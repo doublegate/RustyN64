@@ -84,6 +84,18 @@ impl Width {
     }
 
     /// 32-bit beats on the bus, which is what the data phase costs.
+    ///
+    /// **The `VR4300`'s `SysAD` is 32 bits wide, not 64.** This is the headline
+    /// cost reduction against the `R4400` and it is easy to get wrong, because
+    /// the CPU is a 64-bit machine internally and most `MIPS` III documentation
+    /// describes a 64-bit external bus. The manual is explicit (§1.3): *"It
+    /// contains a **32-bit** multiplexed address/data bus, with per-byte parity …
+    /// It is not compatible with the System interface bus used on the `VR4400`"*,
+    /// and every signal reference in it is `SysAD(31:0)`.
+    ///
+    /// So a 128-bit `D-cache` line is **4** beats and a 256-bit `I-cache` line is
+    /// **8**, not 2 and 4. Halving these would make every cache fill finish twice
+    /// as fast as hardware.
     #[must_use]
     pub const fn beats(self) -> u32 {
         self.bytes() / 4
@@ -170,7 +182,10 @@ impl Transaction {
             Phase::Address => {
                 self.phase = Phase::Data;
                 // The target's latency, then one bus cycle per 32-bit beat.
-                self.remaining = service_cycles + self.width.beats();
+                // Saturating: `service_cycles` may ultimately be derived from
+                // guest-writable timing registers (PI/RI), so a hostile or
+                // careless value must not panic a debug build.
+                self.remaining = service_cycles.saturating_add(self.width.beats());
                 false
             }
             Phase::Data => true,
@@ -196,6 +211,18 @@ mod tests {
     fn syscmd4_is_clear_for_a_request_and_set_for_data() {
         assert!(!Phase::Address.syscmd4(), "UM 12.11.1: address cycle = 0");
         assert!(Phase::Data.syscmd4(), "UM 12.11.1: data cycle = 1");
+    }
+
+    /// **The bus is 32 bits wide.** Pinned because the natural assumption is 64
+    /// — the CPU is a 64-bit machine and most MIPS III material describes a
+    /// 64-bit external interface. The VR4300 narrowed it, and halving these
+    /// counts would make every cache fill complete twice as fast as hardware.
+    #[test]
+    fn the_bus_is_32_bits_wide_not_64() {
+        assert_eq!(Width::Single32.beats(), 1);
+        assert_eq!(Width::Single64.beats(), 2, "a 64-bit transfer is TWO beats");
+        assert_eq!(Width::Block128.beats(), 4, "a D-cache line is FOUR beats");
+        assert_eq!(Width::Block256.beats(), 8, "an I-cache line is EIGHT beats");
     }
 
     #[test]
