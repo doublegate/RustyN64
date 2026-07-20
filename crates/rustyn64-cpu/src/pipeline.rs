@@ -541,23 +541,50 @@ impl Pipeline {
     }
 
     /// Read `width` big-endian bytes, right-justified.
+    ///
+    /// Dispatches on width so 4- and 8-byte accesses go through [`Bus::read_u32`],
+    /// which `rustyn64-core` overrides with a fast RDRAM path. A byte loop would
+    /// issue 4-8x more bus calls on the *most common* operations, and memory
+    /// access is the hot path for a core targeting full speed
+    /// (`docs/performance.md`).
+    ///
+    /// Alignment is **not** rechecked here. `access` has already validated it
+    /// against the specific [`crate::mem::LoadKind`]/[`crate::mem::StoreKind`],
+    /// and the unaligned family passes an address it has aligned down itself.
+    /// Duplicating the check would put the rule in two places, where it can drift.
     fn read_width<B: Bus>(bus: &mut B, addr: u64, width: u64) -> u64 {
-        let mut v = 0u64;
-        let mut i = 0;
-        while i < width {
-            v = (v << 8) | u64::from(bus.read_u8((addr + i) as u32));
-            i += 1;
+        match width {
+            1 => u64::from(bus.read_u8(addr as u32)),
+            2 => {
+                (u64::from(bus.read_u8(addr as u32)) << 8)
+                    | u64::from(bus.read_u8((addr + 1) as u32))
+            }
+            4 => u64::from(bus.read_u32(addr as u32)),
+            // Big-endian: the high word is at the lower address.
+            8 => {
+                (u64::from(bus.read_u32(addr as u32)) << 32)
+                    | u64::from(bus.read_u32((addr + 4) as u32))
+            }
+            _ => 0,
         }
-        v
     }
 
     /// Write the low `width` big-endian bytes of `value`.
+    ///
+    /// Width-dispatched for the same reason as [`Pipeline::read_width`].
     fn write_width<B: Bus>(bus: &mut B, addr: u64, width: u64, value: u64) {
-        let mut i = 0;
-        while i < width {
-            let shift = (width - 1 - i) * 8;
-            bus.write_u8((addr + i) as u32, (value >> shift) as u8);
-            i += 1;
+        match width {
+            1 => bus.write_u8(addr as u32, value as u8),
+            2 => {
+                bus.write_u8(addr as u32, (value >> 8) as u8);
+                bus.write_u8((addr + 1) as u32, value as u8);
+            }
+            4 => bus.write_u32(addr as u32, value as u32),
+            8 => {
+                bus.write_u32(addr as u32, (value >> 32) as u32);
+                bus.write_u32((addr + 4) as u32, value as u32);
+            }
+            _ => {}
         }
     }
 
