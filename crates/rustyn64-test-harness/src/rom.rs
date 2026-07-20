@@ -90,6 +90,22 @@ pub fn entry_point(rom: &[u8]) -> Result<u64, LoadError> {
 pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadError> {
     let elf_offset = find_elf_offset(rom).ok_or(LoadError::NoElfHeader)?;
 
+    // **COP0 `Status`.** IPL3 leaves it at `0x3400_0000` — `CU1 | CU0 | FR` —
+    // which is the value the COP0 work already cross-checked against a real
+    // boot capture. Without it the first COP1 instruction raises Coprocessor
+    // Unusable, which is what happened at instruction ~26 (`ExcCode = 11`,
+    // `EPC = 0x800A_1650`).
+    //
+    // Note this also clears `ERL` and `BEV`, both of which cold reset sets. That
+    // matters twice over: `BEV = 1` sends every exception to PIF ROM, which is
+    // unemulated here, so an unhandled fault would vanish into zeros rather than
+    // being reported.
+    system
+        .cpu
+        .pipeline
+        .cop0
+        .set_hardware(rustyn64_core::cpu::cop0::reg::STATUS, 0x3400_0000);
+
     // **The stack pointer.** IPL3 leaves `$sp` at the top of SP DMEM
     // (`0xA400_1FF0`), and every compiled entry point immediately relies on it:
     // n64-systemtest's is `ADDIU $29, $29, -0x50` followed by `SW $31, 0x4c($29)`.

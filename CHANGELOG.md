@@ -38,8 +38,16 @@ targets `0xFFFF_FFFF_FFFF_FFFC`, a KSEG3 address, TLB-mapped, refill. IPL3 leave
 of SP DMEM; the direct-load path set no registers at all. Loading the image correctly is not enough
 if the register state it was compiled against is missing.
 
-`seed_ipl3_handoff` now sets `$sp`, and the fault moves to **instruction ~25** — so at least one
-more such expectation remains, findable by the same disassemble-at-the-faulting-PC method.
+`seed_ipl3_handoff` now sets `$sp`, which moved the fault to instruction ~25: `ExcCode = 11`
+(Coprocessor Unusable) — a COP1 instruction with `CU1` clear. IPL3 leaves `Status` at
+`0x3400_0000` (`CU1 | CU0 | FR`), the value the COP0 work had already cross-checked against a real
+boot capture. Seeding it also clears `ERL` and `BEV`.
+
+**The suite now runs 108,000,000 instructions with zero exceptions** — and still prints nothing.
+That is a materially different failure from every previous round: it is no longer lost, faulting,
+or NOP-sledding. The remaining question is genuinely "what is it waiting on", which is what the
+first round wrongly assumed. Cheapest next check is `isviewer::detect()`: a failed magic
+round-trip would silently route all output to a framebuffer console we cannot read.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems

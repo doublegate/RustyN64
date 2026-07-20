@@ -321,11 +321,25 @@ Two things follow, and they are different problems:
    is missing.** `seed_ipl3_handoff` now sets `$sp`, and the fault moves from instruction ~6 to
    **instruction ~25** — so there is at least one more such expectation to find. The same
    disassemble-at-the-faulting-PC method will find it; it took one look to find this one.
-2. **`BEV` is still 1**, because nothing has cleared it — cold reset sets it (UM §6.4.4) and real
-   boot code clears it after installing handlers. Until then *every* exception vectors into PIF
-   ROM. Even once (1) is fixed, an unhandled exception will disappear silently rather than
-   reporting, so a harness that cannot see PIF ROM should probably **fail loudly** on a `BEV=1`
-   vector rather than executing zeros.
+2. ~~**`BEV` is still 1**~~ **Resolved with the same fix.** The next fault after `$sp` was
+   `ExcCode = 11` (Coprocessor Unusable) at `EPC = 0x800A_1650` — a COP1 instruction with `CU1`
+   clear. IPL3 leaves `Status` at `0x3400_0000` (`CU1 | CU0 | FR`), the value the COP0 work had
+   already cross-checked against a real boot capture, and seeding it also clears `ERL` and `BEV`.
+
+**Current state: the suite runs 108,000,000 instructions with ZERO exceptions and still prints
+nothing.** That is a materially different failure from every previous round — it is no longer
+lost, faulting, or sledding. The remaining question is genuinely *"what is it waiting on"*, which
+is what the first round wrongly assumed.
+
+Likely candidates, in order of cheapness to check: it is inside `tests::run()` and simply needs a
+larger budget (108M is not obviously enough for hundreds of hardware tests); or it spins on a VI
+register during `video_init.init()`; or `isviewer::detect()` fails and it chose the framebuffer
+console. **Check `detect()` first** — a single `PI_STATUS` poll or a failed magic round-trip would
+silently route all output somewhere unreadable, and that is one probe to rule out.
+
+A harness that cannot see PIF ROM should still **fail loudly** on a `BEV=1` vector rather than
+executing zeros; that is now a latent trap rather than an active one, but it will bite the next
+person who introduces a fault.
 
 The pattern from the last three findings holds: each fix moved the failure rather than resolving
 it, and each new failure was more specific than the last. That is progress, but it should be
