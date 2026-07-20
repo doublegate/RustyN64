@@ -39,8 +39,9 @@
 use crate::Bus;
 use crate::addr::translate;
 use crate::alu::HiLo;
+use crate::cop0::Cop0;
 use crate::decode::{Decoded, decode};
-use crate::exec::{MemOp, WriteBack, execute};
+use crate::exec::{Cop0Access, MemOp, WriteBack, execute};
 use crate::mem;
 use crate::regs::Regs;
 
@@ -165,6 +166,12 @@ pub struct Latch {
     pub write_back: WriteBack,
     /// A memory access `EX` resolved for `DC` to perform.
     pub mem: Option<MemOp>,
+    /// A COP0 access `EX` resolved: read performed in `DC`, write in `WB`.
+    ///
+    /// Split across those two stages because UM §4.6.9 defines the CP0 bypass
+    /// interlock in terms of a write reaching `WB` while the next instruction
+    /// reads in `DC` — a rule that cannot be expressed if both happen in `EX`.
+    pub cop0: Option<Cop0Access>,
 }
 
 /// Does a load into `load_rt` interlock with the following instruction?
@@ -224,6 +231,11 @@ pub struct Pipeline {
     flush_pending: bool,
     /// Instructions retired at `WB` — a work tally, not a time position.
     pub retired: u64,
+    /// The COP0 register file (T-12-001).
+    ///
+    /// Public because exception dispatch, the TLB and the interrupt path all
+    /// read it, and they land in separate tickets.
+    pub cop0: Cop0,
     /// The link bit, `LLbit`.
     ///
     /// *"set by the LL instruction, cleared by an ERET, and tested by the SC
@@ -236,13 +248,6 @@ pub struct Pipeline {
     /// until then nothing clears this, which is correct-so-far rather than
     /// finished — recorded as such in `docs/cpu.md`.
     ll_bit: bool,
-    /// `LLAddr` (COP0 register 17): `PA(31:4)` of the most recent `LL`.
-    ///
-    /// *"This register is for diagnostic purposes only"* (UM §5.4.7) — nothing
-    /// in the CPU reads it back, so it exists to be observable through `MFC0`
-    /// once COP0 lands. Held here rather than in a COP0 file that does not
-    /// exist yet.
-    ll_addr: u64,
 }
 
 impl Pipeline {
@@ -255,6 +260,7 @@ impl Pipeline {
             word: 0,
             in_delay_slot: false,
             abort: None,
+            cop0: None,
             decoded: Decoded {
                 op: crate::decode::Op::Reserved,
                 rs: 0,
@@ -279,11 +285,8 @@ impl Pipeline {
             prev_was_run: false,
             flush_pending: false,
             retired: 0,
+            cop0: Cop0::new(),
             ll_bit: false,
-            // "The contents of the LLAddr register are undefined on reset"
-            // (UM §5.4.7). Undefined is not licence to be non-deterministic:
-            // ADR 0004 requires a reproducible machine, so it is a fixed zero.
-            ll_addr: 0,
         }
     }
 
@@ -311,9 +314,14 @@ impl Pipeline {
     }
 
     /// `LLAddr` (COP0 register 17): `PA(31:4)` of the most recent `LL`.
+    ///
+    /// Reads straight out of the COP0 file. `LL` writes it there and nowhere
+    /// else — there is deliberately no second copy, because two stores of one
+    /// architectural value drift, and `MFC0 $rt, $17` would then disagree with
+    /// the CPU's own idea of the link address.
     #[must_use]
     pub const fn ll_addr(&self) -> u64 {
-        self.ll_addr
+        self.cop0.read(crate::cop0::reg::LL_ADDR)
     }
 
     /// Request a stall of `cycles` `PCycle`s.
@@ -400,6 +408,15 @@ impl Pipeline {
     /// `WB` — commit the result and retire the instruction.
     fn wb_stage(&mut self, regs: &mut Regs) {
         if self.dc_wb.occupied && self.dc_wb.abort.is_none() {
+            // The COP0 WRITE lands here (UM §4.6.9). A `Read` in this latch was
+            // already performed in DC and left its value in `write_back`.
+            if let Some(Cop0Access::Write { dest, value, wide }) = self.dc_wb.cop0 {
+                if wide {
+                    self.cop0.dmtc0(dest, value);
+                } else {
+                    self.cop0.mtc0(dest, value);
+                }
+            }
             match self.dc_wb.write_back {
                 WriteBack::None => {}
                 // `Regs::write` discards `$zero`, so no guard is needed here --
@@ -447,6 +464,20 @@ impl Pipeline {
                     out = self.ex_dc;
                 }
             }
+        }
+        // The COP0 READ happens here, in DC (UM §4.6.9). The write does not --
+        // it happens in WB, and keeping them in different stages is what makes
+        // the CP0 bypass interlock expressible at all.
+        if out.occupied
+            && out.abort.is_none()
+            && let Some(Cop0Access::Read { src, dest, wide }) = out.cop0
+        {
+            let value = if wide {
+                self.cop0.dmfc0(src)
+            } else {
+                self.cop0.mfc0(src)
+            };
+            out.write_back = WriteBack::Gpr { dest, value };
         }
         self.dc_wb = out;
         self.ex_dc.occupied = false;
@@ -540,8 +571,11 @@ impl Pipeline {
                 let raw = Self::read_width(bus, phys, kind.width());
                 self.ll_bit = true;
                 // "the value with the high-order four bits of the physical
-                // address PA(31:4) ... zero-extended" (UM Figure 5-17).
-                self.ll_addr = u64::from(phys >> 4);
+                // address PA(31:4) ... zero-extended" (UM Figure 5-17). Written
+                // via `set_hardware` because LLAddr is software-writable too:
+                // this is the hardware side effect, not an MTC0.
+                self.cop0
+                    .set_hardware(crate::cop0::reg::LL_ADDR, u64::from(phys >> 4));
                 Ok(WriteBack::Gpr {
                     dest,
                     value: kind.shape(raw),
@@ -685,6 +719,7 @@ impl Pipeline {
                 Ok(e) => {
                     out.write_back = e.write_back;
                     out.mem = e.mem;
+                    out.cop0 = e.cop0;
                     // Control flow. The delay slot has ALREADY been fetched -- it
                     // is in `ic_rf` right now, because IC ran a cycle ahead. That
                     // is the architectural delay slot, not a modelling artefact.
@@ -792,6 +827,7 @@ impl Pipeline {
         if !pc.is_multiple_of(4) {
             self.abort_from(Stage::Ic, Exception::AddressError);
             self.ic_rf = Latch {
+                cop0: None,
                 occupied: true,
                 pc,
                 abort: Some(Exception::AddressError),
@@ -835,6 +871,7 @@ impl Pipeline {
             rt_val: 0,
             write_back: WriteBack::None,
             mem: None,
+            cop0: None,
         };
         *next_pc = pc.wrapping_add(4);
     }
@@ -1872,5 +1909,122 @@ mod tests {
         .expect("aligned");
         assert_eq!(bus.read_u32(0x40), u32::MAX);
         assert_eq!(bus.read_u32(0x44), u32::MAX, "all eight bytes, not four");
+    }
+
+    // --- COP0 access through the pipeline (T-12-001) -----------------------
+
+    /// Build a `COP0` instruction word: opcode 0o20, `rs` = form, `rt` = GPR,
+    /// `rd` = COP0 register.
+    const fn cop0_word(rs: u32, rt: u32, rd: u32) -> u32 {
+        (0o20 << 26) | (rs << 21) | (rt << 16) | (rd << 11)
+    }
+
+    /// `ADDIU rt, $0, imm` — the constant-loading prologue these tests share.
+    /// Written as a helper rather than inline so the `rs = $0` term does not
+    /// have to be spelled as a no-op shift that clippy objects to.
+    const fn addiu_zero(rt: u32, imm: u16) -> u32 {
+        (0o11 << 26) | (rt << 16) | imm as u32
+    }
+
+    /// `MTC0` then `MFC0` must round-trip through the real register file,
+    /// exercising the WB-write / DC-read split rather than a direct call.
+    #[test]
+    fn mtc0_then_mfc0_round_trips_through_the_pipeline() {
+        //   ADDIU $1, $0, 0x18     ; a value to write
+        //   MTC0  $1, Compare      ; COP0 write happens in WB
+        //   MFC0  $2, Compare      ; COP0 read happens in DC
+        let program = alloc::vec![
+            addiu_zero(1, 0x18),
+            cop0_word(0o04, 1, u32::from(crate::cop0::reg::COMPARE)),
+            cop0_word(0o00, 2, u32::from(crate::cop0::reg::COMPARE)),
+        ];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+
+        for _ in 0..32 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::COMPARE),
+            0x18,
+            "MTC0 reached the COP0 register file"
+        );
+        assert_eq!(regs.read(2), 0x18, "MFC0 brought it back into $2");
+    }
+
+    /// `MTC0` must not be given a GPR destination by decode: it reads `rt` and
+    /// writes COP0. If `dest` were set to `rt`, the instruction would clobber
+    /// the very register it sourced its value from.
+    #[test]
+    fn mtc0_does_not_write_a_general_register() {
+        let program = alloc::vec![
+            addiu_zero(1, 0x55),
+            cop0_word(0o04, 1, u32::from(crate::cop0::reg::COMPARE)),
+        ];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(1), 0x55, "$1 still holds the source value");
+        assert_eq!(p.cop0.read(crate::cop0::reg::COMPARE), 0x55);
+    }
+
+    /// The write-mask rules must survive the pipeline path, not just direct
+    /// calls: `MTC0` to `Cause` may only touch IP1:IP0.
+    #[test]
+    fn a_pipelined_mtc0_still_respects_the_write_mask() {
+        let program = alloc::vec![
+            // ADDIU $1, $0, -1  => $1 = 0xFFFF_FFFF_FFFF_FFFF
+            addiu_zero(1, 0xFFFF),
+            cop0_word(0o04, 1, u32::from(crate::cop0::reg::CAUSE)),
+        ];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::CAUSE),
+            0x0000_0300,
+            "only the software interrupt bits took"
+        );
+    }
+
+    /// `LL` records `LLAddr`, which *is* COP0 register 17 — so a `MFC0` of it
+    /// must see what `LL` wrote. Until COP0 existed, `LLAddr` lived on
+    /// `Pipeline` as a second copy of the same architectural value; this test
+    /// pins the fact that there is now only one.
+    #[test]
+    fn ll_writes_the_real_cop0_lladdr_register() {
+        let mut p = Pipeline::new();
+        let mut bus = Ram::new(alloc::vec![]);
+        p.access(
+            &mut bus,
+            MemOp::LinkedLoad {
+                kind: LoadKind::SignedWord,
+                addr: 0x40,
+                dest: 8,
+            },
+        )
+        .expect("aligned");
+        assert_eq!(p.ll_addr(), 0x04, "PA(31:4) of 0x40");
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::LL_ADDR),
+            0x04,
+            "the accessor and COP0 reg 17 are the same storage, not two copies"
+        );
+        assert_eq!(
+            p.cop0.mfc0(crate::cop0::reg::LL_ADDR),
+            0x04,
+            "and software can read it back with MFC0"
+        );
     }
 }

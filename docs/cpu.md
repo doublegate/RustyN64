@@ -100,6 +100,47 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
   `LLAddr` (COP0 reg 17) holds `PA(31:4)` of the last `LL` and is diagnostic
   only: nothing in the CPU reads it back (UM §5.4.7).
 
+### COP0 register file (implemented, T-12-001)
+
+Table-driven in `crates/rustyn64-cpu/src/cop0.rs`, because nearly every rule here
+is data rather than logic:
+
+- **Exactly eight registers are 64 bits wide**: `EntryLo0`, `EntryLo1`,
+  `Context`, `BadVAddr`, `EntryHi`, `EPC`, `XContext`, `ErrorEPC` (UM Table 1-2,
+  p. 46). There is no generating rule — it is the registers holding an address
+  or a TLB entry. A wrong entry is invisible until 64-bit software runs.
+- **Writable-bit masks per register.** Hardware discards writes to hardwired,
+  reserved and hardware-owned bits, and a write to a masked-off bit **preserves**
+  the old value rather than zeroing it. The two easiest to get wrong:
+  `Cause` is read-only *except* `IP1:IP0`, and `Status.DS.TS` is read-only while
+  the rest of `DS` is not.
+- **`Config`'s hardwired fields are merged on read**, not seeded at construction:
+  bits 23:16 = `0b00000110` and 14:4 = `0b110_0100_0110` (UM Fig. 5-16, p. 152).
+  Seeding them would let a too-wide write mask erase them permanently.
+- **`EC` is read-only**, sampled from the `DivMode` pins. We use `0b111` (1:1.5),
+  which matches the N64's 62.5 : 93.75 MHz and is *"allowed with the 100 MHz
+  model only"* — an **inference**, ledger U-6, not a documented fact.
+- **Writing `Wired` forces `Random` to 31** (UM §5.4.2, p. 147) — a side effect
+  belonging to neither register alone, which is why it is easy to lose. `Random`
+  ranges over `[Wired, 31]` **inclusive**: `Wired` itself is the first
+  replaceable entry and `TLBWR` must be able to select it.
+- **`LLAddr` is COP0 register 17 and has exactly one storage location.** `LL`
+  writes it there; `Pipeline::ll_addr()` reads it back from there. It briefly had
+  a second copy on `Pipeline`, which would have let `MFC0 $rt, $17` disagree with
+  the CPU's own link address.
+- **Reserved registers 7, 21–25, 31 read zero and discard writes — by choice.**
+  The manual says only *"Reserved for future use"*. Ledger **U-1**; a test pins
+  the choice so changing it is deliberate, not the behaviour.
+- **`PRId.Imp = 0x0B`; `Rev` is 0** because the manual gives no value for any
+  specific part and warns against depending on it. Ledger **U-3**.
+
+**Stage placement is the manual's, not a convenience.** A COP0 **read happens in
+`DC`** and a COP0 **write happens in `WB`**, because UM §4.6.9 defines the CP0
+bypass interlock as firing when a write reaches `WB` while the next instruction
+reads in `DC`. Performing both in `EX` would make that interlock unexpressible —
+the same mistake ADR 0007 exists to prevent one level up. The interlock itself
+lands with T-12-002.
+
 ## Behavior
 
 ### Pipeline and timing
