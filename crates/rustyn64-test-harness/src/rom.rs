@@ -118,3 +118,84 @@ fn write_spmem_word(system: &mut System, offset: usize, value: u32) {
         }
     }
 }
+
+/// Load a ROM whose payload is an **ELF**, honouring its program headers.
+///
+/// # Why a flat copy is not enough
+///
+/// [`load_direct`] models IPL3's behaviour for an ordinary ROM: copy a fixed
+/// prefix into RDRAM at the entry point. That is wrong for a ROM whose payload
+/// is a linked ELF, because the ELF's segments each carry their **own** load
+/// address, and they are not laid out contiguously from the entry point.
+///
+/// n64-systemtest is such a ROM. Its segments target `0x8000_0000` onward while
+/// its header entry is `0x800A_15E8`, so a flat copy puts every address in the
+/// image at the wrong place — and the very first jump, to a perfectly valid
+/// address, lands in zeros. The header entry point is *correct*; the mapping was
+/// not, which is a distinction worth keeping in mind when a ROM appears to jump
+/// somewhere absurd.
+///
+/// # `memsz` vs `filesz`
+///
+/// A segment's `memsz` may exceed its `filesz`; the difference is **BSS** and
+/// must be zeroed rather than left as whatever the previous ROM wrote. Skipping
+/// it gives a program uninitialised statics, which fails far from its cause.
+///
+/// # Errors
+///
+/// [`LoadError::NoElfHeader`] when the image carries no ELF magic, and
+/// [`LoadError::TooSmall`] when a header runs past the end of the image.
+pub fn load_elf(system: &mut System, rom: &[u8]) -> Result<usize, LoadError> {
+    let base = find_elf_offset(rom).ok_or(LoadError::NoElfHeader)?;
+    let hdr = rom.get(base..base + 0x34).ok_or(LoadError::TooSmall)?;
+
+    // 32-bit big-endian ELF, which is what the MIPS toolchain emits here.
+    let be32 =
+        |b: &[u8], o: usize| -> u32 { u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) };
+    let be16 = |b: &[u8], o: usize| -> u16 { u16::from_be_bytes([b[o], b[o + 1]]) };
+
+    let phoff = be32(hdr, 0x1C) as usize;
+    let phentsize = be16(hdr, 0x2A) as usize;
+    let phnum = be16(hdr, 0x2C) as usize;
+
+    let mut loaded = 0usize;
+    for i in 0..phnum {
+        let o = base + phoff + i * phentsize;
+        let ph = rom.get(o..o + 32).ok_or(LoadError::TooSmall)?;
+        // PT_LOAD only; PT_NULL, PT_NOTE and friends carry nothing to place.
+        if be32(ph, 0) != 1 {
+            continue;
+        }
+        let off = be32(ph, 4) as usize;
+        let vaddr = be32(ph, 8);
+        let filesz = be32(ph, 16) as usize;
+        let memsz = be32(ph, 20) as usize;
+
+        // Segment offsets are relative to the ELF, not to the ROM.
+        let src = rom
+            .get(base + off..base + off + filesz)
+            .ok_or(LoadError::TooSmall)?;
+        for (k, byte) in src.iter().enumerate() {
+            let Some(dst) = rdram_slot(system, vaddr, k) else {
+                continue;
+            };
+            *dst = *byte;
+        }
+        // BSS: memsz beyond filesz is zeroed, not inherited.
+        for k in filesz..memsz {
+            if let Some(dst) = rdram_slot(system, vaddr, k) {
+                *dst = 0;
+            }
+        }
+        loaded += memsz;
+    }
+    Ok(loaded)
+}
+
+/// Resolve `vaddr + k` to a byte of RDRAM, or `None` if it falls outside.
+fn rdram_slot(system: &mut System, vaddr: u32, k: usize) -> Option<&mut u8> {
+    let addr = vaddr.wrapping_add(u32::try_from(k).ok()?);
+    // KSEG0/KSEG1 are unmapped: strip the segment to get the physical address.
+    let phys = (addr & 0x1FFF_FFFF) as usize;
+    system.bus.rdram.get_mut(phys)
+}

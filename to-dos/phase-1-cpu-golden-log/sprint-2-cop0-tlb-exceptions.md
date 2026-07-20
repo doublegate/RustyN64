@@ -301,9 +301,27 @@ segments are:
 land at `0x8000_0000` onward. So **every address in the image is wrong**, which is why the first
 jump — to a perfectly valid `0x8018368C` — lands in zeros.
 
-**Next step, concrete:** parse the ELF at the offset located by magic and load each `PT_LOAD` to
-its `vaddr`, zeroing `memsz - filesz` for BSS (segment 3 needs `0x450` bytes of it). That is a
-harness concern — an IPL3 stand-in — not emulation, and it does not pull Phase 2 forward.
+**ELF loading is now implemented** (`rom::load_elf`), and it moved the failure. The image loads
+correctly — `0x1AD150` bytes across the four `PT_LOAD` segments, BSS zeroed — and execution no
+longer jumps into RDRAM zeros.
+
+**The failure is now an exception, six instructions in.** Execution runs
+`0x800A15E8 … 0x800A15F8` and then vectors to `0xBFC0_0200` — the **`BEV=1` TLB refill vector**,
+which lives in PIF ROM that we do not emulate, so it lands in zeros and slides.
+
+Two things follow, and they are different problems:
+
+1. **Something at instruction ~6 raises a TLB refill.** That is the next thing to identify; it is a
+   real emulation question, not a harness one.
+2. **`BEV` is still 1**, because nothing has cleared it — cold reset sets it (UM §6.4.4) and real
+   boot code clears it after installing handlers. Until then *every* exception vectors into PIF
+   ROM. Even once (1) is fixed, an unhandled exception will disappear silently rather than
+   reporting, so a harness that cannot see PIF ROM should probably **fail loudly** on a `BEV=1`
+   vector rather than executing zeros.
+
+The pattern from the last three findings holds: each fix moved the failure rather than resolving
+it, and each new failure was more specific than the last. That is progress, but it should be
+reported as *"the failure moved to X"*, not as *"fixed"*.
 
 Note the entry point in the **ROM header** (`0x800A15E8`) is inside segment 1 and remains correct;
 what was wrong was the load *mapping*, not the entry.

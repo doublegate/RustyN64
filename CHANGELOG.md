@@ -28,8 +28,19 @@ diverges at the same instruction, because of a second, larger problem underneath
 the image is therefore wrong, which is why the first jump — to a perfectly valid `0x8018368C` —
 lands in zeros. The ROM-header entry point is *not* the problem; the load mapping is.
 
-The next step is concrete: parse the ELF and load each `PT_LOAD` to its `vaddr`, zeroing
-`memsz - filesz` for BSS. A harness concern — an IPL3 stand-in — not emulation.
+`rom::load_elf` now does that: it parses the ELF at the magic-located offset and loads each
+`PT_LOAD` to its `vaddr`, zeroing `memsz - filesz` for BSS. `0x1AD150` bytes load correctly and
+execution no longer jumps into zeros.
+
+**The failure moved rather than disappearing.** The suite now runs six instructions and vectors to
+`0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
+follow: something at instruction ~6 raises a TLB refill (an emulation question), and `BEV` is
+still 1 because nothing has cleared it, so *every* exception vectors into PIF ROM and vanishes
+silently. A harness that cannot see PIF ROM should arguably fail loudly there rather than execute
+zeros.
+
+Reported as "the failure moved to X" rather than "fixed", because each of the last three fixes did
+exactly this — and each new failure was more specific than the last.
 
 Recorded because the *method* mattered more than the finding: three budget increases
 (2 → 30k → 3M → 45M) all looked like progress and none were. Probing for the first divergence
