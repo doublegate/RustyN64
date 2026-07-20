@@ -31,6 +31,64 @@
 //     and flags the hardware does not.
 #![allow(clippy::cast_precision_loss, clippy::float_cmp)]
 
+/// Which VR4300 stepping a console carries.
+///
+/// The only behaviour that currently depends on it is the **FP multiplication
+/// erratum**, and that dependency is why this is modelled as console state
+/// rather than folded into `mul`: an unconditional erratum would make every
+/// multiply on *every* console wrong, and most consoles do not have it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Stepping {
+    /// A later stepping, with the multiplication erratum **fixed**.
+    ///
+    /// The default, because it is the majority of hardware and because the
+    /// erratum's output is undocumented — see [`Stepping::has_mul_erratum`].
+    #[default]
+    Fixed,
+    /// An early stepping carrying the erratum: NUS-01 and NUS-02 (Japan only)
+    /// and NUS-03 (the first US revision).
+    Early,
+}
+
+impl Stepping {
+    /// Does this stepping carry the FP multiplication erratum?
+    ///
+    /// # Why the erratum is not implemented
+    ///
+    /// The trigger is documented (`n64brew_wiki/markdown/VR4300.md`): a
+    /// multiply whose *preceding* multiply had a NaN, zero or infinity operand
+    /// *"may produce unexpected results"*. GCC's `-mfix4300` works around it by
+    /// inserting two `nop`s after every `MUL.S`/`MUL.D`/`MULT`.
+    ///
+    /// **What the corrupted output actually is has never been characterised** —
+    /// our own `ref-docs/2026-07-20-vr4300-timing-supplement.md` lists it under
+    /// undocumented constants, with only trigger conditions known. So the
+    /// erratum can be *detected* here but not *reproduced*, and inventing a
+    /// plausible wrong value would be exactly the fitted-constant failure
+    /// `docs/accuracy-ledger.md` forbids: every later result built on it would
+    /// stop being evidence.
+    ///
+    /// Accuracy-ledger **U-7**. Selecting [`Stepping::Early`] therefore changes
+    /// nothing yet — it exists so that when the output *is* characterised, the
+    /// switch is already in the right place rather than threaded through
+    /// afterwards.
+    #[must_use]
+    pub const fn has_mul_erratum(self) -> bool {
+        matches!(self, Self::Early)
+    }
+}
+
+/// Would the erratum's trigger condition fire for this multiply?
+///
+/// True when an operand of the **previous** multiply was a NaN, zero or
+/// infinity. Exposed so a future characterisation has a tested trigger to hang
+/// the corrupted output on, and so a trace can flag affected instructions today.
+#[must_use]
+pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
+    let suspicious = |v: f64| v.is_nan() || v == 0.0 || v.is_infinite();
+    suspicious(prev_a) || suspicious(prev_b)
+}
+
 /// The `FCSR` cause/flag bits an operation can raise (UM §7.2.2).
 ///
 /// Returned rather than written, because `FCSR` belongs to
@@ -1008,5 +1066,42 @@ mod tests {
         let out = to_i64(9_223_372_036_854_774_784.0, Rounding::Nearest);
         assert!(!out.flags.invalid);
         assert_eq!(to_i64(-1.0, Rounding::Nearest).value, -1);
+    }
+
+    /// The FP multiplication erratum is **detectable but not reproducible**:
+    /// the trigger is documented, the corrupted output never was.
+    ///
+    /// Selecting the affected stepping therefore changes no arithmetic. That is
+    /// deliberate — inventing a plausible wrong value would be the
+    /// fitted-constant failure the accuracy ledger forbids, and every later
+    /// result built on it would stop being evidence.
+    #[test]
+    fn the_multiplication_erratum_is_modelled_but_not_invented() {
+        assert!(!Stepping::default().has_mul_erratum(), "fixed by default");
+        assert!(Stepping::Early.has_mul_erratum());
+
+        // Selecting the affected stepping changes nothing about a multiply,
+        // because there is nothing documented to change it to.
+        let a = mul_s(3.0, 4.0);
+        assert_eq!(a.value, 12.0, "arithmetic is stepping-independent today");
+        assert_eq!(a.flags, Flags::NONE);
+    }
+
+    /// The trigger is a property of the **previous** multiply's operands: a NaN,
+    /// zero or infinity. It is tested now so a future characterisation has
+    /// somewhere correct to attach the output.
+    #[test]
+    fn the_erratum_trigger_keys_off_the_previous_multiplys_operands() {
+        for (a, b) in [
+            (f64::NAN, 1.0),
+            (0.0, 1.0),
+            (1.0, -0.0),
+            (f64::INFINITY, 1.0),
+            (1.0, f64::NEG_INFINITY),
+        ] {
+            assert!(mul_erratum_triggers(a, b), "{a} * {b} arms the erratum");
+        }
+        assert!(!mul_erratum_triggers(2.0, 3.0), "ordinary operands do not");
+        assert!(!mul_erratum_triggers(-1.5, 1e30));
     }
 }

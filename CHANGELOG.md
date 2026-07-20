@@ -65,9 +65,16 @@ Two implementation notes that bit during development:
   implement and that no MIPS mode selects. This crate is `no_std`, so `trunc`/`floor`/`ceil`/
   `round_ties_even` are implemented here rather than pulling in `libm` for four functions.
 
-The **FP multiplication erratum is deliberately absent**: it is a property of specific early console
-revisions and belongs with the revision model. Implementing it inline would make every multiply on
-every console wrong.
+**The FP multiplication erratum is modelled, deliberately not reproduced.** `fpu::Stepping` says
+which console this is, and `mul_erratum_triggers` says when the erratum would fire — but selecting
+the affected stepping changes **no arithmetic**, because *what wrong value the erratum produces
+has never been characterised*. The trigger is documented, the affected steppings are documented,
+the output is not; it sits in the timing supplement's undocumented-constants list.
+
+Inventing a plausible wrong value would be exactly the fitted-constant failure the ledger's
+preamble forbids — every later result built on it would stop being evidence. Recorded as ledger
+**U-7**. The switch exists now so that when the output *is* characterised it goes in one place
+rather than being threaded through afterwards.
 
 Four of five mutations fail the suite. The fifth — `ABS` written as `f32::abs` rather than an
 explicit sign-bit clear — is **equivalent**, including for NaN payloads, and is documented as a
