@@ -9,6 +9,55 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the ADR 0007 five-stage pipeline (T-11-001, second half)
+
+`crates/rustyn64-cpu/src/pipeline.rs`. **Structure, not instructions** — the stages move latches
+and account for time; decode and execute are T-11-002 onward. What is real here is the shape,
+which is the part that cannot be retrofitted without rewriting every consumer.
+
+- Four inter-stage `Latch`es (`ic_rf`, `rf_ex`, `ex_dc`, `dc_wb`), each carrying `pc`, `word`,
+  `occupied`, `in_delay_slot`, and `abort`. Five stages have four boundaries; the state lives on
+  the boundaries.
+- `Pipeline::advance` runs **WB → DC → EX → RF → IC**. Each stage reads its input latch before
+  any upstream stage writes it, so no value moves two stages in one cycle and no double buffering
+  is needed — the reverse order *is* the latching.
+- `Stall { cycles, cause }` with `Interlock` naming all eight documented interlocks (LDI, DCB,
+  DCM, ICB, ITM, MCI, **COp**, CP0I — UM Table 4-3) so a stall is always attributable in a trace.
+  ADR 0007's `resume_stage` is deliberately **absent** until it can be load-bearing: `advance`
+  always runs the full cascade today, so a stored `resume` would be read by nothing — the same
+  hazard `poll_irq_at_phase` was removed for (`engineering-lessons.md` §3.2).
+- An abort raises a pending flush, so the instruction fetched later in the *same* cycle is a
+  bubble rather than a live wrong-path fetch that would escape the flush entirely.
+- `stall_for(0)` is ignored rather than recorded — a zero-cycle stall would still consume a cycle
+  and mark it not-a-run-cycle, silently inserting a bubble *and* suppressing interrupt acceptance
+  on the following cycle.
+- `Exception` is deliberately **not** named `Fault`: UM §4.5 defines a fault as interlocks ∪
+  exceptions, and only the aborting subset rides in a latch.
+- `abort_from` stamps an exception into its own latch and every latch **upstream** — the
+  kill-younger-instructions step. Older instructions are untouched.
+- Interrupts are sampled once per `PClock` in **DC** (UM Figure 4-12, §4.7.6) and accepted only
+  if the previous `PCycle` was a run cycle (§4.7.1). Exactly one recognition predicate exists.
+- `load_interlocks` reproduces the hardware's documented **imprecision** — matching on the `rs`
+  *or* `rt` encoded field whether or not it is used as a source, exempting `$zero`, and not
+  crossing the GPR/FPR boundary. Emulating precise behaviour here would be the bug.
+
+Seven pipeline tests, two of which are the structural guards and both **mutation-tested**:
+
+- `a_value_advances_exactly_one_stage_per_cycle` — reversing the cascade to run forwards fails it.
+- `delay_slot_flag_survives_a_multi_cycle_stall` — the Phase 1 exit criterion. Dropping the flag
+  in transit fails it. A global `in_delay_slot` bool passes a naive test and fails this one.
+- `an_abort_survives_the_cascade` — removing the flush fails it.
+- Plus stall-freezes-the-pipeline, the interrupt run-cycle gate, abort-kills-younger-only,
+  aborted-instructions-do-not-retire, zero-cycle-stall-is-not-a-stall, and the load-interlock
+  imprecision cases.
+
+Two existing tests had premises invalidated by this change and were corrected rather than
+patched around: `Cpu::tick` no longer retires an instruction per call (it takes 5 `PCycle`s to
+fill the pipeline), and the scheduler's step count now derives from `cpu_cycles()` rather than
+`Cpu::retired`, since retirement lags stepping by the pipeline depth and the two are no longer
+interchangeable. The residue invariant's third term likewise moved to an inter-domain
+(CPU vs RCP) comparison, keeping it a property of the clock rather than of the CPU.
+
 ### Changed — the ADR 0006 scheduler rework (T-11-001, first half)
 
 The canonical master clock is now **implemented**, not just decided.
