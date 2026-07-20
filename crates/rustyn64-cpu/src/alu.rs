@@ -663,25 +663,28 @@ mod tests {
         assert_eq!(negative.lo, sext32(0xFFFF_FFF2), "-14");
     }
 
-    /// The **variable** shift forms share the erratum: `SRAV` takes its amount
-    /// from a register but performs the same 64-bit shift as `SRA`. Implementing
-    /// one correctly and the other "properly" is an easy inconsistency.
+    /// `SRA` against **pre-computed** hardware values.
+    ///
+    /// Deliberately not `assert_eq!(sra(v, n), <the expression sra uses>)` — that
+    /// restates the implementation and can only catch a *different* one, never a
+    /// wrong one. These constants were derived independently from the erratum's
+    /// definition: 64-bit arithmetic shift, truncate to 32, sign-extend.
+    ///
+    /// The `SRAV` *instruction path* is pinned separately in `exec`, because a
+    /// helper-level test cannot see `Op::Srav` stop routing through this helper.
     #[test]
-    fn srav_shares_the_sra_erratum() {
+    fn sra_matches_precomputed_hardware_values() {
         let rt = 0x0123_4567_89AB_CDEF;
-        for amount in 0..32u32 {
-            assert_eq!(
-                sra(rt, amount),
-                sext32(((rt as i64) >> amount) as u32),
-                "SRAV at {amount} must leak the upper half exactly as SRA does"
-            );
-        }
-        // The worked example, reached through a register amount.
+        assert_eq!(sra(rt, 1), 0xFFFF_FFFF_C4D5_E6F7, "sa=1");
+        assert_eq!(sra(rt, 8), 0x0000_0000_6789_ABCD, "sa=8");
         assert_eq!(
-            sra(rt, 16 | 32),
+            sra(rt, 16),
             0x0000_0000_4567_89AB,
-            "amount masks to 5 bits"
+            "sa=16, the wiki's example"
         );
+        assert_eq!(sra(rt, 31), 0x0000_0000_0246_8ACF, "sa=31");
+        // The amount masks to 5 bits, so 48 is 16.
+        assert_eq!(sra(rt, 48), sra(rt, 16), "sa masks to 5 bits");
     }
 
     #[test]
