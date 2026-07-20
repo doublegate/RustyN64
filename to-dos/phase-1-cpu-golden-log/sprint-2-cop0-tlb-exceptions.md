@@ -559,9 +559,23 @@ short of asking it.
    **Implementation note that matters.** This cannot be done in `read_u8`: the lane depends on the
    *original access address and width*, which a byte-granular decomposition throws away — a word
    read at 0 and a halfword read at 2 both touch byte 2, and they must resolve differently.
-   `Bus` therefore needs `read_u16`/`read_u32` overrides for the PI window, the same shape as the
-   existing `write_u32` override (which exists for the mirror-image reason: a byte-wise default
-   fired four DMAs for one `sw`).
+   And the change is **larger than a `Bus` override**, which I initially assumed. `CpuBus` today
+   declares `read_u8` (required), `read_u32` (defaulted from `read_u8`), and `write_u32` — there is
+   **no `read_u16`**. So an `LH` is issued as two `read_u8` calls and the bus is never told a
+   halfword was requested. Overriding on `Bus` alone cannot work, because the information does not
+   reach it.
+
+   The actual work is three steps, in order:
+
+   1. Add `fn read_u16(&mut self, addr: u32) -> u16` to `CpuBus`, defaulted from `read_u8` so no
+      existing implementor changes behaviour.
+   2. Route the CPU's `LH`/`LHU` path through it, so the access width reaches the bus.
+   3. Override `read_u16`/`read_u32` on `Bus` for the PI window with the `addr & !1` base and
+      `addr & 3` lane.
+
+   Step 2 touches the shared memory path, so it is the one to be careful with: every load must
+   keep its current behaviour for RDRAM, SPMEM, and the register windows. That is why this was
+   not attempted at the tail of a long session.
 
    Confirm against the `cart: Read32` cases that currently **pass**, so this does not regress them.
 
