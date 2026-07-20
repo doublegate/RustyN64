@@ -106,6 +106,16 @@ pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadE
         .cop0
         .set_hardware(rustyn64_core::cpu::cop0::reg::STATUS, 0x3400_0000);
 
+    // **Insert the cartridge.** The ELF loader above models what IPL3 leaves in
+    // RDRAM, but on hardware the cart itself is still physically present and
+    // readable through the PI domain-1 window at `0x1000_0000`. Loading only
+    // RDRAM leaves `Cart::rom` empty, so every cart read returns zero -- which
+    // is what made the entire `cart:` / `cart_memory:` group of n64-systemtest
+    // fail with `a=0x0`.
+    if let Ok(cart) = rustyn64_core::cart::Cart::load(rom) {
+        system.bus.cart = cart;
+    }
+
     // **COP0 `Config.K0` = 3.** IPL3 leaves the KSEG0 cache-coherency field at 3
     // (cached, non-coherent, write-back); a cold VR4300 does not define it, so
     // like `Status` this is IPL3's doing rather than a reset value, and belongs
