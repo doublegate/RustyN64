@@ -47,16 +47,19 @@ boot capture. Seeding it also clears `ERL` and `BEV`.
 That is a materially different failure from every previous round: it is no longer lost, faulting,
 or NOP-sledding.
 
-**A PC histogram then showed the suite is executing its tests.** The hottest address by a wide
-margin is `0x8000_0180` — the general exception vector, with the suite's own handler underneath.
-n64-systemtest raises exceptions by the thousand on purpose, so reaching its handler at the
-`BEV=0` vector means `install_exception_handlers` ran and dispatch works end to end.
+A PC histogram showed `0x8000_0180` — the general exception vector — hottest by a wide margin, and
+I read that as the suite executing its tests, since n64-systemtest raises exceptions by the
+thousand on purpose. **That reading was wrong.** A second probe found exactly **one distinct
+`EPC`** (`0x8018_32E8`, 2,000,000 hits) and exactly **one `ExcCode` (2 = `TLBL`)`.
 
-The remaining problem is therefore **output routing and budget**, not correctness: `isviewer::detect()`
-is never reached, `main()` renders the framebuffer console only *after* `tests::run()` returns, and
-108M instructions was sized to prove liveness rather than to finish hundreds of faulting tests.
-Reading the framebuffer console directly needs no VI emulation, since the text is rendered into
-RDRAM.
+**It is an infinite exception loop**: a single load faults, the handler returns, and it faults
+again. A hot exception vector looks identical to a busy test suite from a histogram alone — what
+distinguishes them is whether `EPC` *moves*, and it never does. Worth recording, because "which
+instruction" is the question this whole diagnosis was built on and I stopped one step short of
+asking it.
+
+The remaining problem is therefore a **TLB refill that never resolves**, not output routing.
+Candidates and the probes that separate them are in the ticket.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems

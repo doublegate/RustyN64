@@ -338,11 +338,35 @@ instructions. And a PC histogram over a 2M-instruction window shows the hottest 
 margin is **`0x8000_0180`, the general exception vector**, with the suite's own installed handler
 underneath it (33,900 hits, ~1.7× the next).
 
-That is a suite **executing its tests**, not hanging: n64-systemtest deliberately raises exceptions
-by the thousand, and reaching its handler at the `BEV=0` vector means `install_exception_handlers`
-ran and the dispatch path works end to end.
+I first read that as *"the suite is executing its tests"* — n64-systemtest raises exceptions by
+the thousand on purpose. **That reading was wrong**, and a second probe disproved it: over a
+2M-instruction window there is exactly **one distinct `EPC`** (`0x8018_32E8`, 2,000,000 hits) and
+exactly **one `ExcCode` (2 = `TLBL`)**.
 
-So the remaining problem is **output routing plus budget**, not correctness:
+**It is an infinite exception loop.** A single load faults, the handler runs, returns, and the load
+faults again. A hot exception vector looks identical to a busy test suite from a PC histogram
+alone; the thing that distinguishes them is whether `EPC` *moves*, and it never does.
+
+Recording the mistake because it is instructive: the histogram was real evidence and I drew an
+optimistic conclusion from it that one more cheap measurement would have refuted. "Which
+instruction" was the question the whole session's method was built on, and I stopped one step
+short of asking it.
+
+**The real remaining problem is a TLB refill that never resolves.** Candidates, in order:
+
+1. The suite's refill handler writes a TLB entry (via `TLBWR`/`TLBWI`) that our TLB does not then
+   match — a write/match asymmetry, which the unit tests would not catch because they write and
+   read through the *same* code.
+2. The handler itself faults, so the exception nests: the first fault takes the refill vector
+   (`0x8000_0000`, `EXL=0`), the nested one takes the general vector (`0x8000_0180`, `EXL=1`) —
+   consistent with the earlier histogram showing `0x180` hottest rather than `0x000`.
+3. The address at `0x8018_32E8` is one the suite expects to be *unmapped* — meaning our segment
+   decode sends it through the TLB when hardware would not.
+
+Disassembling the load at `0x8018_32E8` and dumping the TLB after the handler's first `TLBWR` will
+separate these; both are one probe each.
+
+Output routing and budget are **secondary** and were previously mis-ranked as the remaining work:
 
 - `main()` renders the framebuffer console *after* `tests::run()` returns, so with `ISViewer`
   unselected there is nothing to read until the whole suite finishes.
