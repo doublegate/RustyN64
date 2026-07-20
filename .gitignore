@@ -41,6 +41,17 @@ CLAUDE.local.md
 node_modules/
 package-lock.json
 
+# Python (scripts/ tooling; py_compile and imports drop bytecode caches)
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.venv/
+
+# Large local N64brew Wiki mirror (reference only; rebuild with
+# scripts/mirror_n64brew_wiki.py). Upstream https://n64brew.dev is
+# authoritative -- see n64brew_wiki/README.md.
+/n64brew_wiki/
+
 # rusty-console-forge additions
 /ref-proj/
 /tests/roms/external/

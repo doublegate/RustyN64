@@ -71,6 +71,9 @@ stubs** — accuracy work has not started. Do not assume any chip executes instr
 - `crates/rustyn64-cheevos/` — RetroAchievements FFI (later, off by default) · empty stub today
 - `docs/` — the spec (update in the same PR as code); `docs/STATUS.md` = single source of truth;
   `docs/adr/` — ADRs. `ref-docs/` — immutable research. `ref-proj/` — study clones (gitignored).
+- `n64brew_wiki/` — gitignored offline mirror of the N64brew Wiki, the primary hardware
+  reference. Search `n64brew_wiki/markdown/`; browse `n64brew_wiki/html/`. Rebuild or update
+  with `python3 scripts/mirror_n64brew_wiki.py [--refresh]`. CC BY-SA 4.0 — attribute if quoted.
 - `to-dos/ROADMAP.md` — planning entry point; tickets `T-PS-NNN`.
 
 ## Build / test / lint
