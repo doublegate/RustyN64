@@ -13,8 +13,10 @@ name: Deploy Pages (docs)
 # produce anything. Wiring it up is frontend work, not workflow work.
 #
 # REQUIRES: Pages must be enabled with "GitHub Actions" as the source
-# (Settings -> Pages -> Build and deployment -> Source). On a PRIVATE repo that
-# also needs a paid plan; otherwise the deploy job fails with a 404.
+# (Settings -> Pages -> Build and deployment -> Source). The repository is public,
+# so Pages is free; it was private until 2026-07-20, when this also needed a paid
+# plan or the deploy job failed with a 404. Kept as a note because reverting to
+# private would silently reintroduce that failure.
 
 on:
   push:
