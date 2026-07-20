@@ -108,7 +108,8 @@ from a green `cargo test`:
 
 - **The unmaskable unimplemented-operation cause (bit 17) is not produced**, and
   it is now the dominant blocker. The VR4300 raises it for subnormal operands
-  and results, and for an IEEE-quiet NaN operand to an arithmetic operation;
+  and results, and for an IEEE-signalling / VR4300-quiet NaN operand (MSB
+  clear) to an arithmetic operation;
   this FPU computes those normally instead. Nearly every surviving COP1 failure
   is one of these or an `FS = 1` flush-to-zero case.
 - **`SQRT` (funct 4) is still undecoded** — there is no square-root
@@ -124,11 +125,13 @@ and the compares and conversions decode and execute — **all sixteen
 `C.cond.fmt` tests pass outright**. NaN classification follows the VR4300's
 inverted convention (ledger C-12), not IEEE-754:2008.
 
-`SQRT` (funct 4), the conversions and the `C.cond.fmt` compares are implemented
-in `fpu.rs` but **not yet decoded**, so they remain unreachable. `ABS`, `MOV`
-and `NEG` were in that list until they were found to be the cause of ~100
-failures — a *decoded-but-no-op* instruction is invisible to `cargo test`, and
-`MOV` in particular is emitted by the compiler for every FP call boundary.
+**Only `SQRT` (funct 4) is still implemented-but-undecoded.** The conversions
+and the `C.cond.fmt` compares were in that list until this sprint, and `ABS`,
+`MOV` and `NEG` before them — `MOV` alone cost ~100 failures, because a
+*decoded-but-no-op* instruction is invisible to `cargo test` and the compiler
+emits one at every FP call boundary. That pattern has now cost two separate
+investigations; when adding a decode arm, enumerate the neighbouring funct
+space rather than only the encoding that prompted the change.
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |

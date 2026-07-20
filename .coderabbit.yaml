@@ -4,6 +4,14 @@
 # A second review bot alongside GitHub Copilot. Installing the app is a
 # repository-owner action on github.com; this file only tunes the review.
 #
+# Profile is **assertive** — the most feedback CodeRabbit offers, and the one
+# its docs warn "may feel nitpicky". That is the right trade here: this is a
+# cycle-accuracy emulator where a missed defect is measured in weeks of
+# misdirected investigation (see accuracy ledger C-10), the maintainer
+# adjudicates every comment individually rather than skimming, and the
+# `path_instructions` below already tell the bot which deliberate deviations
+# NOT to report — which is what makes assertive affordable rather than noisy.
+#
 # The guiding principle: `cargo clippy` (pedantic + nursery, `-D warnings`),
 # rustdoc `-D warnings`, `cargo fmt` and markdownlint already gate everything
 # mechanical, and they gate it harder than any bot will. So the tool
@@ -20,7 +28,7 @@ tone_instructions: >-
   correct.
 
 reviews:
-  profile: chill
+  profile: assertive
   request_changes_workflow: false
   high_level_summary: true
   high_level_summary_in_walkthrough: true
@@ -45,7 +53,10 @@ reviews:
     - "!ref-docs/**"
     - "!ref-proj/**"
     - "!n64brew_wiki/**"
-    - "!tests/roms/**"
+    # Only the EXTERNAL tier. `tests/roms/n64-systemtest/` is committed (MIT,
+    # with its upstream LICENSE beside it) and its README carries the licence
+    # tiering rules, so both should stay reviewable.
+    - "!tests/roms/external/**"
     - "!target/**"
 
   path_instructions:
@@ -93,6 +104,13 @@ reviews:
         whose success and failure paths can converge — for example comparing a
         total across two runs that differ for an unrelated reason, or asserting
         a destination equals a value it already held.
+
+    - path: "**/*.md"
+      instructions: |
+        markdownlint is a pre-commit hook with NO CI job, so it is the one gate
+        that can silently not run. Any Markdown change must have had
+        `pre-commit run markdownlint --all-files` run locally — that includes
+        `AGENTS.md` and `CHANGELOG.md`, not only files under `docs/`.
 
     - path: "docs/**/*.md"
       instructions: |
