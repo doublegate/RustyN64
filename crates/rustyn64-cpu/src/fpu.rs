@@ -218,6 +218,90 @@ impl Rounding {
     }
 }
 
+/// The next representable `f32` toward +∞.
+#[must_use]
+pub fn next_up_f32(x: f32) -> f32 {
+    if x.is_nan() || x == f32::INFINITY {
+        return x;
+    }
+    if x == 0.0 {
+        // Covers −0.0 as well: the successor of either zero is the smallest
+        // positive subnormal.
+        return f32::from_bits(1);
+    }
+    let b = x.to_bits();
+    // Magnitude bits ascend away from zero, so "toward +∞" is +1 above zero and
+    // −1 below it.
+    f32::from_bits(if x > 0.0 { b + 1 } else { b - 1 })
+}
+
+/// The next representable `f32` toward −∞.
+#[must_use]
+pub fn next_down_f32(x: f32) -> f32 {
+    -next_up_f32(-x)
+}
+
+/// Round an **exact** `f64` to `f32` under an explicit rounding mode.
+///
+/// # Why this exists
+///
+/// Rust's `as f32` is always round-to-nearest-even. The VR4300 selects one of
+/// four modes through `FCSR.RM`, so a single-precision result computed with
+/// native arithmetic has a wrong last bit under any directed mode — accuracy
+/// ledger C-10, and the largest single contributor to n64-systemtest's COP1
+/// failures.
+///
+/// # The exactness precondition
+///
+/// `exact` must be the **exact** mathematical result, not an already-rounded
+/// one, or this double-rounds. That precondition is satisfiable for `f32`
+/// `ADD`/`SUB`/`MUL`: `f64` carries 53 significand bits and the exact product of
+/// two 24-bit significands needs at most 48, so computing in `f64` is exact and
+/// this is the *only* rounding that happens.
+///
+/// It is **not** satisfiable for `DIV`, whose quotient is generally irrational
+/// in binary and is already rounded by the time `f64` holds it, nor for any
+/// double-precision operation, which has no wider type to compute in. Those need
+/// a soft-float path and remain round-to-nearest for now.
+#[must_use]
+pub fn round_f64_to_f32(exact: f64, mode: Rounding) -> f32 {
+    let nearest = exact as f32;
+    // Exactly representable, or a non-finite that carries across unchanged:
+    // every mode agrees, and the comparisons below would be meaningless.
+    if f64::from(nearest) == exact || !exact.is_finite() {
+        return nearest;
+    }
+    match mode {
+        Rounding::Nearest => nearest,
+        Rounding::TowardZero => {
+            // Only step back if rounding went AWAY from zero.
+            if f64::from(nearest).abs() > exact.abs() {
+                if nearest > 0.0 {
+                    next_down_f32(nearest)
+                } else {
+                    next_up_f32(nearest)
+                }
+            } else {
+                nearest
+            }
+        }
+        Rounding::TowardPlusInf => {
+            if f64::from(nearest) < exact {
+                next_up_f32(nearest)
+            } else {
+                nearest
+            }
+        }
+        Rounding::TowardMinusInf => {
+            if f64::from(nearest) > exact {
+                next_down_f32(nearest)
+            } else {
+                nearest
+            }
+        }
+    }
+}
+
 /// A result plus the flags producing it raised.
 ///
 /// Deliberately **not** `Eq`: `T` is a float, and `NaN != NaN`. Deriving `Eq`
@@ -302,6 +386,43 @@ fn classify_f64(r: f64, a: f64, b: f64) -> Flags {
 #[must_use]
 pub fn add_s(a: f32, b: f32) -> Outcome<f32> {
     let value = a + b;
+    Outcome {
+        value,
+        flags: classify_f32(value, a, b),
+    }
+}
+
+/// `ADD.S`/`SUB.S`/`MUL.S` under an explicit rounding mode.
+///
+/// # Why these three and not `DIV.S`
+///
+/// The exact sum, difference or product of two `f32`s fits in an `f64`: 53
+/// significand bits against the at-most-48 an exact 24×24-bit product needs. So
+/// the `f64` computation below is **exact**, and the single rounding into `f32`
+/// is the only one — which is the precondition [`round_f64_to_f32`] documents.
+///
+/// A quotient has no such bound: it is generally non-terminating in binary, so
+/// the `f64` division already rounds and a second rounding would compound.
+///
+/// # Not currently used — and why it is kept
+///
+/// The pipeline was wired to this and then **reverted**. Against n64-systemtest
+/// it changed nothing measurable and made `ADD.S` marginally worse, because the
+/// exactness argument above **fails in the subnormal range**: an `f64` result
+/// that is subnormal *as an `f32`* has already lost bits to `f32`'s reduced
+/// exponent range, so the final conversion double-rounds.
+///
+/// Kept because the helper and its tests are correct for the normal range and
+/// because the rounding-mode gap is real; the missing piece is a soft-float path
+/// that never leaves the target format. Accuracy ledger C-10.
+#[must_use]
+pub fn arith_s_rm(a: f32, b: f32, op: u8, mode: Rounding) -> Outcome<f32> {
+    let exact = match op {
+        0 => f64::from(a) + f64::from(b),
+        1 => f64::from(a) - f64::from(b),
+        _ => f64::from(a) * f64::from(b),
+    };
+    let value = round_f64_to_f32(exact, mode);
     Outcome {
         value,
         flags: classify_f32(value, a, b),
@@ -1189,5 +1310,88 @@ mod tests {
         }
         assert!(!mul_erratum_triggers(2.0, 3.0), "ordinary operands do not");
         assert!(!mul_erratum_triggers(-1.5, 1e30));
+    }
+
+    /// Directed rounding must differ from nearest where the exact value falls
+    /// between two representable `f32`s — otherwise `FCSR.RM` is decorative.
+    ///
+    /// `0.1_f64` is not representable in `f32`, so the four modes must split
+    /// into the two neighbours bracketing it.
+    #[test]
+    fn the_four_rounding_modes_bracket_an_inexact_value() {
+        let exact = 0.1f64;
+        let nearest = round_f64_to_f32(exact, Rounding::Nearest);
+        let zero = round_f64_to_f32(exact, Rounding::TowardZero);
+        let up = round_f64_to_f32(exact, Rounding::TowardPlusInf);
+        let down = round_f64_to_f32(exact, Rounding::TowardMinusInf);
+
+        assert!(
+            f64::from(up) > exact,
+            "toward +inf must land ABOVE the exact value"
+        );
+        assert!(f64::from(down) < exact, "toward -inf must land BELOW it");
+        assert_eq!(
+            zero, down,
+            "for a positive value, toward-zero == toward-minus-inf"
+        );
+        assert_eq!(
+            up,
+            next_up_f32(down),
+            "and the two are adjacent representables"
+        );
+        assert!(
+            nearest == up || nearest == down,
+            "nearest picks one of the two neighbours"
+        );
+    }
+
+    /// Toward-zero is **magnitude** truncation, so for a negative value it goes
+    /// the opposite way from a positive one. Testing only positives would let a
+    /// sign-blind implementation pass.
+    #[test]
+    fn toward_zero_follows_the_sign() {
+        let pos = 0.1f64;
+        let neg = -0.1f64;
+        assert!(
+            f64::from(round_f64_to_f32(pos, Rounding::TowardZero)) < pos,
+            "a positive truncates DOWNWARD"
+        );
+        assert!(
+            f64::from(round_f64_to_f32(neg, Rounding::TowardZero)) > neg,
+            "a negative truncates UPWARD -- toward zero, not toward -inf"
+        );
+    }
+
+    /// An exactly representable value is unchanged by every mode; a rounding
+    /// helper that always steps would corrupt exact arithmetic.
+    #[test]
+    fn an_exact_value_is_untouched_by_every_mode() {
+        for v in [0.5f64, -0.5, 0.0, -0.0, 1.0, 262_144.0] {
+            for mode in [
+                Rounding::Nearest,
+                Rounding::TowardZero,
+                Rounding::TowardPlusInf,
+                Rounding::TowardMinusInf,
+            ] {
+                assert_eq!(
+                    f64::from(round_f64_to_f32(v, mode)),
+                    v,
+                    "{v} is exact in f32 and must not move"
+                );
+            }
+        }
+    }
+
+    /// The successor/predecessor helpers step exactly one representable, cross
+    /// zero correctly, and treat the infinities as fixed points.
+    #[test]
+    fn next_up_and_down_step_one_representable() {
+        assert_eq!(next_up_f32(0.0), f32::from_bits(1), "smallest subnormal");
+        assert_eq!(next_up_f32(-0.0), f32::from_bits(1), "-0.0 too");
+        assert_eq!(next_down_f32(0.0), -f32::from_bits(1));
+        assert_eq!(next_up_f32(f32::INFINITY), f32::INFINITY, "a fixed point");
+        assert_eq!(next_down_f32(f32::NEG_INFINITY), f32::NEG_INFINITY);
+        assert_eq!(next_down_f32(next_up_f32(1.0)), 1.0, "round trip");
+        assert!(next_up_f32(1.0) > 1.0 && next_down_f32(1.0) < 1.0);
     }
 }

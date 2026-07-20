@@ -1459,6 +1459,11 @@ impl Pipeline {
             {
                 let a = f32::from_bits(self.fpr.read_s(fs));
                 let b = f32::from_bits(self.fpr.read_s(ft));
+                // Round-to-nearest only: `FCSR.RM` is not honoured here, and
+                // routing this through `fpu::arith_s_rm` was tried and REVERTED
+                // -- see ledger C-10. It changed nothing the oracle measures and
+                // made `ADD.S` marginally worse, because computing in `f64` and
+                // rounding to `f32` double-rounds in the subnormal range.
                 let out = match funct {
                     0 => fpu::add_s(a, b),
                     1 => fpu::sub_s(a, b),

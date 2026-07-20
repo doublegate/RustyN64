@@ -328,8 +328,24 @@ argument, so the conversions were written mode-aware and the arithmetic was not.
 The gap has existed since Sprint 3 and was invisible because nothing decoded to
 the arithmetic until COP1 was wired.
 
-**Confirm with:** per-mode golden vectors for each operation, then deleting this
-entry.
+**A fix was attempted and reverted.** Routing `ADD.S`/`SUB.S`/`MUL.S` through an
+exact `f64` computation rounded per `RM` changed **nothing** the oracle measures
+(2,897 before and after) and made `ADD.S` marginally worse, 39 failures to 40.
+Two lessons, both recorded rather than discarded:
+
+1. The exactness argument (53 significand bits ≥ 2×24+2) holds only in the
+   **normal** range. An `f64` value that is subnormal as an `f32` has already
+   lost bits to the narrower exponent range, so converting it double-rounds. A
+   correct implementation must never leave the target format — i.e. soft-float.
+2. **The rounding mode is not what these tests are failing on.** The hypothesis
+   was plausible and measurably wrong, so the cause of the ~250 `Result after
+   <op>` failures is still unidentified. Do not assume `RM` next time.
+
+The helper (`fpu::round_f64_to_f32`, `next_up_f32`, `next_down_f32`) is retained
+with its tests: it is correct in the normal range and will be needed.
+
+**Confirm with:** capturing what n64-systemtest actually feeds an `ADD.S` case
+and comparing our result bit-for-bit, before writing any more FP code.
 
 ## 5. Deliberate deviations from hardware
 
