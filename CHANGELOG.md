@@ -32,8 +32,17 @@ lands in zeros. The ROM-header entry point is *not* the problem; the load mappin
 `PT_LOAD` to its `vaddr`, zeroing `memsz - filesz` for BSS. `0x1AD150` bytes load correctly and
 execution no longer jumps into zeros.
 
-**The failure moved rather than disappearing.** The suite now runs six instructions and vectors to
-`0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
+**The instruction-6 fault was the stack pointer.** Disassembling the entry showed a standard
+prologue — `ADDIU $29, $29, -0x50` then `SW $31, 0x4c($29)` — and with `$29` at zero that store
+targets `0xFFFF_FFFF_FFFF_FFFC`, a KSEG3 address, TLB-mapped, refill. IPL3 leaves `$sp` at the top
+of SP DMEM; the direct-load path set no registers at all. Loading the image correctly is not enough
+if the register state it was compiled against is missing.
+
+`seed_ipl3_handoff` now sets `$sp`, and the fault moves to **instruction ~25** — so at least one
+more such expectation remains, findable by the same disassemble-at-the-faulting-PC method.
+
+**The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
+and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
 follow: something at instruction ~6 raises a TLB refill (an emulation question), and `BEV` is
 still 1 because nothing has cleared it, so *every* exception vectors into PIF ROM and vanishes
 silently. A harness that cannot see PIF ROM should arguably fail loudly there rather than execute

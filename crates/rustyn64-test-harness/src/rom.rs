@@ -90,6 +90,16 @@ pub fn entry_point(rom: &[u8]) -> Result<u64, LoadError> {
 pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadError> {
     let elf_offset = find_elf_offset(rom).ok_or(LoadError::NoElfHeader)?;
 
+    // **The stack pointer.** IPL3 leaves `$sp` at the top of SP DMEM
+    // (`0xA400_1FF0`), and every compiled entry point immediately relies on it:
+    // n64-systemtest's is `ADDIU $29, $29, -0x50` followed by `SW $31, 0x4c($29)`.
+    //
+    // With `$sp` at 0 that store goes to `0xFFFF_FFFF_FFFF_FFFC` -- a KSEG3
+    // address, TLB-mapped, and an instant refill exception six instructions in.
+    // Loading the image correctly is not enough if the register state the image
+    // was compiled against is missing.
+    system.cpu.regs.write(29, 0xFFFF_FFFF_A400_1FF0);
+
     // Word 0: the RDRAM size IPL3 detected.
     let size = u32::try_from(system.bus.rdram.len()).unwrap_or(u32::MAX);
     write_spmem_word(system, 0, size);

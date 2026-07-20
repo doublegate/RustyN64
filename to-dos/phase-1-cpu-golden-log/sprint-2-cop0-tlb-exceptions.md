@@ -311,8 +311,16 @@ which lives in PIF ROM that we do not emulate, so it lands in zeros and slides.
 
 Two things follow, and they are different problems:
 
-1. **Something at instruction ~6 raises a TLB refill.** That is the next thing to identify; it is a
-   real emulation question, not a harness one.
+1. ~~**Something at instruction ~6 raises a TLB refill.**~~ **Identified: the stack pointer.**
+   Disassembling the entry showed a standard prologue — `ADDIU $29, $29, -0x50` then
+   `SW $31, 0x4c($29)`. With `$29` at zero that store targets `0xFFFF_FFFF_FFFF_FFFC`, a KSEG3
+   address, TLB-mapped, refill. IPL3 leaves `$sp` at the top of SP DMEM (`0xA400_1FF0`); the
+   direct-load path set no registers at all.
+
+   **Loading the image correctly is not sufficient if the register state it was compiled against
+   is missing.** `seed_ipl3_handoff` now sets `$sp`, and the fault moves from instruction ~6 to
+   **instruction ~25** — so there is at least one more such expectation to find. The same
+   disassemble-at-the-faulting-PC method will find it; it took one look to find this one.
 2. **`BEV` is still 1**, because nothing has cleared it — cold reset sets it (UM §6.4.4) and real
    boot code clears it after installing handlers. Until then *every* exception vectors into PIF
    ROM. Even once (1) is fixed, an unhandled exception will disappear silently rather than
