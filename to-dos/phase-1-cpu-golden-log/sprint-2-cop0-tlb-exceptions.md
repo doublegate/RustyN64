@@ -354,9 +354,18 @@ short of asking it.
 
 **The real remaining problem is a TLB refill that never resolves.** Candidates, in order:
 
-1. The suite's refill handler writes a TLB entry (via `TLBWR`/`TLBWI`) that our TLB does not then
-   match — a write/match asymmetry, which the unit tests would not catch because they write and
-   read through the *same* code.
+1. ~~The suite's refill handler writes a TLB entry that our TLB does not match.~~
+   **Investigated. A real bug was found here and it was *not* the cause.**
+
+   `Cop0::tick_random` was implemented and **never called from the pipeline** — only from a unit
+   test. `Random` therefore sat at 31 forever, so every `TLBWR` overwrote the same entry
+   (UM §5.4.2: *"decrements as each instruction executes"*). That is a genuine emulation defect,
+   and precisely the shape this candidate predicted: a stuck counter is invisible to any test that
+   calls `tick_random` itself, which is what the COP0 unit tests do.
+
+   **Fixed** — advanced at retirement, pinned by a test driven through `advance` rather than by
+   calling the method directly — **and the loop persists unchanged**: still one distinct `EPC`,
+   still `TLBL`. So the refill failure is candidate 2 or 3.
 2. The handler itself faults, so the exception nests: the first fault takes the refill vector
    (`0x8000_0000`, `EXL=0`), the nested one takes the general vector (`0x8000_0180`, `EXL=1`) —
    consistent with the earlier histogram showing `0x180` hottest rather than `0x000`.

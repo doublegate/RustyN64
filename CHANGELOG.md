@@ -9,6 +9,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — `Random` never advanced, so every `TLBWR` overwrote the same entry
+
+`Cop0::tick_random` was implemented and **never called from the pipeline** — only from a unit test.
+`Random` therefore sat at 31 forever, and since `TLBWR` writes the entry `Random` names, every
+refill overwrote the same one. UM §5.4.2 is explicit: *"decrements as each instruction executes."*
+
+A stuck counter is **invisible to any test that calls `tick_random` itself**, which is exactly what
+the COP0 unit tests did — they exercised the decrement logic thoroughly while nothing checked that
+anything ever called it. The new test drives it through `advance` instead.
+
+Found by chasing an infinite TLB-refill loop in n64-systemtest. **It did not fix that loop** — the
+suite still shows one distinct `EPC` and one `ExcCode` — so this is a genuine defect found *beside*
+the bug being hunted rather than the bug itself, and it is reported that way.
+
 ### Diagnosed — why n64-systemtest reports nothing (T-12-007)
 
 Not waiting; **lost**. Probing for the first divergence found it **191 retired instructions in**:

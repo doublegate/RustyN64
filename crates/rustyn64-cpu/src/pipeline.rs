@@ -619,6 +619,18 @@ impl Pipeline {
                 WriteBack::Lo(v) => regs.lo = v,
             }
             self.retired = self.retired.wrapping_add(1);
+            // "Random decrements as each instruction executes" (UM §5.4.2,
+            // p. 147) -- advanced HERE, at retirement, so it counts executed
+            // instructions rather than cycles.
+            //
+            // This was implemented and then never called from the pipeline, so
+            // `Random` sat at 31 forever and **every `TLBWR` overwrote the same
+            // entry**. A refill handler that needs more than one mapping live at
+            // once therefore destroys its previous entry on each miss and faults
+            // again immediately -- an infinite refill loop, which is exactly what
+            // n64-systemtest hit. A stuck counter is invisible to any test that
+            // calls `tick_random` itself.
+            self.cop0.tick_random();
         }
         self.dc_wb.occupied = false;
     }
@@ -3298,6 +3310,39 @@ mod tests {
             p.cop0.read(reg::ENTRY_HI) & crate::tlb::VPN2_MASK,
             0xFFFF_FFFF_E000_0000 & crate::tlb::VPN2_MASK,
             "and VPN2 alongside it"
+        );
+    }
+
+    /// **`Random` advances as instructions retire** (UM §5.4.2, p. 147).
+    ///
+    /// It was implemented and never called from the pipeline, so it sat at 31
+    /// forever and every `TLBWR` overwrote the same entry. A stuck counter is
+    /// invisible to any test that calls `tick_random` itself — which is what the
+    /// COP0 unit tests do — so this asserts it through `advance`.
+    #[test]
+    fn random_advances_as_instructions_retire() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![
+            addiu_zero(1, 1),
+            addiu_zero(2, 2),
+            addiu_zero(3, 3),
+            addiu_zero(4, 4),
+        ]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        p.cop0.mtc0(reg::WIRED, 0);
+        let start = p.cop0.read(reg::RANDOM);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert!(p.retired >= 4, "instructions retired");
+        assert_ne!(
+            p.cop0.read(reg::RANDOM),
+            start,
+            "Random must move as instructions retire -- a stuck Random makes \
+             every TLBWR overwrite the same entry"
         );
     }
 
