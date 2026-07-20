@@ -11,8 +11,8 @@ The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 
 ### Fixed — rustdoc gets its own CI job
 
-`RUSTDOCFLAGS="-D warnings" cargo doc` was the **last step of the `test` job**, after the slow
-test run. Two consequences, both observed rather than theorised:
+`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` was the **last step of the
+`test` job**, after the slow test run. Two consequences, both observed rather than theorised:
 
 - It was the most likely thing to be lost to `cancel-in-progress`. A commit with a broken
   intra-doc link (public docs linking to a private item) went through with its run marked
