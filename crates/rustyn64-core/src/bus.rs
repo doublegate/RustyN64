@@ -270,6 +270,6 @@ mod tests {
         let mut bus = Bus::new();
         bus.rcp.mi_intr.ai = true;
         bus.rcp.mi_mask.ai = true;
-        assert!(CpuBus::poll_irq_at_phase(&mut bus, BusPhase::Phi2));
+        assert!(CpuBus::poll_irq_at_phase(&mut bus, BusPhase::Data));
     }
 }

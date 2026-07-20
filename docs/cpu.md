@@ -21,8 +21,14 @@ master tick unit of the scheduler (`docs/scheduler.md`).
 The CPU borrows the system memory bus during `tick`. The trait it sees
 (`crates/rustyn64-cpu/src/lib.rs`):
 
+`BusPhase` names the two halves of a SysAD transaction after the hardware's own
+encoding: `SYSCMD` bit 4 is documented as "Command or Data"
+(`n64brew_wiki/markdown/SysAD Interface.md`). It is **not** a sub-cycle timing
+model — the scheduler still advances at whole-VR4300-cycle resolution, and finer
+resolution is the deferred ADR 0005 refactor.
+
 ```rust
-pub enum BusPhase { Phi1, Phi2 }
+pub enum BusPhase { Command, Data }
 
 pub trait Bus {
     fn read_u8(&mut self, addr: u32) -> u8;

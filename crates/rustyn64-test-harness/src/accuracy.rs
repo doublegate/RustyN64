@@ -1,6 +1,6 @@
 //! The accuracy scorer over a first-party probe battery.
 //!
-//! The N64 has no single all-in-one oracle ROM the way the NES has AccuracyCoin,
+//! The N64 has no single all-in-one oracle ROM the way the NES has `AccuracyCoin`,
 //! so this battery is assembled from named probes rather than wrapping one suite.
 //!
 //! Runs a battery of named accuracy probes and tallies a pass score. The

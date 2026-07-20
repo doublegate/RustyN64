@@ -30,18 +30,28 @@
 
 extern crate alloc;
 
-/// The half of the VR4300 bus cycle the lockstep scheduler is currently in.
+/// Which half of a `SysAD` bus transaction the lockstep scheduler is currently in.
 ///
-/// The N64 core, like the NES reference, splits each CPU cycle so that
-/// mid-cycle RCP/interface events sample interrupts at the correct phase. The
-/// [`Bus::poll_irq_at_phase`] hook is parameterized over this so `rustyn64-core`
-/// and the test harness can import it through `rustyn64_core::scheduler`.
+/// The VR4300 talks to the RCP over the `SysAD` bus, which multiplexes the command
+/// and the data onto the same lines. `SYSCMD` bit 4 is literally documented as
+/// "Command or Data", and this enum mirrors that split: the transaction issues a
+/// command, then transfers data.
+///
+/// The scheduler needs the distinction because an RCP or interface event landing
+/// between the two halves must be visible to the correct one — that is the
+/// not-catch-up property in ADR 0001. The [`Bus::poll_irq_at_phase`] hook is
+/// parameterized over it so `rustyn64-core` and the test harness can import it
+/// through `rustyn64_core::scheduler`.
+///
+/// Note this is *not* a sub-cycle bus-timing model: the scheduler still advances
+/// at whole-VR4300-cycle resolution. Finer resolution is the deferred ADR 0005
+/// refactor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum BusPhase {
-    /// φ1 — the first half of the cycle (address/issue).
-    Phi1,
-    /// φ2 — the second half of the cycle (data/commit).
-    Phi2,
+    /// The command half — the CPU drives `SYSCMD` and the address.
+    Command,
+    /// The data half — the transfer itself, and where the result commits.
+    Data,
 }
 
 /// The system-memory bus the VR4300 borrows during [`Cpu::tick`].
@@ -76,9 +86,10 @@ pub trait Bus {
         self.write_u8(addr.wrapping_add(3), b[3]);
     }
 
-    /// Sample the pending-interrupt level at a precise bus phase. Default:
-    /// no interrupt pending. `rustyn64-core` overrides to OR the MI interrupt
-    /// mask against the live RCP interrupt lines.
+    /// Sample the pending-interrupt level at a given `SysAD` transaction half.
+    ///
+    /// Default: no interrupt pending. `rustyn64-core` overrides to OR the MI
+    /// interrupt mask against the live RCP interrupt lines.
     fn poll_irq_at_phase(&mut self, _phase: BusPhase) -> bool {
         false
     }
