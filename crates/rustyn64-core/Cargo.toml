@@ -1,0 +1,21 @@
+[package]
+name = "rustyn64-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+rustyn64-cpu = { path = "../rustyn64-cpu", version = "0.1.0", default-features = false }
+rustyn64-rsp = { path = "../rustyn64-rsp", version = "0.1.0", default-features = false }
+rustyn64-rdp = { path = "../rustyn64-rdp", version = "0.1.0", default-features = false }
+rustyn64-audio = { path = "../rustyn64-audio", version = "0.1.0", default-features = false }
+rustyn64-cart = { path = "../rustyn64-cart", version = "0.1.0", default-features = false }
+
+[lints]
+workspace = true

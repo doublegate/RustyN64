@@ -1,0 +1,65 @@
+[package]
+name = "rustyn64-frontend"
+description = "RustyN64: cross-platform N64 emulator binary (winit + wgpu + cpal + egui)"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords = ["n64", "emulator", "nintendo64", "wgpu", "cpal"]
+categories = ["emulators", "games"]
+
+[lib]
+name = "rustyn64_frontend"
+path = "src/lib.rs"
+# `cdylib` produces the `.wasm` artifact wasm-bindgen + trunk consume for the
+# (future) browser frontend; `rlib` keeps the regular crate-graph integration so
+# the `[[bin]]` can depend on the lib without duplicating sources.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Everything optional is additive + off by default (determinism + byte-identity
+# contract). The dedicated emulation thread is the lone default-on native helper.
+default = ["emu-thread"]
+
+# v0.1 — dedicated emulation thread (native-only; a no-op on wasm32, which is
+# single-threaded). Frame production runs off the winit event-loop thread so
+# UI/render stalls never disturb emulation cadence.
+emu-thread = []
+
+# Roadmap placeholders (no code yet) — kept so downstream `--features` resolve.
+debug-hooks = []
+hd-pack = []
+retroachievements = []
+
+[[bin]]
+name = "rustyn64"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rustyn64-core = { path = "../rustyn64-core", version = "0.1.0" }
+
+# Frontend stack — pinned to the same known-good tier RustyNES uses (winit 0.30 /
+# wgpu 29 / egui 0.34 / cpal 0.18 / gilrs 0.11 / rfd 0.17).
+winit = "0.30"
+wgpu = { version = "29", features = ["webgl"] }
+egui = "0.34"
+egui-wgpu = "0.34"
+egui-winit = { version = "0.34", default-features = false, features = ["links", "wayland", "x11"] }
+pollster = "0.4"
+bytemuck = "1"
+thiserror = { version = "2.0", default-features = false }
+web-time = "1.1"
+
+# Native-only host deps (audio out, gamepads, file picker, config dirs). Gated to
+# `cfg(not(wasm32))` so the future wasm build never pulls them (it uses the
+# browser-native input / file-picker / Web Audio APIs instead).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cpal = "0.18"
+gilrs = "0.11"
+rfd = "0.17"
+directories = "5"

@@ -1,0 +1,49 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Merge / patch artifacts
+*.orig
+*.rej
+
+# Generated
+*.profraw
+*.profdata
+/coverage/
+/perf.data*
+/flamegraph.svg
+
+# Per-developer
+.envrc
+.direnv/
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Agent tooling (Master-Claude writes *.mc-bak on every mc-apply/retrofit run)
+*.mc-bak
+
+# Node (markdownlint-cli is run via npx; guard against a local install)
+node_modules/
+package-lock.json
+
+# rusty-console-forge additions
+/ref-proj/
+/tests/roms/external/
+/tests/captures/
+/perf-logs/
+/web/dist/

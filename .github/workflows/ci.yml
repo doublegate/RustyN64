@@ -1,0 +1,104 @@
+name: CI
+
+# Cost/time optimisation: the expensive legs (the macOS/Windows matrix and the
+# `test-roms` accuracy battery) run only on release-class events -- push to the
+# default branch, the merge queue, manual dispatch, a weekly drift-net cron, and
+# `release/*` PRs -- and are SKIPPED on ordinary feature PRs, which get only the
+# fast essential gates (fmt/clippy/rustdoc, the ubuntu unit tests, no_std). The
+# full suite still runs on every merge to `main`, on release PRs, and weekly, so
+# nothing ships unproven. See the `setup` job for the light/full decision.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  merge_group:
+  # Weekly drift safety-net: re-run the FULL suite on `main` so a regression
+  # merged between releases is caught within a week regardless of cadence.
+  schedule:
+    - cron: "0 7 * * 1"
+
+# Cancel superseded PR-branch runs (rapid pushes); let every other run finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Compute one "full-run" flag + the OS matrix. LIGHT (ubuntu-only, no
+  # test-roms) for a regular feature PR; FULL (adds macOS/Windows + the
+  # test-roms battery) for push-to-main, the merge queue, dispatch, the weekly
+  # cron, and release/* PRs.
+  setup:
+    name: select matrix
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+      full: ${{ steps.pick.outputs.full }}
+    steps:
+      - id: pick
+        shell: bash
+        # Pass event/ref via env (NOT ${{ }} interpolation into run:) so a branch
+        # name can't inject shell -- the actions/script-injection pattern CodeQL flags.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && [[ "$HEAD_REF" != release/* ]]; then
+            echo 'full=false' >> "$GITHUB_OUTPUT"
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'full=true' >> "$GITHUB_OUTPUT"
+            echo 'os=["ubuntu-latest", "macos-latest", "windows-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.setup.outputs.os) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        if: runner.os == 'Linux'
+
+  test-roms:
+    name: test (test-roms feature)
+    # The heavy accuracy-ROM battery -- FULL-run only (skipped on ordinary
+    # feature PRs, runs on push-to-main / merge queue / dispatch / weekly cron /
+    # release PRs). This is the single biggest per-PR time saving.
+    needs: setup
+    if: ${{ needs.setup.outputs.full == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
+      - run: cargo test --workspace --features test-roms
+
+  no_std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96
+        with:
+          targets: thumbv7em-none-eabihf
+      - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features

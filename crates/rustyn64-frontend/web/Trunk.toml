@@ -1,0 +1,9 @@
+# Trunk config for the wasm build.
+# GOTCHA: the wasm-bindgen CLI pin below MUST exactly equal the wasm-bindgen LIBRARY version
+# in Cargo.lock (`grep -A1 'name = "wasm-bindgen"' Cargo.lock`). A mismatch fails `trunk
+# build` / the Pages deploy but wasm clippy still passes. Bump on every resolve that moves it.
+[build]
+target = "index.html"
+
+[tools]
+wasm_bindgen = "0.2.100"   # <-- keep == Cargo.lock
