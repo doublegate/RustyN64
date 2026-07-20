@@ -9,6 +9,30 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the PI DMA engine (T-14-001), pulled forward from Phase 5
+
+n64-systemtest loads the rest of its own ELF from cart through PI, so the Phase 1 exit criterion —
+and with it the **v0.2.0 cut criterion** — was unreachable without it. Pulling PI forward keeps
+that criterion an honest oracle result instead of weakening it or letting the harness diverge from
+hardware by staging the whole ROM itself.
+
+`PI_DRAM_ADDR` / `PI_CART_ADDR` / `PI_RD_LEN` / `PI_WR_LEN` / `PI_STATUS`, with the two rules that
+bite both pinned:
+
+- **Length is `len + 1` bytes.** Writing 0 transfers **one** byte. An implementation short by one
+  corrupts the *last* byte of every block — which presents as memory corruption rather than as a
+  DMA bug, and so gets debugged in the wrong place.
+- **`RD`/`WR` are named from the cartridge's point of view**, so `PI_WR_LEN` — the one everything
+  actually uses — moves data **cart → RDRAM**. Reversed, the first ROM load writes uninitialised
+  RDRAM over the ROM image.
+
+The engine **returns a description of the transfer rather than performing it**, and the Bus
+carries it out. The PI does not own RDRAM — having it reach back into its owner is precisely the
+cycle this architecture exists to avoid. It also means charging the transfer real time later is a
+scheduling change rather than a rewrite, the same reasoning as `SysAD` being a state machine.
+
+Completion raises the PI line into the MI, which the CPU sees as `IP2`.
+
 ### Added — the floating-point register file, moves and FP loads/stores (T-13-001)
 
 32 physical 64-bit **FGRs**, with the `Status.FR` view applied on access rather than assumed:
