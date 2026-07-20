@@ -26,7 +26,7 @@ impl TraceRecord {
     pub fn capture(cpu: &Cpu) -> Self {
         Self {
             pc: cpu.pc,
-            gpr: cpu.gpr,
+            gpr: cpu.regs.gpr,
             cycle: cpu.retired,
         }
     }

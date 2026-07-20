@@ -9,6 +9,33 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — decode and `EX`-stage wiring: the CPU executes (T-11-002, second part)
+
+The pipeline stops moving empty latches and starts running programs.
+
+- `decode.rs` — MIPS III decode for the integer subset. **Total**: every 32-bit pattern decodes
+  to something, with anything unrecognised becoming `Op::Reserved` rather than panicking. A guest
+  can execute arbitrary bytes. Unimplemented opcodes decode to `Reserved` (which raises a
+  reserved-instruction exception) rather than to a `NOP`, so a missing opcode is loud instead of
+  silently producing wrong results.
+- `regs.rs` — the register file, split out so `$zero`'s hardwiring lives in exactly one place.
+  A scattered `if rd != 0` is how a write to `$zero` eventually slips through.
+- `exec.rs` — `EX` execution as a pure function of `(op, operands, HI/LO)`, bridging decode to
+  the ALU. Carries the immediate sign/zero-extension asymmetry: arithmetic forms sign-extend,
+  logical forms zero-extend, so `ORI $t0, $0, 0xFFFF` yields `0xFFFF` and not all-ones.
+- The pipeline stages now do their jobs: `IC` fetches and decodes, `RF` reads, `EX` executes and
+  raises the multiply/divide stall, `WB` commits.
+
+**The operand bypass network (UM §4.6) — found by the end-to-end test, missed by every unit
+test.** Without it, back-to-back dependent instructions read stale registers, and `LUI`+`ORI` —
+the standard way to build a 32-bit constant — produced `0xFFFF` instead of `0x7FFFFFFF`. Every
+one of the 46 unit tests passed while the CPU could not run a six-instruction program. The
+bypass is mutation-tested: removing it fails the end-to-end test.
+
+Three integration tests that exercise the whole machine rather than a piece of it: a real
+program computing through `ADDIU`/`MULT`/`MFLO`/`ADDU`/`SLL` into the register file; `$zero`
+surviving an instruction that targets it; and an overflowing `ADD` aborting without committing.
+
 ### Added — the integer ALU (T-11-002, first part)
 
 `crates/rustyn64-cpu/src/alu.rs`: the arithmetic, logical, shift and multiply/divide families as

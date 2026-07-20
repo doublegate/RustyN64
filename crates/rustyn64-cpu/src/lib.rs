@@ -31,10 +31,16 @@
 extern crate alloc;
 
 pub mod alu;
+pub mod decode;
+pub mod exec;
 pub mod pipeline;
+pub mod regs;
 
 pub use alu::{HiLo, MulDiv};
+pub use decode::{Decoded, Op, decode};
+pub use exec::{Executed, WriteBack, execute};
 pub use pipeline::{Exception, Interlock, Latch, Pipeline, Stage};
+pub use regs::Regs;
 
 /// Which half of a `SysAD` bus transaction is on the wire.
 ///
@@ -116,12 +122,9 @@ pub trait Bus {
 /// the CP0 TLB, and the CP1 FPU are roadmap phases left as marked TODOs.
 #[derive(Debug, Clone)]
 pub struct Cpu {
-    /// 32 general-purpose 64-bit registers (`gpr[0]` is hard-wired zero).
-    pub gpr: [u64; 32],
-    /// The HI multiply/divide result register.
-    pub hi: u64,
-    /// The LO multiply/divide result register.
-    pub lo: u64,
+    /// The register file: 32 GPRs plus `HI`/`LO`. `$zero`'s hardwiring lives in
+    /// [`Regs::read`]/[`Regs::write`] so no call site can forget it.
+    pub regs: Regs,
     /// Program counter (virtual address).
     pub pc: u64,
     /// The five-stage pipeline: four inter-stage latches plus control state
@@ -154,9 +157,7 @@ impl Cpu {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            gpr: [0; 32],
-            hi: 0,
-            lo: 0,
+            regs: Regs::new(),
             pc: 0xBFC0_0000,
             pipeline: Pipeline::new(),
             retired: 0,
@@ -178,10 +179,8 @@ impl Cpu {
     /// Hot path: keep allocation-free (no `Vec`/`Box` in `tick`). The `bus`
     /// argument is the `&mut Bus` the scheduler hands down each step.
     pub fn tick<B: Bus>(&mut self, bus: &mut B) {
-        self.pipeline.advance(bus, &mut self.pc);
+        self.pipeline.advance(bus, &mut self.regs, &mut self.pc);
         self.retired = self.pipeline.retired;
-        // $zero is architecturally hardwired; writes to it are discarded.
-        self.gpr[0] = 0;
     }
 }
 
@@ -206,7 +205,7 @@ mod tests {
     #[test]
     fn constructs_with_zero_register() {
         let cpu = Cpu::new();
-        assert_eq!(cpu.gpr[0], 0);
+        assert_eq!(cpu.regs.read(0), 0);
         assert_eq!(cpu.pc, 0xBFC0_0000);
     }
 
