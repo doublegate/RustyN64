@@ -27,7 +27,12 @@ testing: every `.S` operation works and only doubles break. A single-precision w
 **preserves** the upper half of its FGR, since with `FR = 0` that half is the other word of a
 double the program never touched.
 
-Plus `MFC1`/`DMFC1`/`MTC1`/`DMTC1` (`DMFC1` moves the *physical* register and so ignores `FR`) and
+Plus `MFC1`/`DMFC1`/`MTC1`/`DMTC1` — which **apply the `FR` view rather than moving the physical
+register**, per UM Ch. 17's pseudocode: with `FR = 0` and an even `fs`, `data <- FGR[fs+1] ||
+FGR[fs]`, the pair, exactly like `LDC1`. Only an *odd* `fs` with `FR = 0` is undefined, and it is
+undefined rather than a Reserved Instruction exception. A raw-move implementation round-trips
+through `DMTC1`/`DMFC1` correctly and disagrees with `SDC1`, so the test asserts across both
+paths — and
 `LWC1`/`LDC1`/`SWC1`/`SDC1`, which obey the same alignment, translation and `CU1` rules as the
 integer forms. The move-to and FP load/store forms write no general register — `rt` names an FPR,
 so giving them a GPR destination would corrupt an integer register.

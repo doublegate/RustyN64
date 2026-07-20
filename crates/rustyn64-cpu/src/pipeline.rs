@@ -245,6 +245,12 @@ pub const fn load_interlocks(load_rt: u8, rs: u8, rt: u8, same_reg_file: bool) -
     load_rt == rs || load_rt == rt
 }
 
+/// `Status.FR` — whether the FP register file presents 32 independent 64-bit
+/// registers (set) or 16 built from FGR pairs (clear).
+fn fr_of(cop0: &Cop0) -> bool {
+    cop0.read(crate::cop0::reg::STATUS) & (1 << 26) != 0
+}
+
 /// An exception captured at its raising site, with the context the epilogue
 /// needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -557,8 +563,10 @@ impl Pipeline {
             if let Some(Cop0Access::Cop1(Cop1Access::WriteFpr { dest, value, wide })) =
                 self.dc_wb.cop0
             {
+                // DMTC1 mirrors DMFC1: the FR view, not the physical register.
                 if wide {
-                    self.fpr.write_raw(dest, value);
+                    let fr = fr_of(&self.cop0);
+                    self.fpr.write_d(dest, fr, value);
                 } else {
                     self.fpr.write_s(dest, value as u32);
                 }
@@ -674,10 +682,20 @@ impl Pipeline {
         {
             out.write_back = WriteBack::Gpr {
                 dest,
-                // DMFC1 moves the PHYSICAL register and so ignores FR; MFC1
-                // moves the low word, sign-extended.
+                // DMFC1 applies the FR view -- it does NOT move the physical
+                // register. UM Ch. 17's pseudocode is explicit:
+                //
+                //   if FR = 1        then data <- FGR[fs]
+                //   else if fs0 = 0  then data <- FGR[fs+1] || FGR[fs]
+                //   else                  data <- undefined
+                //
+                // So with FR = 0 and an even `fs` it reads the PAIR, exactly like
+                // LDC1. Only an odd `fs` with FR = 0 is undefined -- and it is
+                // *undefined*, not a Reserved Instruction exception.
+                //
+                // MFC1 moves the low word, sign-extended, in both modes.
                 value: if wide {
-                    self.fpr.read_raw(src)
+                    self.fpr.read_d(src, fr_of(&self.cop0))
                 } else {
                     crate::alu::sext32(self.fpr.read_s(src))
                 },
@@ -1024,7 +1042,7 @@ impl Pipeline {
                 let phys = self.translate_data(addr, store)?;
                 // `Status.FR` selects the register-file view; a double under
                 // FR = 0 occupies an FGR pair.
-                let fr = self.cop0.read(crate::cop0::reg::STATUS) & (1 << 26) != 0;
+                let fr = fr_of(&self.cop0);
                 match op {
                     Op::Lwc1 => {
                         let v = Self::read_width(bus, phys, 4) as u32;
@@ -3628,6 +3646,48 @@ mod tests {
         assert_eq!(p.fpr.read_s(4), 0x55, "MTC1 reached the FP register file");
         assert_eq!(regs.read(2), 0x55, "and MFC1 read it back");
         assert_eq!(regs.read(1), 0x55, "$1 -- MTC1's source -- must survive");
+    }
+
+    /// **`DMFC1`/`DMTC1` apply the `FR` view**, they do not move the physical
+    /// register. UM Ch. 17's pseudocode: with `FR = 0` and an even `fs`,
+    /// `data <- FGR[fs+1] || FGR[fs]` — the pair, exactly like `LDC1`.
+    ///
+    /// An implementation that moves `FGR[fs]` raw round-trips through
+    /// `DMTC1`/`DMFC1` correctly and disagrees with `SDC1`, which is why this
+    /// asserts across *both* paths.
+    #[test]
+    fn dmtc1_and_dmfc1_apply_the_fr_view_rather_than_moving_the_raw_fgr() {
+        use crate::cop0::reg;
+        const fn cop1(rs: u32, rt: u32, fs: u32) -> u32 {
+            (0o21 << 26) | (rs << 21) | (rt << 16) | (fs << 11)
+        }
+        let mut p = Pipeline::new();
+        // CU1 set, FR CLEAR -- the paired view.
+        p.cop0.set_hardware(reg::STATUS, 1 << 29);
+        // DMTC1 $1, $f2 with $1 = 0x1122_3344_5566_7788.
+        let prog = alloc::vec![cop1(0o05, 1, 2), cop1(0o01, 2, 2)];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        regs.write(1, 0x1122_3344_5566_7788);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..32 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        // The pair, not FGR 2 alone -- this is what a raw move gets wrong.
+        assert_eq!(
+            p.fpr.read_raw(2),
+            0x5566_7788,
+            "even FGR holds the low word"
+        );
+        assert_eq!(
+            p.fpr.read_raw(3),
+            0x1122_3344,
+            "odd FGR holds the high word"
+        );
+        assert_eq!(regs.read(2), 0x1122_3344_5566_7788, "DMFC1 reassembles it");
+        // And it agrees with the LDC1/SDC1 view of the same register.
+        assert_eq!(p.fpr.read_d(2, false), 0x1122_3344_5566_7788);
     }
 
     /// `SDC1` then `LDC1` round-trips a double through memory, and with
