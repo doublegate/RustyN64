@@ -9,6 +9,26 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the unmaskable unimplemented-operation cause for subnormals
+
+The VR4300 has no subnormal datapath: rather than producing a subnormal it raises `FCSR.Cause.E`
+(bit 17) and traps. Now modelled for a subnormal operand, a subnormal result with `FCSR.FS` clear,
+a subnormal result with `FS` set but underflow/inexact enabled, and an MSB-clear NaN operand. With
+`FS` set and those enables clear it flushes — to `±0` under nearest and toward-zero, but to the
+smallest **normal** of that sign under a mode that rounds away from zero.
+
+Out-of-range float-to-integer conversions now raise unimplemented rather than the IEEE Invalid.
+
+**n64-systemtest: 1,098 → 584.** `ADD.S`, `SUB.S`, `ADD.D`, `DIV.D`, `ABS.*` and `NEG.*` are at
+zero failures; the `CVT.W`/`CVT.L` families fell off the list. Accuracy ledger **C-13**.
+
+### Fixed — `ABS`/`NEG` are not sign flips, and are not `MOV`
+
+They classify their operand — Invalid on a signalling NaN, unimplemented on a subnormal or
+MSB-clear NaN — and they **replace** `FCSR.Cause`, whereas `MOV` transports the bits and leaves
+`FCSR` untouched. Treating all three alike was worth 52 assertions. The earlier finding that `MOV`
+must not touch `Cause` stands; it just does not generalise to its neighbours.
+
 ### Added — the COP1 compares and conversions, and a corrected NaN convention
 
 `C.cond.fmt`, the `CVT` family, and `ROUND`/`TRUNC`/`CEIL`/`FLOOR` to `.W`/`.L` now decode and

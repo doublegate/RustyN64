@@ -1532,23 +1532,26 @@ impl Pipeline {
         // `fs`, touch no exponent or significand, round nothing, and raise
         // nothing. Handled ahead of the arithmetic split so `ft` is never read
         // for an instruction whose `ft` field is architecturally zero.
-        if matches!(funct, 5..=7) {
+        // **`MOV` (funct 6) alone is the pure bit move.** `ABS` (5) and `NEG`
+        // (7) look like sign flips and are not: they classify their operand,
+        // raising Invalid on a signalling NaN and unimplemented-operation on a
+        // subnormal or an MSB-clear NaN, and they REPLACE the `Cause` field.
+        //
+        // n64-systemtest settles which is which by construction rather than by
+        // description: `MOV.S` is driven through
+        // `test_floating_point_f32_which_preserves_cause_bits`, while `ABS.S`
+        // and `NEG.S` go through the ordinary `test_floating_point_f32`, which
+        // asserts `Cause` was cleared. Treating all three alike was worth 52
+        // assertions.
+        if matches!(funct, 5 | 7) {
+            return self.fp_sign_op(fmt, funct, fs, fd, fr);
+        }
+        if funct == 6 {
             if fmt == 0o20 {
-                let a = f32::from_bits(self.fpr.read_s(fs));
-                let v = match funct {
-                    5 => fpu::abs_s(a),
-                    6 => a,
-                    _ => fpu::neg_s(a),
-                };
-                self.fpr.write_s(fd, v.to_bits());
+                self.fpr.write_s(fd, self.fpr.read_s(fs));
             } else {
-                let a = f64::from_bits(self.fpr.read_d(fs, fr));
-                let v = match funct {
-                    5 => fpu::abs_d(a),
-                    6 => a,
-                    _ => fpu::neg_d(a),
-                };
-                self.fpr.write_d(fd, fr, v.to_bits());
+                let v = self.fpr.read_d(fs, fr);
+                self.fpr.write_d(fd, fr, v);
             }
             // **`FCSR` is left completely alone**, `Cause` included.
             //
@@ -1633,7 +1636,168 @@ impl Pipeline {
         false
     }
 
+    /// `ABS` and `NEG` — sign manipulation, but **not** a pure bit flip.
+    ///
+    /// The VR4300 classifies the operand first: a subnormal or an MSB-clear NaN
+    /// raises unimplemented-operation, and an MSB-set (signalling, ledger C-12)
+    /// NaN raises Invalid and yields the default NaN rather than the operand
+    /// with its sign changed. Only when the operand is ordinary does the sign
+    /// bit move.
+    ///
+    /// Unlike `MOV`, these REPLACE the `Cause` field — clearing it on success.
+    fn fp_sign_op(&mut self, fmt: u8, funct: u8, fs: u8, fd: u8, fr: bool) -> bool {
+        use crate::fpu;
+        /// `FCSR` Cause field, bits 17:12.
+        const CAUSE_MASK: u32 = 0x3F << 12;
+
+        let fcsr = self.cop1.fcsr();
+        let (commit, flags, unimplemented) = if fmt == 0o20 {
+            let a = f32::from_bits(self.fpr.read_s(fs));
+            if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
+                (0u64, fpu::Flags::NONE, true)
+            } else if fpu::is_snan_f32(a) {
+                (
+                    u64::from(crate::softfloat::F32.default_nan() as u32),
+                    fpu::Flags::INVALID,
+                    false,
+                )
+            } else {
+                let v = if funct == 5 {
+                    fpu::abs_s(a)
+                } else {
+                    fpu::neg_s(a)
+                };
+                (u64::from(v.to_bits()), fpu::Flags::NONE, false)
+            }
+        } else {
+            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
+                (0u64, fpu::Flags::NONE, true)
+            } else if fpu::is_snan_f64(a) {
+                (
+                    crate::softfloat::F64.default_nan(),
+                    fpu::Flags::INVALID,
+                    false,
+                )
+            } else {
+                let v = if funct == 5 {
+                    fpu::abs_d(a)
+                } else {
+                    fpu::neg_d(a)
+                };
+                (v.to_bits(), fpu::Flags::NONE, false)
+            }
+        };
+
+        let raised = flags.to_fcsr_bits()
+            | if unimplemented {
+                fpu::CAUSE_UNIMPLEMENTED
+            } else {
+                0
+            };
+        if unimplemented {
+            self.cop1
+                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
+            self.abort_from(Stage::Wb, Exception::FloatingPoint);
+            return true;
+        }
+        if flags.invalid && self.cop1.enables() & (1 << 4) != 0 {
+            self.cop1
+                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
+            self.abort_from(Stage::Wb, Exception::FloatingPoint);
+            return true;
+        }
+        if fmt == 0o20 {
+            self.fpr.write_s(fd, commit as u32);
+        } else {
+            self.fpr.write_d(fd, fr, commit);
+        }
+        self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
+        false
+    }
+
+    /// The VR4300's policy for a **subnormal result**, applied wherever one can
+    /// be produced — arithmetic and the narrowing `CVT.S.D`.
+    ///
+    /// Three outcomes, in order:
+    ///
+    /// 1. `FCSR.FS` clear — the processor cannot represent the result at all,
+    ///    so *unimplemented operation*.
+    /// 2. `FS` set but underflow or inexact **enabled** — it cannot deliver a
+    ///    trapped underflow's defined result either, so unimplemented again.
+    ///    n64-systemtest's own comment on this case reads "(wow)".
+    /// 3. `FS` set and both disabled — flush per
+    ///    [`fpu::flush_subnormal_f32`], reporting underflow and inexact.
+    fn subnormal_policy_s(
+        &self,
+        out: crate::fpu::Outcome<f32>,
+        mode: crate::fpu::Rounding,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu;
+        if !fpu::is_subnormal_f32(out.value) {
+            return (FpCommit::Single(out.value.to_bits()), out.flags, false);
+        }
+        if !self.cop1.flush_denorm_to_zero() || self.underflow_traps() {
+            return (FpCommit::Single(0), fpu::Flags::NONE, true);
+        }
+        let mut flags = out.flags;
+        flags.underflow = true;
+        flags.inexact = true;
+        let v = fpu::flush_subnormal_f32(out.value, mode);
+        (FpCommit::Single(v.to_bits()), flags, false)
+    }
+
+    /// See [`Pipeline::subnormal_policy_s`].
+    fn subnormal_policy_d(
+        &self,
+        out: crate::fpu::Outcome<f64>,
+        mode: crate::fpu::Rounding,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu;
+        if !fpu::is_subnormal_f64(out.value) {
+            return (FpCommit::Double(out.value.to_bits()), out.flags, false);
+        }
+        if !self.cop1.flush_denorm_to_zero() || self.underflow_traps() {
+            return (FpCommit::Double(0), fpu::Flags::NONE, true);
+        }
+        let mut flags = out.flags;
+        flags.underflow = true;
+        flags.inexact = true;
+        let v = fpu::flush_subnormal_f64(out.value, mode);
+        (FpCommit::Double(v.to_bits()), flags, false)
+    }
+
+    /// Is underflow or inexact enabled? Either turns a flushed subnormal into
+    /// an unimplemented operation.
+    fn underflow_traps(&self) -> bool {
+        /// `FCSR.Enable` underflow (bit 8) and inexact (bit 7), as
+        /// `Cop1Control::enables` returns them — shifted down by 7.
+        const ENABLE_UNDERFLOW_OR_INEXACT: u32 = 0b11;
+        self.cop1.enables() & ENABLE_UNDERFLOW_OR_INEXACT != 0
+    }
+
     /// `ADD`/`SUB`/`MUL`/`DIV` in either format.
+    ///
+    /// # The VR4300 cannot compute with subnormals
+    ///
+    /// It raises the unmaskable *unimplemented operation* cause instead, and
+    /// there are three distinct occasions (UM §7.5; pinned by n64-systemtest):
+    ///
+    /// 1. **A subnormal operand** — checked before the operation is attempted,
+    ///    and it outranks everything, including a NaN that would otherwise
+    ///    raise Invalid.
+    /// 2. **A subnormal result with `FCSR.FS` clear.**
+    /// 3. **A subnormal result with `FS` set but underflow or inexact
+    ///    *enabled*.** The processor cannot deliver a trapped underflow's
+    ///    defined result, so it declines instead — the suite's own comment on
+    ///    this case reads "(wow)".
+    ///
+    /// With `FS` set and those enables clear it flushes, per
+    /// [`fpu::flush_subnormal_f32`], and reports underflow + inexact.
+    ///
+    /// The returned flags are deliberately [`fpu::Flags::NONE`] on every
+    /// unimplemented path: `FCSR` must end up with bit 17 and *nothing else*,
+    /// which is what the suite asserts.
     fn fp_binary(
         &self,
         fmt: u8,
@@ -1647,23 +1811,29 @@ impl Pipeline {
         if fmt == 0o20 {
             let a = f32::from_bits(self.fpr.read_s(fs));
             let b = f32::from_bits(self.fpr.read_s(ft));
+            if fpu::arith_unimplemented_s(a, b) {
+                return (FpCommit::Single(0), fpu::Flags::NONE, true);
+            }
             let out = match funct {
                 0 => fpu::add_s(a, b, mode),
                 1 => fpu::sub_s(a, b, mode),
                 2 => fpu::mul_s(a, b, mode),
                 _ => fpu::div_s(a, b, mode),
             };
-            (FpCommit::Single(out.value.to_bits()), out.flags, false)
+            self.subnormal_policy_s(out, mode)
         } else {
             let a = f64::from_bits(self.fpr.read_d(fs, fr));
             let b = f64::from_bits(self.fpr.read_d(ft, fr));
+            if fpu::arith_unimplemented_d(a, b) {
+                return (FpCommit::Double(0), fpu::Flags::NONE, true);
+            }
             let out = match funct {
                 0 => fpu::add_d(a, b, mode),
                 1 => fpu::sub_d(a, b, mode),
                 2 => fpu::mul_d(a, b, mode),
                 _ => fpu::div_d(a, b, mode),
             };
-            (FpCommit::Double(out.value.to_bits()), out.flags, false)
+            self.subnormal_policy_d(out, mode)
         }
     }
 
@@ -1691,15 +1861,42 @@ impl Pipeline {
         // The source is widened to `f64` first, which is EXACT for an `f32`, so
         // no rounding happens before the one the instruction asks for.
         let v = self.fp_source_as_f64(fmt, fs, fr);
+        if self.integer_conversion_unimplemented(fmt, fs, fr) {
+            return (FpCommit::Single(0), fpu::Flags::NONE, true);
+        }
         // funct 8..=11 target `.L`, 12..=15 target `.W`.
         if funct < 0o14 {
             let out = fpu::to_i64(v, mode);
+            // `to_i64` reports NaN and out-of-range as Invalid, which is the
+            // IEEE answer and NOT this processor's: the VR4300 declines with
+            // *unimplemented operation* instead. n64-systemtest expects `Err`
+            // for infinities, NaNs and anything past the target's range.
+            if out.flags.invalid {
+                return (FpCommit::Double(0), fpu::Flags::NONE, true);
+            }
             #[allow(clippy::cast_sign_loss)] // a bit pattern, not a magnitude
             (FpCommit::Double(out.value as u64), out.flags, false)
         } else {
             let out = fpu::to_i32(v, mode);
+            if out.flags.invalid {
+                return (FpCommit::Single(0), fpu::Flags::NONE, true);
+            }
             #[allow(clippy::cast_sign_loss)] // a bit pattern, not a magnitude
             (FpCommit::Single(out.value as u32), out.flags, false)
+        }
+    }
+
+    /// Is the source of a float-to-integer conversion one the VR4300 refuses?
+    ///
+    /// Only subnormality is checked here; NaN and out-of-range are detected
+    /// from the conversion's own result, because "out of range" depends on the
+    /// target width.
+    fn integer_conversion_unimplemented(&self, fmt: u8, fs: u8, fr: bool) -> bool {
+        use crate::fpu;
+        if fmt == 0o20 {
+            fpu::is_subnormal_f32(f32::from_bits(self.fpr.read_s(fs)))
+        } else {
+            fpu::is_subnormal_f64(f64::from_bits(self.fpr.read_d(fs, fr)))
         }
     }
 
@@ -1717,8 +1914,14 @@ impl Pipeline {
             // To single.
             0o40 => match fmt {
                 0o21 => {
-                    let out = fpu::cvt_s_d(f64::from_bits(self.fpr.read_d(fs, fr)));
-                    (FpCommit::Single(out.value.to_bits()), out.flags, false)
+                    let a = f64::from_bits(self.fpr.read_d(fs, fr));
+                    if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
+                        return (FpCommit::Single(0), fpu::Flags::NONE, true);
+                    }
+                    // Narrowing CAN produce a subnormal even from a normal
+                    // double, so the result policy applies here exactly as it
+                    // does to the arithmetic.
+                    self.subnormal_policy_s(fpu::cvt_s_d(a), mode)
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
@@ -1741,7 +1944,12 @@ impl Pipeline {
             // To double.
             0o41 => match fmt {
                 0o20 => {
-                    let out = fpu::cvt_d_s(f32::from_bits(self.fpr.read_s(fs)));
+                    let a = f32::from_bits(self.fpr.read_s(fs));
+                    if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
+                        return (FpCommit::Double(0), fpu::Flags::NONE, true);
+                    }
+                    // Widening cannot underflow, so no result policy is needed.
+                    let out = fpu::cvt_d_s(a);
                     (FpCommit::Double(out.value.to_bits()), out.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
@@ -1760,12 +1968,24 @@ impl Pipeline {
             // To word / to long, both honouring `FCSR.RM` -- which is what
             // separates them from the fixed-mode family above.
             0o44 => {
+                if self.integer_conversion_unimplemented(fmt, fs, fr) {
+                    return (FpCommit::Single(0), fpu::Flags::NONE, true);
+                }
                 let out = fpu::to_i32(self.fp_source_as_f64(fmt, fs, fr), mode);
+                if out.flags.invalid {
+                    return (FpCommit::Single(0), fpu::Flags::NONE, true);
+                }
                 #[allow(clippy::cast_sign_loss)]
                 (FpCommit::Single(out.value as u32), out.flags, false)
             }
             _ => {
+                if self.integer_conversion_unimplemented(fmt, fs, fr) {
+                    return (FpCommit::Double(0), fpu::Flags::NONE, true);
+                }
                 let out = fpu::to_i64(self.fp_source_as_f64(fmt, fs, fr), mode);
+                if out.flags.invalid {
+                    return (FpCommit::Double(0), fpu::Flags::NONE, true);
+                }
                 #[allow(clippy::cast_sign_loss)]
                 (FpCommit::Double(out.value as u64), out.flags, false)
             }
@@ -4373,6 +4593,237 @@ mod tests {
             12345.0f32.to_bits(),
             "the integer source must be converted, not reinterpreted"
         );
+    }
+
+    // --- Unimplemented operation on subnormals (T-13-004) -------------------
+
+    /// `ADD.S $f4, $f0, $f2`.
+    const ADD_S_SUB: u32 = 0x4602_0100;
+    /// `FCSR.Cause.E`, bit 17 — unmaskable unimplemented operation.
+    const CAUSE_E: u32 = 1 << 17;
+    /// `FCSR.FS`, bit 24 — flush denormals to zero.
+    const FCSR_FS: u32 = 1 << 24;
+
+    /// Run `ADD.S $f4, $f0, $f2` with the given operands and `FCSR`.
+    fn run_add_s(fcsr: u32, a: u32, b: u32) -> Pipeline {
+        use crate::cop0::reg;
+        let mut bus = Ram::new(alloc::vec![ADD_S_SUB]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        p.cop1.ctc1(31, fcsr);
+        p.fpr.write_s(0, a);
+        p.fpr.write_s(2, b);
+        p.fpr.write_raw(4, 0x1122_3344_5566_7788);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        p
+    }
+
+    /// A **subnormal operand** raises unimplemented operation before the
+    /// arithmetic is attempted — even with `FS` set, which does not rescue it.
+    ///
+    /// `FCSR` must end up with bit 17 and *nothing else*: no Invalid, no
+    /// Inexact, and the sticky `Flags` untouched.
+    #[test]
+    fn a_subnormal_operand_raises_unimplemented_operation() {
+        use crate::cop0::reg;
+        let subnormal = 1u32; // the smallest positive subnormal
+        for fcsr in [0, FCSR_FS] {
+            let p = run_add_s(fcsr, subnormal, 2.0f32.to_bits());
+            assert_eq!(
+                (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+                crate::exception::exc_code::FPE,
+                "fcsr={fcsr:#X}"
+            );
+            assert_ne!(p.cop1.fcsr() & CAUSE_E, 0, "Cause.E set");
+            assert_eq!(
+                p.cop1.fcsr() & !(CAUSE_E | FCSR_FS),
+                0,
+                "bit 17 and nothing else -- no flags, no other causes"
+            );
+            assert_eq!(
+                p.fpr.read_raw(4),
+                0x1122_3344_5566_7788,
+                "fd must be untouched"
+            );
+        }
+    }
+
+    /// A **subnormal result** with `FS` clear is equally refused. The operands
+    /// here are both normal, so this is the result path and not the operand
+    /// one — the two are separate checks and a test using a subnormal input
+    /// would pass with the result check deleted.
+    #[test]
+    fn a_subnormal_result_raises_unimplemented_when_fs_is_clear() {
+        use crate::cop0::reg;
+        let a = 1.528_510_4e-37f32;
+        let b = -1.539_154_3e-37f32;
+        assert!(!crate::fpu::is_subnormal_f32(a), "operands are normal");
+        assert!(!crate::fpu::is_subnormal_f32(b));
+
+        let p = run_add_s(0, a.to_bits(), b.to_bits());
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::FPE
+        );
+        assert_ne!(p.cop1.fcsr() & CAUSE_E, 0);
+    }
+
+    /// With `FS` set, the same operation **flushes** — and where it flushes to
+    /// depends on the rounding mode. These are n64-systemtest's own vectors.
+    ///
+    /// Round-to-nearest and toward-zero give a signed zero; a mode that rounds
+    /// *away* from zero must give the smallest **normal** instead, because zero
+    /// is on the wrong side of the true result. Getting that wrong yields `-0`
+    /// in all four cases, which looks entirely reasonable.
+    #[test]
+    fn with_fs_set_a_subnormal_result_flushes_per_rounding_mode() {
+        let a = 1.528_510_4e-37f32.to_bits();
+        let b = (-1.539_154_3e-37f32).to_bits();
+        // (RM, expected) -- the true result is a tiny NEGATIVE subnormal.
+        for (rm, want) in [
+            (0u32, (-0.0f32).to_bits()),         // nearest
+            (1, (-0.0f32).to_bits()),            // toward zero
+            (2, (-0.0f32).to_bits()),            // toward +inf
+            (3, (-f32::MIN_POSITIVE).to_bits()), // toward -inf: away from zero
+        ] {
+            let p = run_add_s(FCSR_FS | rm, a, b);
+            assert_eq!(p.fpr.read_s(4), want, "RM={rm}");
+            let fcsr = p.cop1.fcsr();
+            assert_ne!(fcsr & (1 << 13), 0, "Cause.underflow, RM={rm}");
+            assert_ne!(fcsr & (1 << 12), 0, "Cause.inexact, RM={rm}");
+            assert_eq!(fcsr & CAUSE_E, 0, "not unimplemented, RM={rm}");
+        }
+        // ...and the mirrored operands flush the other way.
+        let p = run_add_s(
+            FCSR_FS | 2,
+            (-1.528_510_4e-37f32).to_bits(),
+            1.539_154_3e-37f32.to_bits(),
+        );
+        assert_eq!(
+            p.fpr.read_s(4),
+            f32::MIN_POSITIVE.to_bits(),
+            "a positive tiny result under toward-+inf"
+        );
+    }
+
+    /// **`FS` set but underflow enabled is unimplemented, not a trap.** The
+    /// processor cannot deliver a trapped underflow's defined result either.
+    ///
+    /// Easy to miss because it is the interaction of two features that each
+    /// work: flushing works, and enabled traps work, but together they do not.
+    #[test]
+    fn fs_plus_an_enabled_underflow_is_unimplemented_rather_than_a_trap() {
+        let a = 1.528_510_4e-37f32.to_bits();
+        let b = (-1.539_154_3e-37f32).to_bits();
+        // bit 8 = enable underflow, bit 7 = enable inexact.
+        for enable in [1u32 << 8, 1 << 7] {
+            let p = run_add_s(FCSR_FS | enable, a, b);
+            assert_ne!(
+                p.cop1.fcsr() & CAUSE_E,
+                0,
+                "enable={enable:#X} must give unimplemented"
+            );
+        }
+    }
+
+    /// **The two NaN classes trap differently.** MSB clear (quiet by the
+    /// VR4300's convention) is unimplemented; MSB set (signalling) is Invalid.
+    ///
+    /// Swapping them is invisible until `FCSR` is read back, and both are
+    /// "the operation trapped", so a test asserting only that would pass either
+    /// way. See ledger C-12.
+    #[test]
+    fn the_two_nan_classes_raise_different_causes() {
+        let msb_clear = 0x7F80_0001u32; // unimplemented here
+        let msb_set = 0x7FC0_0001u32; // signalling here -> Invalid
+
+        let p = run_add_s(0, msb_clear, 2.0f32.to_bits());
+        assert_ne!(p.cop1.fcsr() & CAUSE_E, 0, "MSB clear -> unimplemented");
+        assert_eq!(p.cop1.fcsr() & (1 << 16), 0, "and NOT invalid");
+
+        let p = run_add_s(0, msb_set, 2.0f32.to_bits());
+        assert_ne!(p.cop1.fcsr() & (1 << 16), 0, "MSB set -> Cause.invalid");
+        assert_eq!(p.cop1.fcsr() & CAUSE_E, 0, "and NOT unimplemented");
+    }
+
+    /// **`ABS`/`NEG` classify their operand; `MOV` does not.** All three look
+    /// like sign/bit manipulation, and only `MOV` actually is.
+    ///
+    /// n64-systemtest settles it by construction rather than description:
+    /// `MOV.S` is driven through the cause-*preserving* harness while `ABS.S`
+    /// and `NEG.S` go through the ordinary one. Treating all three alike was
+    /// worth 52 assertions.
+    #[test]
+    fn abs_and_neg_refuse_a_subnormal_but_mov_moves_it() {
+        use crate::cop0::reg;
+        /// fmt 16, `fs` 0, `fd` 4.
+        const fn unary(funct: u32) -> u32 {
+            (0o21 << 26) | (0o20 << 21) | (4 << 6) | funct
+        }
+        let subnormal = 1u32;
+
+        for funct in [5u32, 7] {
+            let mut bus = Ram::new(alloc::vec![unary(funct)]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_s(0, subnormal);
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_ne!(
+                p.cop1.fcsr() & CAUSE_E,
+                0,
+                "funct {funct} (ABS/NEG) must refuse a subnormal"
+            );
+        }
+
+        // MOV.S is a pure move: it transports the subnormal untouched and
+        // raises nothing at all.
+        let mut bus = Ram::new(alloc::vec![unary(6)]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        p.fpr.write_s(0, subnormal);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.fpr.read_s(4), subnormal, "MOV.S moves the subnormal");
+        assert_eq!(p.cop1.fcsr(), 0, "and raises nothing");
+    }
+
+    /// An out-of-range float-to-integer conversion is **unimplemented**, not
+    /// Invalid. IEEE says Invalid; this processor declines instead, and
+    /// `fpu::to_i32` reports the IEEE answer that must be translated.
+    #[test]
+    fn an_out_of_range_integer_conversion_is_unimplemented_not_invalid() {
+        use crate::cop0::reg;
+        /// `CVT.W.S $f4, $f0` — fmt 16, `fs` 0, `fd` 4, funct 0o44.
+        const CVT_W_S: u32 = (0o21 << 26) | (0o20 << 21) | (4 << 6) | 0o44;
+
+        for src in [1e30f32, f32::INFINITY, f32::from_bits(0x7FC0_0000)] {
+            let mut bus = Ram::new(alloc::vec![CVT_W_S]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_s(0, src.to_bits());
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_ne!(p.cop1.fcsr() & CAUSE_E, 0, "{src:e} -> unimplemented");
+            assert_eq!(p.cop1.fcsr() & (1 << 16), 0, "{src:e} -> NOT invalid");
+            assert_eq!(
+                (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+                crate::exception::exc_code::FPE
+            );
+        }
     }
 
     // --- CACHE (T-12-005) ---------------------------------------------------
