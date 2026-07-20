@@ -9,6 +9,28 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — loads, stores, and the unaligned family (T-11-003)
+
+- `mem.rs` — load/store data shaping as pure byte-level transforms. Width and signedness rules
+  (`LW` sign-extends into the 64-bit register, `LWU` does not — confusing that pair silently
+  breaks any address above 2 GiB), alignment requirements, and the `LWL`/`LWR`/`LDL`/`LDR` and
+  `SWL`/`SWR`/`SDL`/`SDR` merges.
+- The unaligned family is **big-endian-directional**, and getting a shift backwards produces
+  plausible values that are wrong only at unaligned addresses. It is tested as a *pair* — the
+  way it is actually used — plus a store-then-load round-trip across every byte offset, which is
+  the strongest statement that the shift directions agree with each other.
+- `EX` resolves the effective address (base + **sign**-extended offset) and `DC` performs the
+  access. That split is the point of the pipeline: `DC` is the cycle the scheduler interleaves
+  the RCP around.
+- An unaligned *aligned-form* access raises `AddressError`; the `LWL`/`LWR` family is exempt by
+  construction, since being usable at any byte offset is the reason it exists.
+
+**The load-delay interlock is live** (UM §4.6.5) — it finally has something to interlock against.
+It reproduces the hardware's documented imprecision, and it compares against the `ex_dc` latch
+rather than `rf_ex`: in the reverse cascade `EX` runs before `RF`, so by the time `RF` executes,
+the instruction that was in `EX` has already moved on. Checking the wrong latch made it silently
+never fire, which is what the integration test caught. Mutation-tested.
+
 ### Added — decode and `EX`-stage wiring: the CPU executes (T-11-002, second part)
 
 The pipeline stops moving empty latches and starts running programs.

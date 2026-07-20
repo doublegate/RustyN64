@@ -39,7 +39,8 @@
 use crate::Bus;
 use crate::alu::HiLo;
 use crate::decode::{Decoded, decode};
-use crate::exec::{WriteBack, execute};
+use crate::exec::{MemOp, WriteBack, execute};
+use crate::mem;
 use crate::regs::Regs;
 
 /// The five pipeline stages, in hardware order (UM §4.1, Figure 4-1).
@@ -159,6 +160,8 @@ pub struct Latch {
     pub rt_val: u64,
     /// What `EX` computed, committed at `WB`.
     pub write_back: WriteBack,
+    /// A memory access `EX` resolved for `DC` to perform.
+    pub mem: Option<MemOp>,
 }
 
 /// Does a load into `load_rt` interlock with the following instruction?
@@ -242,6 +245,7 @@ impl Pipeline {
             rs_val: 0,
             rt_val: 0,
             write_back: WriteBack::None,
+            mem: None,
         };
         Self {
             ic_rf: EMPTY,
@@ -385,10 +389,24 @@ impl Pipeline {
         if self.prev_was_run && bus.poll_irq() {
             self.abort_from(Stage::Dc, Exception::Interrupt);
         }
-        // TODO(T-11-003): the memory access itself. This is the point the
-        // scheduler interleaves the RCP around -- the whole reason the pipeline
-        // is modelled at all (ADR 0007).
-        self.dc_wb = self.ex_dc;
+        // The memory access. This is the point the scheduler interleaves the RCP
+        // around -- the whole reason the pipeline is modelled at all (ADR 0007).
+        let mut out = self.ex_dc;
+        if out.occupied
+            && out.abort.is_none()
+            && let Some(op) = out.mem
+        {
+            match Self::access(bus, op) {
+                Ok(wb) => out.write_back = wb,
+                // Stamp before the latch move so the abort travels with the
+                // instruction that caused it -- see `abort_from`.
+                Err(exc) => {
+                    self.abort_from(Stage::Dc, exc);
+                    out = self.ex_dc;
+                }
+            }
+        }
+        self.dc_wb = out;
         self.ex_dc.occupied = false;
     }
 
@@ -439,6 +457,110 @@ impl Pipeline {
         }
     }
 
+    /// Perform a memory access.
+    ///
+    /// # Errors
+    ///
+    /// [`Exception::AddressError`] when an *aligned* access is misaligned. The
+    /// `LWL`/`LWR` family is exempt by construction — being usable at any byte
+    /// offset is the entire reason it exists.
+    fn access<B: Bus>(bus: &mut B, op: MemOp) -> Result<WriteBack, Exception> {
+        // TODO(T-11-003): charge the cache-miss cost (8..=9 + M PCycles for a
+        // D-cache fill, UM Table 11-1) once `M` is measured -- accuracy-ledger C-1.
+        match op {
+            MemOp::Load { kind, addr, dest } => {
+                if !kind.is_aligned(addr) {
+                    return Err(Exception::AddressError);
+                }
+                let raw = Self::read_width(bus, addr, kind.width());
+                Ok(WriteBack::Gpr {
+                    dest,
+                    value: kind.shape(raw),
+                })
+            }
+            MemOp::Store { kind, addr, value } => {
+                if !kind.is_aligned(addr) {
+                    return Err(Exception::AddressError);
+                }
+                Self::write_width(bus, addr, kind.width(), value);
+                Ok(WriteBack::None)
+            }
+            // The unaligned family accesses the ALIGNED container holding `addr`
+            // and merges, so it can never raise an address error.
+            MemOp::Unaligned { op, addr, rt, dest } => {
+                use crate::decode::Op;
+                let word_addr = addr & !3;
+                let dword_addr = addr & !7;
+                let byte4 = addr & 3;
+                let byte8 = addr & 7;
+                Ok(match op {
+                    Op::Lwl | Op::Lwr => {
+                        let w = bus.read_u32(word_addr as u32);
+                        let v = if matches!(op, Op::Lwl) {
+                            mem::lwl(rt, w, byte4)
+                        } else {
+                            mem::lwr(rt, w, byte4)
+                        };
+                        WriteBack::Gpr { dest, value: v }
+                    }
+                    Op::Ldl | Op::Ldr => {
+                        let d = Self::read_width(bus, dword_addr, 8);
+                        let v = if matches!(op, Op::Ldl) {
+                            mem::ldl(rt, d, byte8)
+                        } else {
+                            mem::ldr(rt, d, byte8)
+                        };
+                        WriteBack::Gpr { dest, value: v }
+                    }
+                    Op::Swl | Op::Swr => {
+                        let w = bus.read_u32(word_addr as u32);
+                        let merged = if matches!(op, Op::Swl) {
+                            mem::swl(rt, w, byte4)
+                        } else {
+                            mem::swr(rt, w, byte4)
+                        };
+                        bus.write_u32(word_addr as u32, merged);
+                        WriteBack::None
+                    }
+                    Op::Sdl | Op::Sdr => {
+                        let d = Self::read_width(bus, dword_addr, 8);
+                        let merged = if matches!(op, Op::Sdl) {
+                            mem::sdl(rt, d, byte8)
+                        } else {
+                            mem::sdr(rt, d, byte8)
+                        };
+                        Self::write_width(bus, dword_addr, 8, merged);
+                        WriteBack::None
+                    }
+                    // `MemOp::Unaligned` is only ever constructed for the eight
+                    // forms above.
+                    _ => WriteBack::None,
+                })
+            }
+        }
+    }
+
+    /// Read `width` big-endian bytes, right-justified.
+    fn read_width<B: Bus>(bus: &mut B, addr: u64, width: u64) -> u64 {
+        let mut v = 0u64;
+        let mut i = 0;
+        while i < width {
+            v = (v << 8) | u64::from(bus.read_u8((addr + i) as u32));
+            i += 1;
+        }
+        v
+    }
+
+    /// Write the low `width` big-endian bytes of `value`.
+    fn write_width<B: Bus>(bus: &mut B, addr: u64, width: u64, value: u64) {
+        let mut i = 0;
+        while i < width {
+            let shift = (width - 1 - i) * 8;
+            bus.write_u8((addr + i) as u32, (value >> shift) as u8);
+            i += 1;
+        }
+    }
+
     /// `EX` — execute.
     fn ex_stage(&mut self, regs: &Regs) {
         let mut out = self.rf_ex;
@@ -451,6 +573,7 @@ impl Pipeline {
             match execute(out.decoded, out.rs_val, out.rt_val, hilo) {
                 Ok(e) => {
                     out.write_back = e.write_back;
+                    out.mem = e.mem;
                     // Multiply and divide stall the ENTIRE pipeline for the
                     // documented count (UM Table 3-12), so the request is raised
                     // here and honoured from the next cycle onward.
@@ -485,8 +608,28 @@ impl Pipeline {
         // TODO(T-11-002): the MFHI/MFLO hazard window -- a MFHI followed within
         // two instructions by a HI write reads hardware's WRONG value, and that
         // is non-interlocked (alu::MFHI_MFLO_HAZARD_INSTRUCTIONS).
-        // TODO(T-11-003): raise Interlock::Ldi via `load_interlocks` once loads
-        // exist -- there is nothing to interlock against yet.
+        // The load-delay interlock (UM §4.6.5). A load's result is not ready in
+        // time to bypass, so if the NEXT instruction names the loaded register
+        // the pipeline stalls one cycle. The detection is deliberately imprecise,
+        // matching hardware -- see `load_interlocks`.
+        //
+        // Compare against `ex_dc`, not `rf_ex`. In the reverse cascade `EX` runs
+        // before `RF`, so by now the instruction that was in `EX` this cycle has
+        // already moved into `ex_dc` and `rf_ex` has been vacated. Checking
+        // `rf_ex` here silently never fires -- which is exactly what it did
+        // before `a_load_followed_by_its_use_interlocks...` caught it.
+        if out.occupied
+            && self.ex_dc.occupied
+            && self.ex_dc.decoded.is_load()
+            && load_interlocks(
+                self.ex_dc.decoded.dest,
+                out.decoded.rs,
+                out.decoded.rt,
+                self.ex_dc.decoded.targets_fpr() == out.decoded.targets_fpr(),
+            )
+        {
+            self.stall_for(1, Interlock::Ldi);
+        }
         self.rf_ex = out;
         self.ic_rf.occupied = false;
     }
@@ -548,6 +691,7 @@ impl Pipeline {
             rs_val: 0,
             rt_val: 0,
             write_back: WriteBack::None,
+            mem: None,
         };
         *next_pc = pc.wrapping_add(4);
     }
@@ -985,6 +1129,163 @@ mod tests {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
         assert_eq!(p.retired, retired, "a faulting fetch retired anyway");
+    }
+
+    /// A RAM-backed bus, so loads and stores can be exercised end to end.
+    struct Ram {
+        prog: alloc::vec::Vec<u32>,
+        data: alloc::vec::Vec<u8>,
+    }
+    impl Ram {
+        fn new(prog: alloc::vec::Vec<u32>) -> Self {
+            Self {
+                prog,
+                data: alloc::vec![0; 0x1000],
+            }
+        }
+    }
+    impl Bus for Ram {
+        fn read_u8(&mut self, addr: u32) -> u8 {
+            self.data.get(addr as usize).copied().unwrap_or(0)
+        }
+        fn write_u8(&mut self, addr: u32, val: u8) {
+            if let Some(b) = self.data.get_mut(addr as usize) {
+                *b = val;
+            }
+        }
+        fn read_u32(&mut self, addr: u32) -> u32 {
+            // Instructions live above 0x800; data below it.
+            if addr >= 0x800 {
+                self.prog
+                    .get(((addr - 0x800) / 4) as usize)
+                    .copied()
+                    .unwrap_or(0)
+            } else {
+                u32::from_be_bytes([
+                    self.read_u8(addr),
+                    self.read_u8(addr + 1),
+                    self.read_u8(addr + 2),
+                    self.read_u8(addr + 3),
+                ])
+            }
+        }
+    }
+    const fn ld_st(opcode: u32, base: u32, rt: u32, off: u16) -> u32 {
+        (opcode << 26) | (base << 21) | (rt << 16) | off as u32
+    }
+
+    /// A store followed by a load round-trips through real memory, at every
+    /// width, with the sign/zero-extension rules applied.
+    #[test]
+    fn stores_and_loads_round_trip_through_memory() {
+        //   ADDIU $1, $0, 0x100     ; base
+        //   ADDIU $2, $0, -2        ; value = 0xFFFF_FFFF_FFFF_FFFE
+        //   SW    $2, 0($1)
+        //   LW    $3, 0($1)         ; sign-extended  -> 0xFFFF_FFFF_FFFF_FFFE
+        //   LWU   $4, 0($1)         ; zero-extended  -> 0x0000_0000_FFFF_FFFE
+        //   LBU   $5, 0($1)         ; big-endian MSB -> 0xFF
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 0x100,
+            (0o11 << 26) | (2 << 16) | 0xFFFE,
+            ld_st(0o53, 1, 2, 0),
+            ld_st(0o43, 1, 3, 0),
+            ld_st(0o47, 1, 4, 0),
+            ld_st(0o44, 1, 5, 0),
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..80 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(3), 0xFFFF_FFFF_FFFF_FFFE, "LW sign-extends");
+        assert_eq!(regs.read(4), 0x0000_0000_FFFF_FFFE, "LWU zero-extends");
+        assert_eq!(regs.read(5), 0xFF, "LBU reads the big-endian MSB");
+    }
+
+    /// An unaligned `LW` raises an address error and does not commit — the whole
+    /// reason the `LWL`/`LWR` family exists.
+    #[test]
+    fn an_unaligned_load_raises_address_error() {
+        //   ADDIU $1, $0, 0x101   ; deliberately unaligned
+        //   LW    $2, 0($1)
+        let prog = alloc::vec![(0o11 << 26) | (1 << 16) | 0x101, ld_st(0o43, 1, 2, 0)];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..40 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(2), 0, "an unaligned LW must not commit");
+    }
+
+    /// **The load-delay interlock** (UM §4.6.5) — it finally has something to
+    /// interlock against. A load followed by an instruction naming the loaded
+    /// register stalls one cycle, and the dependent instruction must still see
+    /// the loaded value.
+    #[test]
+    fn a_load_followed_by_its_use_interlocks_and_still_reads_the_value() {
+        //   ADDIU $1, $0, 0x100
+        //   ADDIU $2, $0, 0x55
+        //   SW    $2, 0($1)
+        //   LW    $3, 0($1)      ; load
+        //   ADDIU $4, $3, 1      ; uses $3 immediately -> LDI stall
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 0x100,
+            (0o11 << 26) | (2 << 16) | 0x55,
+            ld_st(0o53, 1, 2, 0),
+            ld_st(0o43, 1, 3, 0),
+            (0o11 << 26) | (3 << 21) | (4 << 16) | 1,
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        let mut saw_ldi = false;
+        for _ in 0..80 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            if p.stalled_by() == Some(Interlock::Ldi) {
+                saw_ldi = true;
+            }
+        }
+        assert!(saw_ldi, "the load-delay interlock never fired");
+        assert_eq!(regs.read(3), 0x55, "LW loaded the stored value");
+        assert_eq!(regs.read(4), 0x56, "the dependent instruction saw it");
+    }
+
+    /// The `LWL`/`LWR` pair assembles an unaligned word from memory — the
+    /// end-to-end version of the unit tests in `mem`.
+    #[test]
+    fn the_unaligned_pair_assembles_a_word_from_real_memory() {
+        //   ADDIU $1, $0, 0x100
+        //   LWL   $3, 1($1)
+        //   LWR   $3, 4($1)
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 0x100,
+            ld_st(0o42, 1, 3, 1),
+            ld_st(0o46, 1, 3, 4),
+        ];
+        let mut bus = Ram::new(prog);
+        // Memory at 0x100: 00 11 22 33 44 55 66 77
+        for (k, b) in [0x00u8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]
+            .into_iter()
+            .enumerate()
+        {
+            bus.write_u8(0x100 + k as u32, b);
+        }
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..60 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(3),
+            crate::alu::sext32(0x1122_3344),
+            "LWL+LWR must assemble the unaligned word at 0x101"
+        );
     }
 
     /// The load interlock reproduces the hardware's documented imprecision.
