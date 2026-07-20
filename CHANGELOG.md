@@ -9,6 +9,24 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — enabled floating-point traps (`Exception::FloatingPoint`)
+
+A COP1 condition whose `FCSR.Enable` bit is set now raises an FP exception (`ExcCode` 15) instead
+of merely recording the bits. Four things change on the trapping path, each separately observable
+and each pinned by a mutation-tested unit test:
+
+- `fd` is **not** written — the trap is precise, so the destination keeps its old value;
+- the sticky `Flags` field is **not** accumulated, only `Cause` is written;
+- the instruction does not retire, so it does not tick `Random`;
+- `Cause.CE` is 0, not a coprocessor number.
+
+**Measured effect: n64-systemtest 2,795 → 2,794.** Reported plainly because the number is small
+and the reason matters: a trap needs a *raised* condition, and `fpu::classify_*` sets `inexact`
+only as a side effect of overflow and never sets `underflow` at all. The trap path is not the
+blocker — flag detection is. That is now accuracy-ledger **C-11**, together with why the obvious
+`f64` round-trip fix is a fitted constant rather than a measurement: it is correct in the normal
+range and wrong in exactly the range n64-systemtest probes.
+
 ### Fixed — `MOV.fmt` was a silent no-op, and it was not an FPU bug (T-12-007)
 
 `MOV.fmt` is COP1 funct **6**. The decoder admitted only `funct <= 3` to the FP arithmetic path

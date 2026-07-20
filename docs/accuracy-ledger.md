@@ -549,6 +549,56 @@ stream that was supposed to write it before theorising about the writer.
 (`SQRT`, `ABS`, `MOV`, `NEG`) first, since `MOV` is load-bearing for every
 compiled FP call, then the conversions and `C.cond.fmt`.
 
+### C-11 — the IEEE flags are barely detected, which is what gates the FP traps
+
+**Claim.** `fpu::classify_f32`/`classify_f64` set `invalid`, `div_by_zero` and
+`overflow`, and set `inexact` **only as a side effect of overflow**. `underflow`
+is never set at all.
+
+**Why it matters more than it looks.** Enabled FP traps were implemented (COP1
+`Cause`/`Enable` are compared, `Exception::FloatingPoint` is raised, `fd` is left
+unwritten, the sticky `Flags` are not accumulated, the instruction does not
+retire — all four pinned by mutation-tested unit tests). Against the oracle it
+moved n64-systemtest by **one assertion**, 2,795 → 2,794.
+
+That is not a defect in the trap path; it is the trap path being unreachable. A
+trap fires only when a *raised* condition meets a *set* enable, and `inexact` is
+the condition most of the suite's cases raise. With `inexact` undetected, both
+halves of every such case fail: the untrapped half on
+`FCSR after <op> with exceptions disabled`, and the trapped half by never
+trapping.
+
+The verbatim shape, for `f32::MIN + (-1.0)`:
+
+```text
+'COP1: ADD.S' with '(false, Nearest, -3.4028235e38, -1e0, Ok((inexact, …)))'
+   a = FCSR { flags: ,        causes: "" }
+   b = FCSR { flags: inexact, causes: " inexact" }
+```
+
+The *value* is right; only the flags are missing.
+
+**Why it is not a small fix.** Detecting `inexact` requires knowing the exact
+result, which the native `f32`/`f64` operators discard. For `MUL.S` the exact
+product of two `f32`s fits an `f64` exactly (≤48 significand bits, exponent well
+inside `f64`'s range), so a compare-after-round works. **For `ADD.S`/`SUB.S` it
+does not**: the exact sum of `2^127` and `2^-149` needs ~277 significand bits, so
+the `f64` sum is itself rounded and the comparison silently becomes a guess. A
+correct implementation needs an error-free transformation (2Sum) or a soft-float
+path that never leaves the target format — the same conclusion C-10 reached for
+directed rounding, arrived at from a different direction.
+
+**Recorded rather than fitted.** The tempting move is to declare `inexact` on an
+`f64` round-trip mismatch and take the numbers. That is exactly the "fitted
+constant" this file exists to refuse: it would be right in the normal range,
+wrong in the range that the suite deliberately probes, and every later FP result
+would stop being evidence.
+
+**Not yet handled either:** the unmaskable **unimplemented-operation** cause
+(bit 17). The VR4300 raises it for subnormal operands and results, which this
+FPU computes normally instead; the suite's `expected_unimplemented` cases fail
+for that reason and not because of the enables.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

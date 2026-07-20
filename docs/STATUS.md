@@ -102,17 +102,27 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
-registers, the data moves, and S/D `ADD`/`SUB`/`MUL`/`DIV` decode and execute.
-Two things do **not** work, and neither is visible from a green `cargo test`:
+registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, and `ABS`/`MOV`/`NEG`
+decode and execute. Three things do **not** work, and none of them is visible
+from a green `cargo test`:
 
 - **Arithmetic is correct only in round-to-nearest-even.** `FCSR.RM`'s three
   directed modes and the `FS` denormal flush are ignored, because the operations
   use Rust's native `+`/`-`/`*`/`/`. Note this is **no longer** believed to be a
   large contributor: routing the ops through explicit directed rounding was
   tried and moved the oracle by nothing (accuracy-ledger C-10).
-- **Enabled FP traps do not raise.** `Cause`/`Flags` are set in `FCSR`, but an
-  enabled exception does not become `Exception::FloatingPoint`. The remaining
-  `ADD.S` failures are now all `FCSR`-shaped, which makes this the next item.
+- **The IEEE flags are barely detected**, which is the live blocker.
+  `invalid`, `div_by_zero` and `overflow` are set; `inexact` only as a side
+  effect of overflow, and `underflow` never. Accuracy-ledger **C-11**.
+- **The unmaskable unimplemented-operation cause (bit 17) is not produced.** The
+  VR4300 raises it for subnormal operands and results; this FPU computes them
+  normally instead.
+
+Enabled FP traps **are** implemented: an enabled condition raises
+`Exception::FloatingPoint`, leaves `fd` unwritten, does not accumulate the
+sticky `Flags`, and does not retire. It moved the oracle by one assertion,
+because a trap needs a *raised* condition and the flags above are mostly not
+raised — see C-11 rather than reading the small number as a broken trap path.
 
 `SQRT` (funct 4), the conversions and the `C.cond.fmt` compares are implemented
 in `fpu.rs` but **not yet decoded**, so they remain unreachable. `ABS`, `MOV`
@@ -162,7 +172,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,795 failing** — next: enabled FP traps, then the undecoded COP1 funct space (ledger C-10) |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,794 failing** — next: IEEE flag detection (ledger C-11), then the undecoded COP1 funct space |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

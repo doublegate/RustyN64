@@ -116,6 +116,13 @@ pub enum Exception {
     },
     /// A store to a valid but non-writable page.
     TlbModified,
+    /// A floating-point operation raised a condition whose `FCSR.Enable` bit is
+    /// set.
+    ///
+    /// Carries nothing: which condition fired is reported in `FCSR.Cause`, not
+    /// in COP0 `Cause`, and the handler reads it from there. Adding a field
+    /// here would duplicate — and could contradict — the architectural record.
+    FloatingPoint,
 }
 
 /// The documented interlocks (UM Table 4-3).
@@ -583,8 +590,14 @@ impl Pipeline {
                 fs,
                 fd,
             })) = self.dc_wb.cop0
+                && self.fp_arith(fmt, funct, ft, fs, fd)
             {
-                self.fp_arith(fmt, funct, ft, fs, fd);
+                // Trapped. The instruction does **not** complete, so it must not
+                // reach the retirement tail below: `Random` "decrements as each
+                // instruction executes" (UM §5.4.2), and one that took an
+                // exception did not execute.
+                self.dc_wb.occupied = false;
+                return;
             }
             if let Some(Cop0Access::Tlb(op)) = self.dc_wb.cop0 {
                 match op {
@@ -1445,15 +1458,33 @@ impl Pipeline {
     /// `Flags::to_fcsr_bits` produces both, so clearing only `Cause` before
     /// OR-ing preserves the sticky half.
     ///
-    /// # Not yet handled
+    /// # Enabled traps
     ///
-    /// An **enabled** trap must raise `Exception::FloatingPoint` rather than
-    /// merely setting the bits. That is deliberately absent here: this wires the
-    /// arithmetic, which previously did not execute at all, and the trap path is
-    /// the next step. Until it lands, a program that enables FP traps sees the
-    /// flags but not the exception — recorded so this is not mistaken for
-    /// complete.
-    fn fp_arith(&mut self, fmt: u8, funct: u8, ft: u8, fs: u8, fd: u8) {
+    /// A condition whose `FCSR.Enable` bit is set raises
+    /// [`Exception::FloatingPoint`] instead of completing, and **three** things
+    /// then differ from the untrapped path. All three are architectural, and
+    /// each is separately observable by n64-systemtest:
+    ///
+    /// 1. **`fd` is not written.** The trap is precise, so the destination keeps
+    ///    its old value — which is what the suite checks with its
+    ///    `Result after operation (with exception)` assertion.
+    /// 2. **The sticky `Flags` field is not updated.** Only `Cause` is. This is
+    ///    easy to get wrong because the untrapped path sets both from the same
+    ///    helper, and a trapped operation that also OR-ed into `Flags` looks
+    ///    right in every test that does not read `FCSR` back.
+    /// 3. **The instruction does not retire**, so it must not tick `Random`.
+    ///
+    /// Returns `true` when it trapped, so `wb_stage` can skip its retirement
+    /// tail.
+    ///
+    /// # Still not handled
+    ///
+    /// The **unimplemented-operation** cause (bit 17) is unmaskable and is not
+    /// produced by the arithmetic here — the VR4300 raises it for subnormal
+    /// operands and results, which this FPU computes normally instead. That is
+    /// a separate body of work from the maskable enables, and the suite's
+    /// `expected_unimplemented` cases still fail.
+    fn fp_arith(&mut self, fmt: u8, funct: u8, ft: u8, fs: u8, fd: u8) -> bool {
         use crate::fpu;
         /// `FCSR` Cause field, bits 16:12 — replaced per operation.
         const CAUSE_MASK: u32 = 0x1F << 12;
@@ -1485,10 +1516,15 @@ impl Pipeline {
             }
             let fcsr = self.cop1.fcsr();
             self.cop1.ctc1(31, fcsr & !CAUSE_MASK);
-            return;
+            return false;
         }
 
-        let flags = if fmt == 0o20 {
+        // Computed but **not committed**: whether the write happens depends on
+        // the enables, and they cannot be consulted until the flags are known.
+        // Writing inside the arithmetic branch and undoing it afterwards would
+        // be wrong under `FR = 0`, where a `.S` write can disturb a neighbouring
+        // register's half.
+        let (bits, flags, wide) = if fmt == 0o20 {
             {
                 let a = f32::from_bits(self.fpr.read_s(fs));
                 let b = f32::from_bits(self.fpr.read_s(ft));
@@ -1503,13 +1539,7 @@ impl Pipeline {
                     2 => fpu::mul_s(a, b),
                     _ => fpu::div_s(a, b),
                 };
-                // Preserves the upper half, as `MTC1` does. Writing the full
-                // register (`write_raw`, zeroing the upper half) was tried and
-                // REVERTED: it is what the observed values suggest, but it moved
-                // the oracle by nothing and it bypasses the `FR` view, which is
-                // exactly the mistake ledger U-7 records. See ledger C-10.
-                self.fpr.write_s(fd, out.value.to_bits());
-                out.flags
+                (u64::from(out.value.to_bits()), out.flags, false)
             }
         } else {
             {
@@ -1521,13 +1551,39 @@ impl Pipeline {
                     2 => fpu::mul_d(a, b),
                     _ => fpu::div_d(a, b),
                 };
-                self.fpr.write_d(fd, fr, out.value.to_bits());
-                out.flags
+                (out.value.to_bits(), out.flags, true)
             }
         };
+
+        let raised = flags.to_fcsr_bits();
         let fcsr = self.cop1.fcsr();
-        self.cop1
-            .ctc1(31, (fcsr & !CAUSE_MASK) | flags.to_fcsr_bits());
+
+        // `Cause` bits 16:12 and the `Enable` field bits 11:7 hold the five
+        // conditions in the SAME order, so shifting `Cause` down by 12 lines it
+        // up with what `Cop1Control::enables` returns. Comparing them in
+        // different orders is a silent mis-map that only shows up on whichever
+        // condition happens to be tested first.
+        if (raised >> 12) & self.cop1.enables() != 0 {
+            // Cause only. The sticky `Flags` field is deliberately left
+            // untouched — see the doc comment.
+            self.cop1
+                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
+            self.abort_from(Stage::Wb, Exception::FloatingPoint);
+            return true;
+        }
+
+        // Preserves the upper half, as `MTC1` does. Writing the full register
+        // (`write_raw`, zeroing the upper half) was tried and REVERTED: it is
+        // what the observed values suggest, but it moved the oracle by nothing
+        // and it bypasses the `FR` view, which is exactly the mistake ledger
+        // U-7 records. See ledger C-10.
+        if wide {
+            self.fpr.write_d(fd, fr, bits);
+        } else {
+            self.fpr.write_s(fd, bits as u32);
+        }
+        self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
+        false
     }
 }
 
@@ -3759,6 +3815,138 @@ mod tests {
             }
             assert_eq!(p.fpr.read_s(0), want, "funct {funct} did not execute");
         }
+    }
+
+    // --- Enabled FP traps (T-13-002) ----------------------------------------
+
+    /// `ADD.S $f4, $f0, $f2` — the encoding the FP-trap tests drive.
+    const ADD_S_F4_F0_F2: u32 = 0x4602_0100;
+    /// `FCSR.Enable` for Invalid Operation (bit 11).
+    const ENABLE_INVALID: u32 = 1 << 11;
+    /// `FCSR.Cause` for Invalid Operation (bit 16).
+    const CAUSE_INVALID: u32 = 1 << 16;
+    /// `FCSR.Flags` (sticky) for Invalid Operation (bit 6).
+    const FLAG_INVALID: u32 = 1 << 6;
+
+    /// Run `ADD.S $f4, $f0, $f2` on `inf + (-inf)` — an Invalid Operation —
+    /// with `FCSR` preloaded, and report what the machine ended up in.
+    fn run_invalid_add_s(fcsr: u32) -> (Pipeline, u64) {
+        use crate::cop0::reg;
+        let mut bus = Ram::new(alloc::vec![ADD_S_F4_F0_F2]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 | FR
+        p.cop1.ctc1(31, fcsr);
+        p.fpr.write_s(0, 0x7F80_0000); // +inf
+        p.fpr.write_s(2, 0xFF80_0000); // -inf
+        p.fpr.write_raw(4, 0x1122_3344_5566_7788); // untouched-if-trapped marker
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        let code = (p.cop0.read(reg::CAUSE) >> 2) & 0x1F;
+        (p, code)
+    }
+
+    /// With the Invalid enable **clear**, the operation completes: `fd` is
+    /// written, both `Cause` and the sticky `Flags` record it, and nothing
+    /// raises. This is the control for the trap test below — without it, a
+    /// pipeline that raised on *every* invalid operation would pass that test.
+    #[test]
+    fn a_masked_fp_condition_completes_and_sets_both_cause_and_flags() {
+        let (p, code) = run_invalid_add_s(0);
+        assert_eq!(code, 0, "masked: no exception");
+        assert_ne!(
+            p.fpr.read_s(4),
+            0x5566_7788,
+            "fd must be written when no trap is taken"
+        );
+        let fcsr = p.cop1.fcsr();
+        assert_ne!(fcsr & CAUSE_INVALID, 0, "Cause.V set");
+        assert_ne!(fcsr & FLAG_INVALID, 0, "sticky Flags.V set");
+    }
+
+    /// With the enable **set**, the same operation traps: `ExcCode` is 15, `fd`
+    /// keeps its old value, and `Cause` records the condition.
+    #[test]
+    fn an_enabled_fp_condition_raises_and_leaves_the_destination_alone() {
+        use crate::cop0::reg;
+        let (p, code) = run_invalid_add_s(ENABLE_INVALID);
+        assert_eq!(code, crate::exception::exc_code::FPE, "ExcCode 15 (FPE)");
+        assert_eq!(
+            p.fpr.read_raw(4),
+            0x1122_3344_5566_7788,
+            "a trapped operation must not write fd"
+        );
+        assert_ne!(p.cop1.fcsr() & CAUSE_INVALID, 0, "Cause.V set");
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 28) & 0b11,
+            0,
+            "Cause.CE is 0 for an FP exception, not the coprocessor number"
+        );
+    }
+
+    /// **The sticky `Flags` field is NOT updated on a trap** — only `Cause` is.
+    ///
+    /// Split from the test above deliberately. Both come from the same
+    /// `Flags::to_fcsr_bits` value, so writing the whole thing on the trap path
+    /// is the natural implementation and is wrong; it passes every assertion
+    /// about the exception itself and only shows up when `FCSR` is read back,
+    /// which is exactly what n64-systemtest does.
+    #[test]
+    fn a_trapped_operation_does_not_accumulate_into_the_sticky_flags() {
+        let (p, _) = run_invalid_add_s(ENABLE_INVALID);
+        assert_eq!(
+            p.cop1.fcsr() & FLAG_INVALID,
+            0,
+            "Flags must be left alone when the trap is taken"
+        );
+    }
+
+    /// A trapped FP operation does not retire, so it must not tick `Random`.
+    ///
+    /// `Random` is decremented in the retirement tail of `WB`, which is also
+    /// where the FP write-back happens — so an implementation that raises the
+    /// exception but falls through keeps counting an instruction that never
+    /// completed.
+    ///
+    /// **Asserted on the trap cycle specifically.** Comparing total `retired`
+    /// between a trapping and a non-trapping run was tried first and proved
+    /// nothing: the trap flushes the pipe and redirects `PC`, so the totals
+    /// differ over a fixed cycle budget whether or not the trapping instruction
+    /// itself retired. That version passed with the fix removed.
+    #[test]
+    fn a_trapped_fp_operation_does_not_retire() {
+        use crate::cop0::reg;
+        let mut bus = Ram::new(alloc::vec![ADD_S_F4_F0_F2]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        p.cop1.ctc1(31, ENABLE_INVALID);
+        p.fpr.write_s(0, 0x7F80_0000);
+        p.fpr.write_s(2, 0xFF80_0000);
+
+        let mut pc = KSEG0_PROG;
+        let mut saw_trap = false;
+        for _ in 0..24 {
+            let retired_before = p.retired;
+            let random_before = p.cop0.read(reg::RANDOM);
+            p.advance(&mut bus, &mut regs, &mut pc);
+            let code = (p.cop0.read(reg::CAUSE) >> 2) & 0x1F;
+            if !saw_trap && code == crate::exception::exc_code::FPE {
+                saw_trap = true;
+                assert_eq!(
+                    p.retired, retired_before,
+                    "the trapping instruction must not retire on the trap cycle"
+                );
+                assert_eq!(
+                    p.cop0.read(reg::RANDOM),
+                    random_before,
+                    "and must not tick Random"
+                );
+            }
+        }
+        assert!(saw_trap, "no FP trap was taken -- the test proved nothing");
     }
 
     // --- CACHE (T-12-005) ---------------------------------------------------

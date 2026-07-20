@@ -164,6 +164,7 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
         }
         Exception::TlbModified => exc_code::MOD,
         Exception::CoprocessorUnusable { .. } => exc_code::CPU,
+        Exception::FloatingPoint => exc_code::FPE,
     }
 }
 
@@ -186,6 +187,7 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
         // there is nothing for a refill handler to refill.
         | Exception::TlbInvalid { .. }
         | Exception::CoprocessorUnusable { .. }
+        | Exception::FloatingPoint
         | Exception::TlbModified => VectorKind::General,
         // Only a genuine miss takes the refill vector, and only with EXL clear.
         Exception::TlbRefill { .. } => VectorKind::TlbRefill,
