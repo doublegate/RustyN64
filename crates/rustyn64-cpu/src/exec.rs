@@ -8,6 +8,7 @@
 use crate::Exception;
 use crate::alu::{self, HiLo, MulDiv};
 use crate::decode::{Decoded, Op};
+use crate::mem::{LoadKind, StoreKind};
 
 /// What an executed instruction wants written back.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -30,6 +31,46 @@ pub enum WriteBack {
     Lo(u64),
 }
 
+/// A memory access `EX` computed and `DC` must perform.
+///
+/// `EX` resolves the effective address and hands the access to `DC`; it does not
+/// touch the bus itself. That split is the point of the pipeline — `DC` is the
+/// cycle the scheduler interleaves the RCP around (ADR 0007).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemOp {
+    /// An aligned load into `dest`.
+    Load {
+        /// Width and signedness.
+        kind: LoadKind,
+        /// Effective address.
+        addr: u64,
+        /// Destination register.
+        dest: u8,
+    },
+    /// An aligned store of `value`.
+    Store {
+        /// Width.
+        kind: StoreKind,
+        /// Effective address.
+        addr: u64,
+        /// Value from `rt`.
+        value: u64,
+    },
+    /// One half of an unaligned access. `rt` is needed for both directions: a
+    /// partial load merges into it, and a partial store merges out of it.
+    Unaligned {
+        /// Which of the eight forms.
+        op: Op,
+        /// Effective address (deliberately **not** aligned down here — `DC`
+        /// needs the low bits to know which bytes are covered).
+        addr: u64,
+        /// Current `rt`.
+        rt: u64,
+        /// Destination register, or 0 for the store forms.
+        dest: u8,
+    },
+}
+
 /// The outcome of executing one instruction in `EX`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Executed {
@@ -37,6 +78,8 @@ pub struct Executed {
     pub write_back: WriteBack,
     /// Extra `PCycle`s the whole pipeline stalls for (multiply/divide only).
     pub stall_cycles: u32,
+    /// A memory access for `DC` to perform, if any.
+    pub mem: Option<MemOp>,
 }
 
 /// Sign-extend a 16-bit immediate — the arithmetic and `SLT` immediate forms.
@@ -85,6 +128,35 @@ pub const fn execute(
                     value: $v,
                 },
                 stall_cycles: 0,
+                mem: None,
+            })
+        };
+    }
+    // A load: EX resolves the address, DC performs the access and produces the
+    // write-back. Nothing is committed here.
+    macro_rules! mem_load {
+        ($kind:expr) => {
+            Ok(Executed {
+                write_back: WriteBack::None,
+                stall_cycles: 0,
+                mem: Some(MemOp::Load {
+                    kind: $kind,
+                    addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                    dest: d.dest,
+                }),
+            })
+        };
+    }
+    macro_rules! mem_store {
+        ($kind:expr) => {
+            Ok(Executed {
+                write_back: WriteBack::None,
+                stall_cycles: 0,
+                mem: Some(MemOp::Store {
+                    kind: $kind,
+                    addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                    value: rt_val,
+                }),
             })
         };
     }
@@ -95,6 +167,7 @@ pub const fn execute(
             Ok(Executed {
                 write_back: WriteBack::HiLo($res),
                 stall_cycles: alu::muldiv_stall_cycles($kind),
+                mem: None,
             })
         };
     }
@@ -181,11 +254,39 @@ pub const fn execute(
         Op::Mthi => Ok(Executed {
             write_back: WriteBack::Hi(rs_val),
             stall_cycles: 0,
+            mem: None,
         }),
         Op::Mtlo => Ok(Executed {
             write_back: WriteBack::Lo(rs_val),
             stall_cycles: 0,
+            mem: None,
         }),
+
+        // --- memory. EX resolves the effective address only; DC performs the
+        // access. The address is base + SIGN-extended offset, always.
+        Op::Lb => mem_load!(LoadKind::SignedByte),
+        Op::Lbu => mem_load!(LoadKind::UnsignedByte),
+        Op::Lh => mem_load!(LoadKind::SignedHalf),
+        Op::Lhu => mem_load!(LoadKind::UnsignedHalf),
+        Op::Lw => mem_load!(LoadKind::SignedWord),
+        Op::Lwu => mem_load!(LoadKind::UnsignedWord),
+        Op::Ld => mem_load!(LoadKind::Double),
+        Op::Sb => mem_store!(StoreKind::Byte),
+        Op::Sh => mem_store!(StoreKind::Half),
+        Op::Sw => mem_store!(StoreKind::Word),
+        Op::Sd => mem_store!(StoreKind::Double),
+        Op::Lwl | Op::Lwr | Op::Ldl | Op::Ldr | Op::Swl | Op::Swr | Op::Sdl | Op::Sdr => {
+            Ok(Executed {
+                write_back: WriteBack::None,
+                stall_cycles: 0,
+                mem: Some(MemOp::Unaligned {
+                    op: d.op,
+                    addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                    rt: rt_val,
+                    dest: d.dest,
+                }),
+            })
+        }
     }
 }
 
@@ -327,12 +428,15 @@ mod tests {
     /// with no indication of why.
     #[test]
     fn unimplemented_opcodes_raise_reserved_instruction() {
-        // LW (0o43) is not decoded yet -- T-11-003.
+        // BEQ (0o04) arrives with T-11-004; SPECIAL funct 0o01 is unused.
         assert_eq!(
-            run(i(0o43, 1, 2, 0), 0, 0),
+            run(i(0o04, 1, 2, 0), 0, 0),
             Err(Exception::ReservedInstruction)
         );
-        assert_eq!(run(0xFFFF_FFFF, 0, 0), Err(Exception::ReservedInstruction));
+        assert_eq!(
+            run(r(0o01, 1, 2, 3, 0), 0, 0),
+            Err(Exception::ReservedInstruction)
+        );
     }
 
     /// `SLL $0, $0, 0` is `NOP`: it executes successfully and its write-back

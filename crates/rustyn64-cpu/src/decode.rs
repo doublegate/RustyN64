@@ -148,6 +148,50 @@ pub enum Op {
     Mflo,
     /// `MTLO rs`.
     Mtlo,
+
+    // --- aligned loads
+    /// `LB rt, off(base)` — signed byte.
+    Lb,
+    /// `LBU rt, off(base)`.
+    Lbu,
+    /// `LH rt, off(base)` — signed halfword.
+    Lh,
+    /// `LHU rt, off(base)`.
+    Lhu,
+    /// `LW rt, off(base)` — sign-extended into the 64-bit register.
+    Lw,
+    /// `LWU rt, off(base)` — zero-extended.
+    Lwu,
+    /// `LD rt, off(base)`.
+    Ld,
+
+    // --- aligned stores
+    /// `SB rt, off(base)`.
+    Sb,
+    /// `SH rt, off(base)`.
+    Sh,
+    /// `SW rt, off(base)`.
+    Sw,
+    /// `SD rt, off(base)`.
+    Sd,
+
+    // --- the unaligned family (used in pairs; see [`crate::mem`])
+    /// `LWL rt, off(base)`.
+    Lwl,
+    /// `LWR rt, off(base)`.
+    Lwr,
+    /// `LDL rt, off(base)`.
+    Ldl,
+    /// `LDR rt, off(base)`.
+    Ldr,
+    /// `SWL rt, off(base)`.
+    Swl,
+    /// `SWR rt, off(base)`.
+    Swr,
+    /// `SDL rt, off(base)`.
+    Sdl,
+    /// `SDR rt, off(base)`.
+    Sdr,
 }
 
 impl Op {
@@ -203,6 +247,28 @@ pub struct Decoded {
 }
 
 impl Decoded {
+    /// Does this instruction load into a general register?
+    ///
+    /// The load-delay interlock keys off this: only a *load* result is
+    /// unavailable in time to bypass, which is why the interlock exists at all.
+    #[must_use]
+    pub const fn is_load(self) -> bool {
+        matches!(
+            self.op,
+            Op::Lb
+                | Op::Lbu
+                | Op::Lh
+                | Op::Lhu
+                | Op::Lw
+                | Op::Lwu
+                | Op::Ld
+                | Op::Lwl
+                | Op::Lwr
+                | Op::Ldl
+                | Op::Ldr
+        )
+    }
+
     /// Does this instruction target a floating-point register?
     ///
     /// Always `false` for the integer subset. Present because the load-delay
@@ -226,6 +292,25 @@ const OP_XORI: u32 = 0o16;
 const OP_LUI: u32 = 0o17;
 const OP_DADDI: u32 = 0o30;
 const OP_DADDIU: u32 = 0o31;
+const OP_LDL: u32 = 0o32;
+const OP_LDR: u32 = 0o33;
+const OP_LB: u32 = 0o40;
+const OP_LH: u32 = 0o41;
+const OP_LWL: u32 = 0o42;
+const OP_LW: u32 = 0o43;
+const OP_LBU: u32 = 0o44;
+const OP_LHU: u32 = 0o45;
+const OP_LWR: u32 = 0o46;
+const OP_LWU: u32 = 0o47;
+const OP_SB: u32 = 0o50;
+const OP_SH: u32 = 0o51;
+const OP_SWL: u32 = 0o52;
+const OP_SW: u32 = 0o53;
+const OP_SDL: u32 = 0o54;
+const OP_SDR: u32 = 0o55;
+const OP_SWR: u32 = 0o56;
+const OP_LD: u32 = 0o67;
+const OP_SD: u32 = 0o77;
 
 /// Decode one instruction word. Total — never fails, never panics.
 #[must_use]
@@ -342,6 +427,40 @@ pub const fn decode(word: u32) -> Decoded {
         OP_LUI => i!(Op::Lui),
         OP_DADDI => i!(Op::Daddi),
         OP_DADDIU => i!(Op::Daddiu),
+
+        // Loads write `rt`; stores read it and write memory, so they have no
+        // register destination.
+        OP_LB => i!(Op::Lb),
+        OP_LBU => i!(Op::Lbu),
+        OP_LH => i!(Op::Lh),
+        OP_LHU => i!(Op::Lhu),
+        OP_LW => i!(Op::Lw),
+        OP_LWU => i!(Op::Lwu),
+        OP_LD => i!(Op::Ld),
+        OP_LWL => i!(Op::Lwl),
+        OP_LWR => i!(Op::Lwr),
+        OP_LDL => i!(Op::Ldl),
+        OP_LDR => i!(Op::Ldr),
+        OP_SB => Decoded { op: Op::Sb, ..base },
+        OP_SH => Decoded { op: Op::Sh, ..base },
+        OP_SW => Decoded { op: Op::Sw, ..base },
+        OP_SD => Decoded { op: Op::Sd, ..base },
+        OP_SWL => Decoded {
+            op: Op::Swl,
+            ..base
+        },
+        OP_SWR => Decoded {
+            op: Op::Swr,
+            ..base
+        },
+        OP_SDL => Decoded {
+            op: Op::Sdl,
+            ..base
+        },
+        OP_SDR => Decoded {
+            op: Op::Sdr,
+            ..base
+        },
         _ => base,
     }
 }
@@ -397,9 +516,10 @@ mod tests {
         for bit in 0..32 {
             let _ = decode(1u32 << bit);
         }
-        assert_eq!(decode(0xFFFF_FFFF).op, Op::Reserved);
-        // Not yet implemented => Reserved, which is loud. `LW` is opcode 0o43.
-        assert_eq!(decode(i(0o43, 1, 2, 0)).op, Op::Reserved);
+        // Not yet implemented => Reserved, which is loud. SPECIAL funct 0o01 is
+        // unused on MIPS III, and `BEQ` (0o04) arrives with T-11-004.
+        assert_eq!(decode(r(0o01, 1, 2, 3, 0)).op, Op::Reserved);
+        assert_eq!(decode(i(0o04, 1, 2, 0)).op, Op::Reserved);
     }
 
     /// The `*32` shift variants add 32 to the encoded 5-bit field, so `sa` is the
