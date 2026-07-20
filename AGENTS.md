@@ -85,6 +85,11 @@ stubs** — accuracy work has not started. Do not assume any chip executes instr
 - `n64brew_wiki/` — gitignored offline mirror of the N64brew Wiki, the primary hardware
   reference. Search `n64brew_wiki/markdown/`; browse `n64brew_wiki/html/`. Rebuild or update
   with `python3 scripts/mirror_n64brew_wiki.py [--refresh]`. CC BY-SA 4.0 — attribute if quoted.
+- **`n64brew_wiki/images/VR4300-Users-Manual.pdf` is the primary CPU timing oracle** — the full
+  655-page NEC manual, with every pipeline/cache/FPU/interlock timing table. **Extract with
+  `mutool draw -F txt`; `pdftotext` fails on it** and `file` misreports it as 27 pages. Cite as
+  `UM §x`. Corrections it forced on the immutable `ref-docs/research-report.md` live in
+  `ref-docs/2026-07-20-vr4300-timing-supplement.md`, which wins where they disagree.
 - `to-dos/ROADMAP.md` — planning entry point; tickets `T-PS-NNN`.
 
 ## Build / test / lint
@@ -121,6 +126,16 @@ Linux frontend needs system deps (wgpu/winit/cpal). Arch/CachyOS:
 ## Conventions
 
 - A chip change touches the chip code AND its `docs/<chip>.md` in the same commit.
+- **Never increment a cycle counter except `master_ticks`.** Every other cycle position is a
+  derived accessor (ADR 0006). A new `cycles`/`ticks` field on a chip struct needs justification
+  in review; the one legitimate use is a *retired-work* tally that nothing schedules against. The
+  residue invariant test exists to catch this and must stay in the default `cargo test` path.
+- **A timing constant the hardware docs do not supply is MEASURED, never tuned.** It goes in
+  `docs/accuracy-ledger.md` with its provenance. Adjusting one until a ROM passes makes every
+  later timing result unfalsifiable. Currently unmeasured: `M` (memory access time), the
+  exception-epilogue cost, CP0I, RDRAM bank-state costs.
+- Say "master clock" only with its rate. The sources use **MasterClock = 62.5 MHz**; this
+  project's master tick is **187.5 MHz**; ADR 0001 used it for 93.75 MHz. See `docs/glossary.md`.
 - `unsafe` is allowed only in the frontend and FFI. Enforced: every chip crate and `-core` carry
   `#![forbid(unsafe_code)]`. There is zero `unsafe` in the tree today — keep it that way.
 - Stubs are `TODO(T-XXX-NN)` comments in no-op bodies that still compile, NOT `todo!()`. So a

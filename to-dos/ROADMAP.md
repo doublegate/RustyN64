@@ -16,10 +16,13 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 - **Current phase:** Phase 1 (CPU golden log) — not started. Phase 0 is complete: the workspace
   compiles, all eight CI jobs are green across Linux/macOS/Windows, the docs site publishes, and
   the test-ROM corpora are staged. No chip executes instructions yet.
-- **Release:** v0.1.0 (SKELETON), untagged. The architecture is in place — the Bus owns all
-  mutable state, the 3:2 fractional master-clock scheduler runs, the crate graph is
-  one-directional — but every chip `tick` is an LLE-shaped stub. See `docs/STATUS.md` for the
-  honest per-subsystem state.
+- **Release:** v0.1.0, tagged. The architecture is in place — the Bus owns all mutable state,
+  the scheduler runs, the crate graph is one-directional — but every chip `tick` is an
+  LLE-shaped stub. See `docs/STATUS.md` for the honest per-subsystem state.
+- **The v0.1.0 scheduler is the superseded ADR 0001 timebase** (93.75 MHz tick, 3:2 fractional
+  accumulator). ADR 0006 replaces it with a canonical 187.5 MHz clock and integer divisors, and
+  ADR 0007 makes the CPU a cycle-accurate five-stage pipeline. Both are decided and documented;
+  implementing them is Phase 1 ticket **T-11-001**, which blocks every other Phase 1 ticket.
 
 ## The phase spine
 

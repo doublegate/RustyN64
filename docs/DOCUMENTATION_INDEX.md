@@ -26,6 +26,7 @@ corrected.
 | [cart.md](cart.md) | PI cart, PIF/CIC boot, SI joybus, and the four save backends |
 | [cartridge-format.md](cartridge-format.md) | ROM header, the `.z64`/`.n64`/`.v64` byte orders, save-type and CIC detection |
 | [scheduler.md](scheduler.md) | The canonical 187.5 MHz master-clock scheduler and the lockstep contract |
+| [accuracy-ledger.md](accuracy-ledger.md) | Measured constants, open residuals, ruled-out approaches, source contradictions |
 | [architecture.md](architecture.md) | Cross-cutting design — the eight load-bearing facts |
 | [frontend.md](frontend.md) | The `rustyn64` shell (winit + wgpu + cpal + egui), audio ring, pacing |
 

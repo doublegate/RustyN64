@@ -5,6 +5,33 @@
 Domain terms for the Nintendo 64 and its emulation. Cited sections point at the
 research report.
 
+## Clocks — read this before writing "master clock" anywhere
+
+The term is overloaded three ways and the hardware documentation owns one of them.
+Always state the rate.
+
+- **MClock / MasterClock** — **62.5 MHz**, the RCP clock, derived RCLK ÷ 4. This is
+  what the primary sources (`Clock Timing.md`, VR4300 UM Fig 4-1) mean by
+  "MasterClock", and it is the meaning a reader arrives with.
+- **PClock** — **93.75 MHz**, the VR4300's internal pipeline clock, multiplied up
+  from MClock by the CPU's PLL at `DivMode = 0b01` (1:1.5). One **PCycle** is one
+  PClock period, and it internally has two phases, **F1** and **F2** (UM §4.1).
+- **SClock** — the VR4300's system-interface clock, normally equal to MClock
+  (62.5 MHz). This is the rate SysAD transactions run at, so **one SysAD cycle is
+  1.5 PCycles**.
+- **TClock** — transmit clock to external agents; always equal to MasterClock.
+- **RCLK** — 250 MHz, crystal X2 × 17; the source MClock divides down from.
+- **the master tick (this project)** — **187.5 MHz**, the LCM of PClock and MClock,
+  and the only counter the emulator increments. CPU every 2 ticks, RCP every 3,
+  COP0 `Count` every 4, SI every 12, PIF every 96 (ADR 0006). Beware: 187.5 MHz
+  *also* appears in the sources as the `DivMode = 0b11` overclocked PClock, which
+  the N64 does not use.
+- **VCLK** — the VI video clock, **48.681818 MHz** NTSC, derived from a *different*
+  crystal (X1) and therefore not a rational multiple of the above. It is the one
+  domain that keeps a fractional accumulator.
+
+## Components
+
 - **RCP (Reality Coprocessor)** — the SGI/Nintendo ASIC at 62.5 MHz that contains
   the RSP, the RDP, and the eight memory-mapped interfaces; it arbitrates all
   memory traffic between the CPU, RDRAM, and the cartridge bus (§2).

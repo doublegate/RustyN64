@@ -67,6 +67,15 @@ Everything built to date, tagged as-is rather than left in a perpetual `[Unrelea
 The CPU executes MIPS III, including the TLB, COP0, the FPU, and the documented errata, and
 0-diffs against a golden trace.
 
+- **The timebase and microarchitecture rework lands here (T-11-001), before any instruction
+  work.** The scheduler moves to the canonical 187.5 MHz clock with integer divisors and a
+  single incremented counter (ADR 0006, superseding ADR 0001's 93.75 MHz tick and 3:2 fractional
+  accumulator), and the CPU becomes a cycle-accurate five-stage pipeline (ADR 0007). Both are
+  MINOR-compatible here only because nothing depends on the old shape yet — no save-state format
+  exists, and no chip executes instructions. **This is the last release at which either change is
+  free**; after save states ship, the same change is a MAJOR bump with a format epoch break,
+  which is exactly what a sibling project had to pay.
+- The residue invariant test lands with it, and stays in the default test path permanently.
 - The first release where a test ROM actually runs: `run_until_complete` stops returning
   `Timeout` and n64-systemtest reports a real number.
 - The determinism regression test lands here, closing the ADR 0004 gap that `docs/STATUS.md`

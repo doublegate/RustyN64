@@ -42,11 +42,45 @@ remains byte-identical and is what the determinism contract is defined against.
   `perf record` on a headless run. Each chip crate has a `benches/` harness
   (`crates/rustyn64-*/benches/`).
 
+## The goal, stated plainly
+
+**Sustained, fully cycle-accurate N64 emulation at full speed — the core and every
+other component.** Not cycle-accurate *or* fast; both.
+
+This is an unproven target. No public N64 core sustains full speed while fully
+cycle-accurate. What is known:
+
+- CEN64's pipeline is cycle-accurate, but its **bus is not** — memory accesses
+  complete in zero emulated time against flat constants — and it is nonetheless
+  widely regarded as too slow, from a stalled project benchmarked on 2013-era
+  hardware. It never bought full accuracy for the price it paid.
+- ares is fast because it is cycle-*approximate*: no pipeline, no interlocks,
+  instruction-granular latencies from a table, deferred synchronisation.
+- A sibling project's canonical-clock rewrite cost **6–8%** in end-to-end frame
+  time while its isolated CPU loop got ~35% faster — so the timebase model itself
+  is a single-digit-percent tax, and the cost lands bus-side.
+
+None of that establishes the goal is reachable; none of it establishes it is not.
+It is an **open engineering risk with a measurement gate**, and the consequence is
+that performance is a design input from the first line of Phase 1 rather than a
+later optimisation pass.
+
+### The budget
+
+93.75M CPU + 62.5M RSP = **156.25M component-steps/s**, before the RDP. On a
+~5 GHz core that is roughly **32 host cycles per emulated component step**. This
+figure is an *estimate*, not a measurement — it needs a real Sprint 1 benchmark
+before it is worth defending. What it implies is already actionable: pipeline
+latches cache-resident, no allocation in `tick`, no per-cycle branching on cold
+conditions, and the reverse-order stage cascade written so the common case is
+straight-line.
+
 ## Targets (provisional — refine after the interpreter lands)
 
 | Metric | Target |
 | --- | --- |
 | Headless emulated frame | ≤ 16.67 ms (60 fps NTSC) on a modern desktop core |
+| Host cycles per emulated component step | ≤ ~32 (estimate; measure in Sprint 1) |
 | RSP interpreter | the watch item — measure first, dynarec if it misses |
 | Software RDP at native res | interactive; quantify vs the compute backend need |
 | wgpu-compute RDP | sub-ms/frame (the ParaLLEl-RDP reference point) |

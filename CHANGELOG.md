@@ -9,6 +9,26 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — reference corpus and the accuracy ledger
+
+- **[`docs/accuracy-ledger.md`](docs/accuracy-ledger.md)** — referenced from five documents and
+  never created until now. Records measured constants with their provenance, open residuals,
+  ruled-out approaches, and contradictions between primary sources. Seeded with the four timing
+  constants the hardware documentation does not supply (`M`, the exception epilogue, CP0I, RDRAM
+  bank state) and the four source contradictions found during the ADR review. The governing rule:
+  a constant is measured, never tuned until a ROM passes — a tuned constant makes every later
+  timing result unfalsifiable.
+- **[`ref-docs/2026-07-20-vr4300-timing-supplement.md`](ref-docs/2026-07-20-vr4300-timing-supplement.md)**
+  — `ref-docs/` is an immutable corpus, so corrections to `research-report.md` land as a dated
+  supplement rather than an in-place edit. Records the IC/RF/EX/DC/WB stage-name correction, the
+  MClock-is-primary clock derivation, the documented cycle-cost tables, the errata with exact
+  behaviour, the SysAD block-ordering rules, and an explicit list of what is *not* documented.
+- `docs/glossary.md` gains a **Clocks** section, because "master clock" is overloaded three ways
+  and the primary sources own one of them (MasterClock = 62.5 MHz).
+- `docs/performance.md` states the project goal plainly — sustained fully cycle-accurate
+  emulation at full speed — with the budget (~156M component-steps/s, ~32 host cycles each) and
+  an honest account of why it is unproven rather than impossible.
+
 ### Changed — the timebase and CPU microarchitecture are settled (Phase 1 design)
 
 Two ADRs land ahead of any Phase 1 code, because both decisions are of the kind that cannot be
