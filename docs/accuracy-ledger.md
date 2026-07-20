@@ -428,6 +428,24 @@ than on the first `ADD.S` encountered. Uncorrelated captures produced two
 confident and unfounded conclusions here, one of which was used to justify a code
 change.
 
+**Correlated run: zero hits.** Scanning the whole run for an `ADD.S` whose
+operands are `0.0` and `2.0` — the pair the failing case names — found **none**.
+Taken at face value that says the failing test's `ADD.S` **never executes**, which
+would explain the untouched `0x11223344` sentinel far better than any theory
+about the FPU, and would move the investigation upstream to whatever aborts each
+case before it reaches its instruction.
+
+**One caveat keeps this from being conclusive.** The probe samples `fs`/`ft` when
+the PC *reaches* the `ADD.S`, but the pipeline is five stages deep, so a load
+feeding those registers may still be in flight — a real `ADD.S` with the right
+operands could read as a miss. Confirm by sampling at **retirement** rather than
+fetch, or by counting `ADD.S` executions of any operands and comparing against the
+number of `COP1: ADD.S` cases the suite reports. Only then is "never executes"
+established.
+
+Stated this way deliberately: the two previous conclusions in this entry were
+recorded as facts on comparable evidence and both had to be retracted.
+
 **A fix was attempted and reverted.** Writing the full 64-bit FGR
 (`write_raw`, zeroing the upper half) moved the failure count by **nothing**
 (2,897 either way) and bypasses the `FR` view — the precise mistake ledger U-7
