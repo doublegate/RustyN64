@@ -1,47 +1,75 @@
-# CodeRabbit configuration — https://docs.coderabbit.ai/guides/configure-coderabbit
-# Validated against https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+# CodeRabbit configuration — RustyN64
+# https://docs.coderabbit.ai/reference/configuration
+# Every key below validated against schema.v2.json.
 #
-# A second review bot alongside GitHub Copilot. Installing the app is a
-# repository-owner action on github.com; this file only tunes the review.
+# Alternate PR review bot alongside copilot-pull-request-reviewer and
+# gemini-code-assist. Project convention: reply to and RESOLVE every bot review
+# thread before merge (AGENTS.md, "Shipping: every change goes through a PR").
 #
-# Profile is **assertive** — the most feedback CodeRabbit offers, and the one
-# its docs warn "may feel nitpicky". That is the right trade here: this is a
-# cycle-accuracy emulator where a missed defect is measured in weeks of
-# misdirected investigation (see accuracy ledger C-10), the maintainer
-# adjudicates every comment individually rather than skimming, and the
-# `path_instructions` below already tell the bot which deliberate deviations
-# NOT to report — which is what makes assertive affordable rather than noisy.
+# profile: assertive — the most feedback CodeRabbit offers, and the one its docs
+# warn "may feel nitpicky". That is the right trade here. A missed defect on
+# this project is measured in weeks of misdirected investigation (accuracy
+# ledger C-10: nine wrong hypotheses aimed at the FPU while the real cause was
+# an undecoded `MOV.fmt`), every comment is adjudicated individually rather than
+# skimmed, and the path instructions below already list the deliberate
+# deviations NOT to report — which is what makes assertive affordable.
 #
-# The guiding principle: `cargo clippy` (pedantic + nursery, `-D warnings`),
-# rustdoc `-D warnings`, `cargo fmt` and markdownlint already gate everything
-# mechanical, and they gate it harder than any bot will. So the tool
-# integrations that would duplicate them are turned OFF, and the review budget
-# is pointed at the one thing a linter cannot check: whether a change
-# contradicts a decision recorded in an ADR or the accuracy ledger.
+# Tool selection principle: enable what covers a gap, disable what duplicates a
+# gate this repo already runs harder. See the `tools` block for the per-tool
+# reasoning; it is deliberately explicit rather than inheriting ~50 tools'
+# worth of findings for languages this project does not contain.
 
 language: en-GB
-early_access: false
 
+# Max 250 characters (schema-enforced).
 tone_instructions: >-
-  Be direct and technical. Cite the specific rule, ADR or ledger entry a finding
-  violates. Do not restate what the code does. Say plainly when something is
-  correct.
+  Direct and technical. Cite the rule, ADR or accuracy-ledger entry a finding
+  violates. Do not restate what the code does, and do not repeat findings clippy
+  or rustfmt already gate. Say plainly when something is correct.
+
+early_access: false
 
 reviews:
   profile: assertive
   request_changes_workflow: false
+
+  # Summary surface. Sequence diagrams earn their place here because the
+  # load-bearing bugs are control-flow shaped (the reverse pipeline cascade,
+  # the commit-or-trap path in `fp_arith`).
   high_level_summary: true
   high_level_summary_in_walkthrough: true
-  poem: false
-  review_status: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
   collapse_walkthrough: true
+  review_status: true
+  poem: false
+
+  # Single-maintainer repo: suggestions are welcome, automatic actions are not.
+  suggested_labels: true
+  auto_apply_labels: false
+  suggested_reviewers: true
+  auto_assign_reviewers: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+
+  # Flags low-substance / filler content. Worth having on a repo whose docs are
+  # treated as the spec.
+  slop_detection:
+    enabled: true
 
   auto_review:
     enabled: true
-    # Review work in progress too: this repo's PRs are long-lived and the
-    # expensive mistakes are the ones caught before the branch is finished.
-    drafts: true
     auto_incremental_review: true
+    # Drafts ARE reviewed here, unlike most setups: branches on this project are
+    # long-lived (PR #27 ran to 49 commits) and the expensive mistakes are the
+    # ones caught before the branch is finished. `ignore_title_keywords` is the
+    # escape hatch when that is not wanted.
+    drafts: true
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT REVIEW"
     base_branches:
       - main
 
@@ -49,115 +77,301 @@ reviews:
     # Immutable research and vendored reference material. `ref-proj/` is
     # gitignored, but list it so a stray commit is never reviewed as if it were
     # ours — several of those clones are study-only for licence reasons and
-    # must never be copied from.
+    # must never be copied from (see ref-proj/README.md).
     - "!ref-docs/**"
     - "!ref-proj/**"
     - "!n64brew_wiki/**"
-    # Only the EXTERNAL tier. `tests/roms/n64-systemtest/` is committed (MIT,
-    # with its upstream LICENSE beside it) and its README carries the licence
-    # tiering rules, so both should stay reviewable.
+    # Only the EXTERNAL ROM tier. `tests/roms/n64-systemtest/` is committed
+    # (MIT, with its upstream LICENSE beside it) and `tests/roms/README.md`
+    # carries the licence-tiering rules, so both stay reviewable.
     - "!tests/roms/external/**"
+    - "!Cargo.lock"
     - "!target/**"
 
   path_instructions:
     - path: "crates/**/*.rs"
-      instructions: |
+      instructions: >-
         Read `AGENTS.md` first; it records decisions that look like bugs.
 
         Flag with high priority:
+
         - Any new `cycles`/`ticks` counter that is INCREMENTED. Only
-          `master_ticks` may be incremented; every other cycle position is a
-          derived accessor (ADR 0006).
+        `master_ticks` may be incremented; every other cycle position is a
+        derived accessor (ADR 0006). The one legitimate exception is a
+        retired-work tally that nothing schedules against.
+
+        - Anything that could introduce NON-DETERMINISM: wall-clock time, OS
+        RNG, thread scheduling, or unordered-map iteration order in the core.
+        Determinism is a hard contract (ADR 0004): seed + ROM + input must give
+        bit-identical output.
+
         - Any invented constant or incidental side effect with no cited source.
-          Undocumented hardware facts must be measured and recorded in
-          `docs/accuracy-ledger.md`, never fitted until a test passes. An
-          invented *side effect* (clearing a field, zeroing a half-register) is
-          worse than an invented number, because it does not land in the ledger
-          where it can be argued with.
-        - A comment that asserts what the code does but disagrees with it.
-          Treat comment and code as independent claims; this project has been
-          bitten by that four times.
+        Undocumented hardware facts must be MEASURED and recorded in
+        `docs/accuracy-ledger.md`, never fitted until a test passes. An invented
+        *side effect* (clearing a field, zeroing a half-register) is worse than
+        an invented number, because it never lands in the ledger where it can be
+        argued with — this cost 112 oracle assertions once already.
+
+        - A comment that asserts what the code does but disagrees with it. Treat
+        comment and code as INDEPENDENT claims; this project has been bitten by
+        that four times and no test failed any of them.
+
         - An instruction or handler that decodes to a silent no-op. Tests must
-          assert the EFFECT, not merely that no exception was raised.
-        - A bit-field mask that does not cover the whole architectural field.
-          A stale bit in an uncovered position can never be cleared.
-        - `unsafe` anywhere outside `rustyn64-frontend`. Every chip crate carries
-          `#![forbid(unsafe_code)]` and the tree has zero `unsafe` today.
+        assert the EFFECT, not merely that no exception was raised.
+
+        - A bit-field mask that does not cover the whole architectural field. A
+        stale bit in an uncovered position can never be cleared.
+
+        - `unsafe` anywhere outside `rustyn64-frontend`. Every chip crate and
+        `-core` carry `#![forbid(unsafe_code)]` and the tree has zero `unsafe`.
+
+        - `.unwrap()` / `.expect()` / `panic!()` on data parsed from an
+        untrusted source (ROM bytes, save-state, PIF/SI input) outside
+        `#[cfg(test)]`. These boundaries must return a typed error.
 
         Do NOT flag as bugs — these are deliberate and documented:
+
         - The pipeline cascade running in REVERSE stage order
-          (WB -> DC -> EX -> RF -> IC), ADR 0007.
+        (WB -> DC -> EX -> RF -> IC), ADR 0007.
+
         - Reproduced VR4300 errata such as `sra`/`srav`. They are behaviour
-          software depends on, not defects to correct.
+        software depends on, not defects to correct.
+
         - NaN classification treating significand-MSB-SET as *signalling*. That
-          is inverted from IEEE-754:2008 and is correct for this processor —
-          the legacy MIPS convention, accuracy ledger C-12.
+        is inverted from IEEE-754:2008 and is CORRECT for this processor — the
+        legacy MIPS convention, accuracy ledger C-12.
+
         - Soft-float arithmetic instead of native `f32`/`f64` operators. The
-          native ones discard the exact pre-rounding result, so IEEE flags and
-          `FCSR.RM` cannot be implemented on them (ledger C-11).
+        native ones discard the exact pre-rounding result, so IEEE flags and
+        `FCSR.RM` cannot be implemented on them (ledger C-11).
+
         - Octal literals (`0o21`) for instruction fields. The MIPS manuals use
-          octal for opcode tables and matching them is deliberate.
+        octal for opcode tables and matching them is deliberate.
+
+        - Hot paths being allocation-free and abstraction-light on purpose.
+
+    - path: "crates/rustyn64-cpu/**"
+      instructions: >-
+        The VR4300: a cycle-accurate five-stage pipeline (ADR 0007) validated
+        against n64-systemtest. Flag any change that could shift instruction
+        timing without a test-ROM justification, and any new latch read that
+        does not account for the reverse cascade — by the time a stage runs,
+        every downstream stage has already moved its latch on, which has
+        silently produced a no-op twice.
+
+    - path: "crates/rustyn64-core/**"
+      instructions: >-
+        The Bus owns all mutable subsystem state; each chip sees only the narrow
+        trait it needs. Flag any change that widens a crate's access beyond
+        that, or that adds a chip-to-chip dependency — the crate graph is
+        one-directional with exactly ONE permitted edge (`rustyn64-rdp` ->
+        `rustyn64-cart`, for the `RdramBus` trait), and any other breaks the
+        fuzz-in-isolation invariant.
+
+    - path: "crates/rustyn64-test-harness/**"
+      instructions: >-
+        This is the accuracy oracle. Flag anything that could let it report
+        success without having run: a pass sentinel set by code that never
+        executed the tests, a skipped corpus reported as passed, or a silent
+        `continue` where a load failed. An oracle that runs nothing looks
+        exactly like one that passes.
 
     - path: "crates/**/tests/**"
-      instructions: |
+      instructions: >-
         A test that passes when its fix is reverted is worthless. Flag tests
-        whose success and failure paths can converge — for example comparing a
-        total across two runs that differ for an unrelated reason, or asserting
-        a destination equals a value it already held.
+        whose success and failure paths can converge — comparing a total across
+        two runs that differ for an unrelated reason, asserting a destination
+        equals a value it already held, or checking only that no exception was
+        raised. Every guard here is expected to have been mutation-checked.
 
     - path: "**/*.md"
-      instructions: |
-        markdownlint is a pre-commit hook with NO CI job, so it is the one gate
-        that can silently not run. Any Markdown change must have had
-        `pre-commit run markdownlint --all-files` run locally — that includes
-        `AGENTS.md` and `CHANGELOG.md`, not only files under `docs/`.
+      instructions: >-
+        markdownlint runs as a pre-commit hook with NO CI job, so it is the one
+        gate in this repo that can silently not run. Any Markdown change must
+        have had `pre-commit run markdownlint --all-files` run locally — that
+        includes `AGENTS.md` and `CHANGELOG.md`, not only files under `docs/`.
+        The hook pins markdownlint-cli v0.49.1 and the repo carries
+        `.markdownlint.json`; do not flag rules that configuration does not
+        enable.
 
     - path: "docs/**/*.md"
-      instructions: |
-        `docs/STATUS.md` is the single source of truth for counts and state;
-        flag any number elsewhere that contradicts it. Docs are the spec, so a
-        behaviour change with an untouched spec is a finding. Claims of the form
-        "X is undocumented" decay — flag them unless a page reference is cited.
-        The accuracy ledger is append-mostly: flag a superseded claim that was
-        edited in place rather than marked resolved.
+      instructions: >-
+        Docs are the SPEC here, not a changelog. `docs/STATUS.md` is the single
+        source of truth for counts and subsystem state; flag any number
+        elsewhere that contradicts it. A behaviour change with an untouched spec
+        is a finding. Claims of the form "X is undocumented" decay — flag them
+        unless a page reference is cited. `docs/accuracy-ledger.md` is
+        append-mostly: flag a superseded claim that was edited in place instead
+        of being marked resolved, since the record of wrong turns is the point.
 
     - path: "docs/adr/**"
-      instructions: |
+      instructions: >-
         ADRs are immutable once accepted. A superseded ADR must be replaced by a
         NEW numbered ADR that cross-links it, never rewritten in place.
 
     - path: ".github/workflows/**"
-      instructions: |
+      instructions: >-
         Flag any gate whose exit status is piped into `tail`, `grep` or `head` —
-        the pipeline reports the filter's status, so a failing gate reads as
-        passing. This has hidden three real failures here. Also flag
-        `--all-features` on any cargo command: this workspace has
-        mutually-exclusive backend features and CI must use explicit sets.
+        a pipeline reports the FILTER's status, so a failing gate reads as
+        passing. That has hidden three real failures here. Flag `--all-features`
+        on any cargo command: this workspace has mutually-exclusive backend
+        features and CI must use explicit sets. Also flag unpinned third-party
+        actions, missing least-privilege `permissions:` blocks, and secrets
+        echoed into logs.
 
-  # Everything below duplicates a gate this repo already runs, and runs harder.
-  # Leaving them on spends review comments on findings CI has already blocked.
+    - path: "scripts/**"
+      instructions: >-
+        Developer tooling, not shipped product code, but `check_no_roms.sh` and
+        `check_no_conflict_markers.sh` are COMMIT GATES — a false pass there
+        ships a commercial ROM into a public repo. Review those two for
+        correctness of their exit codes above all else.
+
   tools:
-    clippy:
-      enabled: false
+    # --- Enabled: each covers a gap no local gate fills -------------------
     markdownlint:
-      enabled: false
-    # Kept on: these cover ground no local gate does.
+      # ON, unlike clippy below, precisely because markdownlint has NO CI job
+      # here — it is pre-commit only, so it silently does not run for anyone
+      # without the hook installed. This is the one linter CodeRabbit adds
+      # rather than duplicates.
+      enabled: true
+    shellcheck:
+      # Two shell scripts, both commit gates that block committing a ROM.
+      enabled: true
+    ruff:
+      # One Python file: scripts/mirror_n64brew_wiki.py.
+      enabled: true
     actionlint:
+      enabled: true
+    zizmor:
+      # GitHub Actions security auditing; no local equivalent.
       enabled: true
     yamllint:
       enabled: true
     gitleaks:
       enabled: true
-    shellcheck:
+    trufflehog:
       enabled: true
+    osvScanner:
+      # Dependency vulnerabilities. There is no `cargo audit` job in CI, so
+      # this is a genuine gap rather than a duplicate.
+      enabled: true
+    semgrep:
+      enabled: true
+    ast-grep:
+      essential_rules: true
 
-  # This project writes its own docs and tests deliberately — rustdoc is a
-  # blocking gate and every test carries a rationale comment explaining what it
-  # would catch. Generated stand-ins would have to be rewritten.
+    # --- Disabled: duplicates a gate this repo already runs harder --------
+    clippy:
+      # OFF. CI runs `cargo clippy --workspace --all-targets -- -D warnings`
+      # with workspace lints at pedantic + nursery, which is a strict SUPERSET
+      # of default clippy — so this can only repeat findings that already block
+      # the merge, or contradict a lint the workspace deliberately allows.
+      enabled: false
+    opengrep:
+      # OFF: a semgrep fork, enabled above. Running both duplicates findings.
+      enabled: false
+    pylint:
+      enabled: false # redundant with ruff
+    flake8:
+      enabled: false # redundant with ruff
+
+    # --- Disabled: the language or ecosystem is not present here ----------
+    # Footprint is Rust, Markdown, TOML, YAML, shell and one Python file.
+    # Listed explicitly so this file documents the stack rather than silently
+    # inheriting every default-on tool.
+    hadolint:
+      enabled: false # no Dockerfile
+    checkmake:
+      enabled: false # no Makefile
+    detekt:
+      enabled: false # no Kotlin
+    swiftlint:
+      enabled: false # no Swift
+    luacheck:
+      enabled: false # no Lua
+    clang:
+      enabled: false # no first-party C/C++
+    cppcheck:
+      enabled: false
+    pmd:
+      enabled: false # no Java
+    fbinfer:
+      enabled: false
+    checkov:
+      enabled: false # no IaC
+    tflint:
+      enabled: false
+    buf:
+      enabled: false # no protobuf
+    regal:
+      enabled: false # no Rego
+    oasdiff:
+      enabled: false # no OpenAPI
+    sqlfluff:
+      enabled: false # no SQL
+    squawk:
+      enabled: false
+    prismaLint:
+      enabled: false
+    phpstan:
+      enabled: false
+    phpcs:
+      enabled: false
+    phpmd:
+      enabled: false
+    rubocop:
+      enabled: false
+    brakeman:
+      enabled: false
+    biome:
+      enabled: false # no JS/TS
+    oxc:
+      enabled: false
+    reactDoctor:
+      enabled: false
+    emberTemplateLint:
+      enabled: false
+    shopifyThemeCheck:
+      enabled: false
+    smartyLint:
+      enabled: false
+    htmlhint:
+      enabled: false
+    stylelint:
+      enabled: false
+    dotenvLint:
+      enabled: false
+    circleci:
+      enabled: false # GitHub Actions only
+    psscriptanalyzer:
+      enabled: false # no PowerShell
+    blinter:
+      enabled: false # no batch files
+
+  # Suggestions are welcome; a bot COMMITTING is not. Every change here goes
+  # through one conditional gate (fmt + clippy + test + rustdoc + markdownlint +
+  # ROM/conflict checks) and every guard is mutation-checked before it is kept.
+  # A bot-authored commit bypasses both, so the write-side features are off.
   finishing_touches:
     docstrings:
+      # rustdoc runs at `-D warnings` with `missing_docs`, so coverage is
+      # already 100% and generated stand-ins would have to be rewritten: the
+      # doc comments here carry rationale, not restatement.
       enabled: false
     unit_tests:
+      # Every test here carries a comment explaining what it would catch and is
+      # verified to fail when its fix is reverted. A generated test satisfies
+      # neither.
+      enabled: false
+    simplify:
+      # Hot paths are intentionally allocation-free and abstraction-light; an
+      # auto-simplify suggestion is more likely to fight that than help.
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
       enabled: false
 
   pre_merge_checks:
@@ -169,6 +383,11 @@ reviews:
         chore, perf, build, ci.
     description:
       mode: warning
+    docstrings:
+      mode: warning
+      threshold: 80
+    issue_assessment:
+      mode: warning
     custom_checks:
       - name: Oracle number is stated
         mode: warning
@@ -176,28 +395,64 @@ reviews:
           A change to emulation behaviour should state its measured effect on
           n64-systemtest's failing-assertion count, or say explicitly that it
           was not measured. Accuracy claims here are oracle numbers, not
-          self-assessments. Docs-only, tooling and CI changes are exempt.
-      - name: Spec updated with behaviour
+          self-assessments — `docs/STATUS.md` carries the current figure. Pass
+          for docs-only, tooling and CI changes.
+      - name: Docs-as-spec sync
         mode: warning
         instructions: >-
-          A change to a chip's behaviour should touch that chip's doc under
-          docs/ in the same PR, and user-visible changes should appear in
-          CHANGELOG.md under [Unreleased].
+          If this PR changes observable behaviour in a chip crate
+          (rustyn64-cpu, -rsp, -rdp, -audio, -cart, -core) rather than
+          refactoring internals, the matching docs/<subsystem>.md should change
+          in the same PR. Fail if a behaviour change has no corresponding docs
+          change and the PR body does not explain why none is needed.
+      - name: CHANGELOG entry for user-visible changes
+        mode: warning
+        instructions: >-
+          A user-visible change, new feature or user-facing fix should add an
+          entry under [Unreleased] in CHANGELOG.md. Pass for pure-internal
+          refactors, dependency-only bumps with no behaviour change, and
+          CI/tooling-only changes.
+      - name: Measured, never tuned
+        mode: warning
+        instructions: >-
+          Flag any new hardware constant or timing value that is not either
+          (a) cited to a manual page or wiki article, or (b) recorded in
+          docs/accuracy-ledger.md with how it was measured. A constant adjusted
+          until a test ROM passes makes every later result built on it
+          unfalsifiable. This applies to invented BEHAVIOUR too — an incidental
+          state change with no cited authority.
+      - name: unsafe stays out of the chip crates
+        mode: error
+        instructions: >-
+          Every chip crate and rustyn64-core carry #![forbid(unsafe_code)] and
+          the tree has zero `unsafe`. Fail if this PR adds `unsafe` anywhere
+          outside rustyn64-frontend, or removes a forbid(unsafe_code) attribute.
+          A new unsafe block in the frontend must carry an adjacent // SAFETY:
+          comment stating the invariant relied on.
 
 chat:
   auto_reply: true
 
 knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - "docs/architecture.md"
+      - "docs/testing-strategy.md"
+      - "docs/engineering-lessons.md"
+      - "docs/accuracy-ledger.md"
+  # Scoped local rather than auto: this is a public repo, and the hardware
+  # conventions learned here (notably the inverted NaN classification) are
+  # correct for the VR4300 and wrong almost everywhere else. Keeping learnings
+  # local stops them leaking into unrelated reviews.
   learnings:
     scope: local
   issues:
     scope: local
   pull_requests:
     scope: local
-  code_guidelines:
-    enabled: true
-    filePatterns:
-      - "AGENTS.md"
-      - "docs/accuracy-ledger.md"
-      - "docs/engineering-lessons.md"
-      - "CONTRIBUTING.md"
