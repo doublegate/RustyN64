@@ -302,6 +302,8 @@ impl System {
         self.bus.rdp_tick();
         // AI / interface sub-clock advance.
         self.bus.audio_tick();
+        // The PI's asynchronous direct-I/O write finalises on this clock.
+        self.bus.pi_tick();
     }
 }
 

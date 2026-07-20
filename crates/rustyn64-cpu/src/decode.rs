@@ -289,6 +289,30 @@ pub enum Op {
     /// both use it, so a `Reserved` decode blocks every real ROM. See
     /// `docs/cpu.md` and accuracy-ledger D-5.
     Cache,
+    /// A COP0 **CO-class instruction in the `funct` 0x20-0x3F extension range**,
+    /// executed as a no-op.
+    ///
+    /// # Why this is not `Reserved`
+    ///
+    /// n64-systemtest probes for the `emux` emulator by executing
+    /// `COP0 CO funct 0x20` (its `XDETECT`) and reading the result out of a GPR.
+    /// It does this from `init_allocator`, inside `entrypoint` -- **before**
+    /// `main` installs any exception handler. If a real VR4300 raised Reserved
+    /// Instruction there, the suite would derail on every N64 it has ever run
+    /// on, before printing a single line. It does not, so hardware must retire
+    /// these encodings harmlessly.
+    ///
+    /// The range is not a guess: the suite's own constant for the probe is named
+    /// `XDETECT_CODE_EXTENSIONS_20_3F`, i.e. emux claims `funct` 0x20-0x3F as
+    /// extension space precisely because the VR4300 leaves it inert.
+    ///
+    /// Decoding these to `Reserved` is what made the suite appear to hang: the
+    /// RI dispatched to an uninstalled `0x8000_0180`, ran zeros as `NOP`s into
+    /// `.text`, and faulted there instead.
+    ///
+    /// Recorded as an **inference** in the accuracy ledger (C-8), not a manual
+    /// citation -- the writeback behaviour of the target GPR is untested.
+    Cop0Extension,
     /// `CFC1 rt, fs` — read a COP1 **control** register.
     Cfc1,
     /// `CTC1 rt, fs` — write a COP1 **control** register.
@@ -315,6 +339,26 @@ pub enum Op {
     /// **Coprocessor Unusable** when `Status.CU1` is clear rather than Reserved
     /// Instruction. Conflating the two sends the handler the wrong `ExcCode`.
     Cop1Unimplemented,
+    /// Any **COP2** encoding.
+    ///
+    /// The VR4300 has a COP2 unit, so these are architecturally *valid*
+    /// encodings. With `Status.CU2` clear they raise **Coprocessor Unusable**,
+    /// not Reserved Instruction — the same distinction as
+    /// [`Op::Cop1Unimplemented`], and for the same reason.
+    ///
+    /// Decoding them as `Reserved` is what produced n64-systemtest's
+    /// "Exception storm detected. Aborting." during `MFC2/MTC2/DMFC2/DMTC2`:
+    /// the suite expects `ExcCode 11` and got `10` five times running, which
+    /// tripped its recovery limit and truncated the whole run.
+    Cop2,
+    /// A COP1 **arithmetic** operation, format and operation carried in the
+    /// already-decoded fields: `rs` is the format, `funct` the operation, with
+    /// `rt`=ft, `rd`=fs and `sa`=fd.
+    ///
+    /// One variant rather than ~60, because the pipeline dispatches into
+    /// `crate::fpu` on `(fmt, funct)` anyway and a variant per opcode would just
+    /// be a second copy of that table.
+    FpArith,
     /// `TLBR` — read the TLB entry `Index` names into the COP0 registers.
     Tlbr,
     /// `TLBWI` — write the COP0 registers into the entry **`Index`** names.
@@ -544,6 +588,8 @@ const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
 const OP_COP0: u32 = 0o20;
 const OP_COP1: u32 = 0o21;
+/// COP2.
+const OP_COP2: u32 = 0o22;
 const OP_LWC1: u32 = 0o61;
 const OP_LDC1: u32 = 0o65;
 const OP_SWC1: u32 = 0o71;
@@ -790,17 +836,30 @@ pub const fn decode(word: u32) -> Decoded {
                         op: Op::Eret,
                         ..base
                     },
+                    // funct 0x20-0x3F: the emux extension space, inert on
+                    // hardware. See `Op::Cop0Extension`.
+                    0o40..=0o77 => Decoded {
+                        op: Op::Cop0Extension,
+                        ..base
+                    },
                     _ => base,
                 },
                 _ => base,
             }
         }
-        // COP1. The CONTROL moves (T-12-006) and the DATA moves (T-13-001) are
-        // implemented; FP **arithmetic** is not, and the FP load/store forms
-        // have their own primary opcodes below. Everything else in this opcode
-        // decodes to `Cop1Unimplemented` rather than `Reserved`, because the
-        // encodings are valid and must raise Coprocessor Unusable, not Reserved
-        // Instruction.
+        // COP2. Every encoding is valid on the VR4300, so the usability check
+        // in EX decides between executing and Coprocessor Unusable. No COP2
+        // operation is implemented, which is why one arm covers the opcode.
+        OP_COP2 => Decoded {
+            op: Op::Cop2,
+            ..base
+        },
+        // COP1. The CONTROL moves (T-12-006), the DATA moves (T-13-001) and the
+        // S/D arithmetic below are implemented; the remaining formats and the
+        // conversions are not, and the FP load/store forms have their own
+        // primary opcodes. Everything unhandled decodes to `Cop1Unimplemented`
+        // rather than `Reserved`, because the encodings are valid and must raise
+        // Coprocessor Unusable, not Reserved Instruction.
         OP_COP1 => {
             let rs = ((word >> 21) & 31) as u8;
             match rs {
@@ -820,6 +879,23 @@ pub const fn decode(word: u32) -> Decoded {
                 0o02 => Decoded {
                     op: Op::Cfc1,
                     dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                // Format 16 = single, 17 = double. `funct` 0..=3 are
+                // ADD/SUB/MUL/DIV and 5..=7 are ABS/MOV/NEG; `funct` 4 is
+                // `SQRT`, still unwired, and everything above 7 (the
+                // conversions and `C.cond.fmt`) stays `Cop1Unimplemented`.
+                //
+                // **`MOV` matters far more than its size suggests.** It is
+                // funct 6, so admitting only `<= 3` made every `MOV.fmt` a
+                // silent no-op — and the compiler emits one for each FP
+                // argument and each FP return value. A single n64-systemtest
+                // FP thunk contains three, so its operands were stale and its
+                // result never left the callee. That accounted for the whole
+                // `Result after <op>` failure block, which had been read as an
+                // FPU arithmetic fault for nine rounds (ledger C-10).
+                0o20 | 0o21 if matches!(word & 0o77, 0..=3 | 5..=7) => Decoded {
+                    op: Op::FpArith,
                     ..base
                 },
                 0o04 => Decoded {
@@ -1095,5 +1171,117 @@ mod tests {
         assert_eq!(d.op, Op::Sync);
         assert_ne!(d.op, Op::Reserved, "SYNC must not raise");
         assert_eq!(d.dest, 0, "SYNC writes no register");
+    }
+
+    /// COP0 CO `funct` 0x20-0x3F is the **emux extension range** and must retire
+    /// as a no-op, not raise Reserved Instruction.
+    ///
+    /// n64-systemtest probes it from `init_allocator`, inside `entrypoint`,
+    /// **before** `main` installs an exception handler -- so an RI here derails
+    /// the suite before it prints a line. Decoding it to `Reserved` is exactly
+    /// what made the suite appear to hang: the RI dispatched to an uninstalled
+    /// `0x8000_0180`, ran zeros as `NOP`s into `.text`, and faulted there.
+    #[test]
+    fn cop0_co_extension_functs_are_inert_not_reserved() {
+        // The exact word n64-systemtest executes: COP0, rs = CO, funct = 0x20.
+        assert_eq!(decode(0x4280_0060).op, Op::Cop0Extension, "emux XDETECT");
+        // The rest of the documented extension space.
+        for funct in 0x20u32..=0x3F {
+            let word = (0x10 << 26) | (0x10 << 21) | funct;
+            assert_eq!(
+                decode(word).op,
+                Op::Cop0Extension,
+                "COP0 CO funct {funct:#04X} is extension space"
+            );
+        }
+        // Below 0x20 the real CO instructions and the genuinely reserved
+        // encodings are unaffected.
+        assert_eq!(decode((0x10 << 26) | (0x10 << 21) | 0x18).op, Op::Eret);
+        assert_eq!(decode((0x10 << 26) | (0x10 << 21) | 0x02).op, Op::Tlbwi);
+        assert_eq!(
+            decode((0x10 << 26) | (0x10 << 21) | 0x1F).op,
+            Op::Reserved,
+            "funct 0x1F is still reserved -- the range starts at 0x20"
+        );
+    }
+
+    /// **COP2 encodings are valid**, so they must not decode to `Reserved`.
+    ///
+    /// With `Status.CU2` clear they raise Coprocessor Unusable (`ExcCode 11`);
+    /// `Reserved` would raise `10`. n64-systemtest's `MFC2/MTC2/DMFC2/DMTC2`
+    /// test saw `10` five times running, tripped its recovery limit, and
+    /// aborted the entire run with "Exception storm detected".
+    #[test]
+    fn cop2_encodings_are_valid_not_reserved() {
+        // MFC2, DMFC2, CFC2, MTC2, DMTC2, CTC2 -- the `rs` sub-opcodes.
+        for rs in [0o00u32, 0o01, 0o02, 0o04, 0o05, 0o06] {
+            let word = (0o22 << 26) | (rs << 21);
+            assert_eq!(
+                decode(word).op,
+                Op::Cop2,
+                "COP2 rs={rs:#o} is a valid encoding"
+            );
+        }
+    }
+
+    /// COP1 S/D arithmetic decodes to [`Op::FpArith`], not `Cop1Unimplemented`.
+    ///
+    /// The FPU has been implemented in `fpu.rs` since Sprint 3, but nothing
+    /// decoded to it, so the whole unit was unreachable from an instruction
+    /// stream — which is why COP1 accounted for 85% of n64-systemtest's
+    /// failures.
+    #[test]
+    fn cop1_single_and_double_arithmetic_decode_to_fp_arith() {
+        // COP1, fmt, ft, fs, fd, funct
+        let enc = |fmt: u32, funct: u32| {
+            (0o21 << 26) | (fmt << 21) | (2 << 16) | (3 << 11) | (4 << 6) | funct
+        };
+        for fmt in [0o20u32, 0o21] {
+            for funct in 0..=3u32 {
+                let d = decode(enc(fmt, funct));
+                assert_eq!(d.op, Op::FpArith, "fmt {fmt:#o} funct {funct}");
+                assert_eq!(d.rs, fmt as u8, "rs carries the format");
+                assert_eq!(d.rt, 2, "rt = ft");
+                assert_eq!(d.rd, 3, "rd = fs");
+                assert_eq!(d.sa, 4, "sa = fd");
+            }
+        }
+        // funct 4 (SQRT) is not wired yet and must stay unimplemented, NOT
+        // become a wrong ADD.
+        assert_eq!(decode(enc(0o20, 4)).op, Op::Cop1Unimplemented);
+    }
+
+    /// **`MOV.fmt` (funct 6) must decode.** With the arm admitting only
+    /// `funct <= 3` it did not, and executed as a silent no-op.
+    ///
+    /// That is not a cosmetic gap. The compiler emits `MOV.fmt` for every FP
+    /// argument and every FP return value, so a no-op left callees reading
+    /// stale operands and callers reading a register the callee never wrote.
+    /// It cost the whole `Result after <op>` block in n64-systemtest and nine
+    /// rounds of investigation aimed at the FPU (ledger C-10) — the arithmetic
+    /// was correct the entire time.
+    ///
+    /// ABS (5) and NEG (7) share the arm and are covered here for the same
+    /// reason: nothing fails when a move quietly does nothing.
+    #[test]
+    fn abs_mov_and_neg_decode_rather_than_silently_doing_nothing() {
+        let enc = |fmt: u32, funct: u32| (0o21 << 26) | (fmt << 21) | (3 << 11) | (4 << 6) | funct;
+        for fmt in [0o20u32, 0o21] {
+            for funct in 5..=7u32 {
+                let d = decode(enc(fmt, funct));
+                assert_eq!(
+                    d.op,
+                    Op::FpArith,
+                    "fmt {fmt:#o} funct {funct} must not be a no-op"
+                );
+                assert_eq!(d.rd, 3, "rd = fs");
+                assert_eq!(d.sa, 4, "sa = fd");
+            }
+        }
+        // The exact encoding the correlated capture found in the delay slot of
+        // the failing test's `jr $ra`: `MOV.S $f0, $f4`.
+        let d = decode(0x4600_2006);
+        assert_eq!(d.op, Op::FpArith, "MOV.S $f0, $f4 must decode");
+        assert_eq!((d.rs, d.rd, d.sa), (0o20, 4, 0), "fmt=S, fs=4, fd=0");
     }
 }

@@ -258,6 +258,395 @@ than silence.
 
 ---
 
+### C-8 — COP0 CO `funct` 0x20-0x3F retires as a no-op
+
+**Claim.** A COP0 CO-class instruction whose `funct` is in `0x20..=0x3F` retires
+with no architectural effect, rather than raising Reserved Instruction.
+
+**Basis: inference, not a manual citation.** The VR4300 manual does not enumerate
+this range. The inference is from n64-systemtest's own structure: it probes for
+the `emux` emulator by executing `COP0 CO funct 0x20` from `init_allocator`,
+inside `entrypoint` — **before** `main` installs any exception handler. An RI
+there would derail the suite on every N64 it has ever run on, before it printed a
+line. The suite's constant for the probe is named
+`XDETECT_CODE_EXTENSIONS_20_3F`, i.e. emux claims exactly this range as extension
+space, which only works if hardware leaves it inert.
+
+**Untested.** Whether the target GPR is written (and with what) is unknown; we
+leave it untouched, so a probe reads back its prior value and concludes emux is
+absent. That is the correct outcome here but is not evidence about hardware.
+
+**Confirm with:** a hardware run of an `XDETECT` word with a known GPR value.
+
+### C-9 — PI direct-I/O write latch duration is fitted, not measured
+
+**Claim.** A PI direct-I/O write latches its value and shadows every PI-bus read
+for `Bus::PI_WRITE_CYCLES` (100) RCP cycles.
+
+**Documented part.** The *behaviour* is from N64brew *Memory map* (PI external
+bus): writes are asynchronous, the PI latches the value and releases the CPU
+immediately, `PI_STATUS.IOBUSY` reports the in-flight write, further writes are
+ignored, and reads from **any** address return the value being written. The PI
+does not know a device is read-only, so ROM writes follow the same path and are
+dropped by the ROM.
+
+**Undocumented part — the duration.** Hardware finalisation depends on the PI
+domain timing registers (`LAT`/`PWD`/`PGS`/`RLS`), which we do not model.
+n64-systemtest bounds the latch only relatively: visible after 0 decay-loop
+iterations, gone after 110. The constant was chosen by trying values against the
+suite and keeping the best.
+
+**Known-wrong, deliberately.** `cart-writing: Write32, Read32 (same location)`
+still fails on its **second** read, where hardware has finalised and we have not.
+No single constant closes that, because the real duration is not constant. This
+is recorded as a fitted approximation rather than presented as accurate.
+
+**Confirm with:** modelling the PI domain timing registers and deriving the
+finalisation time, then deleting the constant.
+
+### C-10 — FP arithmetic is correct only in round-to-nearest-even
+
+**Claim.** `fpu::{add,sub,mul,div}_{s,d}` compute with Rust's native `+`/`-`/
+`*`/`/`, which round to nearest-even unconditionally.
+
+**Why that is wrong.** The VR4300's `FCSR.RM` selects one of four rounding modes
+(nearest, toward zero, toward +inf, toward -inf), and `FCSR.FS` flushes denormal
+results to zero. Neither is consulted. Every operation whose exact result is not
+representable therefore has a wrong last bit under any mode except `RM = 0`.
+
+**Evidence.** n64-systemtest sweeps rounding modes and reports 63 `Result after
+MUL.S`, 54 `Result after DIV.S`, 39 `Result after ADD.S` failures (and the `.D`
+equivalents) — on operations that *are* wired and do execute.
+
+**Not fixable by wiring.** The arithmetic core itself is mode-blind. `no_std`
+Rust has no `fesetround`, so directed rounding has to be produced explicitly:
+compute exactly in wider precision and round per `RM`, or use a soft-float
+implementation. Both need their own golden vectors.
+
+**Note the asymmetry.** `to_i32`/`to_i64`/`round_f64` already take a `Rounding`
+argument, so the conversions were written mode-aware and the arithmetic was not.
+The gap has existed since Sprint 3 and was invisible because nothing decoded to
+the arithmetic until COP1 was wired.
+
+**A fix was attempted and reverted.** Routing `ADD.S`/`SUB.S`/`MUL.S` through an
+exact `f64` computation rounded per `RM` changed **nothing** the oracle measures
+(2,897 before and after) and made `ADD.S` marginally worse, 39 failures to 40.
+Two lessons, both recorded rather than discarded:
+
+1. The exactness argument (53 significand bits ≥ 2×24+2) holds only in the
+   **normal** range. An `f64` value that is subnormal as an `f32` has already
+   lost bits to the narrower exponent range, so converting it double-rounds. A
+   correct implementation must never leave the target format — i.e. soft-float.
+2. **The rounding mode is not what these tests are failing on.** The hypothesis
+   was plausible and measurably wrong, so the cause of the ~250 `Result after
+   <op>` failures is still unidentified. Do not assume `RM` next time.
+
+The helper (`fpu::round_f64_to_f32`, `next_up_f32`, `next_down_f32`) is retained
+with its tests: it is correct in the normal range and will be needed.
+
+**Measured, and it is not an arithmetic problem at all.** The verbatim failure:
+
+```text
+'COP1: ADD.S' with '(false, Nearest, 0.0, 2e0, Ok((, 2e0)))' failed:
+  a=1.2795344e-28 b=2e0 (0x11223344 vs 0x40000000)
+```
+
+`0x11223344` is the test's **sentinel**, unchanged — the destination is never
+written. And the mode is `Nearest`, so `RM` was never implicated. Both earlier
+hypotheses (unwired operations, exception behaviour) and the rounding hypothesis
+are now all excluded by measurement.
+
+A neighbouring case is more informative still: `Upper bits of 32 bit operation
+(half mode)` reports `0x1111_40C0_0000` against an expected `0x40C0_0000`. There
+the low word **is** correct (`0x40C00000` = 6.0) and the *upper* half of the FGR
+retains its sentinel. So the arithmetic works and the write-back width or path is
+wrong — a 32-bit FP result apparently must not leave the upper half intact.
+
+**Next:** determine why `fd` is unwritten in the main path while the "upper bits"
+case does write. Candidates:
+
+- ~~the result never leaves the FPR because `SWC1` does not store, or the
+  operands are never loaded by `LWC1`~~ — **eliminated**: `LWC1`/`LDC1`/`SWC1`/
+  `SDC1` are all decoded *and* executed (`Pipeline`, the FP load/store arm), so
+  the transfer path exists.
+- the `Cop1Access::Arith` request is dropped between EX and WB, so `fp_arith`
+  never runs for these cases;
+- or it runs and writes, but the test reads the register through a path whose
+  view disagrees — note the failing tuple begins `(false, …)`, and the
+  neighbouring failure is explicitly labelled **"half mode"**, which is what
+  `Status.FR = 0` is called. Under `FR = 0` a 32-bit result and a 64-bit read
+  disagree about which FGR half holds it, and `0x1111_40C0_0000` — correct low
+  word, sentinel upper half — is exactly that shape.
+
+The second and third are distinguishable in one run: dump the FPR immediately
+after an `ADD.S` retires and compare against what the test reads back. **Do not
+assume the third is right because it is the tidiest** — that reasoning has now
+failed nine times in this ticket.
+
+**Targeted run: the arithmetic is CORRECT; the write-back is not.** Breaking on a
+real `ADD.S fd=4, fs=0, ft=2` and reading the raw FGRs afterwards:
+
+```text
+fd_raw = 0x0011_0011_4000_0000   <- low word 0x40000000 = 2.0, correct
+fs_raw = 0x0000_1111_4000_0000
+```
+
+The low word is right. The **upper half retains its sentinel**, and the suite
+expects `0x4000_0000` — matching the `Upper bits of 32 bit operation (half mode)`
+case, which reports `0x1111_40C0_0000` against an expected `0x40C0_0000`. So
+every hypothesis about the *arithmetic* was aimed at the wrong half of the
+register.
+
+**Re-reading the same probe output shows the operands are wrong too.** For the
+case `(false, Nearest, 0.0, 2e0, …)`:
+
+```text
+fs_raw = 0x0000_1111_4000_0000   low = 0x40000000 = 2.0   <- correct operand
+ft_raw = 0x0000_0000_0123_4567   low = 0x01234567         <- a SENTINEL, not 0.0
+```
+
+`ft` never received `0.0`; it still holds a fill pattern. The result was only
+**coincidentally** correct, because `2.0 + 3e-38` rounds to `2.0` — which is
+exactly the kind of accident that makes a broken path look healthy.
+
+So the operand **load** looks implicated as well as the write-back.
+
+**But both conclusions rest on a comparison that may not be valid.** The probe
+captured the *first five* `ADD.S` sites in the run and compared their registers
+against a failure message from a *specific* test case. Nothing correlates the
+two: those `ADD.S` instances may belong to entirely different tests, possibly
+ones that pass. `LWC1` has since been read and is correct
+(`write_s(ft, v)`, preserving the upper half as it must), which is evidence
+against the operand-load theory and a reason to distrust the pairing.
+
+**Treat as established:** the FPU is not validated, and both "the arithmetic is
+correct" and "the operands are wrong" are unproven.
+
+**The probe has to correlate.** Break on the `ADD.S` reached from the failing
+test — identify it by symbol or by the operand values the test names — rather
+than on the first `ADD.S` encountered. Uncorrelated captures produced two
+confident and unfounded conclusions here, one of which was used to justify a code
+change.
+
+**Correlated run: zero hits.** Scanning the whole run for an `ADD.S` whose
+operands are `0.0` and `2.0` — the pair the failing case names — found **none**.
+Taken at face value that says the failing test's `ADD.S` **never executes**, which
+would explain the untouched `0x11223344` sentinel far better than any theory
+about the FPU, and would move the investigation upstream to whatever aborts each
+case before it reaches its instruction.
+
+**One caveat keeps this from being conclusive.** The probe samples `fs`/`ft` when
+the PC *reaches* the `ADD.S`, but the pipeline is five stages deep, so a load
+feeding those registers may still be in flight — a real `ADD.S` with the right
+operands could read as a miss. Confirm by sampling at **retirement** rather than
+fetch, or by counting `ADD.S` executions of any operands and comparing against the
+number of `COP1: ADD.S` cases the suite reports. Only then is "never executes"
+established.
+
+Stated this way deliberately: the two previous conclusions in this entry were
+recorded as facts on comparable evidence and both had to be retracted.
+
+**Falsification test run; the lead is REFUTED.** `ADD.S` is fetched **3,074**
+times against **70** reported `COP1: ADD.S` cases, so the instruction executes
+freely. The zero correlated hits was precisely the pipeline artefact flagged
+above — operands sampled at fetch have not been loaded yet by instructions still
+in flight.
+
+The caveat did its job: the hypothesis died on its own test instead of becoming a
+third retraction. That is the only method in this entry that has worked.
+
+**Where COP1 actually stands.** Excluded by measurement, not argument:
+unwired operations; exception behaviour; rounding mode; a write-back width fix;
+operand-load failure; and now "the instruction never runs". The cause remains
+**unidentified**, and the honest position is that a correlated capture at
+*retirement* — matching the specific failing case — has still not been performed.
+Every shortcut around that has cost a wrong answer.
+
+**A fix was attempted and reverted.** Writing the full 64-bit FGR
+(`write_raw`, zeroing the upper half) moved the failure count by **nothing**
+(2,897 either way) and bypasses the `FR` view — the precise mistake ledger U-7
+records. Under `FR = 0` a `.S` destination is not simply "FGR *fd* low half", so
+`write_raw` cannot be right even where it looks right. The correct change has to
+express what a single-precision *arithmetic* write-back does **through** the
+`FR` view, and that is not yet known.
+
+**Run done. FPR writes do occur**, so the `Arith` request is not being dropped
+wholesale — candidate two is weakened. (Watching all 32 raw FGRs, values change
+during the COP1 phase; pairs appearing to change together are an artefact of
+`step_to_next_edge` advancing several cycles per observation, not aliasing.)
+
+That leaves the `FR = 0` view as the live candidate, but it is **not confirmed**:
+"writes happen somewhere" is much weaker than "the write for *this* `ADD.S` lands
+where the test reads". The next probe must be *targeted*, not global — break on
+the specific `ADD.S`, then read back `fd` through both `read_s` and `read_d` and
+compare with the `0x11223344` the test sees. A global FGR watch cannot answer it,
+which is worth stating because this run looked informative and was not.
+
+### C-10 RESOLVED — the cause is `MOV.S`, and it is not in the FPU at all
+
+The correlated capture at retirement was finally performed, and it identifies the
+cause outright. Two things made it work where nine previous attempts failed:
+
+1. **The correlation trigger is the suite's own progress marker.** Capture arms
+   only after `Running COP1: ADD.S...` appears in the ISViewer stream, so the
+   captured `ADD.S` is provably the failing test's. Every earlier probe took the
+   first `ADD.S` in the run and hoped.
+2. **The capture is of the instruction stream, not of the registers.** Dumping
+   `(pc, word)` either side of the site answered in one run a question that four
+   register-watching probes could not.
+
+The site is `0x8000_5FE4`, and the eight words around it are the whole story:
+
+```text
+80005FD4  46006006   MOV.S $f0, $f12     <- argument 1
+80005FD8  46007086   MOV.S $f2, $f14     <- argument 2
+80005FDC  C424FA10   LWC1  $f4, ...      <- the 0x4B3C614E sentinel
+80005FE0  00000000   nop                 <- the test's BRANCH_INSTRUCTION slot
+80005FE4  46020100   ADD.S $f4, $f0, $f2 <- the instruction under test
+80005FE8  00000000   nop
+80005FEC  03E00008   jr    $ra
+80005FF0  46002006   MOV.S $f0, $f4      <- delay slot: THE RETURN VALUE
+```
+
+`MOV.fmt` is COP1 funct **6**. The decoder admits funct `<= 3` to `Op::FpArith`
+and sends everything else to `Op::Cop1Unimplemented`, which executes as a no-op.
+So **all three `MOV.S` in this one function do nothing**:
+
+- the two operand moves never run, so `$f0`/`$f2` hold whatever a previous test
+  left — which is why the probe saw `$f2 = 0x0000_0000_0123_4567`, a stale fill
+  pattern, and read it as "the operand load is broken";
+- the return move never runs, so the caller reads a `$f0` the callee never wrote.
+  `0x1122_3344` is simply what was in `$f0` at that moment, left by the earlier
+  `full_vs_half_mode` tests. It is **not** a sentinel belonging to this test —
+  the string `0x11223344` does not occur anywhere in `AddS`'s source.
+
+`ADD.S` itself is fine: the trace shows `$f4` going `0x0011_0011_4B3C_614E` →
+`0x0011_0011_4000_0000`, i.e. exactly `2.0`, the expected result. **Every one of
+the ~250 `Result after <op>` failures was reported against a value the tested
+instruction never produced.** The constant `a = 0x11223344` across all 30-odd
+`ADD.S` cases regardless of operands was the tell, and it was visible in the very
+first capture of this entry.
+
+What this retires:
+
+- the `FR = 0` view — the last live candidate — is **excluded**. `Status.FR` is 1
+  here (IPL3 leaves it set), and the leading `false` in the failing tuple is
+  `flush_denorm_to_zero`, **not** `FR`. That misreading survived three rounds.
+- "the arithmetic is correct" is now **confirmed** rather than retracted, on
+  evidence that actually correlates.
+- "the operands are wrong" is confirmed *as an observation* and **misattributed**
+  as a diagnosis: the operands are stale because the moves that set them no-op,
+  not because `LWC1` is broken.
+
+**Method note, since this entry is mostly a record of being wrong.** Nine
+hypotheses were formed by reasoning about the FPU and every one was wrong. The
+tenth was formed by reading the eight instructions the test actually executes,
+and it was right immediately. The prior probes all watched *state* and inferred
+*cause*; this one read the *code*. When a value looks stale, dump the instruction
+stream that was supposed to write it before theorising about the writer.
+
+**Fix:** decode and execute the remaining COP1 funct space — funct 4-7
+(`SQRT`, `ABS`, `MOV`, `NEG`) first, since `MOV` is load-bearing for every
+compiled FP call, then the conversions and `C.cond.fmt`.
+
+### C-11 — the IEEE flags are barely detected, which is what gates the FP traps
+
+**Claim.** `fpu::classify_f32`/`classify_f64` set `invalid`, `div_by_zero` and
+`overflow`, and set `inexact` **only as a side effect of overflow**. `underflow`
+is never set at all.
+
+**Why it matters more than it looks.** Enabled FP traps were implemented (COP1
+`Cause`/`Enable` are compared, `Exception::FloatingPoint` is raised, `fd` is left
+unwritten, the sticky `Flags` are not accumulated, the instruction does not
+retire — all four pinned by mutation-tested unit tests). Against the oracle it
+moved n64-systemtest by **one assertion**, 2,795 → 2,794.
+
+That is not a defect in the trap path; it is the trap path being unreachable. A
+trap fires only when a *raised* condition meets a *set* enable, and `inexact` is
+the condition most of the suite's cases raise. With `inexact` undetected, both
+halves of every such case fail: the untrapped half on
+`FCSR after <op> with exceptions disabled`, and the trapped half by never
+trapping.
+
+The verbatim shape, for `f32::MIN + (-1.0)`:
+
+```text
+'COP1: ADD.S' with '(false, Nearest, -3.4028235e38, -1e0, Ok((inexact, …)))'
+   a = FCSR { flags: ,        causes: "" }
+   b = FCSR { flags: inexact, causes: " inexact" }
+```
+
+The *value* is right; only the flags are missing.
+
+**Why it is not a small fix.** Detecting `inexact` requires knowing the exact
+result, which the native `f32`/`f64` operators discard. For `MUL.S` the exact
+product of two `f32`s fits an `f64` exactly (≤48 significand bits, exponent well
+inside `f64`'s range), so a compare-after-round works. **For `ADD.S`/`SUB.S` it
+does not**: the exact sum of `2^127` and `2^-149` needs ~277 significand bits, so
+the `f64` sum is itself rounded and the comparison silently becomes a guess. A
+correct implementation needs an error-free transformation (2Sum) or a soft-float
+path that never leaves the target format — the same conclusion C-10 reached for
+directed rounding, arrived at from a different direction.
+
+**Recorded rather than fitted.** The tempting move is to declare `inexact` on an
+`f64` round-trip mismatch and take the numbers. That is exactly the "fitted
+constant" this file exists to refuse: it would be right in the normal range,
+wrong in the range that the suite deliberately probes, and every later FP result
+would stop being evidence.
+
+**Not yet handled either:** the unmaskable **unimplemented-operation** cause
+(bit 17). The VR4300 raises it for subnormal operands and results, which this
+FPU computes normally instead; the suite's `expected_unimplemented` cases fail
+for that reason and not because of the enables.
+
+### C-11 RESOLVED — soft-float, and the fix uncovered a second bug
+
+`crates/rustyn64-cpu/src/softfloat.rs` computes both formats and all four
+operations from unpacked `(sign, significand, exponent)` triples in `u128`,
+rounding **once** at the end. Discarded bits are folded into a sticky bit rather
+than dropped, which is what makes `inexact` exact rather than approximate.
+`FCSR.RM` falls out of the same step, closing the rounding-mode half of C-10
+as well.
+
+n64-systemtest: **2,794 → 2,682**.
+
+**How it is known to be right.** The soft-float is checked against an
+independent oracle — Rust's own `f32`/`f64` operators — with the requirement
+that in round-to-nearest its result is *bit-identical* for every case in three
+corpora: 40,000 uniformly random bit patterns (which are mostly extreme
+exponents), 40,000 draws from the ordinary numeric range (where cancellation
+happens), and 20,000 around the subnormal boundary. The flags come from the same
+rounding step as the value, so a value that matches bit-for-bit is real evidence
+that the guard/sticky bookkeeping the flags are read from is right. Testing the
+flags alone would have been self-referential: there is no second implementation
+here for them to disagree with. Rounding-mode results are pinned separately
+against vectors transcribed from n64-systemtest.
+
+**The measurement did not move on the first attempt, and that was the useful
+part.** Wiring the soft-float in produced 2,794 → 2,794, with the suite
+reporting `flags: inexact` but `causes: ""`. The sticky half was surviving and
+the per-operation half was gone — the signature of *a later instruction
+overwriting `Cause`*, not of a flag never raised. The culprit was mine: the
+`ABS`/`MOV`/`NEG` path added in the previous change cleared `FCSR.Cause`, on no
+evidence. Because the compiler emits `MOV.fmt` to move an FP return value, a
+`MOV` sits between almost every arithmetic operation and the `CFC1` that reads
+its result, so it erased exactly the bits the program was about to inspect.
+`MOV`/`ABS`/`NEG` now leave `FCSR` untouched: the architectural rule is that
+`Cause` is written by operations that *can* raise, and these cannot. That alone
+was worth 112 assertions, and it is pinned by a named regression test.
+
+Twice now in this ticket an invented value has cost more than the feature it was
+attached to (the other being ledger U-7's premise). Both were written as
+plausible-looking one-liners with no citation.
+
+**What remains, and it is not flags.** Every surviving `ADD.S` failure is a
+subnormal case: either `Err(())` — the suite expecting the unmaskable
+unimplemented-operation cause — or an `FS = 1` flush-to-zero case whose result
+is rounding-mode dependent. The normal range passes. The dominant remaining
+block across the whole suite is the still-undecoded COP1 funct space:
+`C.cond.fmt` (16 tests × 84 assertions) and the `CVT`/`ROUND`/`TRUNC`/`FLOOR`/
+`CEIL` conversions, together roughly 1,700 of the 2,682.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

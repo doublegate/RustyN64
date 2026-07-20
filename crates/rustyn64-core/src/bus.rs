@@ -76,10 +76,27 @@ pub struct Bus {
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
+    /// RSP DMEM + IMEM as plain memory (`0x0400_0000..0x0400_2000`).
+    ///
+    /// The RSP does not execute yet, but its memory must be **readable**: boot
+    /// code and IPL3 use DMEM as a handoff area, and n64-systemtest reads its
+    /// RDRAM size and ELF offset straight out of it on its second and third
+    /// instructions. A stub returning 0 made it build a memory map from zeros
+    /// and jump into nothing.
+    pub spmem: alloc::boxed::Box<[u8]>,
     /// The `ISViewer` buffer, as guest-visible memory.
     isviewer: alloc::boxed::Box<[u8]>,
     /// Text the guest has flushed through the `ISViewer` channel.
     isviewer_out: alloc::vec::Vec<u8>,
+    /// The value a PI direct-I/O write latched, visible to every PI-bus read
+    /// until the write finalises. See [`Bus::pi_tick`].
+    pi_write_latch: u32,
+    /// RCP cycles remaining before the latched PI write finalises. Zero is idle.
+    pi_write_countdown: u32,
+    /// SP DMA: the SPMEM-side address (bit 12 selects IMEM over DMEM).
+    sp_mem_addr: u32,
+    /// SP DMA: the RDRAM-side address.
+    sp_dram_addr: u32,
     /// The RSP coprocessor.
     pub rsp: Rsp,
     /// The RDP rasterizer.
@@ -115,8 +132,13 @@ impl Default for Bus {
             // `vec![..].into_boxed_slice()` allocates straight on the heap —
             // no 8 MiB stack temporary (which `Box::new([0; N])` would create).
             pi: rustyn64_cart::pi::Pi::new(),
+            spmem: alloc::vec![0u8; Self::SPMEM_LEN].into_boxed_slice(),
             isviewer: alloc::vec![0u8; 0x20 + Self::ISVIEWER_LEN].into_boxed_slice(),
             isviewer_out: alloc::vec::Vec::new(),
+            pi_write_latch: 0,
+            pi_write_countdown: 0,
+            sp_mem_addr: 0,
+            sp_dram_addr: 0,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
@@ -134,6 +156,41 @@ impl Bus {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Advance the PI's asynchronous write by one RCP cycle.
+    ///
+    /// # Why a PI write is not immediate
+    ///
+    /// From N64brew *Memory map* (PI external bus):
+    ///
+    /// > All writes are performed **asynchronously** by the PI. Making a write
+    /// > in this area will in fact just cause the PI to latch the value
+    /// > internally, and release the VR4300 immediately. The write will then
+    /// > happen in background. [...] While a write is ongoing, further writes
+    /// > are ignored, and reads (from any address) return the 32-bit value that
+    /// > is being written.
+    ///
+    /// The PI does not know a device is read-only, so a write into ROM follows
+    /// the same path and is simply dropped by the ROM — which is why a value
+    /// written to cart ROM is briefly readable and then gone.
+    ///
+    /// # The duration is bounded by the oracle, not derived from hardware
+    ///
+    /// How long finalisation takes depends on the PI domain timing registers
+    /// (`LAT`/`PWD`/`PGS`/`RLS`), which are not modelled. n64-systemtest bounds
+    /// it only *relatively*: the latched value must still be visible after 0
+    /// loop iterations and gone after 110. [`Bus::PI_WRITE_CYCLES`] sits inside
+    /// those bounds; it is **not** a hardware measurement. Accuracy ledger C-9.
+    pub const fn pi_tick(&mut self) {
+        if self.pi_write_countdown > 0 {
+            self.pi_write_countdown -= 1;
+        }
+    }
+
+    /// Is a PI direct-I/O write still in flight?
+    const fn pi_io_busy(&self) -> bool {
+        self.pi_write_countdown > 0
     }
 
     /// Step the RSP against this bus's narrow [`RspBus`] view.
@@ -172,6 +229,51 @@ impl Bus {
 
     /// Map a CPU physical address into RDRAM (`0..RDRAM_SIZE`), or `None` if it
     /// targets a memory-mapped register region instead.
+    /// Base of RSP DMEM. IMEM follows at `+0x1000`.
+    pub const SPMEM_BASE: u32 = 0x0400_0000;
+
+    /// RCP cycles a PI direct-I/O write stays latched before finalising.
+    ///
+    /// **This number is fitted, not measured.** Hardware finalisation depends on
+    /// the PI domain timing registers (`LAT`/`PWD`/`PGS`/`RLS`), which are not
+    /// modelled; n64-systemtest bounds the latch only relatively (visible after
+    /// 0 decay-loop iterations, gone after 110). 100 was the best of the values
+    /// tried against the suite.
+    ///
+    /// Treat that provenance as a warning, not a credential. The suite still
+    /// fails `Write32, Read32 (same location)` on its **second** read, where
+    /// hardware has finalised and we have not — a gap no single constant closes,
+    /// because the real duration is not constant. Modelling the domain registers
+    /// is the actual fix. Accuracy ledger C-9.
+    pub const PI_WRITE_CYCLES: u32 = 100;
+
+    /// `SP_MEM_ADDR` (`0x0404_0000`) — the SPMEM side of an SP DMA.
+    pub const SP_MEM_ADDR: u32 = 0x0404_0000;
+    /// `SP_DRAM_ADDR` (`0x0404_0004`) — the RDRAM side.
+    pub const SP_DRAM_ADDR: u32 = 0x0404_0004;
+    /// `SP_RD_LEN` (`0x0404_0008`) — **write triggers** RDRAM to SPMEM.
+    pub const SP_RD_LEN: u32 = 0x0404_0008;
+    /// `SP_WR_LEN` (`0x0404_000C`) — **write triggers** SPMEM to RDRAM.
+    pub const SP_WR_LEN: u32 = 0x0404_000C;
+
+    /// `SP_STATUS` (`0x0404_0010`).
+    pub const SP_STATUS: u32 = 0x0404_0010;
+
+    /// `SP_STATUS.halt` (bit 0).
+    ///
+    /// **Set at power-on.** The RSP comes out of reset halted and idles until
+    /// the CPU clears this bit; software reads `SP_STATUS` expecting to find it
+    /// already halted rather than racing a running RSP. n64-systemtest's
+    /// `StartupTest` checks exactly this and reads `0x1`.
+    pub const SP_STATUS_HALT: u32 = 1 << 0;
+    /// DMEM + IMEM, 4 KiB each.
+    pub const SPMEM_LEN: usize = 0x2000;
+
+    /// Is this address in RSP DMEM/IMEM?
+    const fn is_spmem(addr: u32) -> bool {
+        addr >= Self::SPMEM_BASE && addr < Self::SPMEM_BASE + Self::SPMEM_LEN as u32
+    }
+
     /// Base of the **`ISViewer`** debug window, in cart address space.
     ///
     /// Not real N64 hardware — it is a flashcart/emulator convention that
@@ -193,15 +295,115 @@ impl Bus {
         addr >= Self::ISVIEWER_BASE && addr < Self::ISVIEWER_BASE + 0x20 + Self::ISVIEWER_LEN as u32
     }
 
+    /// The raw `ISViewer` backing memory, for diagnostics.
+    #[must_use]
+    pub fn isviewer_raw(&self) -> &[u8] {
+        &self.isviewer
+    }
+
     /// Everything the guest has written to the `ISViewer` channel.
     #[must_use]
     pub fn isviewer_output(&self) -> &[u8] {
         &self.isviewer_out
     }
 
+    /// Is this address on the **PI external bus** — the memory-mapped window
+    /// through which the CPU reaches cart ROM, SRAM and `FlashRAM`?
+    ///
+    /// Ranges from N64brew *Memory map*: `0x0500_0000-0x1FBF_FFFF` and
+    /// `0x1FD0_0000-0x7FFF_FFFF`. Addresses outside them are DMA-only.
+    const fn is_pi_bus(addr: u32) -> bool {
+        matches!(addr, 0x0500_0000..=0x1FBF_FFFF | 0x1FD0_0000..=0x7FFF_FFFF)
+    }
+
+    /// Map a PI-bus address through the **16-bit-bus off-by-two**.
+    ///
+    /// The PI external bus is 16 bits wide and the RCP ignores access size, so
+    /// every VR4300 read becomes two 16-bit bus reads: the MSB at the CPU's
+    /// address with bit 0 ignored, then the LSB at `address + 2`. The RCP thus
+    /// returns the word starting at `addr & !1`, while the CPU selects its byte
+    /// lane assuming a word at `addr & !3`. **That two-byte disagreement is the
+    /// bug**, and it is hardware behaviour, not an approximation:
+    ///
+    /// > effectively a 16-bit read at `0x1000'0002` returns the 16-bit word at
+    /// > `0x1000'0004`
+    /// > — N64brew, *Memory map*, PI external bus
+    ///
+    /// Working it through, `byte = (addr & !1) + (addr & 3)`, which collapses to
+    /// "add two when bit 1 is set". A halfword load needs no special case
+    /// because it is issued as two byte reads and both land correctly; a **word**
+    /// load must bypass this entirely, which is why [`Bus::read_u32`] reads the
+    /// PI window raw.
+    const fn pi_bus_byte(addr: u32) -> u32 {
+        if addr & 2 != 0 {
+            addr.wrapping_add(2)
+        } else {
+            addr
+        }
+    }
+
     /// Is this address in the PI register block?
     const fn is_pi_register(addr: u32) -> bool {
         addr >= rustyn64_cart::pi::PI_BASE && addr < rustyn64_cart::pi::PI_BASE + 0x34
+    }
+
+    /// Perform an SP DMA between RDRAM and SPMEM.
+    ///
+    /// # The length encoding
+    ///
+    /// `SP_RD_LEN`/`SP_WR_LEN` are **not** a plain byte count. The word packs
+    /// three fields (N64brew, *RSP Interface*):
+    ///
+    /// | Bits | Field | Meaning |
+    /// | --- | --- | --- |
+    /// | 11:0 | `length` | bytes per row, minus one |
+    /// | 19:12 | `count` | number of rows, minus one |
+    /// | 31:20 | `skip` | bytes skipped in **RDRAM** between rows |
+    ///
+    /// Treating the whole word as a byte count transfers megabytes for a
+    /// routine 8-byte copy, and reading only bits 11:0 silently drops every row
+    /// after the first — which is the failure mode for anything that DMAs a 2D
+    /// block, i.e. most microcode.
+    ///
+    /// `skip` applies to the RDRAM side only; the SPMEM side is contiguous and
+    /// **wraps within its 4 KiB half**, since `SP_MEM_ADDR` bit 12 selects IMEM
+    /// and the address field is only 12 bits wide.
+    pub fn sp_dma(&mut self, len_word: u32, to_dram: bool) {
+        // Both counts are stored minus one, so a zero field means one unit.
+        // Rows are a multiple of 8 bytes on hardware.
+        let row = ((len_word & 0xFFF) + 1) & !7;
+        let rows = ((len_word >> 12) & 0xFF) + 1;
+        let skip = (len_word >> 20) & 0xFFF;
+
+        // Bit 12 picks IMEM; the offset itself is 12 bits and wraps within
+        // whichever half was selected.
+        let half = (self.sp_mem_addr & 0x1000) as usize;
+        let mut mem = (self.sp_mem_addr & 0xFFF) as usize;
+        let mut dram = self.sp_dram_addr & 0x00FF_FFF8;
+
+        for _ in 0..rows {
+            for _ in 0..row {
+                let Some(off) = Self::rdram_offset(dram) else {
+                    continue;
+                };
+                // Wrap within the selected 4 KiB half, never across it.
+                let m = half | (mem & 0xFFF);
+                if to_dram {
+                    self.rdram[off] = self.spmem.get(m).copied().unwrap_or(0);
+                } else if let Some(dst) = self.spmem.get_mut(m) {
+                    *dst = self.rdram[off];
+                }
+                mem += 1;
+                dram = dram.wrapping_add(1);
+            }
+            // `skip` advances the RDRAM pointer between rows; SPMEM stays
+            // contiguous.
+            dram = dram.wrapping_add(skip);
+        }
+
+        // Hardware leaves the registers past the transfer, as the PI does.
+        self.sp_mem_addr = (self.sp_mem_addr & 0x1000) | ((mem & 0xFFF) as u32);
+        self.sp_dram_addr = dram;
     }
 
     /// Write a PI register and perform any transfer it starts.
@@ -257,8 +459,27 @@ impl CpuBus for Bus {
         }
         if Self::is_pi_register(addr) {
             // PI registers are 32-bit; a byte read selects within the word.
-            let w = self.pi.read(addr);
+            let mut w = self.pi.read(addr);
+            // `IOBUSY` covers the asynchronous direct-I/O write as well as DMA;
+            // software polls it to know when a cart write has landed.
+            if addr & !3 == rustyn64_cart::pi::PI_STATUS && self.pi_io_busy() {
+                w |= rustyn64_cart::pi::STATUS_IO_BUSY;
+            }
             return (w >> (8 * (3 - (addr & 3)))) as u8;
+        }
+        if Self::is_spmem(addr) {
+            return self
+                .spmem
+                .get((addr - Self::SPMEM_BASE) as usize)
+                .copied()
+                .unwrap_or(0);
+        }
+        // SP_STATUS. The RSP is an LLE-shaped stub (see `docs/STATUS.md`), so
+        // only the power-on `halt` bit is modelled -- enough for software to see
+        // a halted RSP, which is the true state here, rather than a zero that
+        // claims it is running.
+        if addr & !3 == Self::SP_STATUS {
+            return (Self::SP_STATUS_HALT >> (8 * (3 - (addr & 3)))) as u8;
         }
         if Self::is_isviewer(addr) {
             // Readable as ordinary memory, which is what makes the suite's
@@ -271,9 +492,48 @@ impl CpuBus for Bus {
                 .copied()
                 .unwrap_or(0);
         }
+        if Self::is_pi_bus(addr) {
+            // A write in flight shadows the whole bus: reads from ANY address
+            // return the value being written, not the device's data.
+            if self.pi_io_busy() {
+                return self.pi_write_latch.to_be_bytes()[(addr & 3) as usize];
+            }
+            return self.cart.pi_read(Self::pi_bus_byte(addr));
+        }
         // TODO(T-CORE-01): decode the remaining RCP register windows
         // (SP/DP/VI/AI/SI/RI/MI) and the PIF ROM/RAM.
         self.cart.pi_read(addr)
+    }
+
+    /// Read an aligned big-endian word.
+    ///
+    /// Overridden for the **PI external bus** only. The default composes four
+    /// [`Bus::read_u8`] calls, which would apply the 16-bit-bus off-by-two to
+    /// each byte independently and mangle bytes 2 and 3 of every word. A word
+    /// access puts its own address on the bus, so `addr & !1 == addr` and the
+    /// word is simply the four bytes there.
+    fn read_u32(&mut self, addr: u32) -> u32 {
+        // ISViewer lives INSIDE the PI bus range and is claimed first, exactly
+        // as it is on the byte path. Letting the cart branch win here routes the
+        // debug channel's read-back to ROM and breaks the detection handshake
+        // the suite uses to select it.
+        if Self::is_pi_bus(addr) && !Self::is_isviewer(addr) {
+            if self.pi_io_busy() {
+                return self.pi_write_latch;
+            }
+            return u32::from_be_bytes([
+                self.cart.pi_read(addr),
+                self.cart.pi_read(addr.wrapping_add(1)),
+                self.cart.pi_read(addr.wrapping_add(2)),
+                self.cart.pi_read(addr.wrapping_add(3)),
+            ]);
+        }
+        u32::from_be_bytes([
+            self.read_u8(addr),
+            self.read_u8(addr.wrapping_add(1)),
+            self.read_u8(addr.wrapping_add(2)),
+            self.read_u8(addr.wrapping_add(3)),
+        ])
     }
 
     fn write_u8(&mut self, addr: u32, val: u8) {
@@ -303,6 +563,12 @@ impl CpuBus for Bus {
             }
             return;
         }
+        if Self::is_spmem(addr) {
+            if let Some(b) = self.spmem.get_mut((addr - Self::SPMEM_BASE) as usize) {
+                *b = val;
+            }
+            return;
+        }
         if Self::is_isviewer(addr) {
             if let Some(b) = self.isviewer.get_mut((addr - Self::ISVIEWER_BASE) as usize) {
                 *b = val;
@@ -314,6 +580,38 @@ impl CpuBus for Bus {
     }
 
     fn write_u32(&mut self, addr: u32, val: u32) {
+        // SP DMA registers. Handled here, at word granularity, for the same
+        // reason as the PI: the default byte-wise path would fire four DMAs for
+        // one `sw` to a length register.
+        // A PI direct-I/O write latches and returns immediately; the transfer
+        // finalises in the background. Further writes while one is in flight are
+        // ignored -- not queued.
+        if Self::is_pi_bus(addr) && !Self::is_isviewer(addr) {
+            if !self.pi_io_busy() {
+                self.pi_write_latch = val;
+                self.pi_write_countdown = Self::PI_WRITE_CYCLES;
+            }
+            return;
+        }
+        match addr {
+            Self::SP_MEM_ADDR => {
+                self.sp_mem_addr = val & 0x1FF8;
+                return;
+            }
+            Self::SP_DRAM_ADDR => {
+                self.sp_dram_addr = val & 0x00FF_FFF8;
+                return;
+            }
+            Self::SP_RD_LEN => {
+                self.sp_dma(val, false);
+                return;
+            }
+            Self::SP_WR_LEN => {
+                self.sp_dma(val, true);
+                return;
+            }
+            _ => {}
+        }
         if addr == Self::ISVIEWER_WRITE_LEN {
             // Flushing is triggered by the LENGTH write, not by the buffer
             // writes -- so the guest assembles a whole line and then publishes
@@ -671,5 +969,211 @@ mod pi_tests {
         let mut bus = Bus::new();
         bus.write_u32(Bus::ISVIEWER_WRITE_LEN, 0xFFFF_FFFF);
         assert_eq!(bus.isviewer_output().len(), Bus::ISVIEWER_LEN);
+    }
+
+    /// **The RSP powers up halted.** Reading `SP_STATUS` as zero claims a
+    /// running RSP, which is false; n64-systemtest's `StartupTest` reads `0x1`.
+    #[test]
+    fn sp_status_reports_the_rsp_halted_at_power_on() {
+        let mut bus = Bus::new();
+        assert_eq!(
+            bus.read_u32(Bus::SP_STATUS) & Bus::SP_STATUS_HALT,
+            Bus::SP_STATUS_HALT,
+            "the RSP idles halted until the CPU clears it"
+        );
+    }
+
+    /// **`SP_RD_LEN` moves RDRAM into SPMEM**, and the length word is not a
+    /// plain byte count: bits 11:0 are bytes-per-row minus one.
+    #[test]
+    fn an_sp_dma_moves_rdram_into_spmem() {
+        let mut bus = Bus::new();
+        for (i, b) in bus.rdram[0x100..0x108].iter_mut().enumerate() {
+            *b = 0xA0 + i as u8;
+        }
+        bus.write_u32(Bus::SP_DRAM_ADDR, 0x100);
+        bus.write_u32(Bus::SP_MEM_ADDR, 0);
+        bus.write_u32(Bus::SP_RD_LEN, 7); // 8 bytes, one row
+        assert_eq!(
+            &bus.spmem[0..8],
+            &[0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7]
+        );
+    }
+
+    /// `SP_WR_LEN` is the other direction — SPMEM into RDRAM.
+    #[test]
+    fn an_sp_dma_moves_spmem_into_rdram() {
+        let mut bus = Bus::new();
+        for (i, b) in bus.spmem[0..8].iter_mut().enumerate() {
+            *b = 0x50 + i as u8;
+        }
+        bus.write_u32(Bus::SP_DRAM_ADDR, 0x200);
+        bus.write_u32(Bus::SP_MEM_ADDR, 0);
+        bus.write_u32(Bus::SP_WR_LEN, 7);
+        assert_eq!(
+            &bus.rdram[0x200..0x208],
+            &[0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57]
+        );
+    }
+
+    /// **`count` and `skip` are real fields, not padding.** A 2D block copy
+    /// moves `count + 1` rows and steps the RDRAM pointer by `skip` between
+    /// them, while SPMEM stays contiguous. Reading only bits 11:0 silently
+    /// drops every row after the first.
+    #[test]
+    fn an_sp_dma_honours_the_count_and_skip_fields() {
+        let mut bus = Bus::new();
+        // Two rows of 8, separated by an 8-byte gap in RDRAM.
+        for i in 0..8 {
+            bus.rdram[0x300 + i] = 0x10 + i as u8;
+            bus.rdram[0x310 + i] = 0x20 + i as u8;
+        }
+        bus.write_u32(Bus::SP_DRAM_ADDR, 0x300);
+        bus.write_u32(Bus::SP_MEM_ADDR, 0);
+        // length = 7 (8 bytes), count = 1 (two rows), skip = 8.
+        bus.write_u32(Bus::SP_RD_LEN, 7 | (1 << 12) | (8 << 20));
+        assert_eq!(
+            &bus.spmem[0..8],
+            &[0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17]
+        );
+        assert_eq!(
+            &bus.spmem[8..16],
+            &[0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27],
+            "the second row must land contiguously in SPMEM"
+        );
+    }
+
+    /// `SP_MEM_ADDR` bit 12 selects **IMEM**, and the 12-bit offset wraps within
+    /// whichever half was chosen rather than spilling across into the other.
+    #[test]
+    fn sp_mem_addr_bit_12_selects_imem() {
+        let mut bus = Bus::new();
+        bus.rdram[0x400] = 0x99;
+        bus.write_u32(Bus::SP_DRAM_ADDR, 0x400);
+        bus.write_u32(Bus::SP_MEM_ADDR, 0x1000); // IMEM
+        bus.write_u32(Bus::SP_RD_LEN, 7);
+        assert_eq!(bus.spmem[0x1000], 0x99, "landed in IMEM");
+        assert_eq!(bus.spmem[0], 0, "and NOT in DMEM");
+    }
+
+    /// **The PI external bus is 16 bits wide and the RCP ignores access size**,
+    /// so a byte or halfword read returns data two bytes further on than the
+    /// address asked for, while a word read does not. This is a hardware bug we
+    /// must reproduce, not an approximation.
+    ///
+    /// n64-systemtest pins all three against a ROM beginning
+    /// `01 23 45 67 89 AB CD EF`.
+    #[test]
+    fn a_pi_bus_sub_word_read_lands_two_bytes_late() {
+        let mut bus = Bus::new();
+        // A `.z64` header, then a byte-index pattern from 0x40 on.
+        let mut rom = alloc::vec![0u8; 0x1000];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        for (i, b) in rom.iter_mut().enumerate().skip(0x40) {
+            *b = (i & 0xFF) as u8;
+        }
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("valid z64");
+        let base = 0x1000_0040u32;
+
+        // A WORD read is unaffected: the access puts its own address on the bus.
+        assert_eq!(
+            bus.read_u32(base),
+            0x4041_4243,
+            "a word read is the four bytes at its own address"
+        );
+
+        // A BYTE read at offset 2 returns the byte at offset 4.
+        assert_eq!(bus.read_u8(base + 2), 0x44, "offset 2 reads byte 4");
+        assert_eq!(bus.read_u8(base + 3), 0x45, "offset 3 reads byte 5");
+        // ...but offsets 0 and 1 are unaffected: bit 1 is clear.
+        assert_eq!(bus.read_u8(base), 0x40);
+        assert_eq!(bus.read_u8(base + 1), 0x41);
+
+        // A HALFWORD needs no special case -- it is two byte reads, and both
+        // land correctly by the same rule.
+        let hi = (u16::from(bus.read_u8(base + 2)) << 8) | u16::from(bus.read_u8(base + 3));
+        assert_eq!(hi, 0x4445, "halfword at offset 2 reads offset 4");
+    }
+
+    /// The quirk is confined to the PI window. RDRAM must be untouched, or every
+    /// ordinary load in the machine shifts by two bytes.
+    #[test]
+    fn the_pi_off_by_two_does_not_leak_into_rdram() {
+        let mut bus = Bus::new();
+        for (i, b) in bus.rdram[0..8].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        assert_eq!(bus.read_u8(0x0000_0002), 2, "RDRAM is NOT shifted");
+        assert_eq!(bus.read_u32(0x0000_0000), 0x0001_0203);
+    }
+
+    /// **A PI direct-I/O write latches and shadows the whole bus.** While it is
+    /// in flight, reads from *any* PI address return the value being written --
+    /// including from ROM, which the PI has no way of knowing is read-only.
+    #[test]
+    fn a_pi_write_is_latched_and_shadows_reads_until_it_finalises() {
+        let mut bus = Bus::new();
+        let mut rom = alloc::vec![0u8; 0x1000];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        for (i, b) in rom.iter_mut().enumerate().skip(0x40) {
+            *b = (i & 0xFF) as u8;
+        }
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("valid z64");
+        let base = 0x1000_0040u32;
+        assert_eq!(bus.read_u32(base), 0x4041_4243, "ROM before the write");
+
+        bus.write_u32(base, 0xBADC_0FFE);
+        assert_eq!(
+            bus.read_u32(base),
+            0xBADC_0FFE,
+            "the latched value is read back"
+        );
+        assert_eq!(
+            bus.read_u32(base + 0x100),
+            0xBADC_0FFE,
+            "and shadows a DIFFERENT address too -- it is the bus, not the cell"
+        );
+
+        // ...and it decays: the ROM value returns once the write finalises.
+        for _ in 0..Bus::PI_WRITE_CYCLES {
+            bus.pi_tick();
+        }
+        assert_eq!(
+            bus.read_u32(base),
+            0x4041_4243,
+            "ROM is back; ROM ignored the write"
+        );
+    }
+
+    /// `PI_STATUS.IOBUSY` reports the asynchronous write, which is how software
+    /// knows when a cart write has landed.
+    #[test]
+    fn a_pi_write_sets_io_busy_until_it_finalises() {
+        let mut bus = Bus::new();
+        let st = rustyn64_cart::pi::PI_STATUS;
+        assert_eq!(bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY, 0);
+        bus.write_u32(0x1000_0000, 0xDEAD_BEEF);
+        assert_ne!(
+            bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY,
+            0,
+            "IOBUSY is set while the write is in flight"
+        );
+        for _ in 0..Bus::PI_WRITE_CYCLES {
+            bus.pi_tick();
+        }
+        assert_eq!(bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY, 0);
+    }
+
+    /// A second write while one is in flight is **ignored**, not queued.
+    #[test]
+    fn a_pi_write_during_another_is_ignored() {
+        let mut bus = Bus::new();
+        bus.write_u32(0x1000_0000, 0xAAAA_AAAA);
+        bus.write_u32(0x1000_0000, 0xBBBB_BBBB);
+        assert_eq!(
+            bus.read_u32(0x1000_0000),
+            0xAAAA_AAAA,
+            "the FIRST write still owns the bus"
+        );
     }
 }

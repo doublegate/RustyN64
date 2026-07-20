@@ -95,10 +95,39 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | Subsystem | State | Phase |
 | --- | --- | --- |
 | VR4300 integer core, pipeline, delay slots, errata, SysAD | **done** (Sprint 1) | Phase 1 |
-| VR4300 COP0, TLB, exception model | stub | Phase 1 (Sprint 2) |
-| VR4300 COP1 (FPU), golden-log 0-diff | stub | Phase 1 (Sprint 3) |
+| VR4300 COP0, TLB, exception model | **done** (Sprint 2) | Phase 1 |
+| VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
+| CPU golden-log 0-diff | not started — no reference trace captured | Phase 1 (Sprint 3) |
 | VR4300 I/D caches | stub | Phase 1 (Sprint 2, to observable depth) |
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
+
+**What "partial" means for COP1.** The register file (`FR` views), the control
+registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, and `ABS`/`MOV`/`NEG`
+decode and execute. Two things do **not** work, and neither is visible
+from a green `cargo test`:
+
+- **Most of the COP1 funct space is still undecoded**, and this is now the
+  dominant blocker by a wide margin: `C.cond.fmt` (the 16 compares) and the
+  `CVT`/`ROUND`/`TRUNC`/`FLOOR`/`CEIL` conversions are implemented in `fpu.rs`
+  but never reached, because decode admits only `funct 0..=3` and `5..=7`.
+  Together they are roughly **1,700** of the 2,682 remaining failures.
+- **The unmaskable unimplemented-operation cause (bit 17) is not produced.** The
+  VR4300 raises it for subnormal operands and results; this FPU computes them
+  normally instead. Every surviving `ADD.S` failure is one of these, or an
+  `FS = 1` flush-to-zero case.
+
+What **is** done: the arithmetic runs on a soft-float core
+(`crates/rustyn64-cpu/src/softfloat.rs`) that produces exact IEEE flags and
+honours all four `FCSR.RM` modes, verified bit-for-bit against Rust's native
+operators over 100,000 cases; and enabled FP traps raise
+`Exception::FloatingPoint`, leave `fd` unwritten, do not accumulate the sticky
+`Flags`, and do not retire.
+
+`SQRT` (funct 4), the conversions and the `C.cond.fmt` compares are implemented
+in `fpu.rs` but **not yet decoded**, so they remain unreachable. `ABS`, `MOV`
+and `NEG` were in that list until they were found to be the cause of ~100
+failures — a *decoded-but-no-op* instruction is invisible to `cargo test`, and
+`MOV` in particular is emitted by the compiler for every FP call boundary.
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
@@ -142,7 +171,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | blocked on COP0/COP1/exceptions (T-11-009, Sprint 2) |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,682 failing** — next: the undecoded COP1 funct space (compares + conversions, ~1,700 of them) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

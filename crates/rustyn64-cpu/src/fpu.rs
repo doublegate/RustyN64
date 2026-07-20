@@ -5,22 +5,23 @@
 //! [`crate::cop1`] (the control registers) so each can be tested without the
 //! others.
 //!
-//! # Rounding — and where it does *not* yet apply
+//! # Rounding
 //!
 //! `FCSR.RM` selects the mode (UM §7.2.4): 0 nearest-even, 1 toward zero,
 //! 2 toward +∞, 3 toward −∞.
 //!
-//! **The conversions honour it; the arithmetic does not.** [`round_f64`] and the
-//! integer conversions take a [`Rounding`] explicitly, but `add_*`, `sub_*`,
-//! `mul_*` and `div_*` use Rust's `f32`/`f64` operators, which are nearest-even
-//! only. So a program that sets `FCSR.RM` to toward-zero and then adds will get
-//! a nearest-even result here and a toward-zero one on hardware.
+//! **Every operation here honours it**, arithmetic included. The four
+//! arithmetic operations are adapters over [`crate::softfloat`], which takes
+//! the mode as a parameter and rounds exactly once; the conversions take a
+//! [`Rounding`] directly.
 //!
-//! That gap is **stated rather than implied**, because an earlier version of
-//! this comment claimed the modes were applied throughout while the arithmetic
-//! ignored them — see `docs/engineering-lessons.md` §3.3c. Closing it needs
-//! either soft-float arithmetic or per-operation re-rounding of an
-//! exactly-computed result; it is accuracy-ledger **U-8**.
+//! This paragraph has been wrong in both directions and is worth reading
+//! carefully before it is edited again. It first claimed the modes applied
+//! throughout while the arithmetic ignored them; it was then corrected to say
+//! the arithmetic could not honour them, which became false when the soft-float
+//! path landed. See `docs/engineering-lessons.md` §3.3c — the rule is that a
+//! comment asserting *what the code does* goes stale silently, because no test
+//! fails when it is wrong.
 //!
 //! # What is deliberately absent
 //!
@@ -102,21 +103,16 @@ pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
 ///
 /// # Completeness
 ///
-/// **Not all five are fully modelled yet**, and a caller must not assume they
-/// are:
+/// All five are modelled for the four arithmetic operations, which compute
+/// through [`crate::softfloat`] and so have the exact pre-rounding result
+/// available. `inexact` and `underflow` were the two that previously never set
+/// for ordinary rounding — accuracy-ledger C-11 — and detecting them is
+/// precisely why that module exists.
 ///
-/// | Flag | State |
-/// | --- | --- |
-/// | `invalid` | complete — signalling NaNs and undefined forms |
-/// | `div_by_zero` | complete |
-/// | `overflow` | complete for arithmetic and narrowing conversions |
-/// | `inexact` | **partial** — set for overflow and conversions, not for ordinary rounding |
-/// | `underflow` | **partial** — set for conversions, not for gradual arithmetic underflow |
-///
-/// Detecting ordinary inexactness and gradual underflow needs the exact result
-/// before rounding, which the hardware float operators do not expose. Recorded
-/// as accuracy-ledger **U-8** alongside the rounding-mode gap rather than left
-/// for a caller to discover by trusting a bit that never sets.
+/// Still **not** produced anywhere: the unmaskable *unimplemented-operation*
+/// cause (bit 17), which the VR4300 raises for subnormal operands and results.
+/// It is not an IEEE exception and is not part of this struct; see
+/// [`CAUSE_UNIMPLEMENTED`].
 ///
 /// Returned rather than written, because `FCSR` belongs to
 /// [`crate::cop1::Cop1Control`] and an arithmetic helper that reached into it
@@ -264,136 +260,102 @@ pub const fn is_snan_f64(v: f64) -> bool {
         && b & 0x0007_FFFF_FFFF_FFFF != 0
 }
 
-/// Classify a finished `f32` result into flags.
-fn classify_f32(r: f32, a: f32, b: f32) -> Flags {
-    let mut f = Flags::NONE;
-    if is_snan_f32(a) || is_snan_f32(b) {
-        f.invalid = true;
+///
+/// Each is a thin adapter over [`crate::softfloat`], which computes the
+/// correctly-rounded result **and** the exact IEEE exception flags in one pass.
+///
+/// # Why these are not `a + b`
+///
+/// The native operators produce the right value and discard everything else:
+/// there is no way to ask them whether the operation was inexact, whether it
+/// underflowed, or what a directed rounding mode would have given. The VR4300
+/// reports all three through `FCSR`, so an FPU built on `+`/`-`/`*`/`/` is
+/// bit-exact on values and silently wrong on flags — which is where accuracy
+/// ledger **C-11** found it, with `inexact` set only as a side effect of
+/// overflow and `underflow` never set at all.
+///
+/// The soft-float path is checked against those same native operators as an
+/// independent oracle: in round-to-nearest its results must be bit-identical
+/// across a large pseudo-random corpus in both formats. See
+/// `softfloat::tests`.
+fn arith_s(a: f32, b: f32, op: u8, mode: Rounding) -> Outcome<f32> {
+    use crate::softfloat::{self, F32};
+    let (a_bits, b_bits) = (u64::from(a.to_bits()), u64::from(b.to_bits()));
+    let out = match op {
+        0 => softfloat::add(a_bits, b_bits, F32, mode),
+        1 => softfloat::sub(a_bits, b_bits, F32, mode),
+        2 => softfloat::mul(a_bits, b_bits, F32, mode),
+        _ => softfloat::div(a_bits, b_bits, F32, mode),
+    };
+    Outcome {
+        value: f32::from_bits(out.bits as u32),
+        flags: out.flags,
     }
-    if r.is_nan() && !a.is_nan() && !b.is_nan() {
-        // A NaN produced from non-NaN inputs is an undefined form: 0/0, ∞-∞,
-        // 0×∞. It is Invalid regardless of the inputs' own quietness.
-        f.invalid = true;
-    }
-    if r.is_infinite() && a.is_finite() && b.is_finite() {
-        f.overflow = true;
-        f.inexact = true;
-    }
-    f
 }
 
-/// Classify a finished `f64` result into flags.
-fn classify_f64(r: f64, a: f64, b: f64) -> Flags {
-    let mut f = Flags::NONE;
-    if is_snan_f64(a) || is_snan_f64(b) {
-        f.invalid = true;
+fn arith_d(a: f64, b: f64, op: u8, mode: Rounding) -> Outcome<f64> {
+    use crate::softfloat::{self, F64};
+    let (a_bits, b_bits) = (a.to_bits(), b.to_bits());
+    let out = match op {
+        0 => softfloat::add(a_bits, b_bits, F64, mode),
+        1 => softfloat::sub(a_bits, b_bits, F64, mode),
+        2 => softfloat::mul(a_bits, b_bits, F64, mode),
+        _ => softfloat::div(a_bits, b_bits, F64, mode),
+    };
+    Outcome {
+        value: f64::from_bits(out.bits),
+        flags: out.flags,
     }
-    if r.is_nan() && !a.is_nan() && !b.is_nan() {
-        f.invalid = true;
-    }
-    if r.is_infinite() && a.is_finite() && b.is_finite() {
-        f.overflow = true;
-        f.inexact = true;
-    }
-    f
 }
 
 /// `ADD.S`.
 #[must_use]
-pub fn add_s(a: f32, b: f32) -> Outcome<f32> {
-    let value = a + b;
-    Outcome {
-        value,
-        flags: classify_f32(value, a, b),
-    }
+pub fn add_s(a: f32, b: f32, mode: Rounding) -> Outcome<f32> {
+    arith_s(a, b, 0, mode)
 }
 
 /// `SUB.S`.
 #[must_use]
-pub fn sub_s(a: f32, b: f32) -> Outcome<f32> {
-    let value = a - b;
-    Outcome {
-        value,
-        flags: classify_f32(value, a, b),
-    }
+pub fn sub_s(a: f32, b: f32, mode: Rounding) -> Outcome<f32> {
+    arith_s(a, b, 1, mode)
 }
 
 /// `MUL.S`.
 ///
 /// **Does not model the VR4300 multiplication erratum** — see the module docs.
 #[must_use]
-pub fn mul_s(a: f32, b: f32) -> Outcome<f32> {
-    let value = a * b;
-    Outcome {
-        value,
-        flags: classify_f32(value, a, b),
-    }
+pub fn mul_s(a: f32, b: f32, mode: Rounding) -> Outcome<f32> {
+    arith_s(a, b, 2, mode)
 }
 
 /// `DIV.S`.
 #[must_use]
-pub fn div_s(a: f32, b: f32) -> Outcome<f32> {
-    let value = a / b;
-    let mut flags = classify_f32(value, a, b);
-    // Division by zero is its own flag, and only for a finite non-zero
-    // numerator: 0/0 is Invalid (an undefined form), not `DivByZero`.
-    // `a.is_finite()` is load-bearing and was missing: `inf / 0` is NOT a
-    // division-by-zero. IEEE reserves the flag for a **finite** non-zero
-    // numerator, because only there does a zero divisor create an infinity out
-    // of nothing -- `inf / 0` was already infinite. Without the check the
-    // condition disagreed with the comment directly above it.
-    if b == 0.0 && a != 0.0 && a.is_finite() {
-        flags.div_by_zero = true;
-        // ...and it is NOT an overflow, though the result is infinite. The
-        // generic classifier would call it one, so undo that here.
-        flags.overflow = false;
-        flags.inexact = false;
-    }
-    Outcome { value, flags }
+pub fn div_s(a: f32, b: f32, mode: Rounding) -> Outcome<f32> {
+    arith_s(a, b, 3, mode)
 }
 
 /// `ADD.D`.
 #[must_use]
-pub fn add_d(a: f64, b: f64) -> Outcome<f64> {
-    let value = a + b;
-    Outcome {
-        value,
-        flags: classify_f64(value, a, b),
-    }
+pub fn add_d(a: f64, b: f64, mode: Rounding) -> Outcome<f64> {
+    arith_d(a, b, 0, mode)
 }
 
 /// `SUB.D`.
 #[must_use]
-pub fn sub_d(a: f64, b: f64) -> Outcome<f64> {
-    let value = a - b;
-    Outcome {
-        value,
-        flags: classify_f64(value, a, b),
-    }
+pub fn sub_d(a: f64, b: f64, mode: Rounding) -> Outcome<f64> {
+    arith_d(a, b, 1, mode)
 }
 
 /// `MUL.D`.
 #[must_use]
-pub fn mul_d(a: f64, b: f64) -> Outcome<f64> {
-    let value = a * b;
-    Outcome {
-        value,
-        flags: classify_f64(value, a, b),
-    }
+pub fn mul_d(a: f64, b: f64, mode: Rounding) -> Outcome<f64> {
+    arith_d(a, b, 2, mode)
 }
 
 /// `DIV.D`.
 #[must_use]
-pub fn div_d(a: f64, b: f64) -> Outcome<f64> {
-    let value = a / b;
-    let mut flags = classify_f64(value, a, b);
-    // See `div_s`: a finite non-zero numerator, not merely a non-NaN one.
-    if b == 0.0 && a != 0.0 && a.is_finite() {
-        flags.div_by_zero = true;
-        flags.overflow = false;
-        flags.inexact = false;
-    }
-    Outcome { value, flags }
+pub fn div_d(a: f64, b: f64, mode: Rounding) -> Outcome<f64> {
+    arith_d(a, b, 3, mode)
 }
 
 /// `ABS.S` — clears the sign bit.
@@ -799,9 +761,9 @@ mod tests {
         assert!(!is_snan_f32(qnan), "quiet bit set");
         assert!(!is_snan_f32(f32::INFINITY), "infinity is not a NaN");
 
-        assert!(add_s(snan, 1.0).flags.invalid);
+        assert!(add_s(snan, 1.0, Rounding::Nearest).flags.invalid);
         assert!(
-            !add_s(qnan, 1.0).flags.invalid,
+            !add_s(qnan, 1.0, Rounding::Nearest).flags.invalid,
             "a quiet NaN propagates quietly"
         );
     }
@@ -814,8 +776,8 @@ mod tests {
         let qnan = f64::from_bits(0x7FF8_0000_0000_0001);
         assert!(is_snan_f64(snan));
         assert!(!is_snan_f64(qnan));
-        assert!(add_d(snan, 1.0).flags.invalid);
-        assert!(!add_d(qnan, 1.0).flags.invalid);
+        assert!(add_d(snan, 1.0, Rounding::Nearest).flags.invalid);
+        assert!(!add_d(qnan, 1.0, Rounding::Nearest).flags.invalid);
     }
 
     /// **`x/0` is `DivByZero`; `0/0` is Invalid.** They are different flags, and a
@@ -823,12 +785,12 @@ mod tests {
     /// division fault for what is actually an undefined form.
     #[test]
     fn divide_by_zero_and_zero_over_zero_raise_different_flags() {
-        let f = div_s(1.0, 0.0).flags;
+        let f = div_s(1.0, 0.0, Rounding::Nearest).flags;
         assert!(f.div_by_zero, "finite non-zero over zero");
         assert!(!f.invalid);
         assert!(!f.overflow, "infinite, but not an overflow");
 
-        let f = div_s(0.0, 0.0).flags;
+        let f = div_s(0.0, 0.0, Rounding::Nearest).flags;
         assert!(f.invalid, "0/0 is an undefined form");
         assert!(!f.div_by_zero);
     }
@@ -842,15 +804,15 @@ mod tests {
     #[test]
     fn an_infinite_numerator_over_zero_is_not_a_division_by_zero() {
         for a in [f32::INFINITY, f32::NEG_INFINITY] {
-            let f = div_s(a, 0.0).flags;
+            let f = div_s(a, 0.0, Rounding::Nearest).flags;
             assert!(!f.div_by_zero, "{a} / 0 is not DivByZero");
             assert!(!f.invalid, "nor is it an undefined form");
         }
         // The finite case still is.
-        assert!(div_s(1.0, 0.0).flags.div_by_zero);
-        assert!(div_d(-2.5, 0.0).flags.div_by_zero);
+        assert!(div_s(1.0, 0.0, Rounding::Nearest).flags.div_by_zero);
+        assert!(div_d(-2.5, 0.0, Rounding::Nearest).flags.div_by_zero);
         for a in [f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(!div_d(a, 0.0).flags.div_by_zero);
+            assert!(!div_d(a, 0.0, Rounding::Nearest).flags.div_by_zero);
         }
     }
 
@@ -872,20 +834,20 @@ mod tests {
     /// Invalid — `∞ - ∞` here — even though neither operand was a NaN.
     #[test]
     fn a_nan_from_finite_or_infinite_inputs_is_invalid() {
-        let f = sub_s(f32::INFINITY, f32::INFINITY).flags;
+        let f = sub_s(f32::INFINITY, f32::INFINITY, Rounding::Nearest).flags;
         assert!(f.invalid, "inf - inf is an undefined form");
-        let f = mul_s(0.0, f32::INFINITY).flags;
+        let f = mul_s(0.0, f32::INFINITY, Rounding::Nearest).flags;
         assert!(f.invalid, "0 * inf likewise");
     }
 
     /// Overflow from finite operands sets both Overflow and Inexact.
     #[test]
     fn overflow_from_finite_operands_is_also_inexact() {
-        let f = mul_s(f32::MAX, 2.0).flags;
+        let f = mul_s(f32::MAX, 2.0, Rounding::Nearest).flags;
         assert!(f.overflow);
         assert!(f.inexact, "an overflowed result is never exact");
         // But an infinity that was already infinite is not an overflow.
-        assert!(!add_s(f32::INFINITY, 1.0).flags.overflow);
+        assert!(!add_s(f32::INFINITY, 1.0, Rounding::Nearest).flags.overflow);
     }
 
     /// `ABS`/`NEG` are **bit operations**, so they pass NaN payloads through
@@ -945,23 +907,50 @@ mod tests {
         assert_eq!(Flags::NONE.to_fcsr_bits(), 0);
     }
 
-    /// Ordinary arithmetic raises nothing — the flags must not be noisy, or
+    /// **Exact** arithmetic raises nothing — the flags must not be noisy, or
     /// software with the enables set traps constantly.
+    ///
+    /// # Why the operands are all dyadic
+    ///
+    /// This case previously included `(1e10, 1e-4)`, which is *not* exact in
+    /// `f32` for any of the four operations. It passed only because `inexact`
+    /// was never detected (accuracy ledger C-11), so the test was asserting the
+    /// absence of a flag the implementation could not raise — and would have
+    /// gone on passing however wrong the arithmetic became.
+    ///
+    /// Every pair below is a dyadic rational whose sum, difference, product
+    /// **and** quotient are all exactly representable, so "no flags" is a real
+    /// claim about the result rather than a claim about missing machinery.
     #[test]
-    fn ordinary_arithmetic_raises_no_flags() {
-        // Values chosen so every one of the four operations stays in range:
-        // `1e20 / 1e-20` is 1e40, which genuinely overflows `f32`, so it does
-        // not belong in a "raises nothing" case.
-        for (a, b) in [(1.0f32, 2.0f32), (-3.5, 0.25), (1e10, 1e-4)] {
-            for out in [add_s(a, b), sub_s(a, b), mul_s(a, b), div_s(a, b)] {
+    fn exact_arithmetic_raises_no_flags() {
+        for (a, b) in [
+            (1.0f32, 2.0f32),
+            (-3.5, 0.25),
+            (6.0, 0.5),
+            // Large but still exact: 2^20 and 2^12, whose product 2^32 and
+            // quotient 2^8 both land on the grid.
+            (1_048_576.0, 4096.0),
+        ] {
+            for out in [
+                add_s(a, b, Rounding::Nearest),
+                sub_s(a, b, Rounding::Nearest),
+                mul_s(a, b, Rounding::Nearest),
+                div_s(a, b, Rounding::Nearest),
+            ] {
                 assert_eq!(out.flags, Flags::NONE, "{a} op {b} raised something");
             }
         }
         // Exact bit comparison, not a tolerance: these values are exactly
         // representable, so anything but the exact result is a bug -- and a
         // tolerance would hide it.
-        assert_eq!(add_d(1.0, 2.0).value.to_bits(), 3.0f64.to_bits());
-        assert_eq!(mul_d(3.0, 4.0).value.to_bits(), 12.0f64.to_bits());
+        assert_eq!(
+            add_d(1.0, 2.0, Rounding::Nearest).value.to_bits(),
+            3.0f64.to_bits()
+        );
+        assert_eq!(
+            mul_d(3.0, 4.0, Rounding::Nearest).value.to_bits(),
+            12.0f64.to_bits()
+        );
     }
 
     /// The condition field is **systematic**, so this checks the named mnemonics
@@ -1168,7 +1157,7 @@ mod tests {
 
         // Selecting the affected stepping changes nothing about a multiply,
         // because there is nothing documented to change it to.
-        let a = mul_s(3.0, 4.0);
+        let a = mul_s(3.0, 4.0, Rounding::Nearest);
         assert_eq!(a.value, 12.0, "arithmetic is stepping-independent today");
         assert_eq!(a.flags, Flags::NONE);
     }

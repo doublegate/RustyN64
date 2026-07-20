@@ -9,6 +9,268 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — soft-float arithmetic with exact IEEE flags and all four rounding modes
+
+New `crates/rustyn64-cpu/src/softfloat.rs`. Both formats and all four arithmetic operations are
+computed from unpacked `(sign, significand, exponent)` triples in `u128` and rounded **once** at
+the end; discarded bits are folded into a sticky bit rather than dropped, which is what makes
+`inexact` exact rather than approximate. `FCSR.RM` falls out of the same step, so the directed
+rounding modes now apply to arithmetic as well as conversions.
+
+**n64-systemtest: 2,794 → 2,682.**
+
+Verified against an independent oracle — Rust's own `f32`/`f64` operators — with the requirement
+that in round-to-nearest the result is *bit-identical* across three corpora: 40,000 random bit
+patterns, 40,000 draws from the ordinary numeric range, and 20,000 around the subnormal boundary.
+The flags come from the same rounding step as the value, so a bit-exact value is real evidence
+about the guard/sticky bookkeeping the flags are read from; testing the flags alone would have
+been self-referential. Rounding-mode results are pinned separately against vectors transcribed
+from n64-systemtest.
+
+The `f64`-comparison shortcut was deliberately **not** used: the exact sum of two `f32`s can span
+~277 significand bits, so an `f64` sum is itself rounded and the comparison silently becomes a
+guess in exactly the range the oracle probes.
+
+Removed as superseded: `fpu::{round_f64_to_f32, next_up_f32, next_down_f32}` and the private
+`classify_f32`/`classify_f64`. `round_f64_to_f32` in particular was a double-rounding trap once a
+correct path existed.
+
+### Fixed — `MOV`/`ABS`/`NEG` cleared `FCSR.Cause`, erasing the previous operation's result
+
+Introduced by the `MOV.fmt` change below and found by the soft-float work: wiring exact flags in
+moved the oracle by **zero**, with the suite reporting `flags: inexact` but `causes: ""` — the
+sticky half surviving and the per-operation half gone, which is the signature of a later
+instruction overwriting `Cause` rather than of a flag never raised.
+
+Because the compiler emits `MOV.fmt` to move an FP return value, a `MOV` sits between almost every
+arithmetic operation and the `CFC1` that reads its result, so it erased exactly the bits the
+program was about to inspect. These three instructions cannot raise, so they now write nothing to
+`FCSR`. Worth **112** assertions on its own, and pinned by a named regression test.
+
+### Added — enabled floating-point traps (`Exception::FloatingPoint`)
+
+A COP1 condition whose `FCSR.Enable` bit is set now raises an FP exception (`ExcCode` 15) instead
+of merely recording the bits. Four things change on the trapping path, each separately observable
+and each pinned by a mutation-tested unit test:
+
+- `fd` is **not** written — the trap is precise, so the destination keeps its old value;
+- the sticky `Flags` field is **not** accumulated, only `Cause` is written;
+- the instruction does not retire, so it does not tick `Random`;
+- `Cause.CE` is 0, not a coprocessor number.
+
+**Measured effect: n64-systemtest 2,795 → 2,794.** Reported plainly because the number is small
+and the reason matters: a trap needs a *raised* condition, and `fpu::classify_*` sets `inexact`
+only as a side effect of overflow and never sets `underflow` at all. The trap path is not the
+blocker — flag detection is. That is now accuracy-ledger **C-11**, together with why the obvious
+`f64` round-trip fix is a fitted constant rather than a measurement: it is correct in the normal
+range and wrong in exactly the range n64-systemtest probes.
+
+### Fixed — `MOV.fmt` was a silent no-op, and it was not an FPU bug (T-12-007)
+
+`MOV.fmt` is COP1 funct **6**. The decoder admitted only `funct <= 3` to the FP arithmetic path
+and sent everything else to `Cop1Unimplemented`, which executes as a no-op. Compilers emit
+`MOV.fmt` for every FP argument and every FP return value, so callees read stale operands and
+callers read a register the callee never wrote. `ABS` (5) and `NEG` (7) share the arm and were
+equally absent. All three now decode and execute; `SQRT` (4) remains unwired.
+
+n64-systemtest failures: **2,897 → 2,795**.
+
+This had been read as an FPU arithmetic fault for nine rounds — see
+[`docs/accuracy-ledger.md`](docs/accuracy-ledger.md) C-10, which records each wrong hypothesis and
+what refuted it. The arithmetic was correct the whole time: `ADD.S` wrote the right value to the
+right register, and the suite then reported a *different* register, because the move that was
+supposed to carry the result out of the callee did nothing. Every `Result after <op>` failure was
+measured against a value the instruction under test never produced.
+
+What finally located it was a **correlated capture** — arming on the suite's own
+`Running COP1: ADD.S...` marker so the captured instruction is provably the failing test's, and
+dumping the *instruction stream* rather than the registers. Nine earlier probes watched state and
+inferred cause; two of their conclusions had to be retracted. The eight words either side of the
+site named the bug immediately.
+
+### Fixed — `Random` never advanced, so every `TLBWR` overwrote the same entry
+
+`Cop0::tick_random` was implemented and **never called from the pipeline** — only from a unit test.
+`Random` therefore sat at 31 forever, and since `TLBWR` writes the entry `Random` names, every
+refill overwrote the same one. UM §5.4.2 is explicit: *"decrements as each instruction executes."*
+
+A stuck counter is **invisible to any test that calls `tick_random` itself**, which is exactly what
+the COP0 unit tests did — they exercised the decrement logic thoroughly while nothing checked that
+anything ever called it. The new test drives it through `advance` instead.
+
+Found by chasing an infinite TLB-refill loop in n64-systemtest. **It did not fix that loop** — the
+suite still shows one distinct `EPC` and one `ExcCode` — so this is a genuine defect found *beside*
+the bug being hunted rather than the bug itself, and it is reported that way.
+
+### Diagnosed — why n64-systemtest reports nothing (T-12-007)
+
+Not waiting; **lost**. Probing for the first divergence found it **191 retired instructions in**:
+execution jumps from `0x800A15F4` into a zero-filled region and NOP-slides until it falls off the
+top of RDRAM, which is why raising the instruction budget from 6M to 45M never helped.
+
+The cause is in the suite's own `entrypoint()` — `memory_size` and `elf_header_offset` come from
+**SP DMEM**, which is a stub returning 0. IPL3 writes the detected RDRAM size there at boot; we do
+not, so the suite builds its memory map from zeros and jumps into nothing.
+
+SP DMEM is now readable (`Bus::spmem`) and seeded by `rom::seed_ipl3_handoff` with what IPL3 would
+have written. That was **necessary but not sufficient**: the suite runs far longer and still
+diverges at the same instruction, because of a second, larger problem underneath.
+
+**n64-systemtest is an ELF and the harness does a flat copy.** Its `PT_LOAD` segments target
+`0x8000_0000` onward, while `load_direct` places `ROM[0x1000 + k]` at `entry + k`. Every address in
+the image is therefore wrong, which is why the first jump — to a perfectly valid `0x8018368C` —
+lands in zeros. The ROM-header entry point is *not* the problem; the load mapping is.
+
+`rom::load_elf` now does that: it parses the ELF at the magic-located offset and loads each
+`PT_LOAD` to its `vaddr`, zeroing `memsz - filesz` for BSS. `0x1AD150` bytes load correctly and
+execution no longer jumps into zeros.
+
+**The instruction-6 fault was the stack pointer.** Disassembling the entry showed a standard
+prologue — `ADDIU $29, $29, -0x50` then `SW $31, 0x4c($29)` — and with `$29` at zero that store
+targets `0xFFFF_FFFF_FFFF_FFFC`, a KSEG3 address, TLB-mapped, refill. IPL3 leaves `$sp` at the top
+of SP DMEM; the direct-load path set no registers at all. Loading the image correctly is not enough
+if the register state it was compiled against is missing.
+
+`seed_ipl3_handoff` now sets `$sp`, which moved the fault to instruction ~25: `ExcCode = 11`
+(Coprocessor Unusable) — a COP1 instruction with `CU1` clear. IPL3 leaves `Status` at
+`0x3400_0000` (`CU1 | CU0 | FR`), the value the COP0 work had already cross-checked against a real
+boot capture. Seeding it also clears `ERL` and `BEV`.
+
+**The suite now runs 108,000,000 instructions with zero exceptions** — and still prints nothing.
+That is a materially different failure from every previous round: it is no longer lost, faulting,
+or NOP-sledding.
+
+A PC histogram showed `0x8000_0180` — the general exception vector — hottest by a wide margin, and
+I read that as the suite executing its tests, since n64-systemtest raises exceptions by the
+thousand on purpose. **That reading was wrong.** A second probe found exactly **one distinct
+`EPC`** (`0x8018_32E8`, 2,000,000 hits) and exactly **one `ExcCode` (2 = `TLBL`)`.
+
+**It is an infinite exception loop**: a single load faults, the handler returns, and it faults
+again. A hot exception vector looks identical to a busy test suite from a histogram alone — what
+distinguishes them is whether `EPC` *moves*, and it never does. Worth recording, because "which
+instruction" is the question this whole diagnosis was built on and I stopped one step short of
+asking it.
+
+The remaining problem is therefore a **TLB refill that never resolves**, and disassembling the
+faulting address identified it precisely. `0x8018_32E8` holds `0x42800060` — COP0 CO-class, funct
+`0x20`, which is n64-systemtest's **emux probe opcode**. The suite executes it deliberately to ask
+"am I running under emux?", expecting a Reserved Instruction exception anywhere else.
+
+Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set. But the reported
+`ExcCode` is **2 (`TLBL`)**, not 10 (`RI`) — meaning a **second fault happens inside the handler**,
+with `EPC` surviving exactly as the `EXL` gate requires. That also explains why `0x180` (general,
+`EXL=1`) was hotter than `0x000` (refill, `EXL=0`).
+
+### Fixed — n64-systemtest now boots and runs its full corpus
+
+Four defects, each surfaced by the oracle and each previously unreachable.
+
+**1. COP0 CO `funct` 0x20-0x3F decoded to `Reserved` instead of retiring inertly.**
+n64-systemtest probes for the `emux` emulator by executing `COP0 CO funct 0x20` from
+`init_allocator`, inside `entrypoint` — **before** `main` installs any exception handler. We raised
+Reserved Instruction; the RI dispatched to an uninstalled `0x8000_0180`, where zeros decode as
+`SLL $0, $0, 0` (`NOP`), so the CPU NOP-slid from `0x180` into `.text` at `0x8000_0400` and faulted
+there on a load through a zero base. `EXL` was set by then, so `EPC` retained the *first*
+exception, which is why the reported `ExcCode` (`TLBL`) and `EPC` (the RI site) disagreed and made
+this read as a TLB bug for three rounds.
+
+If a real VR4300 raised RI there, the suite would derail on every N64 it has ever run on, before
+printing a line. The range is not a guess either: the suite's probe constant is named
+`XDETECT_CODE_EXTENSIONS_20_3F`. Added `Op::Cop0Extension`, executed as a no-op that notably does
+**not** write the target GPR. Ledger **C-8** — an inference, not a manual citation.
+
+**2. `IP7` latched at power-on, because the timer tested equality rather than an edge.**
+`Count` and `Compare` both reset to zero, so `Count == Compare` held on the very first step and
+`IP7` latched before a single instruction retired. The timer fires when `Count` *becomes* equal to
+`Compare` — once per wrap — so the poll is now an edge (`Cop0::timer_edge`). The suite pinned this
+precisely: `Cause` during an AdEL read `0x8010` instead of `0x10`.
+
+**3. `Context`/`XContext` were gated on TLB exceptions.** Hardware fills `BadVPN2` from the same
+latch that feeds `BadVAddr`, so an **address error** updates them too, with no TLB lookup involved.
+The suite expects `Context = 0x0052_0000` for `BadVAddr = 0xA400_1A42`, exactly
+`(BadVAddr >> 13) << 4`. `EntryHi` stays TLB-gated — it is the TLB's own match register, and
+writing it on an address error would corrupt the entry a later `TLBWR` installs.
+
+**4. `SP_STATUS` was unmodelled and read as zero**, claiming a running RSP. The RSP comes out of
+reset **halted**; only that power-on `halt` bit is modelled, which is honest about the RSP still
+being an LLE-shaped stub while no longer asserting something false.
+
+With these, `StartupTest` and the whole unaligned-access group pass, and the suite proceeds through
+its corpus (~863 KB of output) instead of hanging on its first print. The remaining failures are
+dominated by one unimplemented area — the **cart address space is not mapped**, so every
+`cart:`/`cart_memory:` read returns zero — plus 32-bit address sign-extension checks. Those are
+next; `Failed: 0` is not yet met, so v0.2.0 stays uncut.
+
+**6. COP2 encodings decoded to `Reserved`.** The VR4300 has a COP2 unit, so `MFC2`/`MTC2`/`DMFC2`/
+`DMTC2` are architecturally *valid*: with `Status.CU2` clear they raise **Coprocessor Unusable**
+(`ExcCode 11`), not Reserved Instruction (`10`) — the same distinction already drawn for COP1.
+Getting it wrong produced n64-systemtest's "Exception storm detected. Aborting.": the suite saw
+five unexpected exceptions in a row, tripped its recovery limit, and **truncated the entire run**.
+Fixing it removed the abort, so the suite now reaches its later groups — which is why the reported
+failure count *rose* (2,551 to 2,909) while the emulator strictly improved. The earlier count was
+a floor, exactly as suspected.
+
+**7. PI address registers never advanced after a transfer.** Hardware walks `PI_DRAM_ADDR` and
+`PI_CART_ADDR` as the DMA proceeds, so software reads back the address *past* the block it just
+moved — which is how a driver chains transfers without rewriting the address each time. Leaving
+them put makes every chained DMA re-send the first block. The oracle checks the delta directly:
+after a `0x10`-byte transfer it expects `PI_CART_ADDR` to have moved by `0x10`, and for a written
+length of 1 (a two-byte transfer) by `0x2`. Failure count 2,909 to 2,907.
+
+**8. SP DMA was entirely unimplemented.** `SP_RD_LEN`/`SP_WR_LEN` now move data between RDRAM and
+SPMEM, honouring the packed length word — bits 11:0 bytes-per-row minus one, 19:12 rows minus one,
+31:20 the RDRAM-side inter-row skip. Treating the word as a plain byte count transfers megabytes
+for a routine 8-byte copy; reading only bits 11:0 silently drops every row after the first, which
+is the failure mode for anything doing a 2D block copy. `SP_MEM_ADDR` bit 12 selects IMEM, and the
+12-bit offset wraps **within** the selected 4 KiB half rather than spilling into the other.
+
+**9. The seeded `$sp` was in KSEG1, and had been over-claimed.** It pointed at the top of SP DMEM
+(`0xA400_1FF0`), described in a comment as what IPL3 leaves behind — but the only evidence for that
+was that *some* valid stack had stopped a crash, which any address would have done. The oracle
+narrowed it: the SP-DMA tests build their source data in a **stack array** and call
+`MemoryMap::uncached_mut` on it, which asserts the address is KSEG0. A KSEG1 stack fails that
+assert and panics the suite outright. The stack is now KSEG0, above `MemoryMap::HEAP_END` so it
+cannot collide with the heap; the exact address remains a documented inference.
+
+With these the suite runs past the SP-DMA group entirely and reaches the TLB tests.
+
+**10. `Cause.CE` was left stale across exceptions.** `CE` (bits 29:28) names the coprocessor for a
+Coprocessor Unusable exception. It was written *only* for that exception, on the reasoning that it
+is meaningless otherwise and that clearing it would erase a value the handler had not read yet.
+Plausible, and wrong: it leaves `CE` stale, so any exception following a Coprocessor Unusable
+reports the old unit number. `TLB: Read after 4k page, expect TLBL` read `Cause = 0x2000_0008`
+where hardware gives `0x8` — a `CE = 2` left behind by the COP2 usability check added in this same
+batch. `CE` is now written on every exception: the unit for CpU, zero otherwise. Failure count
+2,932 to **2,901**, and the run reaches deeper into the TLB group.
+
+**11. PI external-bus sub-word reads ignored the 16-bit-bus off-by-two.** The PI bus is 16 bits
+wide and the RCP ignores access size, so every VR4300 read becomes two 16-bit bus reads — the MSB
+at the CPU's address with bit 0 ignored, then the LSB at `address + 2`. The RCP therefore returns
+the word starting at `addr & !1` while the CPU selects its byte lane assuming a word at
+`addr & !3`, and that two-byte disagreement is a **hardware bug we must reproduce**: a 16-bit read
+at `0x1000_0002` returns the halfword at `0x1000_0004`. Byte reads take the same shift; word reads
+do not, since a word access puts its own address on the bus. `Bus::read_u32` is now overridden to
+read the PI window raw, because the four-`read_u8` default would apply the shift per byte and
+mangle bytes 2 and 3 of every word.
+
+Two things this nearly got wrong, both caught by checking rather than reasoning. The mechanism is
+**not** an advancing address latch, which is what the two failing data points suggested — the
+N64brew *Memory map* page states the real cause. And it needs no `CpuBus::read_u16`: a halfword
+load is already issued as two byte reads, and both land correctly under the byte rule. ISViewer
+lives *inside* the PI range and must keep claiming its window first, or the debug channel's
+read-back handshake breaks — which the existing round-trip test caught immediately.
+
+This is the fourth time in this project that a comment asserting a rule has turned out to assert
+more than the evidence supported — alongside the `$sp` placement, the `DIV` numerator condition,
+and the `CACHE` translation split. The pattern is specific enough to be worth naming: prose that
+explains *why not* to do something is as testable as code, and goes unchecked far longer.
+
+Wrong turns worth recording, since each cost a round and each would have taken real work to
+"fix": `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0` is correct); lost installer stores (the
+installer was never *reached*); and an early panic (the print was `init_allocator`'s legitimate
+`println!`). Every round that guessed at a mechanism was wrong; every round that asked what was
+actually in memory, or actually executed, at the faulting moment was right.
+
 ### Added — a merge-conflict-marker guard (CI + pre-commit)
 
 A `|||||||` diff3 marker was committed into `CHANGELOG.md` during a rebase: the resolution handled
