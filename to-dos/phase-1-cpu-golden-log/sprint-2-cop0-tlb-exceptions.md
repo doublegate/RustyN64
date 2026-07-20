@@ -520,6 +520,28 @@ short of asking it.
    `Cause during TLB exception` where the suite expects raw `0x8` (`ExcCode 2`, `TLBL`, nothing
    else set).
 
+   **Update — the TLB `Cause` mismatch was a stale `Cause.CE`.** `0x2000_0008` vs `0x8` differs in
+   bit 29 alone: `CE = 2`, left behind by the COP2 usability check. `CE` was written only for
+   Coprocessor Unusable, on the documented reasoning that it is meaningless otherwise. It is now
+   written on every dispatch. Failure count 2,932 to **2,901**.
+
+   **Next area: PI direct-I/O sub-word reads.** `cart: Read16` at byte offset 2 gives `0x4567`
+   where hardware gives `0x89AB`; `cart: Read8` at offset 2 gives `0x45` where hardware gives
+   `0x89`. Both hardware values come from byte offset **4**, after a preceding 32-bit read at
+   offset 0.
+
+   The N64brew *Peripheral Interface* page supplies the governing fact: **"direct I/O accesses can
+   only be done as 32-bit words (concatenating two consecutive 16-bit reads)"**, and the mapped
+   ranges are `0x0500_0000-0x1FBF_FFFF` and `0x1FD0_0000-0x7FFF_FFFF`. So a CPU byte or halfword
+   load from cart is not a narrow bus access at all — the PI performs a full 32-bit read.
+
+   **Do not implement this from the two data points above.** They are consistent with an address
+   latch that advanced past the previous read, but that is an inferred *mechanism*, and every
+   inferred mechanism in this ticket has been wrong. Read the wiki's
+   `Memory map#Ranges 0x0500'0000 - 0x1FBF'FFFF` section first — it is cross-referenced precisely
+   for this behaviour — and confirm against the `cart: Read32` cases that currently **pass**, so a
+   change here does not regress them.
+
    **One hypothesis already refuted, so nobody re-spends it:** a spurious `IP2` from the PI
    interrupt, which the Bus now mirrors on every PI write and which software must clear
    explicitly. **Ruled out by inspection** — `Bus::poll_irq` ANDs each MI line against
