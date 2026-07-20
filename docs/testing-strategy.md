@@ -40,7 +40,7 @@ provenance in `tests/roms/README.md`.
 | `external/krom/` | Unlicense (public domain) | external (size) | 196 ROMs, 182 MB |
 | `external/dillon-n64-tests/` | **none** | external (no grant) | 26 ROMs, 38 MB |
 | `external/commercial/` | copyrighted | external (never) | 66 ROMs, 1.5 GB |
-| `external/240p/` | GPL-2.0 | external (copyleft) | not yet fetched |
+| `external/240p/` | GPL-2.0-or-later | external (copyleft) | 1 ROM, 12 MB — built from source |
 
 Absence of a licence is **not** public domain — it means no grant, so
 `dillon-n64-tests` is run-only and never redistributed. `krom` is public domain

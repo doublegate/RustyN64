@@ -77,7 +77,7 @@ different ROM; the committed one is the default set.
 | `external/krom/` | [PeterLemon/N64](https://github.com/PeterLemon/N64) | Unlicense (public domain) | Permissive, but upstream is 2.0 GB; even this curated subset is 182 MB | 182 MB, 196 ROMs |
 | `external/dillon-n64-tests/` | [Dillonb/n64-tests](https://github.com/Dillonb/n64-tests) | **NONE** — no licence file, no README statement | No licence means no grant to redistribute | 38 MB, 26 ROMs |
 | `external/commercial/` | personal cartridge dumps | copyrighted | Never redistributable | 1.5 GB, 66 ROMs |
-| `external/240p/` | [ArtemioUrbina/240pTestSuite](https://github.com/ArtemioUrbina/240pTestSuite) | **GPL-2.0** | Copyleft, incompatible with the committed tier's permissive rule | not yet fetched |
+| `external/240p/` | [ArtemioUrbina/240pTestSuite](https://github.com/ArtemioUrbina/240pTestSuite) | **GPL-2.0-or-later** | Copyleft, incompatible with the committed tier's permissive rule | 12 MB, 1 ROM |
 
 ### krom (PeterLemon/N64)
 
@@ -109,16 +109,57 @@ built, since building needs the ARM9 `bass` assembler fork plus libdragon's
 **Run-only.** With no licence there is no grant to redistribute these: using them
 locally as an oracle is fine, committing or shipping them is not.
 
-### 240p Test Suite (not yet fetched)
+### 240p Test Suite
 
-Artemio's N64 240p Test Suite is the video-timing and calibration reference,
-built on libdragon. **GPL-2.0**, so external tier regardless of size.
+Artemio's N64 240p Test Suite — the video-timing, signal, and calibration
+reference. Per its own source headers it is **GPL-2.0-or-later** ("either
+version 2 of the License, or (at your option) any later version"), so it is
+external tier regardless of size and **must never be committed**. It is
+`git check-ignore`d, rejected by `scripts/check_no_roms.sh` on both extension
+*and* the size ceiling, and deliberately absent from `ALLOW_RE`.
 
-Not staged: the repo ships source only — no prebuilt ROM and no GitHub releases —
-and binaries are distributed through itch.io, which needs an interactive
-download. To add it, take the NTSC build from
-<https://artemiourbina.itch.io/240p-test-suite>, or build `240psuite/N64/` with a
-libdragon MIPS toolchain, then drop the ROM in `tests/roms/external/240p/`.
+Useful for RustyN64 because the N64 build drives the VI hard: it is the
+reference for scan-out timing, 240p/480i modes, and colour/signal correctness —
+the Layer 5 territory where a framebuffer can be bit-correct while the VI
+presentation is wrong.
+
+Built from source; upstream ships no prebuilt ROM and no GitHub releases (the
+itch.io binaries need an interactive download). The build is containerised
+because it needs a MIPS cross-toolchain, libdragon's `preview` branch, and
+Tiny3D — none of which are packaged for Arch:
+
+```bash
+git clone --depth 1 https://github.com/ArtemioUrbina/240pTestSuite
+cd 240pTestSuite
+podman build -t n64-240p-toolchain -f .devcontainer/N64/Dockerfile .devcontainer/N64/
+
+# Deps and build MUST happen in ONE container: libdragon installs into
+# /opt/libdragon, which does not survive `--rm` between runs. Only the
+# bind-mounted workspace persists.
+podman run --rm -v "$PWD/240psuite/N64:/workspace:Z" -w /workspace \
+  n64-240p-toolchain bash -c '
+    export N64_INST=/opt/libdragon T3D_INST=/workspace/tiny3d
+    git clone https://github.com/dragonminded/libdragon -b preview --depth 1
+    git clone https://github.com/HailToDodongo/tiny3d --depth 1
+    cd libdragon && make libdragon tools -j && make install tools-install -j
+    cd ../tiny3d && make -j && make -C tools/gltf_importer -j
+    cd /workspace && make all -j'
+# -> output/240pSuite.z64
+```
+
+Provenance of the staged build:
+
+| Component | Commit |
+|---|---|
+| 240pTestSuite | `184d6f8d53645139992c9bfc97e91cae14f2595d` |
+| libdragon (`preview`) | `f13b48985edbf4310f07779c76d9a68c7605037b` |
+| Tiny3D (`main`) | `e84172f29f719680ac3213a7f408c2f721ef7b24` |
+
+`sha256: e57a552a12c6b6df147b2b3bd15d740f7cc2f340efe5eb67ca9ee5203d9c00a8`
+
+The upstream `LICENSE` (GPL-2.0) sits beside the ROM. Both are gitignored — that
+is correct and intentional: the GPL text is kept for local reference, not
+because the ROM is ever redistributed from this repo.
 
 ## Adding a corpus
 
