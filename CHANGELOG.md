@@ -21,8 +21,16 @@ which is the part that cannot be retrofitted without rewriting every consumer.
 - `Pipeline::advance` runs **WB → DC → EX → RF → IC**. Each stage reads its input latch before
   any upstream stage writes it, so no value moves two stages in one cycle and no double buffering
   is needed — the reverse order *is* the latching.
-- `Stall { cycles, resume, cause }` with `Interlock` naming all eight documented interlocks
-  (LDI, DCB, DCM, ICB, ITM, MCI, CP0I) so a stall is always attributable in a trace.
+- `Stall { cycles, cause }` with `Interlock` naming all eight documented interlocks (LDI, DCB,
+  DCM, ICB, ITM, MCI, **COp**, CP0I — UM Table 4-3) so a stall is always attributable in a trace.
+  ADR 0007's `resume_stage` is deliberately **absent** until it can be load-bearing: `advance`
+  always runs the full cascade today, so a stored `resume` would be read by nothing — the same
+  hazard `poll_irq_at_phase` was removed for (`engineering-lessons.md` §3.2).
+- An abort raises a pending flush, so the instruction fetched later in the *same* cycle is a
+  bubble rather than a live wrong-path fetch that would escape the flush entirely.
+- `stall_for(0)` is ignored rather than recorded — a zero-cycle stall would still consume a cycle
+  and mark it not-a-run-cycle, silently inserting a bubble *and* suppressing interrupt acceptance
+  on the following cycle.
 - `Exception` is deliberately **not** named `Fault`: UM §4.5 defines a fault as interlocks ∪
   exceptions, and only the aborting subset rides in a latch.
 - `abort_from` stamps an exception into its own latch and every latch **upstream** — the
@@ -38,8 +46,10 @@ Seven pipeline tests, two of which are the structural guards and both **mutation
 - `a_value_advances_exactly_one_stage_per_cycle` — reversing the cascade to run forwards fails it.
 - `delay_slot_flag_survives_a_multi_cycle_stall` — the Phase 1 exit criterion. Dropping the flag
   in transit fails it. A global `in_delay_slot` bool passes a naive test and fails this one.
+- `an_abort_survives_the_cascade` — removing the flush fails it.
 - Plus stall-freezes-the-pipeline, the interrupt run-cycle gate, abort-kills-younger-only,
-  aborted-instructions-do-not-retire, and the load-interlock imprecision cases.
+  aborted-instructions-do-not-retire, zero-cycle-stall-is-not-a-stall, and the load-interlock
+  imprecision cases.
 
 Two existing tests had premises invalidated by this change and were corrected rather than
 patched around: `Cpu::tick` no longer retires an instruction per call (it takes 5 `PCycle`s to

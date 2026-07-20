@@ -103,18 +103,29 @@ pub enum Interlock {
     /// Multi-cycle interlock: `MULT`/`DIV`/FPU stall the whole pipeline for the
     /// documented count (UM Tables 3-12, 7-14).
     Mci,
+    /// Cache operation (UM Table 4-3).
+    Cop,
     /// CP0 bypass interlock (UM §4.6.9). **Cycle cost undocumented** — see
     /// `docs/accuracy-ledger.md` C-3.
     Cp0i,
 }
 
-/// A stall request: how long, and which stage to resume the cascade from.
+/// A stall request: how long, and what caused it.
+///
+/// ADR 0007 describes an interlock as `(cycles, resume_stage)`. The `resume`
+/// half is **deliberately absent** until it can be load-bearing. Today
+/// [`Pipeline::advance`] always runs the full cascade when not stalled, so a
+/// stored `resume` would be read by nothing — and a field that looks like it
+/// carries information while carrying none is the exact hazard
+/// `docs/engineering-lessons.md` §3.2 is about. `Bus::poll_irq_at_phase` was
+/// removed for the same reason rather than left in place looking wired.
+///
+/// It lands with T-11-002, when stages can stall independently and a partial
+/// resume becomes meaningful.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Stall {
-    /// `PCycle`s to stall.
+    /// `PCycle`s remaining.
     pub cycles: u32,
-    /// The stage the backward cascade restarts at once the stall expires.
-    pub resume: Stage,
     /// Which documented interlock caused it.
     pub cause: Interlock,
 }
@@ -188,6 +199,11 @@ pub struct Pipeline {
     /// previous `PCycle` was a run cycle."* This is the gate, and it is the
     /// reason the flag exists at all.
     prev_was_run: bool,
+    /// An abort was raised this cycle, so `IC` must fetch a bubble rather than a
+    /// live instruction — the wrong-path fetch would otherwise escape the flush.
+    ///
+    /// Cleared at the end of each [`Pipeline::advance`].
+    flush_pending: bool,
     /// Instructions retired at `WB` — a work tally, not a time position.
     pub retired: u64,
 }
@@ -210,6 +226,7 @@ impl Pipeline {
             dc_wb: EMPTY,
             stall: None,
             prev_was_run: false,
+            flush_pending: false,
             retired: 0,
         }
     }
@@ -229,19 +246,39 @@ impl Pipeline {
         self.prev_was_run
     }
 
-    /// Request a stall. The cascade resumes from `resume` once it expires.
-    pub const fn stall_for(&mut self, cycles: u32, resume: Stage, cause: Interlock) {
-        self.stall = Some(Stall {
-            cycles,
-            resume,
-            cause,
-        });
+    /// Request a stall of `cycles` `PCycle`s.
+    ///
+    /// A zero-cycle request is **not** a stall and is ignored. Recording it would
+    /// still consume a cycle in [`Pipeline::advance`] and mark it as not-a-run
+    /// cycle, which silently inserts a bubble *and* suppresses interrupt
+    /// acceptance on the following cycle (UM §4.7.1) — a one-cycle timing error
+    /// with no visible cause.
+    pub const fn stall_for(&mut self, cycles: u32, cause: Interlock) {
+        if cycles == 0 {
+            return;
+        }
+        self.stall = Some(Stall { cycles, cause });
     }
 
     /// Stamp an abort into `at` **and every latch upstream of it** — the
     /// kill-younger-instructions step. Instructions older than `at` have already
     /// passed and are unaffected.
+    ///
+    /// # Ordering contract
+    ///
+    /// **A stage must call this BEFORE it moves its latch.** The instruction
+    /// executing in stage S this cycle sits in S's *input* latch until the move,
+    /// so stamping first is what makes the abort travel with the instruction that
+    /// caused it. Calling it after the move stamps the abort onto the *younger*
+    /// instruction instead, and the causing one escapes — a misalignment that no
+    /// single-cycle assertion catches. `an_abort_survives_the_cascade` advances
+    /// the pipeline to verify it, rather than checking latch state in place.
+    ///
+    /// The abort also raises [`Pipeline::flush_pending`], so the instruction
+    /// fetched later in the same cycle is a bubble rather than a live
+    /// wrong-path fetch.
     pub const fn abort_from(&mut self, at: Stage, exc: Exception) {
+        self.flush_pending = true;
         match at {
             Stage::Wb => {
                 self.dc_wb.abort = Some(exc);
@@ -287,6 +324,7 @@ impl Pipeline {
         self.ic_stage(next_pc);
 
         self.prev_was_run = true;
+        self.flush_pending = false;
     }
 
     /// `WB` — commit the result and retire the instruction.
@@ -337,6 +375,18 @@ impl Pipeline {
 
     /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
     fn ic_stage(&mut self, next_pc: &mut u64) {
+        // An abort raised earlier this cycle flushes younger instructions. The
+        // fetch happening now is younger than all of them, so it must not become
+        // a live instruction -- otherwise it escapes the flush entirely and
+        // executes down the wrong path.
+        //
+        // TODO(T-11-002): redirect `next_pc` to the exception vector instead of
+        // bubbling. Until the vector exists, a bubble is the honest behaviour:
+        // it declines to execute rather than executing the wrong thing.
+        if self.flush_pending {
+            self.ic_rf = Latch::default();
+            return;
+        }
         // TODO(T-11-002): fetch through the I-cache and decode. The decoded
         // branch sets `in_delay_slot` on the instruction fetched NEXT cycle,
         // which is why the flag is attached here and travels with the latch.
@@ -420,7 +470,7 @@ mod tests {
         let slot_pc = p.ic_rf.pc;
 
         // A long interlock lands between them (e.g. DDIV = 69 PCycles).
-        p.stall_for(69, Stage::Ex, Interlock::Mci);
+        p.stall_for(69, Interlock::Mci);
         for _ in 0..69 {
             p.advance(&mut bus, &mut pc);
         }
@@ -455,7 +505,7 @@ mod tests {
         }
         let before = (p.ic_rf, p.rf_ex, p.ex_dc, p.dc_wb, p.retired);
 
-        p.stall_for(3, Stage::Dc, Interlock::Dcm);
+        p.stall_for(3, Interlock::Dcm);
         for _ in 0..3 {
             p.advance(&mut bus, &mut pc);
             assert_eq!(
@@ -494,7 +544,7 @@ mod tests {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
         p.advance(&mut bus, &mut pc);
-        p.stall_for(1, Stage::Dc, Interlock::Dcb);
+        p.stall_for(1, Interlock::Dcb);
         p.advance(&mut bus, &mut pc); // the stalled cycle
         assert!(
             !p.prev_cycle_was_run(),
@@ -505,6 +555,79 @@ mod tests {
         assert_eq!(
             p.ex_dc.abort, ex_dc_before,
             "an interrupt must NOT be accepted when the previous PCycle stalled"
+        );
+    }
+
+    /// **An abort must survive the cascade**, not merely be present the instant
+    /// it is stamped.
+    ///
+    /// The shallow version of this test asserted latch state immediately after
+    /// `abort_from` and never advanced — so it could not tell a real flush from
+    /// one that gets overwritten by the reverse cascade in the same cycle. This
+    /// version steps the pipeline and follows the consequences.
+    #[test]
+    fn an_abort_survives_the_cascade() {
+        let mut p = Pipeline::new();
+        let mut pc = 0x8000_0000;
+        let mut bus = quiet();
+        for _ in 0..4 {
+            p.advance(&mut bus, &mut pc);
+        }
+
+        // Abort at DC: the instruction in DC plus everything younger.
+        p.abort_from(Stage::Dc, Exception::AddressError);
+        let aborted_pc = p.ex_dc.pc;
+        p.advance(&mut bus, &mut pc);
+
+        // The causing instruction carried its abort forward into WB's latch...
+        assert_eq!(
+            (p.dc_wb.abort, p.dc_wb.pc),
+            (Some(Exception::AddressError), aborted_pc),
+            "the aborting instruction lost its flag while advancing"
+        );
+        // ...and the younger ones kept theirs rather than having them
+        // overwritten by the latch moves.
+        assert_eq!(
+            p.ex_dc.abort,
+            Some(Exception::AddressError),
+            "a younger instruction's abort was overwritten by the cascade"
+        );
+
+        // The younger instruction that was already in flight kept its abort as it
+        // advanced, rather than having it overwritten by the latch move.
+        assert_eq!(
+            p.rf_ex.abort,
+            Some(Exception::AddressError),
+            "an in-flight younger instruction lost its abort while advancing"
+        );
+
+        // And the fetch issued during the aborting cycle is a bubble, not a live
+        // wrong-path instruction that would escape the flush entirely.
+        assert!(
+            !p.ic_rf.occupied,
+            "the instruction fetched during the abort escaped the flush"
+        );
+    }
+
+    /// A zero-cycle stall request is ignored — recording it would burn a cycle
+    /// and suppress interrupt acceptance on the next one, with no visible cause.
+    #[test]
+    fn a_zero_cycle_stall_is_not_a_stall() {
+        let mut p = Pipeline::new();
+        let mut pc = 0x8000_0000;
+        let mut bus = quiet();
+        p.advance(&mut bus, &mut pc);
+
+        p.stall_for(0, Interlock::Ldi);
+        assert!(p.stalled_by().is_none(), "a 0-cycle request is not a stall");
+
+        let before = p.ic_rf.pc;
+        p.advance(&mut bus, &mut pc);
+        assert_ne!(before, p.ic_rf.pc, "the cycle was silently consumed");
+        assert!(
+            p.prev_cycle_was_run(),
+            "a non-stall must still count as a run cycle, or the interrupt gate \
+             is wrongly suppressed on the following cycle"
         );
     }
 
