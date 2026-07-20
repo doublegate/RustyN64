@@ -76,6 +76,10 @@ pub struct Bus {
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
+    /// The `ISViewer` buffer, as guest-visible memory.
+    isviewer: alloc::boxed::Box<[u8]>,
+    /// Text the guest has flushed through the `ISViewer` channel.
+    isviewer_out: alloc::vec::Vec<u8>,
     /// The RSP coprocessor.
     pub rsp: Rsp,
     /// The RDP rasterizer.
@@ -111,6 +115,8 @@ impl Default for Bus {
             // `vec![..].into_boxed_slice()` allocates straight on the heap —
             // no 8 MiB stack temporary (which `Box::new([0; N])` would create).
             pi: rustyn64_cart::pi::Pi::new(),
+            isviewer: alloc::vec![0u8; 0x20 + Self::ISVIEWER_LEN].into_boxed_slice(),
+            isviewer_out: alloc::vec::Vec::new(),
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
@@ -166,6 +172,33 @@ impl Bus {
 
     /// Map a CPU physical address into RDRAM (`0..RDRAM_SIZE`), or `None` if it
     /// targets a memory-mapped register region instead.
+    /// Base of the **`ISViewer`** debug window, in cart address space.
+    ///
+    /// Not real N64 hardware — it is a flashcart/emulator convention that
+    /// n64-systemtest uses to report results (`ref-proj/n64-systemtest/src/isviewer.rs`).
+    /// The suite probes for it by writing a magic word to the buffer and reading
+    /// it back; if the round-trip fails it falls back to a framebuffer console
+    /// we cannot read. So this window is what turns "the suite runs" into "the
+    /// suite reports".
+    pub const ISVIEWER_BASE: u32 = 0x13FF_0000;
+    /// Writing this register flushes `len` bytes from the buffer.
+    pub const ISVIEWER_WRITE_LEN: u32 = 0x13FF_0014;
+    /// The text buffer.
+    pub const ISVIEWER_BUF: u32 = 0x13FF_0020;
+    /// Bytes of buffer modelled — the suite writes in `0x200` chunks.
+    pub const ISVIEWER_LEN: usize = 0x1000;
+
+    /// Is this address inside the `ISViewer` window?
+    const fn is_isviewer(addr: u32) -> bool {
+        addr >= Self::ISVIEWER_BASE && addr < Self::ISVIEWER_BASE + 0x20 + Self::ISVIEWER_LEN as u32
+    }
+
+    /// Everything the guest has written to the `ISViewer` channel.
+    #[must_use]
+    pub fn isviewer_output(&self) -> &[u8] {
+        &self.isviewer_out
+    }
+
     /// Is this address in the PI register block?
     const fn is_pi_register(addr: u32) -> bool {
         addr >= rustyn64_cart::pi::PI_BASE && addr < rustyn64_cart::pi::PI_BASE + 0x34
@@ -227,6 +260,12 @@ impl CpuBus for Bus {
             let w = self.pi.read(addr);
             return (w >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_isviewer(addr) {
+            // Readable as ordinary memory, which is what makes the suite's
+            // write-magic-then-read-back probe succeed and select this channel
+            // instead of the framebuffer console.
+            return self.isviewer[(addr - Self::ISVIEWER_BASE) as usize];
+        }
         // TODO(T-CORE-01): decode the remaining RCP register windows
         // (SP/DP/VI/AI/SI/RI/MI) and the PIF ROM/RAM.
         self.cart.pi_read(addr)
@@ -259,11 +298,31 @@ impl CpuBus for Bus {
             }
             return;
         }
+        if Self::is_isviewer(addr) {
+            self.isviewer[(addr - Self::ISVIEWER_BASE) as usize] = val;
+            return;
+        }
         // TODO(T-CORE-01): decode + dispatch the remaining RCP register windows.
         self.cart.pi_write(addr, val);
     }
 
     fn write_u32(&mut self, addr: u32, val: u32) {
+        if addr == Self::ISVIEWER_WRITE_LEN {
+            // Flushing is triggered by the LENGTH write, not by the buffer
+            // writes -- so the guest assembles a whole line and then publishes
+            // it. Capturing on buffer writes instead would interleave partial
+            // lines and make the output unreadable.
+            let n = (val as usize).min(Self::ISVIEWER_LEN);
+            let base = (Self::ISVIEWER_BUF - Self::ISVIEWER_BASE) as usize;
+            let bytes = &self.isviewer[base..base + n];
+            self.isviewer_out.extend_from_slice(bytes);
+            return;
+        }
+        if Self::is_isviewer(addr) {
+            let off = (addr - Self::ISVIEWER_BASE) as usize;
+            self.isviewer[off..off + 4].copy_from_slice(&val.to_be_bytes());
+            return;
+        }
         // **A PI register write must be a single WORD write.**
         //
         // The default `write_u32` composes four `write_u8` calls, and PI
@@ -536,5 +595,50 @@ mod pi_tests {
         // The address registers CAN be assembled, since they only latch.
         bus.write_u8(PI_DRAM_ADDR + 3, 0x18);
         assert_eq!(bus.read_u32(PI_DRAM_ADDR) & 0xFF, 0x18);
+    }
+
+    /// The `ISViewer` window must round-trip a written word, because that is
+    /// exactly the probe n64-systemtest uses to decide whether the channel
+    /// exists — `isviewer::detect()` writes `0x12345678` and reads it back. If
+    /// it fails, the suite falls back to a framebuffer console we cannot read.
+    #[test]
+    fn the_isviewer_window_round_trips_the_detection_magic() {
+        let mut bus = Bus::new();
+        bus.write_u32(Bus::ISVIEWER_BUF, 0x1234_5678);
+        assert_eq!(
+            bus.read_u32(Bus::ISVIEWER_BUF),
+            0x1234_5678,
+            "detect() must succeed or the suite picks the framebuffer instead"
+        );
+    }
+
+    /// Text is captured on the **length** write, not on the buffer writes, so a
+    /// whole line is published at once. Capturing per buffer write would
+    /// interleave partial lines and make the output unreadable.
+    #[test]
+    fn text_is_captured_on_the_length_write_not_the_buffer_writes() {
+        let mut bus = Bus::new();
+        // "OK!\n" packed big-endian, as `isviewer::pack` does.
+        bus.write_u32(Bus::ISVIEWER_BUF, u32::from_be_bytes(*b"OK!\n"));
+        assert!(
+            bus.isviewer_output().is_empty(),
+            "nothing published until the length write"
+        );
+        bus.write_u32(Bus::ISVIEWER_WRITE_LEN, 4);
+        assert_eq!(bus.isviewer_output(), b"OK!\n");
+
+        // And a second line appends rather than replacing.
+        bus.write_u32(Bus::ISVIEWER_BUF, u32::from_be_bytes(*b"two\n"));
+        bus.write_u32(Bus::ISVIEWER_WRITE_LEN, 4);
+        assert_eq!(bus.isviewer_output(), b"OK!\ntwo\n");
+    }
+
+    /// A length longer than the buffer is clamped rather than panicking — the
+    /// value comes from guest code and must not be trusted.
+    #[test]
+    fn an_oversized_length_write_is_clamped() {
+        let mut bus = Bus::new();
+        bus.write_u32(Bus::ISVIEWER_WRITE_LEN, 0xFFFF_FFFF);
+        assert_eq!(bus.isviewer_output().len(), Bus::ISVIEWER_LEN);
     }
 }
