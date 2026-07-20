@@ -122,6 +122,18 @@ dominated by one unimplemented area — the **cart address space is not mapped**
 `cart:`/`cart_memory:` read returns zero — plus 32-bit address sign-extension checks. Those are
 next; `Failed: 0` is not yet met, so v0.2.0 stays uncut.
 
+**6. COP2 encodings decoded to `Reserved`.** The VR4300 has a COP2 unit, so `MFC2`/`MTC2`/`DMFC2`/
+`DMTC2` are architecturally *valid*: with `Status.CU2` clear they raise **Coprocessor Unusable**
+(`ExcCode 11`), not Reserved Instruction (`10`) — the same distinction already drawn for COP1.
+Getting it wrong produced n64-systemtest's "Exception storm detected. Aborting.": the suite saw
+five unexpected exceptions in a row, tripped its recovery limit, and **truncated the entire run**.
+Fixing it removed the abort, so the suite now reaches its later groups — which is why the reported
+failure count *rose* (2,551 to 2,909) while the emulator strictly improved. The earlier count was
+a floor, exactly as suspected.
+
+The next distinct blocker is a panic inside the suite's own `MemoryMap::uncached`
+(`0xA000_0000` passed where `0x8000_0000` was expected) during `spmem: DMA RDRAM -> DMEM`.
+
 Wrong turns worth recording, since each cost a round and each would have taken real work to
 "fix": `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0` is correct); lost installer stores (the
 installer was never *reached*); and an early panic (the print was `init_allocator`'s legitimate

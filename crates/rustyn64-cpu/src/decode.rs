@@ -339,6 +339,18 @@ pub enum Op {
     /// **Coprocessor Unusable** when `Status.CU1` is clear rather than Reserved
     /// Instruction. Conflating the two sends the handler the wrong `ExcCode`.
     Cop1Unimplemented,
+    /// Any **COP2** encoding.
+    ///
+    /// The VR4300 has a COP2 unit, so these are architecturally *valid*
+    /// encodings. With `Status.CU2` clear they raise **Coprocessor Unusable**,
+    /// not Reserved Instruction — the same distinction as
+    /// [`Op::Cop1Unimplemented`], and for the same reason.
+    ///
+    /// Decoding them as `Reserved` is what produced n64-systemtest's
+    /// "Exception storm detected. Aborting." during `MFC2/MTC2/DMFC2/DMTC2`:
+    /// the suite expects `ExcCode 11` and got `10` five times running, which
+    /// tripped its recovery limit and truncated the whole run.
+    Cop2,
     /// `TLBR` — read the TLB entry `Index` names into the COP0 registers.
     Tlbr,
     /// `TLBWI` — write the COP0 registers into the entry **`Index`** names.
@@ -568,6 +580,8 @@ const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
 const OP_COP0: u32 = 0o20;
 const OP_COP1: u32 = 0o21;
+/// COP2.
+const OP_COP2: u32 = 0o22;
 const OP_LWC1: u32 = 0o61;
 const OP_LDC1: u32 = 0o65;
 const OP_SWC1: u32 = 0o71;
@@ -831,6 +845,13 @@ pub const fn decode(word: u32) -> Decoded {
         // decodes to `Cop1Unimplemented` rather than `Reserved`, because the
         // encodings are valid and must raise Coprocessor Unusable, not Reserved
         // Instruction.
+        // COP2. Every encoding is valid on the VR4300, so the usability check
+        // in EX decides between executing and Coprocessor Unusable. No COP2
+        // operation is implemented, which is why one arm covers the opcode.
+        OP_COP2 => Decoded {
+            op: Op::Cop2,
+            ..base
+        },
         OP_COP1 => {
             let rs = ((word >> 21) & 31) as u8;
             match rs {
@@ -1157,5 +1178,24 @@ mod tests {
             Op::Reserved,
             "funct 0x1F is still reserved -- the range starts at 0x20"
         );
+    }
+
+    /// **COP2 encodings are valid**, so they must not decode to `Reserved`.
+    ///
+    /// With `Status.CU2` clear they raise Coprocessor Unusable (`ExcCode 11`);
+    /// `Reserved` would raise `10`. n64-systemtest's `MFC2/MTC2/DMFC2/DMTC2`
+    /// test saw `10` five times running, tripped its recovery limit, and
+    /// aborted the entire run with "Exception storm detected".
+    #[test]
+    fn cop2_encodings_are_valid_not_reserved() {
+        // MFC2, DMFC2, CFC2, MTC2, DMTC2, CTC2 -- the `rs` sub-opcodes.
+        for rs in [0o00u32, 0o01, 0o02, 0o04, 0o05, 0o06] {
+            let word = (0o22 << 26) | (rs << 21);
+            assert_eq!(
+                decode(word).op,
+                Op::Cop2,
+                "COP2 rs={rs:#o} is a valid encoding"
+            );
+        }
     }
 }

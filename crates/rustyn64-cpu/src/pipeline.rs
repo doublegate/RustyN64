@@ -922,6 +922,7 @@ impl Pipeline {
             | Op::Swc1
             | Op::Sdc1
             | Op::Cop1Unimplemented => 1,
+            Op::Cop2 => 2,
             _ => return None,
         };
         let status = self.cop0.read(crate::cop0::reg::STATUS);

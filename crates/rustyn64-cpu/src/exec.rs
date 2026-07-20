@@ -699,7 +699,7 @@ pub const fn execute(
         //   0x20-0x3F extension range, inert on hardware (ledger C-8). Notably
         //   the target GPR is **not** written, so a probe reads back whatever
         //   was already there and concludes emux is absent.
-        Op::Cop1Unimplemented | Op::Cop0Extension => Ok(NOTHING),
+        Op::Cop1Unimplemented | Op::Cop0Extension | Op::Cop2 => Ok(NOTHING),
         Op::Tlbr => Ok(Executed {
             cop0: Some(Cop0Access::Tlb(TlbOp::Read)),
             ..NOTHING
