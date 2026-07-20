@@ -383,6 +383,18 @@ after an `ADD.S` retires and compare against what the test reads back. **Do not
 assume the third is right because it is the tidiest** — that reasoning has now
 failed nine times in this ticket.
 
+**Run done. FPR writes do occur**, so the `Arith` request is not being dropped
+wholesale — candidate two is weakened. (Watching all 32 raw FGRs, values change
+during the COP1 phase; pairs appearing to change together are an artefact of
+`step_to_next_edge` advancing several cycles per observation, not aliasing.)
+
+That leaves the `FR = 0` view as the live candidate, but it is **not confirmed**:
+"writes happen somewhere" is much weaker than "the write for *this* `ADD.S` lands
+where the test reads". The next probe must be *targeted*, not global — break on
+the specific `ADD.S`, then read back `fd` through both `read_s` and `read_d` and
+compare with the `0x11223344` the test sees. A global FGR watch cannot answer it,
+which is worth stating because this run looked informative and was not.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.
