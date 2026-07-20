@@ -1,19 +1,154 @@
 name: Release
+
+# Builds the `rustyn64` frontend binary for each supported target, packages it
+# with its licences and docs, and publishes a GitHub Release with checksummed
+# assets.
+#
+# Triggered by a v* tag push. workflow_dispatch is available so the packaging
+# path can be exercised without minting a tag -- in that mode the build and
+# packaging run but the publish job is skipped.
+
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
   build:
+    name: build (${{ matrix.target }})
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, ext: "",     archive: tar.gz }
+          - { os: macos-latest,   target: aarch64-apple-darwin,     ext: "",     archive: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   ext: ".exe", archive: zip }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      # Pinned to the toolchain in rust-toolchain.toml rather than @stable.
+      # rust-toolchain.toml takes precedence over the action's default anyway,
+      # so @stable meant installing one toolchain and building with another.
+      - uses: dtolnay/rust-toolchain@1.96
         with:
           targets: ${{ matrix.target }}
-      - run: cargo build --release -p rustyn64-frontend --target ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: ./.github/actions/linux-build-deps
+
+      - name: Build release binary
+        run: cargo build --release -p rustyn64-frontend --target ${{ matrix.target }}
+
+      - name: Smoke-test the binary
+        # Catches a binary that links but cannot start (missing runtime symbol,
+        # bad dynamic link). --version exits 0 without opening a window, so it
+        # runs headless on every platform. Skipped when cross-compiling, since
+        # the artifact will not execute on the build host.
+        if: matrix.target != 'aarch64-apple-darwin' || runner.arch == 'ARM64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/rustyn64${{ matrix.ext }}"
+          out="$("$bin" --version)"
+          echo "$out"
+          case "$out" in
+            "rustyn64 "*) echo "smoke test OK" ;;
+            *) echo "::error::unexpected --version output: $out"; exit 1 ;;
+          esac
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="rustyn64-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          staging="dist/$name"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/rustyn64" "$staging/"
+          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE NOTICE "$staging/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "$staging"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "rustyn64-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $staging = "dist/$name"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rustyn64.exe" $staging
+          Copy-Item README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE, NOTICE $staging
+          Compress-Archive -Path $staging -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force $staging
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish release
+    needs: build
+    # Only a real tag publishes. A manual dispatch stops after packaging so the
+    # pipeline can be exercised without creating a release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          # Name the archive types explicitly so SHA256SUMS can never checksum
+          # itself on a re-run.
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Verify tag matches Cargo.toml version
+        # A tag that disagrees with the manifest ships mislabelled artifacts.
+        run: |
+          set -euo pipefail
+          manifest=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$manifest" != "$tag" ]; then
+            echo "::error::tag v$tag does not match workspace version $manifest"
+            exit 1
+          fi
+          echo "version $manifest matches tag"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; uploading assets only"
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "RustyN64 $GITHUB_REF_NAME" \
+              --generate-notes \
+              --verify-tag
+          fi

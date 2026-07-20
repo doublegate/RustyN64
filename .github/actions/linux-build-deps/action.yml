@@ -1,0 +1,29 @@
+name: Install Linux build dependencies
+description: >
+  Install the system headers rustyn64-frontend needs on Linux. cpal pulls
+  alsa-sys and gilrs pulls libudev-sys; both build scripts shell out to
+  pkg-config, and these headers are not on the GitHub runner images. Any job
+  that compiles the workspace (not just the frontend) on Linux needs this,
+  because cargo builds the whole workspace graph.
+
+  A no-op on non-Linux runners, and idempotent on re-runs.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=()
+        for pkg in libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev; do
+          dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+        done
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "installing: ${missing[*]}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${missing[@]}"
+        else
+          echo "all build dependencies already present"
+        fi

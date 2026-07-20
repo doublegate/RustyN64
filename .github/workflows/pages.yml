@@ -1,16 +1,91 @@
-name: Deploy Pages (demo + docs)
+name: Deploy Pages (docs)
+
+# Publishes the rustdoc API reference to GitHub Pages.
+#
+# URL layout is deliberately /api/ rather than the site root: the wasm demo is
+# meant to live at / once Phase 6 lands (`to-dos/phase-6-frontend-integration/`).
+# Reserving that path now means the demo can be dropped in later without
+# breaking any published /api/ link. Until then / is a redirect to /api/.
+#
+# The demo is NOT built here yet, on purpose. `crates/rustyn64-frontend/web/`
+# contains only a Trunk.toml -- there is no index.html, no wasm-bindgen
+# dependency, and no #[wasm_bindgen(start)] entry point, so `trunk build` cannot
+# produce anything. Wiring it up is frontend work, not workflow work.
+#
+# REQUIRES: Pages must be enabled with "GitHub Actions" as the source
+# (Settings -> Pages -> Build and deployment -> Source). On a PRIVATE repo that
+# also needs a paid plan; otherwise the deploy job fails with a 404.
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
 permissions:
+  contents: read
   pages: write
   id-token: write
+
+# Pages permits one live deployment at a time. Do NOT cancel in progress: an
+# interrupted deploy can leave the site half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  build:
+    name: build rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.96
+
+      - uses: Swatinem/rust-cache@v2
+
+      # rustdoc builds the whole workspace, including rustyn64-frontend, so the
+      # alsa/udev headers its build scripts need must be present.
+      - uses: ./.github/actions/linux-build-deps
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+      - name: Assemble site
+        run: |
+          set -euo pipefail
+          mkdir -p _site/api
+          cp -r target/doc/. _site/api/
+          # cargo doc emits no top-level index for a virtual workspace, so point
+          # both / and /api/ at the crate that is the natural entry point.
+          cat > _site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>RustyN64</title>
+          <meta http-equiv="refresh" content="0; url=./api/rustyn64_core/index.html">
+          <link rel="canonical" href="./api/rustyn64_core/index.html">
+          <p><a href="./api/rustyn64_core/index.html">RustyN64 API documentation</a></p>
+          HTML
+          cp _site/index.html _site/api/index.html
+          sed -i 's|\./api/rustyn64_core|./rustyn64_core|g' _site/api/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
   deploy:
+    name: deploy
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      # Build the wasm demo (trunk) at / and the rustdoc at /api/, then deploy ONE artifact.
-      # GOTCHA: keep web/Trunk.toml's wasm-bindgen pin == Cargo.lock library version.
+      - id: deployment
+        uses: actions/deploy-pages@v4
