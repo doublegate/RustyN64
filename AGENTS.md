@@ -123,6 +123,39 @@ per-feature clippy jobs, so feature-gated code is currently unlinted.
 Linux frontend needs system deps (wgpu/winit/cpal). Arch/CachyOS:
 `sudo pacman -S --needed libxkbcommon wayland alsa-lib systemd-libs`
 
+## Shipping: every change goes through a PR
+
+**Never push to `main`.** All work lands via pull request so the review bots
+(Copilot, Gemini Code Assist) can comment. The full ceremony, in order:
+
+1. **Branch** off `main` — `<type>/<short-desc>`. Commit as normal (conventional
+   commits, one logical change).
+2. **Open the PR.** Body states motivation, the concrete changes, and which gates
+   were run locally.
+3. **Wait for CI *and* the bots.** Bots comment asynchronously and usually land
+   after the first CI leg finishes.
+4. **Bot-comment ceremony — every comment gets adjudicated, none are ignored:**
+   - Read each comment and decide: **adopt** (it is right), **reject** (it is
+     wrong or does not apply here), or **adopt with modification**.
+   - Apply the adopted changes as follow-up commits on the branch.
+   - **Reply to every comment individually** with the decision and the reasoning.
+     A rejection needs a real reason — "this contradicts ADR 0006 because …", not
+     "won't fix". A bot being wrong about this codebase is common and worth saying
+     why, since the reasoning is what a human reviewer reads later.
+   - **Mark each comment resolved** once it has been adjudicated and answered.
+5. **Re-run to green.** Pushing fixes re-triggers CI; wait for the final green,
+   not the first one.
+6. **Squash-merge** into `main` once green and the ceremony is complete.
+7. **Verify, then delete the branch.** Confirm the squashed commit is on `main`
+   and the tree matches before deleting — deletion is only safe after the change
+   is provably incorporated. Auto-delete-on-merge is deliberately OFF so this
+   check cannot be skipped.
+
+A bot suggestion is an input, not an instruction. Several will conflict with
+decisions recorded in the ADRs (the reverse-order pipeline cascade, the
+derive-don't-increment rule, deliberately reproduced hardware errata). Reject
+those with the citation.
+
 ## Conventions
 
 - A chip change touches the chip code AND its `docs/<chip>.md` in the same commit.
