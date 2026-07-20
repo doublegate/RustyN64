@@ -639,18 +639,39 @@ founded — `remainder = (int32_t)(dividend - quotient * divisor)` computed in
 64-bit. What we do there is a **guess**, recorded as such in
 `docs/accuracy-ledger.md` C-5 rather than left looking authoritative.
 
-### The FP multiplication bug — **deferred to Sprint 3**
+### The FP multiplication bug — modelled, deliberately not reproduced
+
+**Detectable but not reproducible.** The trigger is documented
+(`n64brew_wiki/markdown/VR4300.md`): a multiply whose *preceding* multiply had a
+NaN, zero or infinity operand *"may produce unexpected results"*. GCC's
+`-mfix4300` works around it by inserting two `nop`s after every
+`MUL.S`/`MUL.D`/`MULT`. The affected steppings are documented too — NUS-01 and
+NUS-02 (Japan only) and NUS-03 (the first US revision).
+
+**What the corrupted output actually is has never been characterised.** It sits
+in the timing supplement's undocumented-constants list with only trigger
+conditions known.
+
+So `fpu::Stepping` models *which* console this is, and `mul_erratum_triggers`
+models *when* the erratum would fire — but selecting `Stepping::Early` changes no
+arithmetic, because there is nothing documented to change it to. Inventing a
+plausible wrong value would be exactly the fitted-constant failure the accuracy
+ledger's preamble forbids: every later result built on it would stop being
+evidence. Accuracy-ledger **U-7**.
+
+The switch exists now so that when the output *is* characterised, it goes in one
+place rather than being threaded through afterwards.
+
+#### Historical note
 
 Board-revision conditional: NUS-01, NUS-02 and NUS-03 only, fixed in later
 steppings. A `mul` in a branch delay slot can corrupt a *subsequent* multiply
 when operands include NaN, zero or infinity. GCC's `-mfix4300` inserts two `nop`s
 after every `mul.s`/`mul.d`/`mult`.
 
-Not implemented: it needs COP1, which is Sprint 3. The exact corrupted output is
-also not documented — only the trigger conditions and the affected revisions —
-so it will need characterising against hardware, and belongs in the accuracy
-ledger when it lands. Modelling it will also require the console revision to be a
-machine parameter, since unlike the others this erratum is **not** universal.
+That last point — the console revision as a machine parameter — is now
+`fpu::Stepping`, and the missing output is ledger **U-7**. What remains is a
+hardware characterisation, not an implementation.
 
 `PRId` correlates: processor id always `0x0B`; revision `0x10` (1.0, early units)
 or `0x22` (2.2, later) on retail, `0x40` on iQue.

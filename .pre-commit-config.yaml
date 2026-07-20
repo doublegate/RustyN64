@@ -22,6 +22,15 @@ repos:
         language: system
         pass_filenames: true
 
+      # A `|||||||` diff3 marker once reached a commit and would have shipped
+      # into the release notes. A stray marker line is valid Markdown and valid
+      # in a comment, so nothing downstream complains -- it needs its own check.
+      - id: no-conflict-markers
+        name: block merge-conflict markers
+        entry: scripts/check_no_conflict_markers.sh
+        language: system
+        pass_filenames: false
+
       # A commercial N64 ROM is 4-64 MB. Nothing legitimately committed to this
       # repo is that big, so a size ceiling catches renamed or unknown-extension
       # ROMs that the extension check would miss.

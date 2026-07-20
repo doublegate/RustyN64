@@ -59,10 +59,19 @@ Architecture (the load-bearing facts — read `docs/architecture.md`):
 
 ## Current state (read `docs/STATUS.md` first)
 
-**v0.1.0 SKELETON.** The workspace compiles and CI is green *on stubs*. The Bus, the fractional
-scheduler, ROM-format detection (`.z64`/`.n64`/`.v64`), and the harness scaffolding are real.
-The VR4300 interpreter, the LLE RSP, the LLE RDP, AI audio, and PI/SI DMA are **LLE-shaped
-stubs** — accuracy work has not started. Do not assume any chip executes instructions.
+**Phase 1 in progress; tagged release still v0.1.0.** The **VR4300 executes instructions**: the
+canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR 0007), the MIPS III integer
+set, COP0, the TLB + micro-ITLB, the exception model, interrupts, `CACHE`, COP1 (control,
+register file and arithmetic), and **PI DMA** — the last pulled forward from Phase 5 because
+n64-systemtest loads its own ELF through it.
+
+**The RSP, RDP and AI are still LLE-shaped stubs.** Do not assume any chip *other than the CPU*
+executes anything. A green `cargo test` still does not mean a subsystem works — check
+`docs/STATUS.md`.
+
+**Phase 1's exit criterion is not met**: n64-systemtest runs 6M+ instructions with no exceptions
+but does not reach its reporting stage, so there is no `Failed: 0`. Do **not** tag v0.2.0 until
+there is — the criterion is an oracle number, and that is the point of it.
 
 ## Where things live
 
@@ -193,6 +202,16 @@ in this repo, which is worth fixing even when the suggested wording is not.
 ## Conventions
 
 - A chip change touches the chip code AND its `docs/<chip>.md` in the same commit.
+- **A comment stating a rule is not an implementation of it.** Four times in Sprints 2–3 (`CACHE`
+  Index/Hit, `DMFC1` "ignores FR", the PI byte-write RMW, `DIV` on `inf/0`) the comment was right
+  and the code disagreed — and no test failed, because a wrong comment breaks nothing. If a rule is
+  worth a comment, write the test that fails without it (`docs/engineering-lessons.md` §3.3c).
+- **"Undocumented" is a claim about a document, and it decays.** Three files asserted the exception
+  epilogue cost was undocumented while it sits in the opening sentence of the section they cited.
+  Cite the pages actually read; re-open the manual before relying on such a record (§3.3b).
+- **Never invent a value the documentation does not give.** The FP multiplication erratum's trigger
+  is documented and its *output* is not, so `Stepping::Early` changes no arithmetic (ledger U-7).
+  A fitted constant makes every later result built on it stop being evidence.
 - **Never increment a cycle counter except `master_ticks`.** Every other cycle position is a
   derived accessor (ADR 0006). A new `cycles`/`ticks` field on a chip struct needs justification
   in review; the one legitimate use is a *retired-work* tally that nothing schedules against. The

@@ -9,6 +9,88 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — a merge-conflict-marker guard (CI + pre-commit)
+
+A `|||||||` diff3 marker was committed into `CHANGELOG.md` during a rebase: the resolution handled
+`<<<<<<<`, `=======` and `>>>>>>>` but not the diff3 middle section. **It would have shipped into
+the release notes** — a stray marker line is valid Markdown, and valid inside a comment, so
+nothing downstream complained.
+
+`scripts/check_no_conflict_markers.sh` now runs in CI and pre-commit, matching the three-layer
+shape the commercial-ROM guard already uses: the local hook can be skipped with `--no-verify`, the
+CI job cannot.
+
+### Added — FPU arithmetic (T-13-002)
+
+`ADD`/`SUB`/`MUL`/`DIV` in single and double precision, plus `ABS`/`NEG`, as pure functions that
+return a value **and the `FCSR` flags they raised** — rather than mutating `FCSR`, which belongs to
+`Cop1Control`. An arithmetic helper that reached into it would have to own it.
+
+Three distinctions that are easy to collapse, each pinned:
+
+- **Signalling vs quiet NaN.** Only a signalling NaN raises Invalid. IEEE puts the quiet bit at the
+  top of the mantissa, so `is_nan()` cannot tell them apart, and treating every NaN as signalling
+  raises Invalid on ordinary quiet-NaN propagation. The bit sits at a different position for `f64`,
+  so the double case is not a free consequence of the single one.
+- **`x/0` vs `0/0`.** `DivByZero` and Invalid are different flags and a handler distinguishes them;
+  `0/0` is an undefined form, not a division fault. `x/0` is also *not* an overflow, despite the
+  infinite result.
+- **A NaN from non-NaN inputs** — `inf - inf`, `0 * inf` — is Invalid even though neither operand
+  was a NaN.
+
+Flags populate **both** the `Cause` and sticky `Flags` fields, since hardware sets them together;
+writing only one leaves software unable to distinguish "raised now" from "raised at some point".
+
+**`C.cond.fmt` derives all sixteen conditions from the bit encoding** rather than enumerating
+mnemonics. The 4-bit field is systematic (UM Table 7-11): bit 3 raises Invalid when unordered, and
+bits 2/1/0 select less / equal / unordered. So `C.EQ` is 2, `C.OLT` is 4, `C.OLE` is 6, and every
+signalling variant is its ordinary form plus 8. Sixteen hand-written cases invites getting one
+wrong; deriving them makes all sixteen correct or none.
+
+Two things that fall out of the encoding and are worth stating: **`Greater` matches no bit** —
+`fs > ft` is "none of less, equal or unordered", which is why three condition bits suffice — and
+**the signalling forms raise Invalid on a merely quiet NaN**, which is the entire difference
+between `C.EQ` and `C.SEQ` and means the quiet/signalling test used elsewhere is not sufficient
+here on its own.
+
+**Conversions** (`CVT`, and the shared rounding the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` forms use)
+carry one VR4300-specific rule worth calling out. UM §7.5.2:
+
+> *"When converting a long integer to a single- or double-precision floating-point number
+> (`CVT.[S,D].L`), bits 63:55 of the 64-bit integer must be all zeroes or ones, otherwise the
+> VR4300 processor raises a floating-point instruction exception."*
+
+That is a **hardware limitation, not IEEE behaviour** — the value is representable and the
+processor simply declines. Converting it anyway produces a *correct* number where hardware traps,
+so software's fixup path never runs and the divergence surfaces far downstream from its cause. It
+raises `Unimplemented` (`FCSR` bit 17), which is deliberately **not** Invalid: "this processor
+cannot do this" is a different thing from "the operation is undefined", and conflating them sends
+the handler down the numerical-error path.
+
+Two implementation notes that bit during development:
+
+- Rust's float→int cast **saturates**, so `i32::MAX as f32 as i32` is `i32::MAX` again and a
+  round-trip inexactness check silently never fires for exactly the value most likely to be
+  inexact. The checks go through `f64` instead.
+- `Nearest` is **ties-to-even**, not the round-half-away-from-zero that most `round` functions
+  implement and that no MIPS mode selects. This crate is `no_std`, so `trunc`/`floor`/`ceil`/
+  `round_ties_even` are implemented here rather than pulling in `libm` for four functions.
+
+**The FP multiplication erratum is modelled, deliberately not reproduced.** `fpu::Stepping` says
+which console this is, and `mul_erratum_triggers` says when the erratum would fire — but selecting
+the affected stepping changes **no arithmetic**, because *what wrong value the erratum produces
+has never been characterised*. The trigger is documented, the affected steppings are documented,
+the output is not; it sits in the timing supplement's undocumented-constants list.
+
+Inventing a plausible wrong value would be exactly the fitted-constant failure the ledger's
+preamble forbids — every later result built on it would stop being evidence. Recorded as ledger
+**U-7**. The switch exists now so that when the output *is* characterised it goes in one place
+rather than being threaded through afterwards.
+
+Four of five mutations fail the suite. The fifth — `ABS` written as `f32::abs` rather than an
+explicit sign-bit clear — is **equivalent**, including for NaN payloads, and is documented as a
+readability choice rather than implied to be load-bearing.
+
 ### Added — the `ISViewer` result channel (T-12-007, partial)
 
 n64-systemtest reports results through `ISViewer`, a flashcart/emulator convention at

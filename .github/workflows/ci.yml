@@ -164,6 +164,18 @@ jobs:
       # also catches a ROM that slipped in via an earlier commit.
       - run: bash scripts/check_no_roms.sh
 
+  no-conflict-markers:
+    name: no conflict markers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # A `|||||||` diff3 marker was once committed into CHANGELOG.md and would
+      # have shipped into the release notes: the resolution handled the three
+      # familiar markers but not the diff3 middle section, and a stray line is
+      # valid Markdown so nothing downstream complained.
+      - run: bash scripts/check_no_conflict_markers.sh
+
   wasm-bindgen-pin:
     name: trunk pin matches Cargo.lock
     runs-on: ubuntu-latest
