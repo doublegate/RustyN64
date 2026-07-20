@@ -151,21 +151,21 @@ front of it, and the full 32-/64-bit segment map.
 
 **Acceptance criteria:**
 
-- [ ] 32 entries, each mapping an even/odd page pair; page sizes 4K…16M via the seven legal
+- [x] 32 entries, each mapping an even/odd page pair; page sizes 4K…16M via the seven legal
       `PageMask` encodings of UM Table 5-7 p. 149. An illegal mask is **undefined** per the
       manual — pick a behaviour, comment it, ledger it.
-- [ ] Match rule: `VPN2` match **and** (`G` **or** `ASID` match). **The `V` bit does not
+- [x] Match rule: `VPN2` match **and** (`G` **or** `ASID` match). **The `V` bit does not
       participate in matching** (UM §5.4.9 p. 155) — a V-checking matcher passes ordinary tests
       and gets TLB-shutdown wrong.
-- [ ] `G` on write is `EntryLo0.G AND EntryLo1.G` (UM Fig. 5-10 p. 145).
-- [ ] `TLBP` sets `Index.P` (bit 31) on a miss. What the **low** bits hold on a miss is
+- [x] `G` on write is `EntryLo0.G AND EntryLo1.G` (UM Fig. 5-10 p. 145).
+- [x] `TLBP` sets `Index.P` (bit 31) on a miss. What the **low** bits hold on a miss is
       undocumented (ledger U-2) — pin it with n64-systemtest, do not guess it into the spec.
-- [ ] `TLBWI` uses `Index`, `TLBWR` uses `Random`; `TLBWR` cannot touch wired entries but
+- [x] `TLBWI` uses `Index`, `TLBWR` uses `Random`; `TLBWR` cannot touch wired entries but
       **`TLBWI` can** (UM §5.4.4 p. 150).
-- [ ] **TLB shutdown** on multiple matching entries: `Status.TS ← 1`, TLB unusable, reset
+- [x] **TLB shutdown** on multiple matching entries: `Status.TS ← 1`, TLB unusable, reset
       required. It *"can occur even when a matching entry is invalid"* (UM Fig. 6-6 p. 167),
       which is the same fact as the `V`-not-matching rule seen from the other side.
-- [ ] The 32-bit segment map: `kuseg`/`kseg0`/`kseg1`/`ksseg`/`kseg3` with correct
+- [x] The 32-bit segment map: `kuseg`/`kseg0`/`kseg1`/`ksseg`/`kseg3` with correct
       mapped/unmapped and cached/uncached attributes; `kseg0`/`kseg1` PA = VA − base. This
       replaces Sprint 1's `addr.rs` segment stripping with the real thing.
 - [ ] The 64-bit map including `xkphys`, where **only `C = 2` / window 2 is uncached** and all
@@ -173,8 +173,8 @@ front of it, and the full 32-/64-bit segment map.
       coherency protocol, so the VR4400's finer encodings collapse.
 - [ ] `Status.KX`/`SX`/`UX` gate 64-bit addressing and select the **XTLB** refill vector for the
       mode the faulting address belongs to.
-- [ ] An address outside any valid region raises Address Error (UM §6.4.7 p. 186).
-- [ ] The **micro-ITLB is modelled separately** from the JTLB, with its 3-PCycle refill stall
+- [x] An address outside any valid region raises Address Error (UM §6.4.7 p. 186).
+- [x] The **micro-ITLB is modelled separately** from the JTLB, with its 3-PCycle refill stall
       (UM §4.6.2 p. 107). A micro-TLB miss is a *stall*; a JTLB miss is an *exception*. Collapsing
       the two does not approximate the cost — it deletes the structure the cost occurs in.
       **If this is descoped, it must be descoped explicitly here**, not by omission.

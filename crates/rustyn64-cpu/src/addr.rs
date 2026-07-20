@@ -1,4 +1,4 @@
-//! Virtual → physical address translation (T-11-006).
+//! Virtual → physical address translation (T-11-006, T-12-004).
 //!
 //! Every address the CPU hands to the [`crate::Bus`] is **physical**. This is
 //! where that becomes true: the MIPS segment map is applied here, inside the CPU
@@ -18,10 +18,15 @@
 //! ROM entry point of `0x8000_1000` and a hardware register at `0xA430_0000`
 //! both work without any TLB.
 //!
-//! The two mapped segments are the TLB's job (Phase 1 Sprint 2). Until then they
-//! are passed through with their low 29 bits, which is right for the identity
-//! mappings early boot code uses and wrong for anything else — see
-//! [`translate`].
+//! The two mapped segments go through the TLB ([`translate_via`]).
+//!
+//! An earlier `translate` masked mapped addresses to their low 29 bits — right
+//! for the identity mappings early boot code uses, wrong for anything else. It
+//! was **deleted** rather than kept "for unmapped-only paths" once nothing
+//! called it: an unused function that quietly gets translation wrong is exactly
+//! the inert-API hazard `docs/engineering-lessons.md` §3.2 describes.
+
+use crate::tlb::{Tlb, TlbFault};
 
 /// Whether an access goes through the caches.
 ///
@@ -46,31 +51,66 @@ pub struct Physical {
     pub cached: Cached,
 }
 
-/// Translate a virtual address to physical.
+/// Which segment a 32-bit virtual address falls in, and how it translates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Segment {
+    /// Unmapped: physical address is the virtual one minus the segment base.
+    Direct {
+        /// The physical address.
+        addr: u32,
+        /// Whether the access is cached.
+        cached: Cached,
+    },
+    /// TLB-mapped: KUSEG, KSSEG or KSEG3. The TLB decides the physical address
+    /// *and* the cacheability, from the matching entry's `C` field.
+    Mapped,
+}
+
+/// Classify a virtual address by segment (UM §5.2.4, Tables 5-3/5-4).
 ///
-/// KSEG0/KSEG1 are unmapped and become a subtraction. KUSEG and KSEG3 are
-/// TLB-mapped; until the TLB lands (Sprint 2) they are masked to their low 29
-/// bits, which happens to be correct for the identity mappings boot code uses
-/// and is **wrong in general** — a TLB miss must raise a refill exception rather
-/// than silently aliasing. `TODO(T-12)`.
+/// This is the half of translation that does **not** need the TLB, split out so
+/// callers with no TLB (and the many unmapped accesses) do not pay for one.
 #[must_use]
-pub const fn translate(vaddr: u64) -> Physical {
-    // 32-bit mode sign-extends, so a 64-bit register holding a KSEG0 address
-    // reads as 0xFFFF_FFFF_8000_xxxx. Take the low 32 bits before deciding.
+pub const fn segment(vaddr: u64) -> Segment {
     let v = vaddr as u32;
     match v {
-        0x8000_0000..=0x9FFF_FFFF => Physical {
+        0x8000_0000..=0x9FFF_FFFF => Segment::Direct {
             addr: v - 0x8000_0000,
             cached: Cached::Yes,
         },
-        0xA000_0000..=0xBFFF_FFFF => Physical {
+        0xA000_0000..=0xBFFF_FFFF => Segment::Direct {
             addr: v - 0xA000_0000,
             cached: Cached::No,
         },
-        _ => Physical {
-            addr: v & 0x1FFF_FFFF,
-            cached: Cached::Yes,
-        },
+        // KUSEG, KSSEG and KSEG3 are all TLB-mapped.
+        _ => Segment::Mapped,
+    }
+}
+
+/// Translate a virtual address, consulting the TLB for the mapped segments.
+///
+/// # Errors
+///
+/// [`TlbFault`] when a mapped access misses, hits an invalid entry, or stores to
+/// a non-writable page. Unmapped segments cannot fail.
+pub fn translate_via(
+    tlb: &mut Tlb,
+    vaddr: u64,
+    asid: u8,
+    store: bool,
+) -> Result<Physical, TlbFault> {
+    match segment(vaddr) {
+        Segment::Direct { addr, cached } => Ok(Physical { addr, cached }),
+        Segment::Mapped => {
+            let t = tlb.lookup(vaddr, asid, store)?;
+            Ok(Physical {
+                addr: t.addr,
+                // Cacheability of a mapped page comes from its entry's `C`
+                // field, not from the segment -- which is why `Cached` has to be
+                // returned from here rather than derived from the address later.
+                cached: if t.uncached { Cached::No } else { Cached::Yes },
+            })
+        }
     }
 }
 
@@ -78,14 +118,23 @@ pub const fn translate(vaddr: u64) -> Physical {
 mod tests {
     use super::*;
 
+    /// Resolve an unmapped address, panicking if it is mapped — a test helper,
+    /// so the assertions below stay about addresses rather than about `match`.
+    fn direct(vaddr: u64) -> Physical {
+        match segment(vaddr) {
+            Segment::Direct { addr, cached } => Physical { addr, cached },
+            Segment::Mapped => panic!("{vaddr:#X} is TLB-mapped, not direct"),
+        }
+    }
+
     /// KSEG0 and KSEG1 address the *same* physical memory and differ only in
     /// cacheability. Emitting different physical addresses for them is a classic
     /// bug that makes uncached register writes land in RDRAM.
     #[test]
     fn kseg0_and_kseg1_alias_the_same_physical_memory() {
         for phys in [0u32, 0x1000, 0x0080_0000, 0x0400_0000, 0x1000_0000] {
-            let k0 = translate(u64::from(0x8000_0000 + phys));
-            let k1 = translate(u64::from(0xA000_0000 + phys));
+            let k0 = direct(u64::from(0x8000_0000 + phys));
+            let k1 = direct(u64::from(0xA000_0000 + phys));
             assert_eq!(k0.addr, phys, "KSEG0 + {phys:#X}");
             assert_eq!(k1.addr, phys, "KSEG1 + {phys:#X}");
             assert_eq!(k0.cached, Cached::Yes);
@@ -93,31 +142,53 @@ mod tests {
         }
     }
 
-    /// The addresses that actually matter for bring-up.
+    /// The addresses that actually matter for bring-up. All unmapped, which is
+    /// why early boot works before any TLB entry exists.
     #[test]
     fn the_boot_and_register_addresses_translate_correctly() {
         // basic.z64's entry point.
-        assert_eq!(translate(0x8000_1000).addr, 0x1000);
+        assert_eq!(direct(0x8000_1000).addr, 0x1000);
         // n64-systemtest's entry point.
-        assert_eq!(translate(0x800A_15E8).addr, 0x000A_15E8);
+        assert_eq!(direct(0x800A_15E8).addr, 0x000A_15E8);
         // The PIF RAM word basic.z64 writes before its first test.
-        assert_eq!(translate(0xBFC0_07FC).addr, 0x1FC0_07FC);
+        assert_eq!(direct(0xBFC0_07FC).addr, 0x1FC0_07FC);
         // Cart domain 1, where a ROM is memory-mapped.
-        assert_eq!(translate(0xB000_0000).addr, 0x1000_0000);
+        assert_eq!(direct(0xB000_0000).addr, 0x1000_0000);
         // The RSP DMEM base.
-        assert_eq!(translate(0xA400_0000).addr, 0x0400_0000);
+        assert_eq!(direct(0xA400_0000).addr, 0x0400_0000);
     }
 
     /// A 64-bit register holding a 32-bit address is sign-extended, so KSEG0
-    /// arrives as `0xFFFF_FFFF_8xxx_xxxx`. Translating that as a 64-bit value
+    /// arrives as `0xFFFF_FFFF_8xxx_xxxx`. Classifying that as a 64-bit value
     /// rather than its low half sends it to the wrong segment.
     #[test]
     fn a_sign_extended_32_bit_address_still_translates() {
-        assert_eq!(translate(0xFFFF_FFFF_8000_1000).addr, 0x1000);
+        assert_eq!(direct(0xFFFF_FFFF_8000_1000).addr, 0x1000);
         assert_eq!(
-            translate(0xFFFF_FFFF_A400_0000).cached,
+            direct(0xFFFF_FFFF_A400_0000).cached,
             Cached::No,
             "sign extension must not lose the segment"
         );
+    }
+
+    /// KUSEG, KSSEG and KSEG3 are **mapped** — the TLB decides, and a miss
+    /// raises. Before T-12-004 they were silently masked to their low 29 bits,
+    /// which aliased every unmapped access onto real memory instead of faulting.
+    #[test]
+    fn the_mapped_segments_are_reported_as_mapped_not_masked() {
+        for v in [
+            0x0000_0000u64, // KUSEG
+            0x0000_1000,
+            0x7FFF_FFFF,
+            0xC000_0000, // KSSEG
+            0xE000_0000, // KSEG3
+            0xFFFF_FFFF,
+        ] {
+            assert_eq!(
+                segment(v),
+                Segment::Mapped,
+                "{v:#X} must go through the TLB"
+            );
+        }
     }
 }
