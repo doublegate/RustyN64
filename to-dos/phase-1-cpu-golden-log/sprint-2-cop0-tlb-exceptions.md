@@ -447,6 +447,38 @@ short of asking it.
    which symbol owns this address, and was this function ever executed. `readelf` and a
    fourteen-entry control-transfer trace did more than 100M extra instructions ever did.
 
+   **T-12-007 status after the unblock.** The suite boots, runs its full corpus, and reports.
+   Five defects fixed, all oracle-surfaced:
+
+   | # | Defect | Oracle signature |
+   | --- | --- | --- |
+   | 1 | COP0 CO `funct` 0x20-0x3F raised RI | suite never printed a line |
+   | 2 | `IP7` latched at power-on (equality, not edge) | `Cause = 0x8010` vs `0x10` |
+   | 3 | `Context`/`XContext` gated on TLB exceptions | `Context = 0x0` vs `0x0052_0000` |
+   | 4 | `SP_STATUS` unmodelled, read as 0 | RSP STATUS `0x0` vs `0x1` |
+   | 5 | Cartridge never inserted, only its RDRAM image | every cart read `0x0` |
+
+   `StartupTest` and the whole unaligned-access group pass. **`Failed: 0` is not met** — the run
+   still ends in "Exception storm detected. Aborting."
+
+   **Remaining work, in yield order.** These are enumerable now, which they were not before:
+
+   1. **PI/cart bus semantics** (the largest cluster). Sub-word read latching — a 16-bit read at
+      `cart[1]` gives `0x4567` where hardware gives `0x89AB`; cart-address auto-increment after
+      DMA; `PI_STATUS.IOBUSY` during a write; and the documented **write-latch decay**, where a
+      value written to cart ROM stays briefly visible then fades. We drop cart writes entirely, so
+      that test now fails in the *opposite* direction, which is progress worth noting.
+   2. **32-bit address sign-extension.** `LW/SW with address not sign extended` expect an
+      `AdEL` that we do not raise: `segment()` truncates with `vaddr as u32`, so
+      `0x0000_0000_8000_0000` is treated as KSEG0. The check must be **gated on 64-bit addressing
+      mode** (`Status.KX`/`SX`/`UX`), which is not modelled yet — landing it ungated would fault
+      legitimate sign-extended kernel addresses, so `KX` comes first.
+   3. **The exception storm.** Whatever drives the abort likely masks further tests; worth
+      diagnosing before grinding through the cart list, since the abort may be truncating the run.
+
+   Item 3 is the one to take next: an abort can hide more than it reports, and the failure counts
+   above are a floor, not a total.
+
 Disassembling `0x8018_32E8` separated these in one step. Note what made it possible: the
 **instruction word**, not the address. `0x42800060` is meaningless as an address and unambiguous
 as an encoding.
