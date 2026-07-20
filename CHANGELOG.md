@@ -9,6 +9,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — README and `.gitignore` brought up to date
+
+`README.md` described the superseded fractional scheduler, claimed Phase 1 had not started, and
+carried a "no chip emulates anything" banner that stopped being true several tickets ago. It now
+describes the canonical 187.5 MHz clock, the five-stage pipeline, the integer set, COP0, the TLB
+and the exception model — and is equally explicit that **everything else is still a stub** and
+that a green test run does not mean a subsystem works. The accuracy table reports the one gate
+that produces a real number (`basic.z64`, 5/5) instead of asserting that none do, and points at
+the accuracy ledger. Release status now names the v0.1.0 tag and the v0.2.0 cut criterion rather
+than saying no release has been cut.
+
+Kept deliberately out of the README: per-release detail. That belongs here.
+
+`.gitignore` gained `*.preedit` / `*.pre` (snapshots taken before instrumenting a file, so cleanup
+restores a known copy rather than discarding unrelated uncommitted work) and `um.txt` (the
+extracted VR4300 manual text — a large derived artifact whose extraction is *not* reproducible by
+the obvious command, since `pdftotext` scrambles that PDF and only `mutool` works, which is
+precisely why someone would be tempted to commit it).
+
 ### Added — `CACHE` executes instead of raising (T-12-005, partial)
 
 `CACHE` decoded to `Reserved` and therefore **raised**. IPL3 and libdragon both issue it, so that

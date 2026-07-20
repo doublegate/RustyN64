@@ -48,6 +48,20 @@ CLAUDE.local.md
 # Agent tooling (Master-Claude writes *.mc-bak on every mc-apply/retrofit run)
 *.mc-bak
 
+# Pre-edit snapshots taken before instrumenting a file, so cleanup is a restore
+# of a known copy rather than a `git checkout` that would also discard unrelated
+# uncommitted work.
+*.preedit
+*.pre
+
+# Extracted reference text. The VR4300 User's Manual is a 600-page PDF under
+# `n64brew_wiki/` (itself gitignored); `mutool draw -F txt` output is a large
+# derived artifact that is cheap to regenerate and must not be committed --
+# `pdftotext` scrambles this file, so the extraction is not reproducible by the
+# obvious command and someone will be tempted to commit the result.
+/um.txt
+*.um.txt
+
 # Node (markdownlint-cli is run via npx; guard against a local install)
 node_modules/
 package-lock.json

@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.1.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97-orange.svg" alt="Rust: 1.97"></a><br>
-  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-v0.1.0%20SKELETON-yellow.svg" alt="Status: skeleton"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/accuracy-not%20started-lightgrey.svg" alt="Accuracy: not started"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
+  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%201%20in%20progress-yellow.svg" alt="Status: Phase 1 in progress"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/accuracy-basic.z64%205%2F5-yellow.svg" alt="Accuracy: basic.z64 5/5"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
 
@@ -22,13 +22,16 @@ ParaLLEl accuracy bar: one canonical 187.5 MHz master-clock timeline co-scheduli
 compute engines, a Bus that owns everything mutable, low-level emulation of the programmable
 coprocessors, and a hard determinism contract.
 
-> ### Status: v0.1.0 SKELETON — not playable
+> ### Status: Phase 1 in progress — not playable
 >
-> The workspace compiles and all eight CI jobs are green across Linux, macOS, and Windows. That
-> means **the architecture is in place and 42 unit tests pass — not that any chip emulates
-> anything.** The VR4300 interpreter, the LLE RSP, the LLE RDP, AI audio, and PI/SI DMA are all
-> stubs; the `rustyn64` binary opens a shell and presents a test pattern. Stubs are no-op
-> `TODO(...)` bodies rather than `todo!()` panics, so nothing fails loudly.
+> **The VR4300 executes instructions.** The canonical master clock, the five-stage pipeline, the
+> MIPS III integer set, COP0, the TLB and the exception model are implemented, and Dillon's
+> `basic.z64` runs end to end and passes 5/5.
+>
+> **Everything else is still a stub.** The LLE RSP, the LLE RDP, AI audio, and PI/SI DMA do not
+> execute anything; the FPU has control registers but no arithmetic; the `rustyn64` binary opens
+> a shell and presents a test pattern. Stubs are no-op `TODO(...)` bodies rather than `todo!()`
+> panics, so **a green test run does not mean a subsystem works**.
 >
 > **[`docs/STATUS.md`](docs/STATUS.md) is the single source of truth.** Read it before assuming
 > any feature works.
@@ -73,17 +76,21 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 
 | Feature | Status |
 | --- | --- |
-| **Fractional master-clock scheduler** | **Working** — 3:2 accumulator, seeded power-on phase, reset-preserves-phase; pinned by unit tests |
+| **Canonical 187.5 MHz master clock** | **Working** — one incremented counter; CPU/RCP/`Count` derived from it, seeded power-on phase, reset-preserves-phase; pinned by a residue-invariant test (ADR 0006) |
 | **Bus owns all mutable state** | **Working** — RDRAM + every chip + MI lines; five narrow per-chip traits; `core::mem::take` split-borrow stepping |
 | **One-directional crate graph** | **Working** — exactly one permitted chip-to-chip edge (`rdp` → `cart`, for `RdramBus`) |
 | **ROM format handling** | **Working** — `.z64` / `.n64` / `.v64` detection and byte-order normalisation, header parse, save-type and CIC enums |
-| **VR4300 CPU (MIPS III, TLB, FPU)** | Stub — Phase 1 |
+| **VR4300 five-stage pipeline** | **Working** — four inter-stage latches, reverse cascade, operand bypass, imprecise load interlock, delay slots and branch-likely (ADR 0007) |
+| **VR4300 MIPS III integer set** | **Working** — incl. the 64-bit `D*` forms, unaligned `LWL`/`LWR`/`LDL`/`LDR`, `LL`/`SC`, and the documented errata reproduced rather than corrected |
+| **COP0, exceptions, interrupts** | **Working** — full register file, exception epilogue and vectors, `ERET`, `Count`/`Compare` timer, MI interrupt line |
+| **TLB + instruction micro-TLB** | **Working** — 32 joint entries, page pairs, 4K–16M sizes, TLB shutdown; a micro-TLB miss is a stall, a JTLB miss an exception |
+| **VR4300 FPU (COP1)** | Control registers only — arithmetic is Phase 1 Sprint 3 |
 | **LLE RSP (scalar + vector units)** | Stub — Phase 2 |
 | **LLE RDP + VI scan-out** | Stub — Phase 3 |
 | **AI audio** | Stub — Phase 4 |
 | **PI/SI DMA, PIF/CIC boot, saves** | Stub — Phase 5 |
 | **egui shell** | Partial — the shell, input map, and framebuffer plumbing are real; it presents a test pattern |
-| **Test-ROM oracle** | **Staged, not wired** — n64-systemtest committed; krom, dillon-n64-tests, 240p, and a 66-ROM commercial corpus staged locally |
+| **Test-ROM oracle** | **Partly wired** — Dillon's `basic.z64` runs end to end and passes 5/5; n64-systemtest is committed but not yet reporting; krom, 240p and a 66-ROM commercial corpus staged locally |
 | **Hardware reference** | **Working** — offline N64brew Wiki mirror (324 pages, 96 media) rebuilt by a script |
 | **`no_std` chip stack** | **Working** — cross-compiles to `thumbv7em-none-eabihf` |
 | **wasm** | Compiles for `wasm32-unknown-unknown`; no browser entry point yet — Phase 6 |
@@ -95,10 +102,22 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 
 ### Emulation core
 
-- **Fractional master-clock scheduler.** `System::tick_one_unit` advances one VR4300 cycle;
-  the RCP advances on a 2/3 accumulator. "Lockstep" here means *not catch-up*: an RCP event — a
-  DP-done IRQ, an SP halt, an AI buffer drain — is visible to the very next CPU step. That is
-  what makes mid-frame coprocessor effects work without per-quirk patches.
+- **One canonical master clock.** A single 187.5 MHz counter is the *only* incremented cycle
+  position in the core; the VR4300 (÷2), the RCP (÷3) and COP0 `Count` (÷4) are all **derived**
+  from it, so they cannot drift apart (ADR 0006). A residue-invariant test in the default test
+  path is what keeps it that way. "Lockstep" here means *not catch-up*: an RCP event — a DP-done
+  IRQ, an SP halt, an AI buffer drain — is visible to the very next CPU step, which is what makes
+  mid-frame coprocessor effects work without per-quirk patches.
+- **A cycle-accurate five-stage pipeline.** The VR4300 is four inter-stage latches advanced one
+  PClock per step in reverse stage order (`WB → DC → EX → RF → IC`), so the reverse order *is*
+  the latching (ADR 0007). `DC` is the cycle the scheduler interleaves the RCP around — the
+  reason a device can observe the bus partway through an instruction, which a
+  one-`tick`-per-instruction CPU cannot express at all.
+- **The MIPS III integer set, COP0, the TLB and the exception model.** Delay slots and
+  branch-likely nullification, the imprecise load-delay interlock, the operand bypass network,
+  `LL`/`SC`, a 32-entry TLB with its two-entry instruction micro-TLB, and the documented VR4300
+  errata **reproduced rather than corrected** — each pinned by a named test that fails if someone
+  "fixes" it.
 - **The Bus owns everything mutable.** `rustyn64-core::Bus` holds RDRAM (8 MiB: 4 MiB base plus
   Expansion Pak), the RSP, RDP, AI, cart, controllers, and the MI interrupt lines. The CPU
   borrows `&mut Bus`; each chip sees only the narrow trait it needs. Chips are stepped with a
@@ -254,25 +273,31 @@ to-dos/         ROADMAP.md plus per-phase overviews and sprint ticket breakdowns
 
 ## Compatibility and Accuracy
 
-**Every accuracy gate is "not started."** The ROMs now exist locally for most of them, but
-nothing loads or scores a ROM yet, so no gate can report a number.
+**One gate reports a real number; the rest do not.** The distinction that matters here is that
+"oracle available" means the ROM is on disk — it says nothing about whether the emulator can
+execute it.
 
 | Gate | Oracle available? | Status |
 | --- | --- | --- |
+| Dillon `basic.z64` (control flow) | **Yes** — external tier | **Passing** — 5/5 |
+| Determinism (ADR 0004) | n/a — self-checking | **Passing** — exercised, not merely specified |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **Yes** — ROM committed | Not yet reporting |
 | CPU/RSP golden-log (reference trace) | No — needs a cen64/ares capture | Not started |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **Yes** — ROM committed | Not started (no CPU to run it) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | Source cloned, suite not set up | Not started |
 | Accuracy battery | Probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **Yes** — krom + 240p + commercial staged | Not started |
 
-The distinction matters: "oracle available" means the ROM is on disk. It says nothing about
-whether the emulator can execute it, and today the second is never true.
+Where the hardware documentation is silent, or contradicts itself, the project records that
+rather than guessing quietly: [`docs/accuracy-ledger.md`](docs/accuracy-ledger.md) tracks measured
+constants with their provenance, genuinely undocumented behaviour awaiting a hardware pin,
+deliberate deviations, and contradictions **within the vendor manual itself**. A measured constant
+is never tuned to make a ROM pass — the moment one is, every later timing result built on it stops
+being evidence.
 
 > A note on test counts: RustyN64 will be validated by closed-form test ROMs (n64-systemtest,
 > the ParaLLEl-RDP fuzz suite, krom, Dillon's tests) and a commercial-ROM regression corpus — not
-> by a headline unit-test number. The 42 tests that pass today cover the scheduler, the Bus, and
-> ROM parsing. When a doc and a passing test ROM disagree, **the ROM wins** — that is this
-> project's definition of "cycle-accurate."
+> by a headline unit-test number. When a doc and a passing test ROM disagree, **the ROM wins** —
+> that is this project's definition of "cycle-accurate."
 
 ---
 
@@ -338,20 +363,23 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.1.0 (SKELETON), untagged.** No release has been cut, so the release workflow — which builds
-all three targets, packages archives with licences, and generates `SHA256SUMS` — is written but
-has never run.
+**v0.1.0 "Foundation"** is the current tag. The next rung is **v0.2.0 "Interpreter"**, whose cut
+criterion is n64-systemtest reporting `Failed: 0` for the CPU/COP0/TLB categories — a real oracle
+result, not a self-assessment. The release ladder is [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md);
+long-form notes live in [`docs/release-notes/`](docs/release-notes/).
 
 - **Authoritative current state:** [`docs/STATUS.md`](docs/STATUS.md).
 - **Full history:** [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Roadmap
 
-Nine phases, of which **Phase 0 is complete** and Phase 1 has not started:
+Nine phases. **Phase 0 is complete** and **Phase 1 is in progress**:
 
 - **Phase 0 — Foundation** *(complete)* — workspace, CI, the Bus and scheduler, and the acquired
   and licence-classified reference corpus.
-- **Phase 1 — CPU golden log** — the VR4300 to a 0-diff trace and n64-systemtest `Failed: 0`.
+- **Phase 1 — CPU golden log** *(in progress)* — the VR4300 to a 0-diff trace and
+  n64-systemtest `Failed: 0`. The integer core, COP0, the TLB and the exception model are in;
+  the FPU and the golden-log differ are not.
 - **Phase 2 — RSP LLE** — the scalar and vector units running real microcode.
 - **Phase 3 — RDP LLE + VI** — the software reference rasteriser and scan-out; first picture.
 - **Phase 4 — AI audio** — the interface and its timing; the microcode already runs on the RSP.
@@ -361,7 +389,7 @@ Nine phases, of which **Phase 0 is complete** and Phase 1 has not started:
 - **Phase 7 — Accuracy breadth** — the battery across the commercial corpus; the accuracy ledger.
 - **Phase 8 — Reach** — netplay, achievements, TAS, scripting, shaders — all off by default.
 
-The full spine, per-phase exit criteria, and 49 tickets across ten sprints live in
+The full spine, per-phase exit criteria, and the ticket tree live in
 [`to-dos/ROADMAP.md`](to-dos/ROADMAP.md) and the per-phase overviews.
 
 ---
