@@ -426,6 +426,23 @@ impl Cop0 {
         let n = n & 31;
         let mask = WRITE_MASK[n as usize];
         self.regs[n as usize] = (self.regs[n as usize] & !mask) | (value & mask);
+        // "If the timer interrupt request is generated, either clear the IP7 bit
+        // of the Cause register or change the contents of the Compare register,
+        // to clear this interrupt" (UM §6.4.18, p. 200).
+        //
+        // IP7 is LATCHED, not a level. The existence of a documented clear is
+        // itself the evidence: a level tied to `Count == Compare` would
+        // self-clear on the next tick and would need no clearing mechanism at
+        // all. It would also LOSE a timer interrupt raised while `EXL` was set,
+        // because the handler would never see the one-tick pulse.
+        //
+        // Note the manual's first option -- writing `Cause.IP7` -- is not
+        // actually available on this part: `Cause` is read-only to software
+        // except `IP1:IP0`. Writing `Compare` is the usable path, and the one
+        // libdragon takes.
+        if n == reg::COMPARE {
+            self.set_ip(7, false);
+        }
         // Writing Count re-bases the affine mapping rather than storing a value,
         // so the register stays derived from the master clock (ADR 0006).
         if n == reg::COUNT {

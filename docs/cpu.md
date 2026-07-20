@@ -232,10 +232,22 @@ timeline (`count_ticks`, at half PClock — every 4th master tick), and COP0 add
 an epoch that an `MTC0 Count` re-bases. So the register is guest-writable
 *without* ever being incremented, and cannot drift from the master clock.
 
-`Count == Compare` raises `IP7`, modelled as a **level** rather than an edge —
-which is why *"Writing a value to the Compare register, as a side effect, clears
-the timer interrupt"* (UM §6.3.4, p. 165) falls out for free: the write moves the
-comparand away and the match stops holding.
+`Count == Compare` **latches** `IP7`, which then stays set until `Compare` is
+written (UM §6.4.18, p. 200):
+
+> *"If the timer interrupt request is generated, either clear the IP7 bit of the
+> Cause register or change the contents of the Compare register, to clear this
+> interrupt."*
+
+The existence of that documented clear **is** the evidence it is latched: a level
+tied to `Count == Compare` would self-clear on the next tick and need no clearing
+mechanism at all. It would also **lose** any timer interrupt raised while `EXL`
+was set — the equality holds for one tick, and a handler would never see it.
+Pinned by `a_timer_interrupt_raised_while_exl_is_set_survives_until_eret`.
+
+Note the manual's first option, writing `Cause.IP7`, is not available on this
+part: `Cause` is read-only to software except `IP1:IP0`. Writing `Compare` is the
+usable path, and the one libdragon takes.
 
 ## Behavior
 

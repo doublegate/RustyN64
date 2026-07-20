@@ -548,11 +548,14 @@ impl Pipeline {
         // `C0_INTERRUPT_RCP = C0_INTERRUPT_2`; ledger U-4). IP3 is CART, IP4
         // PRENMI, IP7 the timer; the rest are unused on this board.
         self.cop0.set_ip(2, bus.poll_irq());
-        // "Writing a value to the Compare register, as a side effect, clears the
-        // timer interrupt" (UM §6.3.4) -- which falls out for free here, because
-        // a Compare write moves the comparand away from Count so the match stops
-        // holding. Modelled as a level, not an edge.
-        self.cop0.set_ip(7, self.cop0.timer_matches());
+        // IP7 is LATCHED on the match and stays set until `Compare` is written
+        // (UM §6.4.18, p. 200) -- note the one-way `if`, with no `else` clearing
+        // it. Modelling it as a level tied to `Count == Compare` looks tidier
+        // and silently DROPS any timer interrupt that fires while `EXL` is set,
+        // because the equality holds for one tick and the handler never sees it.
+        if self.cop0.timer_matches() {
+            self.cop0.set_ip(7, true);
+        }
 
         if self.prev_was_run && self.cop0.interrupt_pending() {
             self.abort_from(Stage::Dc, Exception::Interrupt);
@@ -2504,13 +2507,67 @@ mod tests {
             "IP7 set at Count==Compare"
         );
 
-        // Writing Compare moves the comparand away, so the match stops holding.
+        // It must PERSIST as Count runs past Compare. A level implementation
+        // clears here, and with it drops any timer interrupt raised while the
+        // CPU could not accept one.
+        for now in 4..20 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+            assert_ne!(
+                p.cop0.read(reg::CAUSE) & (1 << 15),
+                0,
+                "IP7 must stay latched past the match (UM §6.4.18)"
+            );
+        }
+
+        // Only writing Compare clears it.
         p.cop0.mtc0(reg::COMPARE, 999);
-        p.advance_at(&mut bus, &mut regs, &mut pc, 4);
         assert_eq!(
             p.cop0.read(reg::CAUSE) & (1 << 15),
             0,
             "writing Compare clears the timer interrupt"
+        );
+        p.advance_at(&mut bus, &mut regs, &mut pc, 20);
+        assert_eq!(p.cop0.read(reg::CAUSE) & (1 << 15), 0, "and it stays clear");
+    }
+
+    /// **Why `IP7` must latch.** A timer interrupt that fires while the CPU
+    /// cannot accept one — `EXL` set, i.e. inside a handler — must still be
+    /// waiting when the handler returns.
+    ///
+    /// With `IP7` modelled as a level tied to `Count == Compare`, the equality
+    /// holds for a single tick, so the interrupt is silently **lost**. That is
+    /// the failure the latch prevents, and it is invisible to any test that only
+    /// checks the match cycle itself.
+    #[test]
+    fn a_timer_interrupt_raised_while_exl_is_set_survives_until_eret() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = Ram::new(alloc::vec![]);
+        // IE and IM7 set, but EXL set too: a handler is running.
+        p.cop0.set_hardware(reg::STATUS, 1 | (1 << 15) | (1 << 1));
+        p.cop0.mtc0(reg::COMPARE, 3);
+
+        for now in 0..=10 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+        }
+        assert!(
+            !p.cop0.interrupt_pending(),
+            "EXL blocks it, correctly, for now"
+        );
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 15),
+            0,
+            "but IP7 is still asserted, waiting"
+        );
+
+        // The handler returns.
+        let status = p.cop0.read(reg::STATUS);
+        p.cop0.set_hardware(reg::STATUS, status & !(1 << 1));
+        assert!(
+            p.cop0.interrupt_pending(),
+            "and the timer interrupt is taken now, not dropped"
         );
     }
 

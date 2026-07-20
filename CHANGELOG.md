@@ -25,9 +25,13 @@ epoch that `MTC0 Count` re-bases. So the register is guest-writable *without* be
 and cannot drift from the master clock. `Cpu::tick_at` is the seam. The scheduler's `count_ticks`
 doc comment predicted this exact split and is now correct rather than aspirational.
 
-`IP7` is modelled as a **level**, not an edge, which makes UM §6.3.4's *"Writing a value to the
-Compare register, as a side effect, clears the timer interrupt"* fall out for free rather than
-needing a special case.
+**`IP7` is latched**, not a level: `Count == Compare` sets it and only a `Compare` write clears it
+(UM §6.4.18, p. 200). The first version of this modelled it as a level tied to the equality, which
+looked tidier and was wrong — the existence of a *documented* clearing mechanism is itself the
+evidence that it latches, since a level would self-clear and need none. Worse, a level silently
+**drops** any timer interrupt raised while `EXL` is set, because the equality holds for one tick
+and the handler never sees it. Caught in review; now pinned by a test that fails against the level
+implementation.
 
 **Ledger U-4 closed:** the MI drives **`IP2`**. Neither the CPU manual (board-level) nor the
 N64brew mirror states it; libdragon does — `C0_INTERRUPT_RCP = C0_INTERRUPT_2` — and is public
