@@ -30,6 +30,10 @@
 
 extern crate alloc;
 
+pub mod pipeline;
+
+pub use pipeline::{Exception, Interlock, Latch, Pipeline, Stage};
+
 /// Which half of a `SysAD` bus transaction is on the wire.
 ///
 /// The VR4300 talks to the RCP over the `SysAD` bus, which multiplexes the command
@@ -118,6 +122,9 @@ pub struct Cpu {
     pub lo: u64,
     /// Program counter (virtual address).
     pub pc: u64,
+    /// The five-stage pipeline: four inter-stage latches plus control state
+    /// (ADR 0007). Advanced one `PClock` per [`Cpu::tick`].
+    pub pipeline: Pipeline,
     /// Retired-work tally: instructions retired since power-on, for the
     /// golden-log differ.
     ///
@@ -149,6 +156,7 @@ impl Cpu {
             hi: 0,
             lo: 0,
             pc: 0xBFC0_0000,
+            pipeline: Pipeline::new(),
             retired: 0,
         }
     }
@@ -168,13 +176,10 @@ impl Cpu {
     /// Hot path: keep allocation-free (no `Vec`/`Box` in `tick`). The `bus`
     /// argument is the `&mut Bus` the scheduler hands down each step.
     pub fn tick<B: Bus>(&mut self, bus: &mut B) {
-        // TODO(T-11-001): the five-stage pipeline (IC/RF/EX/DC/WB) as four
-        // inter-stage latches advanced in REVERSE order (WB -> DC -> EX -> RF ->
-        // IC), which is what makes the latching implicit — see ADR 0007.
-        // Skeleton: retire one unit of work and keep $zero pinned.
-        let _ = bus;
+        self.pipeline.advance(bus, &mut self.pc);
+        self.retired = self.pipeline.retired;
+        // $zero is architecturally hardwired; writes to it are discarded.
         self.gpr[0] = 0;
-        self.retired = self.retired.wrapping_add(1);
     }
 }
 
@@ -203,12 +208,19 @@ mod tests {
         assert_eq!(cpu.pc, 0xBFC0_0000);
     }
 
+    /// A tick is one `PClock`, not one instruction. The pipeline is 5 stages
+    /// deep, so nothing retires until it has filled (UM §4.1: "at least 5
+    /// `PCycle`s are required to execute an instruction").
     #[test]
-    fn tick_retires_a_unit_of_work() {
+    fn a_tick_is_a_pclock_not_an_instruction() {
         let mut cpu = Cpu::new();
         let mut bus = NullBus;
+        for cycle in 1..=4 {
+            cpu.tick(&mut bus);
+            assert_eq!(cpu.retired, 0, "retired on cycle {cycle}, before WB ran");
+        }
         cpu.tick(&mut bus);
-        assert_eq!(cpu.retired, 1);
+        assert_eq!(cpu.retired, 1, "the first instruction retires on cycle 5");
     }
 
     #[test]

@@ -327,10 +327,13 @@ mod tests {
         for seed in [0, 1, 0xDEAD_BEEF, u64::MAX] {
             let mut sys = System::new(seed);
             let rcp_before = sys.bus.rcp_steps_for_test();
-            let cpu_before = sys.cpu.retired;
+            // Count CPU *steps* from the derived position, not from `Cpu::retired`
+            // -- since ADR 0007 the CPU is a 5-stage pipeline, so retirement lags
+            // stepping by the pipeline depth and the two are not interchangeable.
+            let cpu_before = sys.cpu_cycles();
             sys.run_until(PHASE_PERIOD);
             assert_eq!(
-                sys.cpu.retired - cpu_before,
+                sys.cpu_cycles() - cpu_before,
                 3,
                 "3 CPU steps per 6 master ticks (seed {seed})"
             );
@@ -395,11 +398,16 @@ mod tests {
             let master = i64::try_from(s.master_ticks()).unwrap();
             let cpu_pos = i64::try_from(s.cpu_cycles()).unwrap();
             let rcp_pos = i64::try_from(s.rcp_cycles()).unwrap();
-            let retired = i64::try_from(s.cpu.retired).unwrap();
             (
                 master - i64::try_from(CPU_DIVIDER).unwrap() * cpu_pos,
                 master - i64::try_from(RCP_DIVIDER).unwrap() * rcp_pos,
-                cpu_pos - retired,
+                // the two domains against each other -- catches inter-domain
+                // drift even if each stayed affine to master individually.
+                // NOT `cpu.retired`: since ADR 0007 the CPU is a 5-stage
+                // pipeline, so retirement lags stepping and is a CPU property
+                // rather than a clock one.
+                i64::try_from(CPU_DIVIDER).unwrap() * cpu_pos
+                    - i64::try_from(RCP_DIVIDER).unwrap() * rcp_pos,
             )
         }
 
