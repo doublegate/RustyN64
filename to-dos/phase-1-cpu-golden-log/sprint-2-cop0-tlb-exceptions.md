@@ -476,8 +476,33 @@ short of asking it.
    3. **The exception storm.** Whatever drives the abort likely masks further tests; worth
       diagnosing before grinding through the cart list, since the abort may be truncating the run.
 
-   Item 3 is the one to take next: an abort can hide more than it reports, and the failure counts
-   above are a floor, not a total.
+   **Item 3 done — it was COP2.** `MFC2`/`MTC2`/`DMFC2`/`DMTC2` are valid VR4300 encodings that must
+   raise **Coprocessor Unusable** (`ExcCode 11`) with `Status.CU2` clear, not Reserved Instruction
+   (`10`) — the same distinction already drawn for COP1. Five in a row tripped the suite's recovery
+   limit and aborted the whole run. Removing the abort raised the reported failure count from 2,551
+   to **2,909** while the emulator strictly improved: the old number was a floor, as predicted.
+
+   **Next blocker: the allocator returns a KSEG1 pointer.** The run now stops with a panic inside
+   the suite's own `MemoryMap::uncached_mut` during `spmem: DMA RDRAM -> DMEM (all aligned)`:
+
+   ```text
+   assertion failed: `(left == right)`  left: 0xA0000000, right: 0x80000000
+   src/memory_map.rs:50
+   ```
+
+   The test does `MemoryMap::uncached_mut(source_data.as_mut_ptr())` on an ordinary heap `Vec`.
+   The assert checks bits 31:29, so the **`Vec`'s own pointer was in KSEG1** — yet the heap is
+   `0x801A_D150..0x8030_0000`, squarely KSEG0 (the suite prints this at startup, and it is
+   correct). So the allocator handed back a pointer outside its own arena.
+
+   That points at **heap corruption from an earlier test**, not at the DMA test. The investigation
+   is therefore a bisect, not a lookup: find the earliest test after which the allocator's
+   free-list is inconsistent. A cheap first probe is to watch for the first store that lands
+   outside `0x801A_D150..0x8030_0000` but was meant for the heap — most likely a DMA whose length
+   or destination we compute wrongly, given how much of the PI/SI surface is still stubbed.
+
+   Do **not** guess a mechanism here. The three wrong hypotheses earlier in this ticket were all
+   mechanism guesses, and the cheap state questions were what actually resolved it.
 
 Disassembling `0x8018_32E8` separated these in one step. Note what made it possible: the
 **instruction word**, not the address. `0x42800060` is meaningless as an address and unambiguous
