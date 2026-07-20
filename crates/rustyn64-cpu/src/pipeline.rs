@@ -1469,10 +1469,18 @@ impl Pipeline {
     ///
     /// # `FCSR`
     ///
-    /// `Cause` (bits 16:12) reports what *this* operation raised and is replaced
-    /// each time; `Flags` (6:2) is the sticky accumulation and is OR-ed in.
-    /// `Flags::to_fcsr_bits` produces both, so clearing only `Cause` before
-    /// OR-ing preserves the sticky half.
+    /// `Cause` is bits **17:12** and reports what *this* operation raised; it
+    /// is replaced wholesale each time. `Flags` (6:2) is the sticky
+    /// accumulation and is OR-ed in. `Flags::to_fcsr_bits` produces both, so
+    /// clearing only `Cause` before OR-ing preserves the sticky half.
+    ///
+    /// **The field is 17:12, not 16:12.** Bit 17 is `Cause.E`, Unimplemented
+    /// Operation — part of `Cause` despite having no `Enable` bit and no sticky
+    /// `Flags` twin, which means the mask is the *only* thing that ever clears
+    /// it. This comment said 16:12 while `CAUSE_MASK` covered 16:12 too, and
+    /// the result was a bit that could never be cleared once raised. Only the
+    /// five *maskable* conditions live in 16:12; that narrower range is what
+    /// the enable comparison below uses, and it is a different statement.
     ///
     /// # Enabled traps
     ///
