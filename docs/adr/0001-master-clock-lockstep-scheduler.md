@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted.
+**Superseded by [ADR 0006](0006-one-canonical-master-clock.md) (2026-07-20).**
+
+The goals recorded below are unchanged and still correct: one timeline, lockstep rather than
+catch-up, a seeded power-on phase, and no OS threads in the core. ADR 0006 changes two things.
+The master tick unit becomes **187.5 MHz** rather than the VR4300 cycle, which makes every
+emulated clock domain an integer divisor and removes the fractional accumulator described here.
+And it adds the rule this ADR lacked: exactly one counter may be incremented, and every other
+cycle position is assigned from it. Read 0006 for the current model; this ADR is retained
+unmodified as the record of what was decided first and why.
 
 ## Context
 

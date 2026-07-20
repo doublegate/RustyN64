@@ -38,7 +38,7 @@ The scheduler advances one **master tick = one VR4300 cycle** per
 halt, an AI buffer drain) is visible to the very next CPU step. It is the central
 architectural choice and the reason mid-frame coprocessor effects (framebuffer
 read-back, mid-display-list SP_STATUS polling) work without per-quirk patches.
-See `docs/scheduler.md` and ADR 0001.
+See `docs/scheduler.md` and ADR 0006 (which supersedes ADR 0001).
 
 ### 2. The Bus owns everything mutable
 
@@ -173,10 +173,12 @@ sequential stages. The lockstep scheduler is what keeps the interleaving exact.
 
 - **HLE coprocessors** — rejected for the core (per-game fragility, mid-frame
   effects wrong, custom microcode unsupported). ADR 0002.
-- **Integer lockstep** (the NES model) — rejected: RDRAM, DMA durations, VI/AI
-  divisors, and PAL timing introduce non-integer relationships integer lockstep
-  handles only with per-quirk fudges. Fractional master clock chosen instead.
-  ADR 0001 + 0002.
+- **A fractional CPU:RCP accumulator** (ADR 0001, superseded) — replaced by a
+  187.5 MHz canonical clock where CPU and RCP are *integer* divisors (2 and 3),
+  because the hardware derives the CPU from MClock rather than the reverse, and
+  because integers make cross-domain event ordering a plain comparison. A
+  fractional accumulator survives only for VI/AI, which are genuinely not
+  rational multiples of the master. ADR 0006.
 - **Independent engine threads with periodic resync** — rejected: breaks the
   determinism contract and mid-frame coprocessor synchronization. One timeline.
   ADR 0004.

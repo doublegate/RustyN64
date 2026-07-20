@@ -95,7 +95,7 @@ to the very next CPU step.
 - [ ] `BREAK` halts the RSP and sets the broke bit.
 - [ ] Interrupt-on-break raises the SP line through the MI, and the CPU services it via IP2.
 - [ ] A halt is visible to the CPU step immediately following it, not at the next batch
-      boundary. *(This is the ADR 0001 lockstep contract, and the easiest place to break it.)*
+      boundary. *(This is the ADR 0006 lockstep contract, and the easiest place to break it.)*
 - [ ] n64-systemtest's RSP category reports a real number.
 
 **Dependencies:** T-21-004

@@ -72,7 +72,7 @@ how microcode gets uploaded and started in the first place. The Bus already expo
 - **The reciprocal tables invite computation** — implementing `VRCP`/`VRSQ` arithmetically gets
   close and is wrong. Mitigated by treating them as ROM data and pinning them with a table test.
 - **Lockstep can be quietly broken here** — stepping the RSP in large batches for speed would
-  make SP events invisible to the next CPU step and silently violate ADR 0001. Mitigated by
+  make SP events invisible to the next CPU step and silently violate the ADR 0006 lockstep contract. Mitigated by
   keeping the step granularity in the scheduler, never inside the chip.
 - **Custom microcode is the whole point and the hardest target** — Factor 5 and Boss Game
   Studios titles are staged precisely because they break HLE. Mitigated by treating them as

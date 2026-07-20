@@ -9,9 +9,10 @@ its own Part A. That ADR is now [ADR 0002 — LLE coprocessors](0002-lle-coproce
 
 ## Context
 
-The v0.1 scheduler advances at **whole-master-tick** resolution: one tick is one VR4300 cycle,
-and the RCP advances on a 3:2 fractional accumulator (ADR 0001). Every subsystem is stepped on
-that grid, and an RCP event is visible to the very next CPU step.
+The scheduler advances on a canonical 187.5 MHz clock; the CPU steps every 2nd tick and the RCP
+every 3rd (ADR 0006, superseding ADR 0001's fractional accumulator). ADR 0007 additionally models
+the SysAD command/data split at SClock (62.5 MHz). Note that SClock is *coarser* than a PClock,
+so none of that provides sub-PClock resolution — this ADR remains a separate, later question.
 
 Some hardware behaviour is finer-grained than one VR4300 cycle. If a test ROM or a commercial
 title turns out to observe it, whole-tick lockstep cannot represent it, and the scheduler needs a
@@ -92,10 +93,13 @@ chips, so that increasing resolution is a change to one component and not to eve
 
 ### Risks
 
-- **Two different things get called "the fractional master clock".** The 3:2 accumulator already
-  exists in the v0.1 scheduler (ADR 0001); *this* is a separate, finer-grained future change.
-  Conflating them would misrepresent the current implementation as more precise than it is, and
-  the sibling projects have a version-numbering history that shows how easily that happens. Both
-  senses are named explicitly here and in `docs/STATUS.md` §Version policy.
+- **Three different things get called "finer timing", and conflating them would misrepresent the
+  implementation as more precise than it is.** They are, coarse to fine: (1) the canonical
+  187.5 MHz master clock, where a CPU cycle spans 2 ticks and an RCP cycle 3 (ADR 0006 — this
+  exists); (2) the SysAD command/data split at SClock, 62.5 MHz, which is *coarser* than a
+  PClock (ADR 0007 — this exists); and (3) resolution finer than one PClock, which is **this
+  ADR and does not exist**. The sibling projects have a version-numbering history showing how
+  easily these get merged in prose. All three senses are named explicitly here, in
+  `docs/scheduler.md`, and in `docs/STATUS.md` §Version policy.
 - **Scope creep into a rewrite.** Bus-accurate modelling can absorb unlimited effort. The gate is
   a named failing test, not an aspiration to be maximally accurate.

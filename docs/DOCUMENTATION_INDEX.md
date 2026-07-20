@@ -45,7 +45,7 @@ corrected.
 
 | Directory | Contents |
 |-----------|----------|
-| [adr/](adr/) | Architecture Decision Records (Michael Nygard format), `0001`-`0004` — the fractional master-clock lockstep scheduler, the LLE-coprocessor decision plus the deferred sub-cycle timebase refactor, the no-board-tiering/no-honesty-gate decision, and the determinism contract. |
+| [adr/](adr/) | Architecture Decision Records (Michael Nygard format), `0001`-`0007` — the original lockstep scheduler (`0001`, **superseded**), the LLE-coprocessor decision, no-board-tiering/no-honesty-gate, the determinism contract, the deferred sub-PClock bus refactor, the canonical 187.5 MHz master clock (`0006`, supersedes `0001`), and the cycle-accurate five-stage VR4300 pipeline (`0007`). |
 
 ## Related, outside `docs/`
 

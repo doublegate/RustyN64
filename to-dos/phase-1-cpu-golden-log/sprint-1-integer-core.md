@@ -1,30 +1,59 @@
 # Sprint 1 — Register file, decode, and the integer core
 
 **Phase:** Phase 1 — CPU golden log
-**Sprint goal:** the VR4300 datapath executes the MIPS III integer instruction set with correct
-delay-slot and load-interlock behaviour, stepping under the existing scheduler and reporting
-cycle cost back to it.
-**Estimated duration:** 3 weeks
+**Sprint goal:** the scheduler counts one canonical 187.5 MHz master clock with every other
+cycle position derived from it, and the VR4300 executes the MIPS III integer instruction set as
+a five-stage pipeline advanced one PClock per step, with correct delay-slot and load-interlock
+behaviour.
+**Estimated duration:** 5 weeks (raised from 3: T-11-001 now carries the timebase rework and
+the pipeline structure, both of which are prerequisites for every ticket after it.)
 
 ## Tickets
 
-### T-11-001 — Register file, the 64-bit datapath, and the step function
+### T-11-001 — The canonical master clock and the pipeline skeleton
 
-**Description:** implement the 32 general-purpose registers at 64 bits, `HI`/`LO`, the program
-counter with its delay-slot shadow, and a `step` that fetches through the existing `CpuBus` and
-returns the cycle cost to the scheduler.
+**Description:** rework the scheduler onto a single 187.5 MHz counter (ADR 0006) and build the
+VR4300 as a five-stage pipeline of inter-stage latches advanced one PClock per step in reverse
+stage order (ADR 0007). This is the structural foundation for the whole phase and **must land
+before any instruction implementation** — both decisions are the kind that cannot be retrofitted
+without rewriting the scheduler and every chip's step contract at once.
 
 **Acceptance criteria:**
 
+*The timebase (ADR 0006):*
+
+- [ ] `MASTER_HZ = 187_500_000`; `CPU_DIVIDER = 2`, `RCP_DIVIDER = 3`, `COUNT_DIVIDER = 4`.
+- [ ] `master_ticks: u64` is the **only** incremented counter in the core. `cpu_cycles()` and
+      `rcp_cycles()` are derived accessors, not fields. The old `rcp_accum` is gone.
+- [ ] The scheduler advances **edge to edge**, never iterating the master tick.
+- [ ] **The residue invariant test**: affine offsets between `master_ticks` and every derived
+      position are sampled at frame boundaries and asserted never to move after the first.
+      In the default `cargo test` path, not behind a feature.
+- [ ] 3 CPU steps and 2 RCP steps per 6 master ticks, for every seed.
+- [ ] `reset()` re-derives the same phase; `master_ticks` starts at `phase`, not zero.
+
+*The pipeline (ADR 0007):*
+
+- [ ] Four inter-stage latches (`ic_rf`, `rf_ex`, `ex_dc`, `dc_wb`), each carrying
+      `{ pc, fault: Option<Fault>, in_delay_slot }`.
+- [ ] `tick` advances **one PClock**, running stages in **reverse order WB → DC → EX → RF → IC**.
+      A comment states why: the reverse order *is* the latching, so no double-buffering is
+      needed. A test asserts no value propagates two stages in one cycle.
+- [ ] Interlocks are expressed as `(stall_cycles, resume_stage)`; a stage that cannot complete
+      back-pressures every upstream stage in the same cycle.
+- [ ] `in_delay_slot` travels with the instruction. **Pinned by a test where a multi-cycle stall
+      separates a branch from its delay slot** and `Cause.BD`/`EPC` are still correct — the
+      global-flag version of this passes the naive test and fails this one.
 - [ ] 64-bit GPRs with `$zero` hardwired; `HI`/`LO` present.
-- [ ] The step function fetches through `CpuBus` and advances the master clock by the real cost.
-- [ ] Branch delay slots execute before the branch target, including the branch-likely variants.
-- [ ] The load-delay interlock is modelled, since it is observable.
-- [ ] Unit tests cover delay-slot ordering and interlock stalls.
+- [ ] `Bus::poll_irq_at_phase` is **removed**. Interrupts are sampled once per PClock in DC,
+      accepted only if the previous PCycle was a run cycle, via exactly **one** recognition
+      predicate in the tree.
+- [ ] `docs/cpu.md` and `docs/scheduler.md` reflect the shipped code (already written ahead).
 
 **Dependencies:** T-01-002, T-01-003
-**Reference:** `docs/cpu.md` §registers; `n64brew_wiki/markdown/VR4300.md` §Load Delay Interlock
-**Estimated complexity:** L
+**Reference:** ADR 0006, ADR 0007; `docs/scheduler.md`; `docs/cpu.md`;
+`n64brew_wiki/images/VR4300-Users-Manual.pdf` §4.1, §4.6–4.7
+**Estimated complexity:** XL
 
 ---
 
@@ -38,7 +67,11 @@ both 32- and 64-bit forms, with the correct sign-extension rules for the 32-bit 
 - [ ] `ADD`/`ADDU`/`SUB`/`SUBU`/`DADD`/`DADDU`/`DSUB`/`DSUBU` with overflow trapping where the
       instruction specifies it.
 - [ ] All logical and shift families including the `D*` 64-bit and `*32` variants.
-- [ ] `MULT`/`MULTU`/`DIV`/`DIVU` and the `D*` forms writing `HI`/`LO` with the right latency.
+- [ ] `MULT`/`MULTU`/`DIV`/`DIVU` and the `D*` forms write `HI`/`LO` and **stall the entire
+      pipeline** for the documented count — 5 / 37 / 8 / 69 PCycles (UM Table 3-12). These are
+      not background operations.
+- [ ] The `MFHI`/`MFLO` two-instruction hazard is modelled as a *non-interlocked* hazard
+      producing hardware's wrong result, not as a stall.
 - [ ] 32-bit results are sign-extended into the 64-bit register as hardware does.
 - [ ] Unit tests per family in both widths.
 
@@ -124,6 +157,35 @@ detects the n64-systemtest result protocol, and get the first real pass/fail out
 
 ---
 
+### T-11-008 — The SysAD transaction model and the `M` measurement
+
+**Description:** model the CPU↔RCP bus as a real transaction at SClock (62.5 MHz — 3 master
+ticks against the CPU's 2) with a command cycle and a data cycle, rather than an access that
+completes atomically. Then *measure* `M`, the memory access time, instead of guessing it.
+
+This is the one place the project can exceed the reference emulators rather than match them:
+neither CEN64 nor ares models the phase split at all — both complete the access in zero emulated
+time and charge a flat constant, and they disagree on what that constant is.
+
+**Acceptance criteria:**
+
+- [ ] A transaction occupies command and data cycles on the SClock grid; the RCP is stepped
+      between them, so a device can observe the bus mid-transaction.
+- [ ] `EOK`/`Pvalid`/`Evalid` handshake semantics, with the inter-phase wait unbounded.
+- [ ] Block transfer orderings: D-cache 128-bit reads use **sub-block** ordering when address
+      bit 4 is set (requested 64 bits first, then the 64 *below* it); I-cache 256-bit reads are
+      always sequential.
+- [ ] SYSCMD bit-4 polarity resolved against hardware — the User's Manual (§12.11.1) and the
+      wiki cheat sheet **contradict each other**. Record which won and how it was determined.
+- [ ] `M` is fitted from test ROMs and recorded in the accuracy ledger as a measured constant
+      with its measurement cited. It is never adjusted to make a specific ROM pass.
+
+**Dependencies:** T-11-003
+**Reference:** `n64brew_wiki/markdown/SysAD Interface.md`; UM §12, Tables 11-1/11-2, 12-2
+**Estimated complexity:** L
+
+---
+
 ### T-11-007 — The determinism regression test
 
 **Description:** close the ADR 0004 gap that `docs/STATUS.md` records as unexercised: two runs
@@ -145,6 +207,8 @@ from the same seed and input must produce byte-identical traces.
 ## Sprint review checklist
 
 - [ ] All tickets checked off or explicitly deferred (with reason).
+- [ ] The residue invariant test passes and is in the default test path.
+- [ ] No `+= 1` on any cycle position in the core except `master_ticks`.
 - [ ] n64-systemtest reports a real number for the integer categories.
 - [ ] CHANGELOG.md updated.
 - [ ] `docs/cpu.md` updated in the same change as the code it describes.

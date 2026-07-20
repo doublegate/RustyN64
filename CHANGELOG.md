@@ -9,6 +9,49 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — the timebase and CPU microarchitecture are settled (Phase 1 design)
+
+Two ADRs land ahead of any Phase 1 code, because both decisions are of the kind that cannot be
+retrofitted without rewriting the scheduler and every chip's step contract at once.
+
+- **[ADR 0006](docs/adr/0006-one-canonical-master-clock.md) — one canonical 187.5 MHz master
+  clock. Supersedes [ADR 0001](docs/adr/0001-master-clock-lockstep-scheduler.md)**, which is
+  retained unmodified as the record of the first design. 187.5 MHz is the LCM of the 93.75 MHz
+  CPU and 62.5 MHz RCP clocks, which makes *every* emulated domain an integer divisor: CPU
+  every 2 ticks, RCP every 3, COP0 `Count` every 4 (half PClock), SI every 12, PIF every 96.
+  The 3:2 fractional accumulator is gone; a fractional path survives only for VI and AI, which
+  genuinely run off a different crystal. The load-bearing rule is not the unit but the
+  ownership: **`master_ticks` is the only counter ever incremented**, every other cycle position
+  is a derived accessor, and a residue invariant test fails if any position becomes independent.
+- **[ADR 0007](docs/adr/0007-cycle-accurate-vr4300-pipeline.md) — the VR4300 is a cycle-accurate
+  five-stage pipeline** (IC/RF/EX/DC/WB) of four inter-stage latches advanced one PClock per
+  step in **reverse stage order** (WB → DC → EX → RF → IC), which is what makes the latching
+  implicit and removes any need for double-buffered state. `in_delay_slot` travels with the
+  instruction in the latch chain rather than as global CPU state, so `Cause.BD`/`EPC` survive a
+  multi-cycle stall between a branch and its delay slot. Interlocks are `(cycles, resume_stage)`.
+
+Three factual corrections came out of the hardware research, all in `docs/cpu.md`:
+
+- The pipeline stages are **IC/RF/EX/DC/WB**, not the "IF/RF/EX/DF/WB" previously documented.
+  The manual's entire interlock and exception taxonomy is named stage-relative, so this matters.
+- "The CPU advances one issued instruction per master tick" was not a timing model. `DDIV`
+  stalls the whole pipeline for 69 PCycles, and at minimum 5 PCycles are needed per instruction.
+  The documented cycle-cost tables are now transcribed into `docs/cpu.md` §Cycle costs.
+- **`Bus::poll_irq_at_phase(BusPhase)` is removed, not completed.** It was shaped on the
+  assumption that interrupt sampling is tied to the SysAD command/data phase; no such coupling
+  is documented anywhere. The real rule is per-PCycle, gated on the previous PCycle having been
+  a run cycle. Wiring the parameter up to *something* would have encoded a fiction that looked
+  correct. `BusPhase` is retained for the bus protocol, with no interrupt semantics attached.
+
+The full 655-page NEC VR4300 User's Manual turned out to be in the local wiki mirror already
+(`n64brew_wiki/images/VR4300-Users-Manual.pdf`) with an intact text layer — it is now cited as
+the primary timing oracle. Extract with `mutool draw -F txt`; `pdftotext` fails on it.
+
+`docs/scheduler.md`, `docs/cpu.md`, `docs/architecture.md`, `docs/engineering-lessons.md`,
+`README.md`, `AGENTS.md`, and the Phase 1 plan are updated to match. Sprint 1 gains T-11-008
+(the SysAD transaction model and the measurement of `M`, the undocumented memory access time)
+and its estimate rises from 3 to 5 weeks.
+
 ### Changed — dependency and toolchain refresh
 
 Everything moved to the newest mutually-compatible versions available.

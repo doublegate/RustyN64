@@ -23,22 +23,45 @@ lives only in `docs/` is a document nobody reads at the moment it would have hel
 
 ## Part 1 — Structural decisions, cheapest before any chip executes an instruction
 
-### 1.1 One counter is the timebase; everything else is derived
+### 1.1 One counter is incremented; every other position is derived from it
 
-**The pattern.** A second independent time counter added for a subsystem's convenience will drift
-against the first. Every drift bug then looks like a bug in the *subsystem*, because that is where
-the symptom appears, and the investigation goes to the wrong place repeatedly.
+**The pattern.** The problem is not having several cycle counters — it is having
+several counters that are each *incremented*. They then agree only because every call site
+remembers to step them in matching amounts: an invariant held by construction rather than by
+derivation. It is correct until one path forgets, and the resulting desync is invisible until
+it manifests as a timing bug somewhere else entirely.
 
-**What it means here.** ADR 0001 already fixes this: the VR4300 cycle is the only counter, and the
-RCP is derived from it through a 3:2 fractional accumulator rather than its own clock. The rule
-that keeps it true is the one worth writing down — **no subsystem may keep its own free-running
-cycle count.** A chip that needs a rate expresses it as a divisor of the master counter, or as an
-accumulator advanced by the scheduler. AI sample generation, VI field/line timing, PI/SI DMA
-duration, and the RSP's own step rate are all going to be tempted by a private counter.
+**How it went wrong before.** A sibling project shipped a scheduler with five independently
+incremented counters (CPU, PPU, APU, bus, master). Its own ADR describes them as kept in sync
+"by construction... not by derivation — a correct but fragile invariant". Collapsing them into
+one canonical counter took a full scheduler rewrite, preceded by 17+ failed point-fixes and
+dozens of audit documents, plus a save-state/movie format epoch break because the change
+arrived after those formats had shipped.
 
-**Practice adopted.** Any new `cycles`/`ticks` field on a chip struct is a design smell that needs
-justification in review. The one legitimate use is a *retired-work* counter that nothing schedules
-against (`Cpu::cycles` is this — it feeds the golden-log differ, not the scheduler).
+Two results from that rewrite are worth carrying separately. First, the accuracy payoff was
+real: 100% versus 94.24% on their oracle. Second, and more surprising, **the one-clock model
+ended up ~9% faster than the design it replaced** once ordinary optimisation was applied — the
+first cut was ~10% slower, and the whole deficit plus more came back from unrelated tuning. The
+throughput objection to a canonical master clock does not survive contact with that data, which
+matters because that objection is the usual reason projects avoid the design.
+
+**What it means here.** ADR 0006 makes the 187.5 MHz tick the only incremented counter, with
+`cpu_cycles()` and `rcp_cycles()` as derived accessors rather than fields. We got this for free:
+the sibling paid a format break because their change came after shipping save states, and we
+have none. This was the cheapest this decision will ever be, and it is now spent.
+
+**Practice adopted.**
+
+- No `+= 1` on any cycle position in the core except `master_ticks`. A new `cycles`/`ticks`
+  field on a chip struct is a design smell requiring justification in review. The one legitimate
+  use is a *retired-work* counter that nothing schedules against.
+- Pin the derivation with a **residue invariant test**: sample the affine offsets between the
+  canonical counter and every derived position at frame boundaries, and assert they never move
+  after the first boundary. An independently-incremented counter fails this on the first frame
+  where any path forgets to step it. Keep it in the default test path, never behind a feature.
+- Prefer an integer divisor to an accumulator wherever the domain genuinely is a rational
+  multiple of the master, and use an accumulator *only* where it genuinely is not (VI, AI). The
+  split should carry information about the hardware, not about implementation convenience.
 
 ### 1.2 The bus-access split has to exist before the CPU is written
 
@@ -52,20 +75,24 @@ already accuracy work standing on the old shape.
 be resolved by splitting each instruction into a begin/access/end structure, and by then the
 change touched every consumer. The pre-work was the expensive part; the insight itself was cheap.
 
-**What it means here.** This is the single highest-leverage item in this document, because Phase 1
-has not started. `BusPhase{Command, Data}` already exists in `rustyn64-cpu` and models exactly the
-right hardware fact (`SYSCMD` bit 4 multiplexes command and data onto the same `SysAD` lines) — but
-today it is **not load-bearing**: `Bus::poll_irq_at_phase` ignores its `_phase` argument in both the
-trait default and the `rustyn64-core` implementation. It is correctly-shaped plumbing that carries
-no signal yet (see 3.2 — this is exactly the hazard that lesson warns about, which is why it is
-called out explicitly rather than left to be discovered).
+**What it means here.** This was the single highest-leverage item in this document, and it was
+caught with Phase 1 not yet started — which is the only reason it cost a design conversation
+rather than a rewrite. The skeleton had `Bus::poll_irq_at_phase(BusPhase)` ignoring its argument
+in both the trait default and the `rustyn64-core` implementation: correctly-shaped plumbing
+carrying no signal (see §3.2). Resolving it properly meant going to the primary hardware
+documentation rather than reasoning from the existing shape.
 
-**Practice adopted, binding on Phase 1.** When the interpreter is written, an instruction's memory
-access must be an identifiable point the scheduler can interleave around, not an opaque interior
-step — and the phase argument must reach at least one branch that behaves differently, with a test
-that fails if both phases are made to behave identically. Getting this shape right costs a design
-conversation now and a scheduler rewrite later. Filed against Phase 1; ADR 0005 covers the
-*finer* sub-cycle question, which is genuinely deferrable — this one is not.
+**Resolved by ADR 0007.** The CPU is a five-stage pipeline (IC/RF/EX/DC/WB) of inter-stage
+latches advanced one PClock per step in reverse stage order, so the DC stage *is* the
+interleavable point — the property is structural rather than bolted on. ADR 0005 covers the
+*finer* sub-PClock question, which is genuinely deferrable; this one was not.
+
+The inert `poll_irq_at_phase(BusPhase)` hook was not merely unwired — research against the
+User's Manual showed it was shaped on the **wrong axis entirely**. Interrupt sampling has no
+documented relationship to the SysAD command/data phase; the documented rule is per-PCycle,
+gated on the previous PCycle having been a run cycle (UM §4.7.1). The hook was removed rather
+than completed. See §3.2: had the parameter been wired up to *something* without checking, it
+would have looked correct and encoded a fiction.
 
 ### 1.3 Re-phasing everything uniformly cannot fix a differential measurement
 

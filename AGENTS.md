@@ -28,10 +28,16 @@ only project-specific facts and deliberate overrides live here.
 RustyN64 is a cycle-accurate Nintendo 64 emulator in Rust at the ares / CEN64 / ParaLLEl bar.
 Architecture (the load-bearing facts — read `docs/architecture.md`):
 
-- **The timing master is the VR4300 cycle** (`MASTER_HZ = 93_750_000`); the RCP
-  (`RCP_HZ = 62_500_000`) advances on a **3:2 fractional accumulator** — 2 RCP ticks per 3
-  master ticks — NOT an integer divisor. "Lockstep" here means not-catch-up: an RCP event is
-  visible to the very next CPU step. Integer lockstep was explicitly rejected (ADR 0001/0002).
+- **One canonical clock: `MASTER_HZ = 187_500_000`** (ADR 0006, supersedes 0001). Every
+  emulated domain is an **integer divisor** of it — CPU every 2 ticks (93.75 MHz), RCP every 3
+  (62.5 MHz), COP0 `Count` every 4 (half PClock), SI every 12, PIF every 96. **`master_ticks`
+  is the only counter that is ever incremented**; `cpu_cycles()`/`rcp_cycles()` are derived
+  accessors, and a residue invariant test fails if any position becomes independent. A
+  fractional accumulator survives only for VI/AI, which genuinely are not rational multiples.
+  "Lockstep" means not-catch-up: an RCP event is visible to the very next CPU step.
+- **The CPU is a cycle-accurate 5-stage pipeline** (IC/RF/EX/DC/WB — ADR 0007), four
+  inter-stage latches advanced one PClock per step in **reverse order WB→DC→EX→RF→IC**, which
+  is what makes the latching implicit. `in_delay_slot` rides in the latch, never global.
 - **The Bus owns everything mutable** (`rustyn64-core::Bus`); the CPU borrows `&mut Bus`.
   Chips are stepped via the `core::mem::take` split-borrow trick; each sees only a narrow trait.
 - **The crate graph is one-directional**, with exactly ONE permitted chip→chip edge:

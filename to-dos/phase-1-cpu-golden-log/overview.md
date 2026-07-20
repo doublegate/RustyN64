@@ -29,11 +29,21 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
       mismatched instruction rather than a bare failure.
 - [ ] A determinism regression test exists: two runs from the same seed produce byte-identical
       traces (closes the ADR 0004 gap that `docs/STATUS.md` currently records as unexercised).
-- [ ] An instruction's memory access is a point the scheduler can interleave around, not an
-      opaque interior step, and `Bus::poll_irq_at_phase` reaches at least one branch that
-      behaves differently per `BusPhase` — pinned by a test that fails if `Command` and `Data`
-      are made to behave identically. See the risk below for why this is an exit criterion
-      rather than later work.
+- [ ] The scheduler counts **187.5 MHz master ticks** as the only incremented counter, with
+      every other cycle position derived from it (ADR 0006), pinned by a residue invariant
+      test that fails if any position becomes independently incremented.
+- [ ] The CPU is a **five-stage pipeline** (IC/RF/EX/DC/WB) of inter-stage latches advanced one
+      PClock per step in **reverse stage order** (WB → DC → EX → RF → IC), so the DC stage is
+      the point the scheduler interleaves the RCP around (ADR 0007).
+- [ ] `in_delay_slot` travels *with the instruction* in the latch chain, not as global CPU
+      state — pinned by a test where a multi-cycle stall separates a branch from its delay slot
+      and `Cause.BD` / `EPC` still come out right.
+- [ ] COP0 `Count` advances at **half PClock** (every 4th master tick), pinned by a test.
+- [ ] The documented cycle costs are encoded (`docs/cpu.md` §Cycle costs): mul/div pipeline
+      stalls, FPU rates with the latency = rate + 1 rule, LDI/DCB/ITM/exception costs.
+- [ ] The load-delay interlock reproduces the hardware's **imprecision** — it stalls on an
+      `rs`/`rt` field match whether or not the field is used as a source, exempts `$zero`, and
+      does not cross the GPR/FPR boundary.
 
 ## Scope
 
@@ -83,18 +93,29 @@ Phase 0 criterion (T-02-005) and must land before the 0-diff gate can be met.
 - **Delay slots and the load interlock leak into every instruction** — retrofitting them after
   the fact is a rewrite. Mitigated by building them into the step function in Sprint 1, before
   the instruction count grows.
-- **The step's internal structure is decided here, permanently** — this is the highest-leverage
-  and least-reversible decision in the phase. A CPU written as one indivisible `tick` per
-  instruction cannot later express "the memory access happened partway through, and a device saw
-  the bus in between"; adding that distinction afterwards means rewriting the scheduler and every
-  chip's step contract simultaneously, with accuracy work already standing on the old shape. A
-  sibling project reached exactly that point and paid for it. Note this is *not* the ADR 0005
-  sub-cycle refactor, which is genuinely deferrable — this is the coarser question of whether the
-  access is an addressable point at all, and it is not deferrable. `BusPhase` already models the
-  right hardware fact (`SYSCMD` multiplexes command and data on the same `SysAD` lines) but is
-  inert plumbing today: `poll_irq_at_phase` ignores its argument in both the trait default and
-  the `rustyn64-core` impl. Mitigated by the exit criterion above, and by
-  `docs/engineering-lessons.md` §1.2 / §3.2.
+- **The step's internal structure is decided here, permanently** — settled by ADR 0007 before
+  any interpreter code was written, which is the only reason it cost a design conversation
+  rather than a rewrite. A CPU written as one indivisible `tick` per instruction cannot later
+  express "a device saw the bus partway through this instruction". The residual risk is
+  *erosion*: a later shortcut that completes a bus access atomically inside a stage, or adds an
+  independently-incremented counter, silently reverts the decision. Mitigated by the residue
+  invariant test and by the exit criteria above, not by anyone remembering.
+- **`M`, the memory access time in PCycles, is undocumented** and both cache-miss formulas
+  depend on it. The two most accurate N64 emulators disagree on the equivalent constant (CEN64
+  charges 44 PClocks for a D-cache fill, ares 40) and neither derived it from a spec. Mitigated
+  by fitting it against test ROMs and recording it in the accuracy ledger as a *measured*
+  constant with its measurement cited — never tuned until a ROM passes, which would make every
+  later timing result unfalsifiable.
+- **Performance is unproven at this accuracy level** — no public N64 core sustains full speed
+  fully cycle-accurate, and this project's goal is exactly that. Mitigated by treating the
+  budget (~32 host cycles per emulated component step) as a design input from the first line:
+  latches cache-resident, no allocation in `tick`, no per-cycle branching on cold conditions.
+  Counter-evidence worth holding onto: a sibling's equivalent rewrite measured ~9% *faster* than
+  the design it replaced, and CEN64's discouraging numbers come from a stalled C project on
+  2013-era hardware whose bus was not cycle-accurate anyway.
+- **n64-systemtest's `cycle` and `cop0hazard` sets are default-off upstream**, because the
+  authors state the rules are not yet fully derived. Mitigated by not making them a v1.0 gate;
+  the CPU/COP0/TLB categories are the bar.
 
 ## Reference docs
 

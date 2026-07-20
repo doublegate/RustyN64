@@ -45,10 +45,12 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 **Key differentiators:**
 
 - **The right timebase for this machine.** The VR4300 cycle is the master tick
-  (`MASTER_HZ = 93_750_000`); the RCP (`RCP_HZ = 62_500_000`) advances on a **3:2 fractional
-  accumulator** — two RCP ticks per three master ticks — not an integer divisor. Integer lockstep
-  was evaluated and rejected, because the AI sample divisor, the VI counters, and PAL field
-  timing are not integer multiples of either core clock (ADR 0001).
+  (`MASTER_HZ = 187_500_000`), the LCM of the 93.75 MHz CPU and 62.5 MHz RCP clocks. Every
+  emulated domain is an **integer divisor** of it: the CPU steps every 2nd tick, the RCP every
+  3rd, COP0 `Count` every 4th, SI every 12th, PIF every 96th — so drift is unrepresentable
+  rather than merely avoided. `master_ticks` is the only counter ever incremented; every other
+  cycle position is derived from it and pinned by a residue invariant test. Only VI and AI,
+  which genuinely run off a different crystal, keep a fractional accumulator (ADR 0006).
 - **LLE, never HLE, in the core.** The N64 let every studio ship custom microcode, so
   signature-matching HLE is per-game-fragile and mis-renders mid-frame effects. The RSP executes
   the real instruction stream and the RDP rasterises the real command list. Audio falls out free,
