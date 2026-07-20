@@ -103,8 +103,14 @@ Separately noted and **not** a bug: the image's first `PT_LOAD` is `off=0 vaddr=
 filesz=0x400` — the ELF header itself, which the linker maps over the vector region. Loading it is
 correct ELF behaviour, and is harmless only because the suite is supposed to overwrite the vectors.
 
+Refined once more: the stores are not lost — `install_exception_handlers` (`0x8017_7C08`) is
+**never reached**. The RI site is inside `text_out::text_out`, the backend probe that tries emux
+first, and `text_out` running before the handlers are installed is itself the anomaly: on hardware
+that probe deliberately raises RI and relies on the handler existing. The likely explanation is
+that we are on the **panic path**, meaning something earlier in `entrypoint`/`main` already failed.
+
 Every round of this diagnosis that guessed at a cause was wrong; every round that asked what was
-actually in memory at the faulting moment was right.
+actually in memory, or actually executed, at the faulting moment was right.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems

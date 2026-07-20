@@ -412,11 +412,25 @@ short of asking it.
    `0x8000_0400`. It is benign precisely because the suite overwrites the vectors — which is the
    step that is failing.
 
-   **Next: find why the stores are lost.** The installer copies to the vector addresses and then
-   flushes; the candidates are (a) the writes go through KSEG1/uncached or a `CACHE`-op path we
-   drop, (b) they go through an address our store path mistranslates, or (c) they are `SD`/block
-   stores we mishandle at that address. Instrumenting the *store* side — log every write whose
-   physical address is under `0x400` — answers this directly and is the next probe.
+   **Not lost stores — the installer is never reached.** Probing for `0x8017_7C08`
+   (`install_exception_handlers`, from the symtab) reports `reached_install = false`: the PC never
+   arrives there before the fault. So this is a control-flow divergence upstream, not a memory-
+   write bug, and the store-side instrumentation would have found nothing.
+
+   Note also that `install_handler` NOP-fills the target up to `capacity` after copying, so even a
+   partially-working install would have overwritten `0x8000_0000`. It still holds the ELF header,
+   which independently confirms the function never ran.
+
+   **The RI site is inside `text_out::text_out`** (`0x8018_3270`, size `0x32C`) — the backend probe
+   that tries emux first. `text_out` running *before* the handlers are installed is the anomaly:
+   on hardware the emux probe deliberately raises RI and relies on the handler existing, so the
+   suite would never call it this early on purpose. The most likely explanation is that we are on
+   the **panic path** — a panic handler calls `text_out` to report — meaning something earlier in
+   `entrypoint`/`main` already failed.
+
+   **Next probe:** capture `$ra` on entry to `text_out`, and the last few function entries before
+   it, to identify the caller. If it is the panic handler, the message argument points straight at
+   the failed check.
 
    **Method note.** Every round of this diagnosis that guessed at a cause (run it longer, seed
    `$gp`) was wrong; every round that asked *what is actually in memory at the faulting moment*
