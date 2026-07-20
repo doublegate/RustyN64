@@ -270,12 +270,22 @@ pub fn dispatch(
     let cause = cop0.read(reg::CAUSE);
     let mut new_cause = (cause & !0x7C) | (exc_code_of(exc) << 2);
     // `Cause.CE` (29:28) names the coprocessor for a Coprocessor Unusable
-    // exception, and is meaningless otherwise -- so it is written only here
-    // rather than cleared unconditionally, which would erase a previous value
-    // the handler has not read yet.
-    if let Exception::CoprocessorUnusable { unit } = exc {
-        new_cause = (new_cause & !0x3000_0000) | ((u64::from(unit) & 0b11) << 28);
-    }
+    // exception. It is written on **every** exception -- the unit for a
+    // Coprocessor Unusable, zero otherwise -- not left alone for the others.
+    //
+    // This previously skipped the write for non-CpU exceptions, reasoning that
+    // `CE` is meaningless for them and that clearing it would erase a value the
+    // handler had not read yet. That reasoning is plausible and wrong: it leaves
+    // `CE` **stale**, so an exception following any Coprocessor Unusable reports
+    // that old unit number. n64-systemtest catches it exactly -- `TLB: Read
+    // after 4k page, expect TLBL` reads `Cause = 0x2000_0008` where hardware
+    // gives `0x8`, the difference being a `CE = 2` left over from the COP2
+    // usability check that ran earlier in the suite.
+    let ce = match exc {
+        Exception::CoprocessorUnusable { unit } => u64::from(unit) & 0b11,
+        _ => 0,
+    };
+    new_cause = (new_cause & !0x3000_0000) | (ce << 28);
 
     // 4. EPC and Cause.BD, ONLY if EXL was clear. This is the gate; see the
     //    module docs. Note it also governs BD, not just EPC -- a stale BD with a
@@ -682,5 +692,43 @@ mod tests {
             0xFFFF_FFFF_A400_1A42,
         );
         assert_eq!(c.read(reg::ENTRY_HI), 0, "not a TLB exception");
+    }
+
+    /// **`Cause.CE` is written on every exception, not only on Coprocessor
+    /// Unusable.** Leaving it alone lets a stale unit number survive into an
+    /// unrelated exception.
+    ///
+    /// n64-systemtest reads `Cause = 0x2000_0008` for a `TLBL` where hardware
+    /// gives `0x8` — a `CE = 2` left over from an earlier COP2 usability check.
+    #[test]
+    fn a_later_exception_does_not_inherit_a_stale_cause_ce() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::STATUS, 0);
+        // A COP2 usability fault sets CE = 2.
+        dispatch(
+            &mut c,
+            Exception::CoprocessorUnusable { unit: 2 },
+            0x8000_1000,
+            false,
+            0,
+        );
+        assert_eq!(c.read(reg::CAUSE) & 0x3000_0000, 0x2000_0000, "CE = 2");
+
+        // Clear EXL so the next dispatch is a fresh exception, then take a TLB
+        // fault: CE must be back to zero.
+        c.set_hardware(reg::STATUS, 0);
+        dispatch(
+            &mut c,
+            Exception::TlbInvalid { store: false },
+            0x8000_2000,
+            false,
+            0x1234,
+        );
+        assert_eq!(
+            c.read(reg::CAUSE) & 0x3000_0000,
+            0,
+            "a TLBL must not inherit the COP2 unit number"
+        );
+        assert_eq!(c.read(reg::CAUSE) & 0x7C, 2 << 2, "and still reports TLBL");
     }
 }

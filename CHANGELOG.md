@@ -155,9 +155,19 @@ cannot collide with the heap; the exact address remains a documented inference.
 
 With these the suite runs past the SP-DMA group entirely and reaches the TLB tests.
 
-The run now reaches `TLB: Execute mapped branch which has a non-mapped delay slot`, with
-`Cause during TLB exception` mismatches — a `Cause` of `0x8` where we report otherwise. Failure
-count 2,907 to 2,932, again because more tests execute.
+**10. `Cause.CE` was left stale across exceptions.** `CE` (bits 29:28) names the coprocessor for a
+Coprocessor Unusable exception. It was written *only* for that exception, on the reasoning that it
+is meaningless otherwise and that clearing it would erase a value the handler had not read yet.
+Plausible, and wrong: it leaves `CE` stale, so any exception following a Coprocessor Unusable
+reports the old unit number. `TLB: Read after 4k page, expect TLBL` read `Cause = 0x2000_0008`
+where hardware gives `0x8` — a `CE = 2` left behind by the COP2 usability check added in this same
+batch. `CE` is now written on every exception: the unit for CpU, zero otherwise. Failure count
+2,932 to **2,901**, and the run reaches deeper into the TLB group.
+
+This is the fourth time in this project that a comment asserting a rule has turned out to assert
+more than the evidence supported — alongside the `$sp` placement, the `DIV` numerator condition,
+and the `CACHE` translation split. The pattern is specific enough to be worth naming: prose that
+explains *why not* to do something is as testable as code, and goes unchecked far longer.
 
 Wrong turns worth recording, since each cost a round and each would have taken real work to
 "fix": `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0` is correct); lost installer stores (the
