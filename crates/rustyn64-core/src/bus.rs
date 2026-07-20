@@ -212,6 +212,12 @@ impl Bus {
         addr >= Self::ISVIEWER_BASE && addr < Self::ISVIEWER_BASE + 0x20 + Self::ISVIEWER_LEN as u32
     }
 
+    /// The raw `ISViewer` backing memory, for diagnostics.
+    #[must_use]
+    pub fn isviewer_raw(&self) -> &[u8] {
+        &self.isviewer
+    }
+
     /// Everything the guest has written to the `ISViewer` channel.
     #[must_use]
     pub fn isviewer_output(&self) -> &[u8] {

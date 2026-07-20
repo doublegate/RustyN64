@@ -331,11 +331,28 @@ nothing.** That is a materially different failure from every previous round — 
 lost, faulting, or sledding. The remaining question is genuinely *"what is it waiting on"*, which
 is what the first round wrongly assumed.
 
-Likely candidates, in order of cheapness to check: it is inside `tests::run()` and simply needs a
-larger budget (108M is not obviously enough for hundreds of hardware tests); or it spins on a VI
-register during `video_init.init()`; or `isviewer::detect()` fails and it chose the framebuffer
-console. **Check `detect()` first** — a single `PI_STATUS` poll or a failed magic round-trip would
-silently route all output somewhere unreadable, and that is one probe to rule out.
+**Both were checked, and the answer is the encouraging one.**
+
+`isviewer::detect()` **never runs** — its magic word is never written to the buffer across 108M
+instructions. And a PC histogram over a 2M-instruction window shows the hottest address by a wide
+margin is **`0x8000_0180`, the general exception vector**, with the suite's own installed handler
+underneath it (33,900 hits, ~1.7× the next).
+
+That is a suite **executing its tests**, not hanging: n64-systemtest deliberately raises exceptions
+by the thousand, and reaching its handler at the `BEV=0` vector means `install_exception_handlers`
+ran and the dispatch path works end to end.
+
+So the remaining problem is **output routing plus budget**, not correctness:
+
+- `main()` renders the framebuffer console *after* `tests::run()` returns, so with `ISViewer`
+  unselected there is nothing to read until the whole suite finishes.
+- 108M instructions is plainly not enough for hundreds of hardware tests that each fault
+  repeatedly. The budget was chosen to prove liveness, not to reach completion.
+
+**Next steps, in order:** find why `detect()` is not reached (it is called from the print path, so
+the suite may simply not print until the end); failing that, read the **framebuffer console**
+instead, which needs no VI emulation — the text is rendered into a buffer in RDRAM and can be read
+directly. Then run to completion with a budget sized for the whole suite rather than for liveness.
 
 A harness that cannot see PIF ROM should still **fail loudly** on a `BEV=1` vector rather than
 executing zeros; that is now a latent trap rather than an active one, but it will bite the next

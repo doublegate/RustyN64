@@ -45,9 +45,18 @@ boot capture. Seeding it also clears `ERL` and `BEV`.
 
 **The suite now runs 108,000,000 instructions with zero exceptions** — and still prints nothing.
 That is a materially different failure from every previous round: it is no longer lost, faulting,
-or NOP-sledding. The remaining question is genuinely "what is it waiting on", which is what the
-first round wrongly assumed. Cheapest next check is `isviewer::detect()`: a failed magic
-round-trip would silently route all output to a framebuffer console we cannot read.
+or NOP-sledding.
+
+**A PC histogram then showed the suite is executing its tests.** The hottest address by a wide
+margin is `0x8000_0180` — the general exception vector, with the suite's own handler underneath.
+n64-systemtest raises exceptions by the thousand on purpose, so reaching its handler at the
+`BEV=0` vector means `install_exception_handlers` ran and dispatch works end to end.
+
+The remaining problem is therefore **output routing and budget**, not correctness: `isviewer::detect()`
+is never reached, `main()` renders the framebuffer console only *after* `tests::run()` returns, and
+108M instructions was sized to prove liveness rather than to finish hundreds of faulting tests.
+Reading the framebuffer console directly needs no VI emulation, since the text is rendered into
+RDRAM.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
