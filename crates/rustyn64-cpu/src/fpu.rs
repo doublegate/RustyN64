@@ -20,6 +20,17 @@
 //! the revision model, not with the arithmetic; implementing it inline would
 //! make every multiply on every console wrong.
 
+// Two lints are allowed for this module, both because the thing they warn about
+// is the thing being modelled:
+//
+//   * `cast_precision_loss` -- an FPU's conversion instructions exist precisely
+//     to lose precision in a defined way. The loss is the behaviour, and it is
+//     reported through the Inexact flag rather than avoided.
+//   * `float_cmp` -- `C.EQ` is IEEE equality and the exactness checks are exact
+//     by definition. An epsilon here would make the emulator report relations
+//     and flags the hardware does not.
+#![allow(clippy::cast_precision_loss, clippy::float_cmp)]
+
 /// The `FCSR` cause/flag bits an operation can raise (UM §7.2.2).
 ///
 /// Returned rather than written, because `FCSR` belongs to
@@ -369,7 +380,6 @@ pub fn compare_d(a: f64, b: f64, cond: u8) -> Outcome<bool> {
 /// Exact equality is **correct here and epsilon comparison would be wrong**:
 /// `C.EQ` is defined as IEEE equality, not approximate equality, so a tolerance
 /// would make the instruction report a relation the hardware does not.
-#[allow(clippy::float_cmp)]
 fn relation_f32(a: f32, b: f32) -> Relation {
     if a.is_nan() || b.is_nan() {
         Relation::Unordered
@@ -387,7 +397,6 @@ fn relation_f32(a: f32, b: f32) -> Relation {
 /// Exact equality is **correct here and epsilon comparison would be wrong**:
 /// `C.EQ` is defined as IEEE equality, not approximate equality, so a tolerance
 /// would make the instruction report a relation the hardware does not.
-#[allow(clippy::float_cmp)]
 fn relation_f64(a: f64, b: f64) -> Relation {
     if a.is_nan() || b.is_nan() {
         Relation::Unordered
@@ -418,6 +427,250 @@ fn compare_result(rel: Relation, cond: u8, snan: bool) -> Outcome<bool> {
     // A signalling NaN operand raises Invalid whatever the condition.
     if snan {
         flags.invalid = true;
+    }
+    Outcome { value, flags }
+}
+
+/// The `Unimplemented Operation` cause bit (`FCSR` bit 17).
+///
+/// Distinct from Invalid: it means *"this processor cannot do this in
+/// hardware — trap to software"*, not *"the operation is mathematically
+/// undefined"*. The VR4300 uses it for the long-integer conversion restriction
+/// below, which is a **hardware limitation**, not a numerical error.
+pub const CAUSE_UNIMPLEMENTED: u32 = 1 << 17;
+
+/// Does a 64-bit integer satisfy `CVT.[S,D].L`'s range restriction?
+///
+/// > *"When converting a long integer to a single- or double-precision
+/// > floating-point number (`CVT.[S,D].L`), bits 63:55 of the 64-bit integer
+/// > must be all zeroes or ones, otherwise the VR4300 processor raises a
+/// > floating-point instruction exception."* — UM §7.5.2
+///
+/// This is a **VR4300-specific hardware limitation**, not IEEE behaviour: the
+/// value is perfectly representable, the processor simply declines. An emulator
+/// that converts it anyway produces a *correct* number where hardware traps, so
+/// software's fixup path never runs and the difference surfaces far downstream.
+#[must_use]
+pub const fn long_convertible(v: i64) -> bool {
+    let top = (v >> 55) & 0x1FF;
+    top == 0 || top == 0x1FF
+}
+
+/// `CVT.S.W` / `CVT.D.W` — 32-bit integer to float. Always exact for `f64`.
+#[must_use]
+pub fn cvt_s_w(v: i32) -> Outcome<f32> {
+    let value = v as f32;
+    let mut flags = Flags::NONE;
+    // 24 bits of mantissa cannot hold every i32, so this one CAN be inexact --
+    // unlike the f64 case, which is exact for every i32.
+    //
+    // Compared through `f64`, NOT by casting back to `i32`: Rust's float-to-int
+    // cast **saturates**, so `i32::MAX as f32 as i32` is `i32::MAX` again and
+    // the round-trip check silently never fires for exactly the value most
+    // likely to be inexact.
+    if f64::from(value) != f64::from(v) {
+        flags.inexact = true;
+    }
+    Outcome { value, flags }
+}
+
+/// `CVT.D.W` — 32-bit integer to double. Exact for every input.
+#[must_use]
+pub fn cvt_d_w(v: i32) -> Outcome<f64> {
+    Outcome {
+        value: f64::from(v),
+        flags: Flags::NONE,
+    }
+}
+
+/// `CVT.S.L` — 64-bit integer to single, honouring the VR4300 restriction.
+///
+/// # Errors
+///
+/// [`CAUSE_UNIMPLEMENTED`] when bits 63:55 are neither all-zero nor all-one.
+/// There is no defined result to return in that case, which is why this is a
+/// `Result` rather than a value plus a flag.
+pub fn cvt_s_l(v: i64) -> Result<Outcome<f32>, u32> {
+    if !long_convertible(v) {
+        return Err(CAUSE_UNIMPLEMENTED);
+    }
+    let value = v as f32;
+    let mut flags = Flags::NONE;
+    // Via `f64` for the same saturation reason as `cvt_s_w`. `f32`→`f64` is
+    // exact, and the restriction bounds `|v| < 2^55`, so the `f64`→`i64` step is
+    // exact too for any value an `f32` can hold.
+    if (f64::from(value)) as i64 != v {
+        flags.inexact = true;
+    }
+    Ok(Outcome { value, flags })
+}
+
+/// `CVT.D.L` — 64-bit integer to double, honouring the VR4300 restriction.
+///
+/// # Errors
+///
+/// [`CAUSE_UNIMPLEMENTED`] when bits 63:55 are neither all-zero nor all-one.
+pub fn cvt_d_l(v: i64) -> Result<Outcome<f64>, u32> {
+    if !long_convertible(v) {
+        return Err(CAUSE_UNIMPLEMENTED);
+    }
+    let value = v as f64;
+    let mut flags = Flags::NONE;
+    if value as i64 != v {
+        flags.inexact = true;
+    }
+    Ok(Outcome { value, flags })
+}
+
+/// `CVT.D.S` — single to double. Always exact: every `f32` is an `f64`.
+#[must_use]
+pub fn cvt_d_s(v: f32) -> Outcome<f64> {
+    Outcome {
+        value: f64::from(v),
+        flags: if is_snan_f32(v) {
+            Flags::INVALID
+        } else {
+            Flags::NONE
+        },
+    }
+}
+
+/// `CVT.S.D` — double to single. Can overflow, underflow or lose precision.
+#[must_use]
+pub fn cvt_s_d(v: f64) -> Outcome<f32> {
+    let value = v as f32;
+    let mut flags = Flags::NONE;
+    if is_snan_f64(v) {
+        flags.invalid = true;
+    }
+    if v.is_finite() {
+        if value.is_infinite() {
+            flags.overflow = true;
+            flags.inexact = true;
+        } else if f64::from(value) != v {
+            flags.inexact = true;
+        }
+    }
+    Outcome { value, flags }
+}
+
+/// `2^63`, the bound an `i64` conversion must stay strictly below.
+const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+
+/// `2^52` — above this magnitude every `f64` is already an integer, so the
+/// rounding helpers can return the value untouched.
+const F64_INTEGRAL_THRESHOLD: f64 = 4_503_599_627_370_496.0;
+
+/// `|v|`, by clearing the sign bit.
+///
+/// `f64::abs` and friends live in `std`; this crate is `#![no_std]`, so the
+/// handful of float operations the FPU needs are implemented here rather than
+/// pulling in `libm` for four functions.
+const fn fabs(v: f64) -> f64 {
+    f64::from_bits(v.to_bits() & 0x7FFF_FFFF_FFFF_FFFF)
+}
+
+/// Truncate toward zero.
+fn trunc(v: f64) -> f64 {
+    if !v.is_finite() || fabs(v) >= F64_INTEGRAL_THRESHOLD {
+        // Already integral (or not a number), so there is nothing to remove.
+        return v;
+    }
+    (v as i64) as f64
+}
+
+/// Round toward −∞.
+fn floor(v: f64) -> f64 {
+    let t = trunc(v);
+    if v < 0.0 && t != v { t - 1.0 } else { t }
+}
+
+/// Round toward +∞.
+fn ceil(v: f64) -> f64 {
+    let t = trunc(v);
+    if v > 0.0 && t != v { t + 1.0 } else { t }
+}
+
+/// Round to nearest, **ties to even**.
+///
+/// Not "round half away from zero", which is what most `round` functions do and
+/// which no MIPS rounding mode selects.
+fn round_ties_even(v: f64) -> f64 {
+    if !v.is_finite() || fabs(v) >= F64_INTEGRAL_THRESHOLD {
+        return v;
+    }
+    let f = floor(v);
+    let diff = v - f;
+    if diff > 0.5 {
+        f + 1.0
+    } else if diff < 0.5 {
+        f
+    } else if (f as i64) % 2 == 0 {
+        // Exactly halfway: pick the even neighbour.
+        f
+    } else {
+        f + 1.0
+    }
+}
+
+/// Round a float to an integer under an explicit [`Rounding`] mode.
+///
+/// Split out because `CVT.W`, `ROUND.W`, `TRUNC.W`, `CEIL.W` and `FLOOR.W`
+/// differ **only** in this: `CVT` uses `FCSR.RM`, and the other four hard-code
+/// one mode each. Sharing the body means a rounding bug cannot exist in one and
+/// not the others.
+#[must_use]
+pub fn round_f64(v: f64, mode: Rounding) -> f64 {
+    match mode {
+        // `round_ties_even` rather than `round`, which rounds half AWAY from
+        // zero -- a different mode that no MIPS setting selects.
+        Rounding::Nearest => round_ties_even(v),
+        Rounding::TowardZero => trunc(v),
+        Rounding::TowardPlusInf => ceil(v),
+        Rounding::TowardMinusInf => floor(v),
+    }
+}
+
+/// Convert a float to a 32-bit integer under `mode`.
+///
+/// An out-of-range or NaN input raises **Invalid**. The value returned in that
+/// case is `i32::MAX`, which is the conventional MIPS result — and a *choice*
+/// here, since the architecture leaves it undefined when the exception is
+/// masked.
+#[must_use]
+pub fn to_i32(v: f64, mode: Rounding) -> Outcome<i32> {
+    let r = round_f64(v, mode);
+    if v.is_nan() || r < f64::from(i32::MIN) || r > f64::from(i32::MAX) {
+        return Outcome {
+            value: i32::MAX,
+            flags: Flags::INVALID,
+        };
+    }
+    let value = r as i32;
+    let mut flags = Flags::NONE;
+    if f64::from(value) != v {
+        flags.inexact = true;
+    }
+    Outcome { value, flags }
+}
+
+/// Convert a float to a 64-bit integer under `mode`.
+#[must_use]
+pub fn to_i64(v: f64, mode: Rounding) -> Outcome<i64> {
+    let r = round_f64(v, mode);
+    // The bounds are compared as f64 deliberately: `i64::MAX` is not exactly
+    // representable, so `r > i64::MAX as f64` is the correct test and
+    // `r as i64 == i64::MAX` is not.
+    if v.is_nan() || !(-TWO_POW_63..TWO_POW_63).contains(&r) {
+        return Outcome {
+            value: i64::MAX,
+            flags: Flags::INVALID,
+        };
+    }
+    let value = r as i64;
+    let mut flags = Flags::NONE;
+    if value as f64 != v {
+        flags.inexact = true;
     }
     Outcome { value, flags }
 }
@@ -647,5 +900,113 @@ mod tests {
             !compare_d(f64::NAN, 1.0, 2).value,
             "C.EQ is false when unordered"
         );
+    }
+
+    /// **The VR4300 long-conversion restriction** (UM §7.5.2): bits 63:55 must
+    /// be all-zero or all-one. This is a *hardware limitation*, not IEEE
+    /// behaviour — the value is representable, the processor declines.
+    ///
+    /// Converting it anyway produces a correct number where hardware traps, so
+    /// software's fixup path never runs and the divergence surfaces far
+    /// downstream from its cause.
+    #[test]
+    fn cvt_from_long_rejects_values_outside_the_vr4300_range() {
+        // Small positives and negatives: bits 63:55 uniform.
+        for v in [0i64, 1, -1, 1 << 40, -(1 << 40), (1 << 55) - 1] {
+            assert!(long_convertible(v), "{v} must be convertible");
+            assert!(cvt_d_l(v).is_ok());
+        }
+        // Bits 63:55 mixed -- declines.
+        for v in [1i64 << 55, 1 << 60, i64::MAX, i64::MIN + 1] {
+            assert!(!long_convertible(v), "{v} must be rejected");
+            assert_eq!(cvt_d_l(v), Err(CAUSE_UNIMPLEMENTED));
+            assert_eq!(cvt_s_l(v), Err(CAUSE_UNIMPLEMENTED));
+        }
+        // i64::MIN is 0x8000_0000_0000_0000, so bits 63:55 are 0b1_0000_0000 --
+        // neither all-zero nor all-one, so it is NOT convertible. Easy to
+        // assume otherwise from "the sign bit is set".
+        assert!(!long_convertible(i64::MIN));
+        // The largest magnitudes that ARE convertible sit at the 2^55 boundary.
+        assert!(long_convertible((1i64 << 55) - 1));
+        assert!(long_convertible(-(1i64 << 55)));
+    }
+
+    /// `Unimplemented` is **not** `Invalid`: it means "this processor cannot do
+    /// this", not "the operation is undefined". Conflating them sends the
+    /// handler down the numerical-error path for a hardware limitation.
+    #[test]
+    fn unimplemented_is_a_different_cause_bit_from_invalid() {
+        assert_eq!(CAUSE_UNIMPLEMENTED, 1 << 17);
+        assert_ne!(
+            CAUSE_UNIMPLEMENTED,
+            Flags::INVALID.to_fcsr_bits() & 0x0003_F000,
+            "distinct from the Invalid cause bit"
+        );
+    }
+
+    /// `CVT.D.W` is exact for every `i32`; `CVT.S.W` is not, because 24 mantissa
+    /// bits cannot hold every 32-bit integer.
+    #[test]
+    fn int_to_double_is_exact_but_int_to_single_can_be_inexact() {
+        for v in [0i32, 1, -1, i32::MAX, i32::MIN] {
+            assert_eq!(cvt_d_w(v).flags, Flags::NONE, "{v} to double is exact");
+        }
+        assert_eq!(cvt_s_w(1).flags, Flags::NONE);
+        assert!(
+            cvt_s_w(i32::MAX).flags.inexact,
+            "0x7FFFFFFF does not fit in 24 mantissa bits"
+        );
+    }
+
+    /// `CVT.S.D` can overflow; `CVT.D.S` never can, since every `f32` is an
+    /// `f64`.
+    #[test]
+    fn narrowing_can_overflow_but_widening_cannot() {
+        let out = cvt_s_d(1e300);
+        assert!(out.flags.overflow, "1e300 has no f32 representation");
+        assert!(out.flags.inexact);
+        assert!(!cvt_s_d(1.0).flags.overflow);
+        assert_eq!(cvt_d_s(1.5).value.to_bits(), 1.5f64.to_bits());
+        assert_eq!(cvt_d_s(f32::MAX).flags, Flags::NONE, "widening is exact");
+    }
+
+    /// The four rounding modes differ, and `Nearest` is **ties-to-even** — not
+    /// `f64::round`, which rounds half away from zero and matches no MIPS mode.
+    #[test]
+    fn the_rounding_modes_differ_and_nearest_is_ties_to_even() {
+        assert_eq!(round_f64(2.5, Rounding::Nearest), 2.0, "ties to EVEN");
+        assert_eq!(round_f64(3.5, Rounding::Nearest), 4.0);
+        assert_eq!(round_f64(2.5, Rounding::TowardZero), 2.0);
+        assert_eq!(round_f64(2.5, Rounding::TowardPlusInf), 3.0);
+        assert_eq!(round_f64(2.5, Rounding::TowardMinusInf), 2.0);
+        assert_eq!(round_f64(-2.5, Rounding::TowardZero), -2.0);
+        assert_eq!(round_f64(-2.5, Rounding::TowardMinusInf), -3.0);
+    }
+
+    /// Out-of-range and NaN conversions raise Invalid rather than wrapping.
+    #[test]
+    fn an_out_of_range_conversion_raises_invalid() {
+        for v in [1e30f64, -1e30, f64::NAN, f64::INFINITY] {
+            let out = to_i32(v, Rounding::Nearest);
+            assert!(out.flags.invalid, "{v} does not fit in an i32");
+            assert_eq!(out.value, i32::MAX, "the conventional MIPS result");
+        }
+        assert_eq!(to_i32(42.0, Rounding::Nearest).value, 42);
+        assert_eq!(to_i32(42.0, Rounding::Nearest).flags, Flags::NONE);
+        assert!(to_i32(42.5, Rounding::TowardZero).flags.inexact);
+    }
+
+    /// The 64-bit bound is compared as an `f64` because `i64::MAX` is **not
+    /// exactly representable** — `r > i64::MAX as f64` is the correct test, and
+    /// casting first is not.
+    #[test]
+    fn the_64_bit_conversion_bound_accounts_for_representability() {
+        // 2^63 exactly: out of range, since i64::MAX is 2^63 - 1.
+        let out = to_i64(9_223_372_036_854_775_808.0, Rounding::Nearest);
+        assert!(out.flags.invalid, "2^63 does not fit in an i64");
+        // Just inside.
+        let out = to_i64(9_223_372_036_854_774_784.0, Rounding::Nearest);
+        assert!(!out.flags.invalid);
+        assert_eq!(to_i64(-1.0, Rounding::Nearest).value, -1);
     }
 }
