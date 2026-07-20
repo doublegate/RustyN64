@@ -341,6 +341,44 @@ uncertain (all four are open questions in `docs/architecture.md`), and each is e
 - ADR 0005 exists partly to keep sub-cycle bus timing from becoming the default explanation for
   every residual. It requires a named failing test before the refactor may begin.
 
+### 3.3b "Undocumented" is a claim about a document, and it decays
+
+**The pattern.** A note that some constant is undocumented gets written once, then **cited**
+rather than re-checked. Unlike a claim about behaviour, nothing ever fails when it is wrong — no
+test goes red, no ROM diverges — so it survives indefinitely and spreads. Worse, it *licenses* a
+fitted constant, and a fitted constant standing in for a documented one looks exactly like
+evidence.
+
+**How it went wrong here.** Three files — `docs/accuracy-ledger.md` (entries C-2 and C-3),
+`docs/cpu.md`, and `ref-docs/2026-07-20-vr4300-timing-supplement.md` — all asserted that the
+VR4300 exception epilogue cost was undocumented, with the ledger stating *"no figure appears in
+UM §4.7 or chapter 6"*. The figure is the **opening sentence of UM §4.7**: *"the pipeline stalls
+for 2 PCycles."* CP0I was the same story: recorded as having no cycle count while citing §4.6.9,
+which is the paragraph that gives it (1 PCycle). A third documented constant, the 3-PCycle
+instruction micro-TLB miss penalty (§4.6.2), had simply never been looked for.
+
+Each individual copy was reasonable — each cited the previous file's confidence. The aggregate
+was a fact nobody had checked and everybody believed. It was caught only because a research pass
+for a *different* sprint re-opened the manual.
+
+**Why it happened.** Not misreading — **search shape**. The cost was looked for in §4.7's tables
+and in Chapter 6's exception-*processing* prose, never in §4.7's own first paragraph. Scanning
+tables for a number is the natural move and it systematically misses prose.
+
+**Practice adopted.**
+
+- When recording something as undocumented, **cite the pages actually read**. "No figure appears
+  in UM §4.7" is falsifiable, and was duly falsified; "not documented" is unfalsifiable and
+  therefore permanent.
+- Before *relying* on such a record — above all to justify fitting a constant — re-open the
+  primary source. The cost of re-checking is minutes; the cost of a fitted constant that displaces
+  a documented one is that every timing result built on it becomes unfalsifiable.
+- Read the prose, not only the tables. Vendor manuals put load-bearing numbers in section
+  openings.
+
+This is the mirror image of the ledger's rule that a measured constant is never tuned to make a
+ROM pass. Both produce a number that cannot be falsified; this one arrives by a politer route.
+
 ### 3.4 A frontend-only reproduction is a load-path smell, and needs a full-state diff
 
 **The pattern.** A per-game correction database applied at load time can silently corrupt state the

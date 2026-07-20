@@ -13,7 +13,7 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 1 (CPU golden log) — **Sprint 1 complete**, Sprint 2 next. The
+- **Current phase:** Phase 1 (CPU golden log) — **Sprint 1 complete**, [Sprint 2](phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md) planned and next. The
   VR4300 executes the MIPS III integer set as a five-stage pipeline off a canonical 187.5 MHz
   master clock, and `basic.z64` passes 5/5. Phase 0 is complete: the workspace compiles, CI is
   green across Linux/macOS/Windows, the docs site publishes, and the test-ROM corpora are

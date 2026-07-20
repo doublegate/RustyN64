@@ -149,11 +149,36 @@ The cache figures are the sum of the table rows; the 1-cycle spread is the
 that ADR 0006's seeded phase models. CEN64 corroborates the D-cache number: its
 `DCACHE_ACCESS_DELAY` of 44 is exactly 8 + its `MEMORY_WORD_DELAY` of 38.
 
-**The exception epilogue cost is NOT documented**, despite being commonly quoted
-as 2 PCycles. No figure appears in UM §4.7 or Chapter 6; CEN64 charges 2 and its
-own source asks *"Is the cycle count just the killing of IC/RF, or do we actually
-delay an additional two cycles?"*. Treat it like `M` below — a measured constant
-with its provenance recorded, never a number cited as if the manual supplied it.
+**The exception epilogue cost IS documented, and this doc previously said it was
+not.** UM §4.7 (p. 114), the section's opening sentence:
+
+> *"When a pipeline exception condition occurs, the pipeline stalls for **2
+> PCycles** and the instruction causing the exception as well as all those that
+> follow it in the pipeline are aborted."*
+
+The earlier note here — and ledger entry C-2, and the timing supplement — all
+claimed no figure appeared in UM §4.7, which is precisely where it appears. The
+error came from searching Chapter 6 (exception *processing*) and the §4.7 tables
+rather than reading §4.7's prose. CEN64's 2 is therefore **corroboration**, not
+the source; its source comment asking whether the delay is real is answered.
+
+Two more interlock costs that were likewise wrongly filed as undocumented:
+
+- **CP0I (CP0 bypass interlock) = 1 PCycle** — *"This interlock causes a pipeline
+  stall for one PCycle to allow the CP0 register to be written in the WB stage
+  before allowing any CP0 register to be read in the DC stage"* (UM §4.6.9,
+  p. 113). It fires when an instruction that caused an exception reaches WB while
+  the next instruction in DC reads any CP0 register.
+- **ITM (instruction micro-TLB miss) = 3 PCycles** — *"A miss penalty of 3
+  PCycles is incurred when the micro-TLB is updated from the JTLB"* (UM §4.6.2,
+  p. 107). Note this is the **two-entry instruction micro-TLB** in front of the
+  32-entry JTLB, not the JTLB itself: a micro-TLB miss is a *stall*, a JTLB miss
+  is an *exception*. Whether to model the micro-ITLB separately is an open
+  Sprint 2 decision, recorded in that sprint's plan rather than decided here.
+
+The general lesson, recorded because it cost three files: *"undocumented"* is a
+claim about the manual that has to be checked against the manual, not inherited
+from a previous note. See `docs/engineering-lessons.md`.
 
 Integer multiply and divide **stall the entire pipeline** for the listed count
 (UM Table 3-12) — they are not background operations.

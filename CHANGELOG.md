@@ -21,6 +21,46 @@ verifying Sprint 1's criteria against the code rather than against the ticket's 
   and causes an exception, the exception takes precedence"* (UM §16 p. 487). A misaligned `LL`
   leaves the link disarmed.
 
+### Fixed — three "undocumented" timing constants were documented all along
+
+A research pass for Sprint 2 re-opened the VR4300 manual and found that three constants recorded
+across `docs/accuracy-ledger.md`, `docs/cpu.md` and the timing supplement as *undocumented* are
+stated plainly in the sections those notes cited as lacking them:
+
+| Constant | Value | Where it actually is |
+| --- | --- | --- |
+| Exception epilogue stall | **2 PCycles** | UM §4.7 p. 114 — the section's opening sentence |
+| CP0I (CP0 bypass interlock) | **1 PCycle** | UM §4.6.9 p. 113 |
+| ITM (instruction micro-TLB miss) | **3 PCycles** | UM §4.6.2 p. 107 — never looked for |
+
+The ledger said *"no figure appears in UM §4.7 or chapter 6"* while the figure is §4.7's first
+paragraph. The cause was search shape, not misreading: numbers were looked for in tables, and
+these are in prose. CEN64's 2 is therefore corroboration rather than the origin.
+
+Ledger entries C-2 and C-3 are reclassified from *not yet measured* to documented-with-citation,
+C-7 is added for ITM, and the general lesson is recorded as `docs/engineering-lessons.md` §3.3b:
+*"undocumented" is a claim about a document, and unlike a claim about behaviour, nothing ever
+fails when it is wrong* — so it spreads between files and licenses fitted constants. The
+`ref-docs/` correction lands as a new dated supplement, since that corpus is immutable.
+
+### Fixed — ledger S-3 resolved: the `EXL=1` vector is `0x180`
+
+Recorded as MIPS-docs-versus-CEN64. It is neither — **the manual contradicts itself**. Tables
+6-3/6-4 (p. 181) define the refill offsets only for `EXL=0`, and §6.4.8 says twice (pp. 187, 188)
+that with `EXL=1` you take the common vector. One flowchart, Fig. 6-15 (p. 203), says `0x080` and
+is wrong. CEN64 is right, and its source comment that `0x080` *"doesn't make any sense"* is a
+reaction to that figure. Kept as a ledger entry rather than deleted, because Fig. 6-15 is still
+in the manual and the next reader will find it.
+
+### Added — Sprint 2 planned (T-12-001 … T-12-007)
+
+`to-dos/phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md`: COP0, the TLB (including the
+two-entry instruction micro-TLB in front of the JTLB), the exception model, `CACHE`, and COP1
+*control* access. The goal is n64-systemtest reporting a genuine number — the first oracle this
+project did not write itself. Its blockers were established by reading the suite's source rather
+than assuming: `entrypoint()` calls `CTC1 $31` as its fourth statement, and `main()` immediately
+installs handlers at all three exception vectors.
+
 ### Added — `SYNC` retires as a NOP instead of raising
 
 Found by the same audit: `SYNC` (SPECIAL funct `0o17`) decoded to `Reserved`, so it would have
