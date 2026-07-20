@@ -136,15 +136,29 @@ pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadE
         );
     }
 
-    // **The stack pointer.** IPL3 leaves `$sp` at the top of SP DMEM
-    // (`0xA400_1FF0`), and every compiled entry point immediately relies on it:
-    // n64-systemtest's is `ADDIU $29, $29, -0x50` followed by `SW $31, 0x4c($29)`.
+    // **The stack pointer**, in **KSEG0 RDRAM**, above the heap.
     //
-    // With `$sp` at 0 that store goes to `0xFFFF_FFFF_FFFF_FFFC` -- a KSEG3
-    // address, TLB-mapped, and an instant refill exception six instructions in.
-    // Loading the image correctly is not enough if the register state the image
-    // was compiled against is missing.
-    system.cpu.regs.write(29, 0xFFFF_FFFF_A400_1FF0);
+    // Every compiled entry point relies on `$sp` immediately -- n64-systemtest's
+    // is `ADDIU $29, $29, -0x50` then `SW $31, 0x4c($29)` -- so with `$sp` at 0
+    // that store goes to `0xFFFF_FFFF_FFFF_FFFC`, a TLB-mapped KSEG3 address,
+    // and faults six instructions in.
+    //
+    // # Why KSEG0 specifically
+    //
+    // This previously pointed at the top of SP DMEM (`0xA400_1FF0`), described
+    // in a comment as what IPL3 leaves behind. That was **over-claimed**: the
+    // only evidence at the time was that *some* valid stack stopped a crash,
+    // which any address would have done.
+    //
+    // n64-systemtest then narrowed it. Its SP-DMA tests build their source data
+    // in a **stack array** and call `MemoryMap::uncached_mut` on it, which
+    // asserts `addr & 0xE000_0000 == 0x8000_0000`. A KSEG1 stack fails that
+    // assert and panics the suite outright -- so the stack must be KSEG0.
+    //
+    // The exact address remains an inference: it sits above `MemoryMap::HEAP_END`
+    // (`0x0030_0000`, which the suite prints at startup) so the stack and heap
+    // cannot collide, and inside the 8 MiB we report in SPMEM word 0.
+    system.cpu.regs.write(29, 0xFFFF_FFFF_8078_0000);
 
     // Word 0: the RDRAM size IPL3 detected.
     let size = u32::try_from(system.bus.rdram.len()).unwrap_or(u32::MAX);

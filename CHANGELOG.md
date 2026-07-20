@@ -138,8 +138,26 @@ them put makes every chained DMA re-send the first block. The oracle checks the 
 after a `0x10`-byte transfer it expects `PI_CART_ADDR` to have moved by `0x10`, and for a written
 length of 1 (a two-byte transfer) by `0x2`. Failure count 2,909 to 2,907.
 
-The next distinct blocker is a panic inside the suite's own `MemoryMap::uncached`
-(`0xA000_0000` passed where `0x8000_0000` was expected) during `spmem: DMA RDRAM -> DMEM`.
+**8. SP DMA was entirely unimplemented.** `SP_RD_LEN`/`SP_WR_LEN` now move data between RDRAM and
+SPMEM, honouring the packed length word — bits 11:0 bytes-per-row minus one, 19:12 rows minus one,
+31:20 the RDRAM-side inter-row skip. Treating the word as a plain byte count transfers megabytes
+for a routine 8-byte copy; reading only bits 11:0 silently drops every row after the first, which
+is the failure mode for anything doing a 2D block copy. `SP_MEM_ADDR` bit 12 selects IMEM, and the
+12-bit offset wraps **within** the selected 4 KiB half rather than spilling into the other.
+
+**9. The seeded `$sp` was in KSEG1, and had been over-claimed.** It pointed at the top of SP DMEM
+(`0xA400_1FF0`), described in a comment as what IPL3 leaves behind — but the only evidence for that
+was that *some* valid stack had stopped a crash, which any address would have done. The oracle
+narrowed it: the SP-DMA tests build their source data in a **stack array** and call
+`MemoryMap::uncached_mut` on it, which asserts the address is KSEG0. A KSEG1 stack fails that
+assert and panics the suite outright. The stack is now KSEG0, above `MemoryMap::HEAP_END` so it
+cannot collide with the heap; the exact address remains a documented inference.
+
+With these the suite runs past the SP-DMA group entirely and reaches the TLB tests.
+
+The run now reaches `TLB: Execute mapped branch which has a non-mapped delay slot`, with
+`Cause during TLB exception` mismatches — a `Cause` of `0x8` where we report otherwise. Failure
+count 2,907 to 2,932, again because more tests execute.
 
 Wrong turns worth recording, since each cost a round and each would have taken real work to
 "fix": `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0` is correct); lost installer stores (the
