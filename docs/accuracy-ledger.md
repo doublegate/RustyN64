@@ -409,10 +409,24 @@ ft_raw = 0x0000_0000_0123_4567   low = 0x01234567         <- a SENTINEL, not 0.0
 **coincidentally** correct, because `2.0 + 3e-38` rounds to `2.0` — which is
 exactly the kind of accident that makes a broken path look healthy.
 
-So the operand **load** is implicated as well as the write-back, and "the
-arithmetic is correct" is a weaker claim than it appeared: it was verified on one
-case whose wrong operand could not change the answer. Do not treat the FPU as
-validated on this evidence.
+So the operand **load** looks implicated as well as the write-back.
+
+**But both conclusions rest on a comparison that may not be valid.** The probe
+captured the *first five* `ADD.S` sites in the run and compared their registers
+against a failure message from a *specific* test case. Nothing correlates the
+two: those `ADD.S` instances may belong to entirely different tests, possibly
+ones that pass. `LWC1` has since been read and is correct
+(`write_s(ft, v)`, preserving the upper half as it must), which is evidence
+against the operand-load theory and a reason to distrust the pairing.
+
+**Treat as established:** the FPU is not validated, and both "the arithmetic is
+correct" and "the operands are wrong" are unproven.
+
+**The probe has to correlate.** Break on the `ADD.S` reached from the failing
+test — identify it by symbol or by the operand values the test names — rather
+than on the first `ADD.S` encountered. Uncorrelated captures produced two
+confident and unfounded conclusions here, one of which was used to justify a code
+change.
 
 **A fix was attempted and reverted.** Writing the full 64-bit FGR
 (`write_raw`, zeroing the upper half) moved the failure count by **nothing**
