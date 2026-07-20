@@ -94,6 +94,19 @@ pub enum MemOp {
         /// cache, bits 4..=2 the operation.
         op: u8,
     },
+    /// An FP load or store (`LWC1`/`LDC1`/`SWC1`/`SDC1`).
+    ///
+    /// Kept separate from [`MemOp::Load`]/[`MemOp::Store`] because the value
+    /// moves to or from the **FP** register file, and `DC` needs to know which —
+    /// a shared variant would need a "which file" flag anyway.
+    Fp {
+        /// Which of the four forms.
+        op: Op,
+        /// Effective address.
+        addr: u64,
+        /// The FPR (`ft`).
+        ft: u8,
+    },
     /// One half of an unaligned access. `rt` is needed for both directions: a
     /// partial load merges into it, and a partial store merges out of it.
     Unaligned {
@@ -177,6 +190,24 @@ pub enum Cop0Access {
 /// The COP1 control moves (T-12-006). Arithmetic is Sprint 3.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cop1Access {
+    /// `MFC1`/`DMFC1` — move an FPR to a GPR.
+    ReadFpr {
+        /// FPR number (`fs`).
+        src: u8,
+        /// GPR destination.
+        dest: u8,
+        /// 64-bit (`DMFC1`) rather than 32-bit sign-extended (`MFC1`).
+        wide: bool,
+    },
+    /// `MTC1`/`DMTC1` — move a GPR to an FPR.
+    WriteFpr {
+        /// FPR number (`fs`).
+        dest: u8,
+        /// Value from `rt`.
+        value: u64,
+        /// 64-bit (`DMTC1`) rather than 32-bit (`MTC1`).
+        wide: bool,
+    },
     /// `CFC1` — read control register `src` into GPR `dest`.
     ReadControl {
         /// COP1 control register number.
@@ -615,6 +646,32 @@ pub const fn execute(
             ..NOTHING
         }),
         // `fs` is the COP1 control register, encoded in the `rd` field.
+        Op::Mfc1 | Op::Dmfc1 => Ok(Executed {
+            cop0: Some(Cop0Access::Cop1(Cop1Access::ReadFpr {
+                src: d.rd,
+                dest: d.dest,
+                wide: matches!(d.op, Op::Dmfc1),
+            })),
+            ..NOTHING
+        }),
+        Op::Mtc1 | Op::Dmtc1 => Ok(Executed {
+            cop0: Some(Cop0Access::Cop1(Cop1Access::WriteFpr {
+                dest: d.rd,
+                value: rt_val,
+                wide: matches!(d.op, Op::Dmtc1),
+            })),
+            ..NOTHING
+        }),
+        // FP loads and stores resolve their address exactly like the integer
+        // forms; only the register file they land in differs.
+        Op::Lwc1 | Op::Ldc1 | Op::Swc1 | Op::Sdc1 => Ok(Executed {
+            mem: Some(MemOp::Fp {
+                op: d.op,
+                addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                ft: d.rt,
+            }),
+            ..NOTHING
+        }),
         Op::Cfc1 => Ok(Executed {
             cop0: Some(Cop0Access::Cop1(Cop1Access::ReadControl {
                 src: d.rd,

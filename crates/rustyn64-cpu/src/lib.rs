@@ -37,6 +37,7 @@ pub mod cop1;
 pub mod decode;
 pub mod exception;
 pub mod exec;
+pub mod fpr;
 pub mod mem;
 pub mod pipeline;
 pub mod regs;

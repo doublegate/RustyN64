@@ -276,6 +276,14 @@ Phase 1 or building a harness-side loader that stages the whole ROM image rather
 1 MiB. That is a scoping decision, not something to quietly work around; it is recorded here so
 it is made deliberately.
 
+**Decided (2026-07-20): pull PI/cart DMA forward into Phase 1.** The alternatives were a
+harness-side loader that stages the whole ROM image — which would have made the harness diverge
+from what hardware does, exactly the kind of shortcut later mistaken for accuracy — or weakening
+the v0.2.0 cut criterion. Pulling PI forward keeps the criterion an honest oracle result. Phase 1
+therefore absorbs the PI/cart work that Phase 5 had scoped; **`to-dos/ROADMAP.md` and
+`to-dos/VERSION-PLAN.md` must be updated to reflect that**, so the phase spine stays truthful
+rather than the change living only in this note.
+
 **Dependencies:** T-12-002, T-12-003, T-12-004, T-12-006, **and PI/cart DMA (Phase 5)**
 **Reference:** `ref-proj/n64-systemtest/src/main.rs`, `src/exception_handler.rs`,
 `src/tests/testlist.rs`
