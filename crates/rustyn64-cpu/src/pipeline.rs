@@ -37,6 +37,10 @@
 //! the parts that cannot be retrofitted later without rewriting every consumer.
 
 use crate::Bus;
+use crate::alu::HiLo;
+use crate::decode::{Decoded, decode};
+use crate::exec::{WriteBack, execute};
+use crate::regs::Regs;
 
 /// The five pipeline stages, in hardware order (UM §4.1, Figure 4-1).
 ///
@@ -147,6 +151,14 @@ pub struct Latch {
     pub in_delay_slot: bool,
     /// An aborting condition stamped into this latch and every latch upstream.
     pub abort: Option<Exception>,
+    /// The decoded instruction, filled at `IC`.
+    pub decoded: Decoded,
+    /// `rs` value, read at `RF`.
+    pub rs_val: u64,
+    /// `rt` value, read at `RF`.
+    pub rt_val: u64,
+    /// What `EX` computed, committed at `WB`.
+    pub write_back: WriteBack,
 }
 
 /// Does a load into `load_rt` interlock with the following instruction?
@@ -218,6 +230,18 @@ impl Pipeline {
             word: 0,
             in_delay_slot: false,
             abort: None,
+            decoded: Decoded {
+                op: crate::decode::Op::Reserved,
+                rs: 0,
+                rt: 0,
+                rd: 0,
+                sa: 0,
+                imm: 0,
+                dest: 0,
+            },
+            rs_val: 0,
+            rt_val: 0,
+            write_back: WriteBack::None,
         };
         Self {
             ic_rf: EMPTY,
@@ -306,7 +330,7 @@ impl Pipeline {
     /// one cycle and no double buffering is required. Do not reorder this.
     ///
     /// Hot path: allocation-free.
-    pub fn advance<B: Bus>(&mut self, bus: &mut B, next_pc: &mut u64) {
+    pub fn advance<B: Bus>(&mut self, bus: &mut B, regs: &mut Regs, next_pc: &mut u64) {
         // A stall consumes the cycle. The pipeline holds its state, and the cycle
         // is recorded as NOT a run cycle so an interrupt cannot be accepted on the
         // cycle following it (UM §4.7.1).
@@ -317,20 +341,31 @@ impl Pipeline {
             return;
         }
 
-        self.wb_stage();
+        self.wb_stage(regs);
         self.dc_stage(bus);
-        self.ex_stage();
-        self.rf_stage();
-        self.ic_stage(next_pc);
+        self.ex_stage(regs);
+        self.rf_stage(regs);
+        self.ic_stage(bus, next_pc);
 
         self.prev_was_run = true;
         self.flush_pending = false;
     }
 
     /// `WB` — commit the result and retire the instruction.
-    fn wb_stage(&mut self) {
+    fn wb_stage(&mut self, regs: &mut Regs) {
         if self.dc_wb.occupied && self.dc_wb.abort.is_none() {
-            // TODO(T-11-002): write the result back into the register file.
+            match self.dc_wb.write_back {
+                WriteBack::None => {}
+                // `Regs::write` discards `$zero`, so no guard is needed here --
+                // and must not be added, or the rule lives in two places.
+                WriteBack::Gpr { dest, value } => regs.write(dest, value),
+                WriteBack::HiLo(hl) => {
+                    regs.hi = hl.hi;
+                    regs.lo = hl.lo;
+                }
+                WriteBack::Hi(v) => regs.hi = v,
+                WriteBack::Lo(v) => regs.lo = v,
+            }
             self.retired = self.retired.wrapping_add(1);
         }
         self.dc_wb.occupied = false;
@@ -357,24 +392,107 @@ impl Pipeline {
         self.ex_dc.occupied = false;
     }
 
+    /// The operand bypass network (UM §4.6).
+    ///
+    /// *"Bypassing ... allows data and conditions produced in the `EX`, `DC` and
+    /// `WB` stages to be made available to the `EX` stage of the next cycle."*
+    ///
+    /// Without this, back-to-back dependent instructions read stale registers and
+    /// essentially every real program computes wrong values — `LUI`+`ORI`, the
+    /// standard way to build a 32-bit constant, breaks immediately. Its absence
+    /// was invisible to every unit test in this crate and was caught only by
+    /// `a_program_executes_through_the_whole_pipeline`.
+    ///
+    /// By the time `EX` runs, the reverse cascade has already committed one
+    /// instruction (`WB` ran first, so the register file is current) and moved the
+    /// next into `dc_wb`. Exactly **one** producer can therefore still be
+    /// uncommitted, and `dc_wb` is it.
+    ///
+    /// Loads are the case this does *not* cover — a load's value is not ready in
+    /// time, which is precisely why the hardware has a load-delay interlock. That
+    /// lands with T-11-003 alongside the loads themselves.
+    fn bypass(&self, reg: u8, regs: &Regs) -> u64 {
+        if reg != 0
+            && self.dc_wb.occupied
+            && self.dc_wb.abort.is_none()
+            && let WriteBack::Gpr { dest, value } = self.dc_wb.write_back
+            && dest == reg
+        {
+            return value;
+        }
+        regs.read(reg)
+    }
+
+    /// `HI`/`LO` as `EX` should see them, bypassing an uncommitted producer.
+    fn bypass_hi_lo(&self, regs: &Regs) -> HiLo {
+        if self.dc_wb.occupied && self.dc_wb.abort.is_none() {
+            match self.dc_wb.write_back {
+                WriteBack::HiLo(hl) => return hl,
+                WriteBack::Hi(v) => return HiLo { hi: v, lo: regs.lo },
+                WriteBack::Lo(v) => return HiLo { hi: regs.hi, lo: v },
+                _ => {}
+            }
+        }
+        HiLo {
+            hi: regs.hi,
+            lo: regs.lo,
+        }
+    }
+
     /// `EX` — execute.
-    fn ex_stage(&mut self) {
-        // TODO(T-11-002): the ALU, branch resolution, and the multi-cycle
-        // interlock for MULT/DIV (5/37/8/69 PCycles, UM Table 3-12).
-        self.ex_dc = self.rf_ex;
+    fn ex_stage(&mut self, regs: &Regs) {
+        let mut out = self.rf_ex;
+        if out.occupied && out.abort.is_none() {
+            // Resolve operands through the bypass network rather than trusting
+            // the values latched at RF, which may be one cycle stale.
+            out.rs_val = self.bypass(out.decoded.rs, regs);
+            out.rt_val = self.bypass(out.decoded.rt, regs);
+            let hilo = self.bypass_hi_lo(regs);
+            match execute(out.decoded, out.rs_val, out.rt_val, hilo) {
+                Ok(e) => {
+                    out.write_back = e.write_back;
+                    // Multiply and divide stall the ENTIRE pipeline for the
+                    // documented count (UM Table 3-12), so the request is raised
+                    // here and honoured from the next cycle onward.
+                    if e.stall_cycles > 0 {
+                        self.stall_for(e.stall_cycles, Interlock::Mci);
+                    }
+                }
+                // Stamp BEFORE the latch move, so the abort travels with the
+                // instruction that caused it -- see `abort_from`.
+                Err(exc) => {
+                    self.abort_from(Stage::Ex, exc);
+                    out = self.rf_ex;
+                }
+            }
+        }
+        self.ex_dc = out;
         self.rf_ex.occupied = false;
     }
 
     /// `RF` — register fetch, and where the load interlock is detected.
-    fn rf_stage(&mut self) {
-        // TODO(T-11-002): read the register file, apply bypasses, and raise
-        // Interlock::Ldi via `load_interlocks`.
-        self.rf_ex = self.ic_rf;
+    fn rf_stage(&mut self, regs: &Regs) {
+        let mut out = self.ic_rf;
+        if out.occupied {
+            out.rs_val = regs.read(out.decoded.rs);
+            out.rt_val = regs.read(out.decoded.rt);
+        }
+        // These reads are a first approximation: EX re-resolves them through the
+        // bypass network, since a producer one instruction ahead has not
+        // committed yet. RF still performs the read because that is where the
+        // load interlock is detected (T-11-003).
+        //
+        // TODO(T-11-002): the MFHI/MFLO hazard window -- a MFHI followed within
+        // two instructions by a HI write reads hardware's WRONG value, and that
+        // is non-interlocked (alu::MFHI_MFLO_HAZARD_INSTRUCTIONS).
+        // TODO(T-11-003): raise Interlock::Ldi via `load_interlocks` once loads
+        // exist -- there is nothing to interlock against yet.
+        self.rf_ex = out;
         self.ic_rf.occupied = false;
     }
 
     /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
-    fn ic_stage(&mut self, next_pc: &mut u64) {
+    fn ic_stage<B: Bus>(&mut self, bus: &mut B, next_pc: &mut u64) {
         // An abort raised earlier this cycle flushes younger instructions. The
         // fetch happening now is younger than all of them, so it must not become
         // a live instruction -- otherwise it escapes the flush entirely and
@@ -387,17 +505,51 @@ impl Pipeline {
             self.ic_rf = Latch::default();
             return;
         }
-        // TODO(T-11-002): fetch through the I-cache and decode. The decoded
-        // branch sets `in_delay_slot` on the instruction fetched NEXT cycle,
-        // which is why the flag is attached here and travels with the latch.
+        let pc = *next_pc;
+
+        // An instruction fetch must be word-aligned. An unaligned PC raises an
+        // address error (AdEL) rather than fetching -- so the bus is NOT touched,
+        // because the access itself is what is invalid.
+        //
+        // Not reachable from straight-line execution, which advances by 4 from an
+        // aligned reset vector. It becomes reachable with the jump and branch
+        // family (T-11-004), where a computed target can be unaligned, and it is
+        // already reachable through the public `Cpu::set_pc` the golden-log
+        // harness uses.
+        if !pc.is_multiple_of(4) {
+            self.abort_from(Stage::Ic, Exception::AddressError);
+            self.ic_rf = Latch {
+                occupied: true,
+                pc,
+                abort: Some(Exception::AddressError),
+                ..Latch::default()
+            };
+            // `next_pc` is deliberately NOT realigned. Rounding it down would
+            // silently "fix" the faulting address and let execution continue on a
+            // path hardware never takes -- turning a raised exception into a
+            // wrong answer. TODO(T-11-004): redirect to the exception vector,
+            // which is where hardware actually goes.
+            return;
+        }
+
+        // TODO(T-11-003): fetch through the I-cache rather than straight off the
+        // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
+        let word = bus.read_u32(pc as u32);
+        // Decode here rather than at RF: the decoded branch must set
+        // `in_delay_slot` on the instruction fetched NEXT cycle, so the decode
+        // has to precede the following fetch.
         self.ic_rf = Latch {
             occupied: true,
-            pc: *next_pc,
-            word: 0,
+            pc,
+            word,
             in_delay_slot: false,
             abort: None,
+            decoded: decode(word),
+            rs_val: 0,
+            rt_val: 0,
+            write_back: WriteBack::None,
         };
-        *next_pc = next_pc.wrapping_add(4);
+        *next_pc = pc.wrapping_add(4);
     }
 }
 
@@ -428,28 +580,29 @@ mod tests {
     fn a_value_advances_exactly_one_stage_per_cycle() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
 
         // Cycle 1 fetches a sentinel into ic_rf.
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         let sentinel = p.ic_rf.pc;
         assert!(p.ic_rf.occupied);
         assert_eq!(sentinel, 0x8000_0000);
 
         // Each subsequent cycle moves it exactly one boundary along.
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.rf_ex.pc, sentinel, "after 1 cycle it should be at RF->EX");
         assert_ne!(p.ic_rf.pc, sentinel, "and no longer at IC->RF");
 
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.ex_dc.pc, sentinel, "after 2 cycles, EX->DC");
 
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.dc_wb.pc, sentinel, "after 3 cycles, DC->WB");
 
         // 5 stages => at least 5 PCycles per instruction (UM §4.1).
         assert_eq!(p.retired, 0, "nothing may retire before WB has run on it");
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.retired, 1, "retires at WB on the 5th cycle, not sooner");
     }
 
@@ -462,17 +615,18 @@ mod tests {
     fn delay_slot_flag_survives_a_multi_cycle_stall() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
 
         // Two instructions in flight; mark the younger as the delay slot.
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         p.ic_rf.in_delay_slot = true;
         let slot_pc = p.ic_rf.pc;
 
         // A long interlock lands between them (e.g. DDIV = 69 PCycles).
         p.stall_for(69, Interlock::Mci);
         for _ in 0..69 {
-            p.advance(&mut bus, &mut pc);
+            p.advance(&mut bus, &mut regs, &mut pc);
         }
         assert!(p.stalled_by().is_none(), "the stall should have expired");
 
@@ -483,7 +637,7 @@ mod tests {
         );
 
         // And it must travel with it, not stay behind at a fixed boundary.
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert!(
             p.rf_ex.in_delay_slot && p.rf_ex.pc == slot_pc,
             "the flag failed to travel with the instruction"
@@ -499,15 +653,16 @@ mod tests {
     fn a_stall_freezes_the_pipeline() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
-            p.advance(&mut bus, &mut pc);
+            p.advance(&mut bus, &mut regs, &mut pc);
         }
         let before = (p.ic_rf, p.rf_ex, p.ex_dc, p.dc_wb, p.retired);
 
         p.stall_for(3, Interlock::Dcm);
         for _ in 0..3 {
-            p.advance(&mut bus, &mut pc);
+            p.advance(&mut bus, &mut regs, &mut pc);
             assert_eq!(
                 (p.ic_rf, p.rf_ex, p.ex_dc, p.dc_wb, p.retired),
                 before,
@@ -515,7 +670,7 @@ mod tests {
             );
         }
         assert!(p.stalled_by().is_none());
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_ne!(
             p.dc_wb, before.3,
             "the pipeline must resume after the stall"
@@ -528,12 +683,13 @@ mod tests {
     fn interrupt_is_not_accepted_on_the_cycle_after_a_stall() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = NullBus { irq: true };
 
         // Warm up so prev_was_run is true, then confirm an IRQ IS taken.
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert!(p.prev_cycle_was_run());
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(
             p.ex_dc.abort,
             Some(Exception::Interrupt),
@@ -543,15 +699,16 @@ mod tests {
         // Now stall, and check the very next cycle refuses it.
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
-        p.advance(&mut bus, &mut pc);
+        let mut regs = Regs::new();
+        p.advance(&mut bus, &mut regs, &mut pc);
         p.stall_for(1, Interlock::Dcb);
-        p.advance(&mut bus, &mut pc); // the stalled cycle
+        p.advance(&mut bus, &mut regs, &mut pc); // the stalled cycle
         assert!(
             !p.prev_cycle_was_run(),
             "a stalled cycle must not count as a run cycle"
         );
         let ex_dc_before = p.ex_dc.abort;
-        p.advance(&mut bus, &mut pc); // the cycle immediately after
+        p.advance(&mut bus, &mut regs, &mut pc); // the cycle immediately after
         assert_eq!(
             p.ex_dc.abort, ex_dc_before,
             "an interrupt must NOT be accepted when the previous PCycle stalled"
@@ -569,15 +726,16 @@ mod tests {
     fn an_abort_survives_the_cascade() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
-            p.advance(&mut bus, &mut pc);
+            p.advance(&mut bus, &mut regs, &mut pc);
         }
 
         // Abort at DC: the instruction in DC plus everything younger.
         p.abort_from(Stage::Dc, Exception::AddressError);
         let aborted_pc = p.ex_dc.pc;
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
 
         // The causing instruction carried its abort forward into WB's latch...
         assert_eq!(
@@ -615,14 +773,15 @@ mod tests {
     fn a_zero_cycle_stall_is_not_a_stall() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
 
         p.stall_for(0, Interlock::Ldi);
         assert!(p.stalled_by().is_none(), "a 0-cycle request is not a stall");
 
         let before = p.ic_rf.pc;
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_ne!(before, p.ic_rf.pc, "the cycle was silently consumed");
         assert!(
             p.prev_cycle_was_run(),
@@ -636,9 +795,10 @@ mod tests {
     fn abort_kills_younger_instructions_only() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
-            p.advance(&mut bus, &mut pc);
+            p.advance(&mut bus, &mut regs, &mut pc);
         }
         p.abort_from(Stage::Ex, Exception::Overflow);
         assert_eq!(p.rf_ex.abort, Some(Exception::Overflow), "EX's own latch");
@@ -652,14 +812,179 @@ mod tests {
     fn an_aborted_instruction_does_not_retire() {
         let mut p = Pipeline::new();
         let mut pc = 0x8000_0000;
+        let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
-            p.advance(&mut bus, &mut pc);
+            p.advance(&mut bus, &mut regs, &mut pc);
         }
         p.dc_wb.abort = Some(Exception::AddressError);
         let retired = p.retired;
-        p.advance(&mut bus, &mut pc);
+        p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.retired, retired, "an aborted instruction retired anyway");
+    }
+
+    /// **End to end**: a real program, fetched from a bus, decoded, executed and
+    /// committed to the register file through all five stages.
+    ///
+    /// Until this passed, every other test in the crate exercised a piece in
+    /// isolation. This is the one that says the CPU *runs*.
+    #[test]
+    fn a_program_executes_through_the_whole_pipeline() {
+        /// A bus holding a program at 0, returning `NOP` past its end.
+        struct Rom(alloc::vec::Vec<u32>);
+        impl Bus for Rom {
+            fn read_u8(&mut self, _addr: u32) -> u8 {
+                0
+            }
+            fn write_u8(&mut self, _addr: u32, _val: u8) {}
+            fn read_u32(&mut self, addr: u32) -> u32 {
+                self.0.get((addr / 4) as usize).copied().unwrap_or(0)
+            }
+        }
+        const fn r(funct: u32, rs: u32, rt: u32, rd: u32, sa: u32) -> u32 {
+            (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct
+        }
+        const fn i(opcode: u32, rs: u32, rt: u32, imm: u16) -> u32 {
+            (opcode << 26) | (rs << 21) | (rt << 16) | imm as u32
+        }
+
+        //   ADDIU $1, $0, 6      ; $1 = 6
+        //   ADDIU $2, $0, 7      ; $2 = 7
+        //   MULT  $1, $2         ; HI:LO = 42   (stalls 5 PCycles)
+        //   MFLO  $3             ; $3 = 42
+        //   ADDU  $4, $1, $2     ; $4 = 13
+        //   SLL   $5, $2, 2      ; $5 = 28
+        let program = alloc::vec![
+            i(0o11, 0, 1, 6),
+            i(0o11, 0, 2, 7),
+            r(0o30, 1, 2, 0, 0),
+            r(0o22, 0, 0, 3, 0),
+            r(0o41, 1, 2, 4, 0),
+            r(0o00, 0, 2, 5, 2),
+        ];
+        let mut bus = Rom(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0u64;
+
+        // Generous budget: 6 instructions, 5 stages deep, plus the MULT stall.
+        for _ in 0..64 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        assert_eq!(regs.read(1), 6, "ADDIU $1");
+        assert_eq!(regs.read(2), 7, "ADDIU $2");
+        assert_eq!(regs.lo, 42, "MULT wrote LO");
+        assert_eq!(regs.hi, 0, "MULT wrote HI");
+        assert_eq!(regs.read(3), 42, "MFLO read LO into $3");
+        assert_eq!(regs.read(4), 13, "ADDU $1 + $2");
+        assert_eq!(regs.read(5), 28, "SLL $2 << 2");
+        assert_eq!(regs.read(0), 0, "$zero stayed zero");
+        assert!(p.retired >= 6, "all six instructions retired");
+    }
+
+    /// `$zero` must survive an instruction that nominally targets it — software
+    /// depends on that, and `ADDIU $0, $0, 5` is a legal encoding.
+    #[test]
+    fn writes_to_zero_are_discarded_by_the_pipeline() {
+        struct Ones;
+        impl Bus for Ones {
+            fn read_u8(&mut self, _addr: u32) -> u8 {
+                0
+            }
+            fn write_u8(&mut self, _addr: u32, _val: u8) {}
+            fn read_u32(&mut self, _addr: u32) -> u32 {
+                // ADDIU $0, $0, 5 -- targets $zero, forever.
+                (0o11 << 26) | 5
+            }
+        }
+        let mut bus = Ones;
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0u64;
+        for _ in 0..32 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(0), 0, "$zero was written");
+        assert_eq!(regs.gpr[0], 0, "$zero was written through the raw array");
+    }
+
+    /// An overflowing `ADD` must abort rather than commit, and the destination
+    /// register must be left untouched.
+    #[test]
+    fn an_overflow_trap_prevents_the_write_back() {
+        struct Overflowing;
+        impl Bus for Overflowing {
+            fn read_u8(&mut self, _addr: u32) -> u8 {
+                0
+            }
+            fn write_u8(&mut self, _addr: u32, _val: u8) {}
+            fn read_u32(&mut self, addr: u32) -> u32 {
+                match addr / 4 {
+                    // LUI $1, 0x7FFF ; ORI $1, $1, 0xFFFF  => $1 = i32::MAX
+                    0 => (0o17 << 26) | (1 << 16) | 0x7FFF,
+                    1 => (0o15 << 26) | (1 << 21) | (1 << 16) | 0xFFFF,
+                    // ADDIU $2, $0, 1
+                    2 => (0o11 << 26) | (2 << 16) | 1,
+                    // ADD $3, $1, $2  -> overflows
+                    3 => (1 << 21) | (2 << 16) | (3 << 11) | 0o40,
+                    _ => 0,
+                }
+            }
+        }
+        let mut bus = Overflowing;
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0u64;
+        for _ in 0..48 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(1), 0x7FFF_FFFF, "LUI+ORI built i32::MAX");
+        assert_eq!(regs.read(3), 0, "the overflowing ADD must not commit");
+    }
+
+    /// An unaligned instruction fetch raises an address error instead of
+    /// fetching, and must not silently realign the PC — that would convert a
+    /// raised exception into a wrong answer on a path hardware never takes.
+    #[test]
+    fn an_unaligned_fetch_raises_address_error_without_realigning() {
+        struct Watch {
+            fetched: bool,
+        }
+        impl Bus for Watch {
+            fn read_u8(&mut self, _addr: u32) -> u8 {
+                0
+            }
+            fn write_u8(&mut self, _addr: u32, _val: u8) {}
+            fn read_u32(&mut self, _addr: u32) -> u32 {
+                self.fetched = true;
+                0
+            }
+        }
+        let mut bus = Watch { fetched: false };
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x8000_0002; // deliberately unaligned
+
+        p.advance(&mut bus, &mut regs, &mut pc);
+
+        assert_eq!(
+            p.ic_rf.abort,
+            Some(Exception::AddressError),
+            "an unaligned fetch must raise AdEL"
+        );
+        assert!(
+            !bus.fetched,
+            "the bus must not be accessed for a bad address"
+        );
+        assert_eq!(pc, 0x8000_0002, "the PC must NOT be silently realigned");
+
+        // And the faulting instruction must never retire.
+        let retired = p.retired;
+        for _ in 0..8 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.retired, retired, "a faulting fetch retired anyway");
     }
 
     /// The load interlock reproduces the hardware's documented imprecision.

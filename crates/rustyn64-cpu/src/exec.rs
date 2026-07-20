@@ -1,0 +1,346 @@
+//! `EX`-stage execution: [`Decoded`] plus operands in, result out (T-11-002).
+//!
+//! The bridge between [`mod@crate::decode`] and [`crate::alu`]. Kept separate from
+//! the pipeline so it stays a pure function of `(op, rs_val, rt_val, hi, lo)` —
+//! testable without a machine, and with no way to accidentally read register
+//! state the decode did not name.
+
+use crate::Exception;
+use crate::alu::{self, HiLo, MulDiv};
+use crate::decode::{Decoded, Op};
+
+/// What an executed instruction wants written back.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WriteBack {
+    /// Nothing to commit.
+    #[default]
+    None,
+    /// Write `value` to general register `dest`.
+    Gpr {
+        /// Destination register index.
+        dest: u8,
+        /// Value to commit.
+        value: u64,
+    },
+    /// Write both `HI` and `LO` (every multiply and divide does).
+    HiLo(HiLo),
+    /// Write `HI` alone (`MTHI`).
+    Hi(u64),
+    /// Write `LO` alone (`MTLO`).
+    Lo(u64),
+}
+
+/// The outcome of executing one instruction in `EX`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Executed {
+    /// What to commit at `WB`.
+    pub write_back: WriteBack,
+    /// Extra `PCycle`s the whole pipeline stalls for (multiply/divide only).
+    pub stall_cycles: u32,
+}
+
+/// Sign-extend a 16-bit immediate — the arithmetic and `SLT` immediate forms.
+const fn sext_imm(imm: u16) -> u64 {
+    imm as i16 as i64 as u64
+}
+
+/// Zero-extend a 16-bit immediate — the *logical* immediate forms only.
+///
+/// This asymmetry is real and easy to get wrong: `ADDI` sign-extends while
+/// `ANDI`/`ORI`/`XORI` zero-extend, so `ORI $t0, $0, 0xFFFF` yields `0x0000FFFF`
+/// and not `0xFFFFFFFFFFFFFFFF`.
+const fn zext_imm(imm: u16) -> u64 {
+    imm as u64
+}
+
+/// Execute one decoded instruction.
+///
+/// `rs_val` / `rt_val` are the register values resolved through the bypass
+/// network at `EX`; `hilo` is the current multiply-divide pair.
+///
+/// # Errors
+///
+/// [`Exception::Overflow`] from the trapping arithmetic forms, and
+/// [`Exception::ReservedInstruction`] for anything not yet decoded. Returning
+/// `Reserved` rather than treating an unknown encoding as a `NOP` is deliberate:
+/// a missing opcode should be loud, not silently produce wrong results.
+#[allow(clippy::too_many_lines)]
+// a flat match over the opcode table
+// `rs_val`/`rt_val` trip `similar_names`, but they mirror the MIPS operand
+// naming used throughout the manual and this crate. Any pair dissimilar enough
+// to satisfy the lint would be less clear, so the names stay and the lint goes.
+#[allow(clippy::similar_names)]
+pub const fn execute(
+    d: Decoded,
+    rs_val: u64,
+    rt_val: u64,
+    hilo: HiLo,
+) -> Result<Executed, Exception> {
+    // Most instructions write one general register with no stall.
+    macro_rules! gpr {
+        ($v:expr) => {
+            Ok(Executed {
+                write_back: WriteBack::Gpr {
+                    dest: d.dest,
+                    value: $v,
+                },
+                stall_cycles: 0,
+            })
+        };
+    }
+    // Multiply/divide write HI/LO and stall the ENTIRE pipeline for the
+    // documented count (UM Table 3-12) -- they are not background operations.
+    macro_rules! muldiv {
+        ($res:expr, $kind:expr) => {
+            Ok(Executed {
+                write_back: WriteBack::HiLo($res),
+                stall_cycles: alu::muldiv_stall_cycles($kind),
+            })
+        };
+    }
+
+    match d.op {
+        Op::Reserved => Err(Exception::ReservedInstruction),
+
+        // --- arithmetic, register form
+        Op::Add => match alu::add(rs_val, rt_val) {
+            Ok(v) => gpr!(v),
+            Err(e) => Err(e),
+        },
+        Op::Addu => gpr!(alu::addu(rs_val, rt_val)),
+        Op::Sub => match alu::sub(rs_val, rt_val) {
+            Ok(v) => gpr!(v),
+            Err(e) => Err(e),
+        },
+        Op::Subu => gpr!(alu::subu(rs_val, rt_val)),
+        Op::Dadd => match alu::dadd(rs_val, rt_val) {
+            Ok(v) => gpr!(v),
+            Err(e) => Err(e),
+        },
+        Op::Daddu => gpr!(alu::daddu(rs_val, rt_val)),
+        Op::Dsub => match alu::dsub(rs_val, rt_val) {
+            Ok(v) => gpr!(v),
+            Err(e) => Err(e),
+        },
+        Op::Dsubu => gpr!(alu::dsubu(rs_val, rt_val)),
+        Op::Slt => gpr!(alu::slt(rs_val, rt_val)),
+        Op::Sltu => gpr!(alu::sltu(rs_val, rt_val)),
+
+        // --- logical, register form
+        Op::And => gpr!(alu::and(rs_val, rt_val)),
+        Op::Or => gpr!(alu::or(rs_val, rt_val)),
+        Op::Xor => gpr!(alu::xor(rs_val, rt_val)),
+        Op::Nor => gpr!(alu::nor(rs_val, rt_val)),
+
+        // --- immediate forms. Note the sign/zero-extension asymmetry.
+        Op::Addi => match alu::add(rs_val, sext_imm(d.imm)) {
+            Ok(v) => gpr!(v),
+            Err(e) => Err(e),
+        },
+        Op::Addiu => gpr!(alu::addu(rs_val, sext_imm(d.imm))),
+        Op::Daddi => match alu::dadd(rs_val, sext_imm(d.imm)) {
+            Ok(v) => gpr!(v),
+            Err(e) => Err(e),
+        },
+        Op::Daddiu => gpr!(alu::daddu(rs_val, sext_imm(d.imm))),
+        Op::Slti => gpr!(alu::slt(rs_val, sext_imm(d.imm))),
+        Op::Sltiu => gpr!(alu::sltu(rs_val, sext_imm(d.imm))),
+        Op::Andi => gpr!(alu::and(rs_val, zext_imm(d.imm))),
+        Op::Ori => gpr!(alu::or(rs_val, zext_imm(d.imm))),
+        Op::Xori => gpr!(alu::xor(rs_val, zext_imm(d.imm))),
+        Op::Lui => gpr!(alu::lui(d.imm)),
+
+        // --- shifts. The immediate forms shift `rt`; the variable forms take
+        // the amount from `rs` (masked by the helper).
+        Op::Sll => gpr!(alu::sll(rt_val, d.sa)),
+        Op::Srl => gpr!(alu::srl(rt_val, d.sa)),
+        Op::Sra => gpr!(alu::sra(rt_val, d.sa)),
+        Op::Dsll | Op::Dsll32 => gpr!(alu::dsll(rt_val, d.sa)),
+        Op::Dsrl | Op::Dsrl32 => gpr!(alu::dsrl(rt_val, d.sa)),
+        Op::Dsra | Op::Dsra32 => gpr!(alu::dsra(rt_val, d.sa)),
+        Op::Sllv => gpr!(alu::sll(rt_val, rs_val as u32)),
+        Op::Srlv => gpr!(alu::srl(rt_val, rs_val as u32)),
+        Op::Srav => gpr!(alu::sra(rt_val, rs_val as u32)),
+        Op::Dsllv => gpr!(alu::dsll(rt_val, rs_val as u32)),
+        Op::Dsrlv => gpr!(alu::dsrl(rt_val, rs_val as u32)),
+        Op::Dsrav => gpr!(alu::dsra(rt_val, rs_val as u32)),
+
+        // --- multiply / divide
+        Op::Mult => muldiv!(alu::mult(rs_val, rt_val), MulDiv::Mult),
+        Op::Multu => muldiv!(alu::multu(rs_val, rt_val), MulDiv::Multu),
+        Op::Div => muldiv!(alu::div(rs_val, rt_val), MulDiv::Div),
+        Op::Divu => muldiv!(alu::divu(rs_val, rt_val), MulDiv::Divu),
+        Op::Dmult => muldiv!(alu::dmult(rs_val, rt_val), MulDiv::Dmult),
+        Op::Dmultu => muldiv!(alu::dmultu(rs_val, rt_val), MulDiv::Dmultu),
+        Op::Ddiv => muldiv!(alu::ddiv(rs_val, rt_val), MulDiv::Ddiv),
+        Op::Ddivu => muldiv!(alu::ddivu(rs_val, rt_val), MulDiv::Ddivu),
+
+        // --- HI/LO moves
+        Op::Mfhi => gpr!(hilo.hi),
+        Op::Mflo => gpr!(hilo.lo),
+        Op::Mthi => Ok(Executed {
+            write_back: WriteBack::Hi(rs_val),
+            stall_cycles: 0,
+        }),
+        Op::Mtlo => Ok(Executed {
+            write_back: WriteBack::Lo(rs_val),
+            stall_cycles: 0,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decode::decode;
+
+    #[allow(clippy::similar_names)] // mirrors the MIPS operand naming
+    fn run(word: u32, rs_val: u64, rt_val: u64) -> Result<Executed, Exception> {
+        execute(decode(word), rs_val, rt_val, HiLo { hi: 0, lo: 0 })
+    }
+    const fn r(funct: u32, rs: u32, rt: u32, rd: u32, sa: u32) -> u32 {
+        (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct
+    }
+    const fn i(opcode: u32, rs: u32, rt: u32, imm: u16) -> u32 {
+        (opcode << 26) | (rs << 21) | (rt << 16) | imm as u32
+    }
+
+    #[test]
+    fn register_form_arithmetic_reaches_the_alu() {
+        // ADDU $3, $1, $2  with $1 = 2, $2 = 3
+        let e = run(r(0o41, 1, 2, 3, 0), 2, 3).unwrap();
+        assert_eq!(e.write_back, WriteBack::Gpr { dest: 3, value: 5 });
+        assert_eq!(e.stall_cycles, 0);
+    }
+
+    /// The immediate extension asymmetry: arithmetic sign-extends, logical
+    /// zero-extends. Getting this backwards is a classic MIPS bug — `ORI` with
+    /// 0xFFFF would produce all-ones instead of 0xFFFF.
+    #[test]
+    fn immediates_sign_extend_for_arithmetic_and_zero_extend_for_logical() {
+        // ADDIU $2, $0, -1  =>  sign-extended to 0xFFFF_FFFF_FFFF_FFFF
+        let e = run(i(0o11, 0, 2, 0xFFFF), 0, 0).unwrap();
+        assert_eq!(
+            e.write_back,
+            WriteBack::Gpr {
+                dest: 2,
+                value: u64::MAX
+            }
+        );
+        // ORI $2, $0, 0xFFFF  =>  ZERO-extended to 0x0000_0000_0000_FFFF
+        let e = run(i(0o15, 0, 2, 0xFFFF), 0, 0).unwrap();
+        assert_eq!(
+            e.write_back,
+            WriteBack::Gpr {
+                dest: 2,
+                value: 0xFFFF
+            }
+        );
+        // ANDI and XORI likewise.
+        let e = run(i(0o14, 1, 2, 0xFFFF), u64::MAX, 0).unwrap();
+        assert_eq!(
+            e.write_back,
+            WriteBack::Gpr {
+                dest: 2,
+                value: 0xFFFF
+            }
+        );
+    }
+
+    #[test]
+    fn trapping_arithmetic_returns_overflow_instead_of_a_value() {
+        // ADD $3, $1, $2 with 0x7FFF_FFFF + 1
+        assert_eq!(
+            run(r(0o40, 1, 2, 3, 0), 0x7FFF_FFFF, 1),
+            Err(Exception::Overflow)
+        );
+        // ADDU with the same inputs must NOT trap.
+        assert!(run(r(0o41, 1, 2, 3, 0), 0x7FFF_FFFF, 1).is_ok());
+    }
+
+    #[test]
+    fn multiply_and_divide_write_hi_lo_and_stall_the_documented_count() {
+        // MULT $1, $2 with 6 * 7
+        let e = run(r(0o30, 1, 2, 0, 0), 6, 7).unwrap();
+        match e.write_back {
+            WriteBack::HiLo(hl) => assert_eq!((hl.hi, hl.lo), (0, 42)),
+            other => panic!("MULT should write HI/LO, got {other:?}"),
+        }
+        assert_eq!(e.stall_cycles, 5, "UM Table 3-12");
+        // DDIV is the expensive one.
+        assert_eq!(run(r(0o36, 1, 2, 0, 0), 100, 7).unwrap().stall_cycles, 69);
+        // ...and an ordinary ALU op stalls not at all.
+        assert_eq!(run(r(0o41, 1, 2, 3, 0), 1, 1).unwrap().stall_cycles, 0);
+    }
+
+    #[test]
+    fn hi_lo_moves_read_and_write_the_pair() {
+        // MFHI $5 reads HI
+        let e = execute(
+            decode(r(0o20, 0, 0, 5, 0)),
+            0,
+            0,
+            HiLo {
+                hi: 0xDEAD,
+                lo: 0xBEEF,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            e.write_back,
+            WriteBack::Gpr {
+                dest: 5,
+                value: 0xDEAD
+            }
+        );
+        // MFLO $5 reads LO
+        let e = execute(
+            decode(r(0o22, 0, 0, 5, 0)),
+            0,
+            0,
+            HiLo {
+                hi: 0xDEAD,
+                lo: 0xBEEF,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            e.write_back,
+            WriteBack::Gpr {
+                dest: 5,
+                value: 0xBEEF
+            }
+        );
+        // MTHI $1 writes HI from rs
+        let e = execute(
+            decode(r(0o21, 1, 0, 0, 0)),
+            0x1234,
+            0,
+            HiLo { hi: 0, lo: 0 },
+        )
+        .unwrap();
+        assert_eq!(e.write_back, WriteBack::Hi(0x1234));
+    }
+
+    /// An unimplemented opcode must be **loud**. Treating it as a `NOP` would let
+    /// a program run past instructions that did nothing, producing wrong results
+    /// with no indication of why.
+    #[test]
+    fn unimplemented_opcodes_raise_reserved_instruction() {
+        // LW (0o43) is not decoded yet -- T-11-003.
+        assert_eq!(
+            run(i(0o43, 1, 2, 0), 0, 0),
+            Err(Exception::ReservedInstruction)
+        );
+        assert_eq!(run(0xFFFF_FFFF, 0, 0), Err(Exception::ReservedInstruction));
+    }
+
+    /// `SLL $0, $0, 0` is `NOP`: it executes successfully and its write-back
+    /// targets `$zero`, which `Regs::write` discards.
+    #[test]
+    fn nop_executes_and_commits_nothing() {
+        let e = run(0, 0, 0).unwrap();
+        assert_eq!(e.write_back, WriteBack::Gpr { dest: 0, value: 0 });
+        assert_eq!(e.stall_cycles, 0);
+    }
+}
