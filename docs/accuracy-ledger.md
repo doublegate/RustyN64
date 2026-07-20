@@ -691,11 +691,14 @@ reader. The tests name their patterns `vr_snan`/`vr_qnan` for the same reason,
 and one asserts `is_snan_f32(f32::NAN)` explicitly — that is the case most
 likely to be "fixed" back to IEEE by someone who has not read this entry.
 
-**Still open, and adjacent:** an **IEEE-signalling / VR4300-quiet** NaN operand
-(MSB clear) to an arithmetic operation is expected to raise **unimplemented
-operation**, not nothing — the VR4300 apparently cannot propagate one in hardware. That is part
-of the unimplemented-operation work below rather than of this entry, and it is
-why the arithmetic tests still fail on NaN inputs.
+**Adjacent, and since RESOLVED in C-13:** an **IEEE-signalling / VR4300-quiet**
+NaN operand (MSB clear) to an arithmetic operation raises **unimplemented
+operation** rather than nothing — the VR4300 cannot propagate one in hardware.
+When this entry was written that was still open and the arithmetic tests failed
+on NaN inputs; **C-13** implements it, and they no longer do.
+
+Marked rather than rewritten, per this file's own rule: what each entry believed
+when it was written is the record worth keeping.
 
 ### C-13 — the VR4300 cannot compute with subnormals, and says so
 
