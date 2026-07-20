@@ -574,6 +574,48 @@ mod tests {
     /// An unimplemented opcode must be **loud**. Treating it as a `NOP` would let
     /// a program run past instructions that did nothing, producing wrong results
     /// with no indication of why.
+    /// **The `SRAV` instruction path shares the `SRA` erratum.**
+    ///
+    /// Tested through `execute` rather than by calling `alu::sra`, because the
+    /// risk being guarded against is precisely that `Op::Srav` stops routing
+    /// through the shared helper — gaining its own "corrected" implementation
+    /// while `SRA` stays right. A test that calls the helper directly cannot see
+    /// that happen, which is what an earlier version of this test did.
+    ///
+    /// Source: `n64brew_wiki/markdown/VR4300.md` § Known Bugs.
+    #[test]
+    fn the_srav_instruction_path_shares_the_sra_erratum() {
+        let rt = 0x0123_4567_89AB_CDEF;
+        // SRAV $3, $2, $1  -- amount from rs, value from rt.
+        let word = r(0o07, 1, 2, 3, 0);
+        for (amount, want) in [
+            (1u64, 0xFFFF_FFFF_C4D5_E6F7u64),
+            (8, 0x0000_0000_6789_ABCD),
+            (16, 0x0000_0000_4567_89AB),
+            (31, 0x0000_0000_0246_8ACF),
+        ] {
+            let e = run(word, amount, rt).unwrap();
+            assert_eq!(
+                e.write_back,
+                WriteBack::Gpr {
+                    dest: 3,
+                    value: want
+                },
+                "SRAV by {amount} must leak the upper half, as SRA does"
+            );
+        }
+        // And the immediate form agrees with it, through its own path.
+        let e = run(r(0o03, 0, 2, 3, 16), 0, rt).unwrap();
+        assert_eq!(
+            e.write_back,
+            WriteBack::Gpr {
+                dest: 3,
+                value: 0x0000_0000_4567_89AB
+            },
+            "SRA and SRAV must not diverge"
+        );
+    }
+
     #[test]
     fn unimplemented_opcodes_raise_reserved_instruction() {
         // These must be encodings the VR4300 genuinely leaves UNASSIGNED, not

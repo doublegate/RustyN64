@@ -637,6 +637,56 @@ mod tests {
         assert_eq!(clean.hi, 0);
     }
 
+    /// **The DIV erratum**: like `MULT`, `DIV` sign-extends its *divisor* on bit
+    /// **34**, so it behaves as a 32-bit by 35-bit signed division rather than
+    /// 32x32. Fails if someone "corrects" it to a plain 32-bit division.
+    ///
+    /// Source: `n64brew_wiki/markdown/VR4300.md` § Known Bugs, revision 2.2.
+    #[test]
+    fn div_reproduces_the_35_bit_divisor_sign_extension_erratum() {
+        // Bit 34 set in the divisor: hardware sign-extends from there, so the
+        // divisor is NEGATIVE despite bit 31 being clear. A 32-bit-only reading
+        // would treat the low 32 bits (zero) as the divisor and divide by zero.
+        let divisor = 0x0000_0004_0000_0000u64; // bit 34
+        let got = div(sext32(100), divisor);
+        let naive = div(sext32(100), 0); // what a 32-bit reading gives
+        assert_ne!(
+            got, naive,
+            "bit 34 of the divisor must be significant -- that IS the erratum"
+        );
+
+        // For well-formed sign-extended 32-bit inputs the erratum is invisible,
+        // which is why ordinary compiler output never trips over it.
+        let clean = div(sext32(100), sext32(7));
+        assert_eq!((clean.lo, clean.hi), (14, 2));
+        let negative = div(sext32(100), sext32(0xFFFF_FFF9)); // 100 / -7
+        assert_eq!(negative.lo, sext32(0xFFFF_FFF2), "-14");
+    }
+
+    /// `SRA` against **pre-computed** hardware values.
+    ///
+    /// Deliberately not `assert_eq!(sra(v, n), <the expression sra uses>)` — that
+    /// restates the implementation and can only catch a *different* one, never a
+    /// wrong one. These constants were derived independently from the erratum's
+    /// definition: 64-bit arithmetic shift, truncate to 32, sign-extend.
+    ///
+    /// The `SRAV` *instruction path* is pinned separately in `exec`, because a
+    /// helper-level test cannot see `Op::Srav` stop routing through this helper.
+    #[test]
+    fn sra_matches_precomputed_hardware_values() {
+        let rt = 0x0123_4567_89AB_CDEF;
+        assert_eq!(sra(rt, 1), 0xFFFF_FFFF_C4D5_E6F7, "sa=1");
+        assert_eq!(sra(rt, 8), 0x0000_0000_6789_ABCD, "sa=8");
+        assert_eq!(
+            sra(rt, 16),
+            0x0000_0000_4567_89AB,
+            "sa=16, the wiki's example"
+        );
+        assert_eq!(sra(rt, 31), 0x0000_0000_0246_8ACF, "sa=31");
+        // The amount masks to 5 bits, so 48 is 16.
+        assert_eq!(sra(rt, 48), sra(rt, 16), "sa masks to 5 bits");
+    }
+
     #[test]
     fn divide_writes_quotient_to_lo_and_remainder_to_hi() {
         let r = div(sext32(17), sext32(5));

@@ -247,6 +247,70 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   (`ref-docs/research-report.md` §1) — relevant to the bus-contention model
   (`docs/scheduler.md` open question).
 
+## The documented errata — reproduced, not corrected
+
+The VR4300 has known hardware bugs that software can observe and depend on.
+**Implementing the manual's described behaviour instead of the hardware's is the
+bug.** Each is pinned by a named test that fails if it is "fixed", so the intent
+survives a well-meaning future reader.
+
+The manual documents none of these; `n64brew_wiki/markdown/VR4300.md` § Known
+Bugs is the only source, and the results are for processor revision 2.2.
+
+### `SRA` / `SRAV` leak the upper 32 bits — **all consoles**
+
+The manual says an arithmetic right shift fills the high bits of the low word
+with copies of bit 31, then sign-extends bit 31 into the upper half. Hardware
+instead fills from the **upper 32 bits of the register** first, then sign-extends
+the new bit 31 — leaking 64-bit state that should be inaccessible, in both 32-
+and 64-bit mode.
+
+```text
+manual:   rd = (uint64_t)(int32_t)((int32_t)rt >> sa)
+hardware: rd = (uint64_t)(int32_t)((int64_t)rt >> sa)
+```
+
+`rt = 0x0123456789ABCDEF`, `sa = 16`: the manual predicts `0xFFFFFFFFFFFF89AB`;
+hardware gives `0x00000000456789AB`. Not known to have ever been fixed, and
+present on more consoles than the FP multiply bug — so software can rely on it.
+Tests: `sra_reproduces_the_vr4300_erratum`, `srav_shares_the_sra_erratum`.
+
+### `MULT` is 64-bit × **35-bit**
+
+When inputs are not properly sign-extended 32-bit values, the second operand is
+sign-extended on **bit 34** before a 64-bit multiply, and the first is taken as a
+full 64-bit value. For well-formed inputs it reduces to the expected 32×32
+multiply, which is why ordinary compiler output never trips over it.
+Test: `mult_reproduces_the_35_bit_sign_extension_erratum`.
+
+### `DIV` is 32-bit ÷ **35-bit**
+
+The dividend is sign-extended on bit 31 and the divisor on **bit 34**.
+Test: `div_reproduces_the_35_bit_divisor_sign_extension_erratum`.
+
+**One case is unknown even to N64brew**: when bits 63 and 31 of the divisor
+differ, the `LO` quotient is documented as incorrect and *"it is currently
+unclear how the outputs of this last case are arrived at"*. `HI` is better
+founded — `remainder = (int32_t)(dividend - quotient * divisor)` computed in
+64-bit. What we do there is a **guess**, recorded as such in
+`docs/accuracy-ledger.md` C-5 rather than left looking authoritative.
+
+### The FP multiplication bug — **deferred to Sprint 3**
+
+Board-revision conditional: NUS-01, NUS-02 and NUS-03 only, fixed in later
+steppings. A `mul` in a branch delay slot can corrupt a *subsequent* multiply
+when operands include NaN, zero or infinity. GCC's `-mfix4300` inserts two `nop`s
+after every `mul.s`/`mul.d`/`mult`.
+
+Not implemented: it needs COP1, which is Sprint 3. The exact corrupted output is
+also not documented — only the trigger conditions and the affected revisions —
+so it will need characterising against hardware, and belongs in the accuracy
+ledger when it lands. Modelling it will also require the console revision to be a
+machine parameter, since unlike the others this erratum is **not** universal.
+
+`PRId` correlates: processor id always `0x0B`; revision `0x10` (1.0, early units)
+or `0x22` (2.2, later) on retail, `0x40` on iQue.
+
 ## Test plan
 
 - **Golden-log:** capture `(pc, gpr, cycle)` per retired instruction and 0-diff
