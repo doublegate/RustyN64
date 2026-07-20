@@ -263,8 +263,13 @@ impl CpuBus for Bus {
         if Self::is_isviewer(addr) {
             // Readable as ordinary memory, which is what makes the suite's
             // write-magic-then-read-back probe succeed and select this channel
-            // instead of the framebuffer console.
-            return self.isviewer[(addr - Self::ISVIEWER_BASE) as usize];
+            // instead of the framebuffer console. Bounds-checked for the same
+            // reason as the write path: the address is guest-controlled.
+            return self
+                .isviewer
+                .get((addr - Self::ISVIEWER_BASE) as usize)
+                .copied()
+                .unwrap_or(0);
         }
         // TODO(T-CORE-01): decode the remaining RCP register windows
         // (SP/DP/VI/AI/SI/RI/MI) and the PIF ROM/RAM.
@@ -299,7 +304,9 @@ impl CpuBus for Bus {
             return;
         }
         if Self::is_isviewer(addr) {
-            self.isviewer[(addr - Self::ISVIEWER_BASE) as usize] = val;
+            if let Some(b) = self.isviewer.get_mut((addr - Self::ISVIEWER_BASE) as usize) {
+                *b = val;
+            }
             return;
         }
         // TODO(T-CORE-01): decode + dispatch the remaining RCP register windows.
@@ -319,8 +326,14 @@ impl CpuBus for Bus {
             return;
         }
         if Self::is_isviewer(addr) {
+            // Bounds-checked, not indexed. `addr` comes from guest code, so a
+            // word write starting in the last three bytes of the window --
+            // which `is_isviewer` accepts -- would index past the slice and
+            // **panic the emulator**. A guest must never be able to do that.
             let off = (addr - Self::ISVIEWER_BASE) as usize;
-            self.isviewer[off..off + 4].copy_from_slice(&val.to_be_bytes());
+            if let Some(dst) = self.isviewer.get_mut(off..off + 4) {
+                dst.copy_from_slice(&val.to_be_bytes());
+            }
             return;
         }
         // **A PI register write must be a single WORD write.**
@@ -595,6 +608,24 @@ mod pi_tests {
         // The address registers CAN be assembled, since they only latch.
         bus.write_u8(PI_DRAM_ADDR + 3, 0x18);
         assert_eq!(bus.read_u32(PI_DRAM_ADDR) & 0xFF, 0x18);
+    }
+
+    /// **A guest must not be able to panic the emulator.** A word write starting
+    /// in the last three bytes of the `ISViewer` window is accepted by the range
+    /// check but would index past the backing slice.
+    ///
+    /// The address and value both come from guest code, so this is reachable by
+    /// any ROM, not just a malformed one.
+    #[test]
+    fn a_word_write_at_the_end_of_the_isviewer_window_does_not_panic() {
+        let mut bus = Bus::new();
+        let last = Bus::ISVIEWER_BASE + 0x20 + Bus::ISVIEWER_LEN as u32 - 1;
+        for addr in [last - 3, last - 2, last - 1, last] {
+            bus.write_u32(addr, 0xDEAD_BEEF);
+            let _ = bus.read_u32(addr);
+        }
+        // ...and reads just past the window are 0 rather than a panic.
+        assert_eq!(bus.read_u8(last), 0xEF, "the aligned tail write landed");
     }
 
     /// The `ISViewer` window must round-trip a written word, because that is
