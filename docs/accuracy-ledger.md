@@ -38,6 +38,8 @@ implementation does not silently invent a value and move on.
 | C-2 | Exception epilogue cost (PCycles) | — | — | **not yet measured** |
 | C-3 | CP0I (CP0 bypass interlock) cost | — | — | **not yet measured** |
 | C-4 | RDRAM row-hit / row-miss / dirty-miss | — | — | **not yet measured** |
+| C-5 | `DIV` quotient when divisor bits 63 and 31 differ | *32x35 division* | **guessed** | needs hardware |
+| C-6 | Divide-by-zero `HI`/`LO` values | conventional | **guessed** | needs hardware |
 
 ### C-1 — `M`, memory access time in PCycles
 
@@ -82,6 +84,28 @@ longer if the current row is dirty" — qualitatively, with no cycle counts. The
 timing registers (`RasInterval`: `RowPrecharge`/`RowSense`/`RowImpRestore`/`RowExpRestore`;
 `Delay`: `AckWinDelay`/`ReadDelay`/`AckDelay`/`WriteDelay`) are documented bitwise but the values
 IPL3 programs are not translated into cycles. Interacts with C-1.
+
+### C-5 — `DIV` with mismatched divisor sign bits
+
+The `MULT`/`DIV` sign-extension erratum is documented, but with one hole. When
+bits 63 and 31 of the divisor **differ**, the quotient written to `LO` is
+described as incorrect and *"it is currently unclear how the outputs of this last
+case are arrived at"* — unknown to N64brew, not merely undocumented by NEC.
+
+`alu::div` currently performs the 32x35 division in that case as well. **That is a
+guess**, recorded here so it is not mistaken for the documented behaviour. `HI` is
+better founded: `remainder = (int32_t)(dividend - quotient * divisor)` computed in
+64-bit, which the wiki does state.
+
+**Owner:** T-11-005 (the errata ticket), characterised against hardware or
+n64-systemtest.
+
+### C-6 — divide-by-zero `HI`/`LO`
+
+Architecturally *undefined* on MIPS. `alu::div`/`divu`/`ddiv`/`ddivu` use the
+conventional emulator interpretation (`LO` = ±1 or all-ones, `HI` = dividend).
+Unverified against hardware. What *is* non-negotiable and tested is that it does
+not panic — a guest program can divide by zero at will.
 
 ---
 

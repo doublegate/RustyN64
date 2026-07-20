@@ -30,8 +30,10 @@
 
 extern crate alloc;
 
+pub mod alu;
 pub mod pipeline;
 
+pub use alu::{HiLo, MulDiv};
 pub use pipeline::{Exception, Interlock, Latch, Pipeline, Stage};
 
 /// Which half of a `SysAD` bus transaction is on the wire.
