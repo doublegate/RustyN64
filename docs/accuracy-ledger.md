@@ -363,10 +363,25 @@ retains its sentinel. So the arithmetic works and the write-back width or path i
 wrong — a 32-bit FP result apparently must not leave the upper half intact.
 
 **Next:** determine why `fd` is unwritten in the main path while the "upper bits"
-case does write. Candidates, none verified: the result never leaves the FPR
-because `SWC1` does not store; the write is discarded before WB; or the operands
-are never loaded (`LWC1`), so the test observes its own sentinel throughout.
-Establish which by dumping the FPR immediately after an `ADD.S` retires.
+case does write. Candidates:
+
+- ~~the result never leaves the FPR because `SWC1` does not store, or the
+  operands are never loaded by `LWC1`~~ — **eliminated**: `LWC1`/`LDC1`/`SWC1`/
+  `SDC1` are all decoded *and* executed (`Pipeline`, the FP load/store arm), so
+  the transfer path exists.
+- the `Cop1Access::Arith` request is dropped between EX and WB, so `fp_arith`
+  never runs for these cases;
+- or it runs and writes, but the test reads the register through a path whose
+  view disagrees — note the failing tuple begins `(false, …)`, and the
+  neighbouring failure is explicitly labelled **"half mode"**, which is what
+  `Status.FR = 0` is called. Under `FR = 0` a 32-bit result and a 64-bit read
+  disagree about which FGR half holds it, and `0x1111_40C0_0000` — correct low
+  word, sentinel upper half — is exactly that shape.
+
+The second and third are distinguishable in one run: dump the FPR immediately
+after an `ADD.S` retires and compare against what the test reads back. **Do not
+assume the third is right because it is the tidiest** — that reasoning has now
+failed nine times in this ticket.
 
 ## 5. Deliberate deviations from hardware
 
