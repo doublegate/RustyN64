@@ -9,6 +9,32 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the `ISViewer` result channel (T-12-007, partial)
+
+n64-systemtest reports results through `ISViewer`, a flashcart/emulator convention at
+`0x13FF_0000` in cart space rather than real N64 hardware. The suite **probes for it** — writing
+`0x12345678` to the buffer and reading it back — and falls back to a framebuffer console we cannot
+read if the round-trip fails. So this window is what turns *"the suite runs"* into *"the suite
+reports"*.
+
+Text is captured on the **length** write, not on the buffer writes, so a whole line is published
+at once; capturing per buffer write would interleave partial lines. An oversized length is clamped
+rather than panicking — the value comes from guest code.
+
+**Measured progress on the suite** (each figure is instructions retired before it stops
+progressing):
+
+| After | Retired | Outcome |
+| --- | --- | --- |
+| — | 2 | `ExcCode = TLBS`, `BadVAddr = 0` |
+| the `ERL` fix | 30,679 | ran past the 1 MiB IPL3 window |
+| PI DMA | 3,000,000+ | **no exceptions**; executing its own ELF from high RDRAM |
+| `ISViewer` | 6,000,000+ | no exceptions, **no output yet** |
+
+The suite therefore still does not report a count: it runs cleanly but does not reach its
+reporting stage, which points at further unimplemented hardware (VI/RSP initialisation) rather
+than at the channel. Recorded as a measurement rather than a claim of progress toward `Failed: 0`.
+
 ### Added — the PI DMA engine (T-14-001), pulled forward from Phase 5
 
 n64-systemtest loads the rest of its own ELF from cart through PI, so the Phase 1 exit criterion —

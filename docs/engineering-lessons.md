@@ -379,6 +379,38 @@ tables for a number is the natural move and it systematically misses prose.
 This is the mirror image of the ledger's rule that a measured constant is never tuned to make a
 ROM pass. Both produce a number that cannot be falsified; this one arrives by a politer route.
 
+### 3.3c A comment that states a rule is not an implementation of it
+
+**The pattern.** Writing down a constraint in a comment feels like handling it. It is not, and the
+comment then actively *suppresses* the question for every later reader — including the author, who
+now recalls having dealt with it.
+
+**How it went wrong here — three times in one sprint.**
+
+- A `CACHE` comment described the `Index_*` / `Hit_*` translation distinction while the code
+  translated unconditionally, and the accompanying test asserted the wrong side of it. Three
+  artifacts, mutually inconsistent, each individually plausible.
+- A `DMFC1` comment asserted the instruction "moves the physical register and so ignores `FR`" —
+  which was the opposite of the manual, and of what the sibling `LDC1` path did.
+- A PI module doc warned that byte-wise register handling "would make a length write fire up to
+  four DMAs, one per byte" — written as the *justification* for a read-modify-write, without
+  noticing that the RMW is reached **from** the four-`write_u8` default it was warning about. The
+  bug the comment described was the bug the code had.
+
+**Why it is not self-correcting.** A wrong comment breaks no test. In all three cases the code
+passed its suite, and in the third the comment's own reasoning was correct — only its conclusion
+about the surrounding code was not.
+
+**Practice adopted.**
+
+- When a comment states a rule the code must obey, **write the test that fails if it does not**,
+  in the same change. If the rule is not worth a test, it is not worth a comment either.
+- Treat "the comment explains why this is safe" as a prompt to check that it *is*, not as evidence.
+  Prefer comments that explain *why* a choice was made over ones that assert what the code does —
+  the latter go stale silently, the former stay true even when the code moves.
+- On review, read the comment and the code as **independent claims** and check they agree. All
+  three of these were caught by reviewers doing exactly that, and none by the test suite.
+
 ### 3.4 A frontend-only reproduction is a load-path smell, and needs a full-state diff
 
 **The pattern.** A per-game correction database applied at load time can silently corrupt state the
