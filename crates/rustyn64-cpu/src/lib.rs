@@ -38,6 +38,7 @@ pub mod decode;
 pub mod exception;
 pub mod exec;
 pub mod fpr;
+pub mod fpu;
 pub mod mem;
 pub mod pipeline;
 pub mod regs;
