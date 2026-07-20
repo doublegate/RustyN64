@@ -344,8 +344,29 @@ Two lessons, both recorded rather than discarded:
 The helper (`fpu::round_f64_to_f32`, `next_up_f32`, `next_down_f32`) is retained
 with its tests: it is correct in the normal range and will be needed.
 
-**Confirm with:** capturing what n64-systemtest actually feeds an `ADD.S` case
-and comparing our result bit-for-bit, before writing any more FP code.
+**Measured, and it is not an arithmetic problem at all.** The verbatim failure:
+
+```text
+'COP1: ADD.S' with '(false, Nearest, 0.0, 2e0, Ok((, 2e0)))' failed:
+  a=1.2795344e-28 b=2e0 (0x11223344 vs 0x40000000)
+```
+
+`0x11223344` is the test's **sentinel**, unchanged — the destination is never
+written. And the mode is `Nearest`, so `RM` was never implicated. Both earlier
+hypotheses (unwired operations, exception behaviour) and the rounding hypothesis
+are now all excluded by measurement.
+
+A neighbouring case is more informative still: `Upper bits of 32 bit operation
+(half mode)` reports `0x1111_40C0_0000` against an expected `0x40C0_0000`. There
+the low word **is** correct (`0x40C00000` = 6.0) and the *upper* half of the FGR
+retains its sentinel. So the arithmetic works and the write-back width or path is
+wrong — a 32-bit FP result apparently must not leave the upper half intact.
+
+**Next:** determine why `fd` is unwritten in the main path while the "upper bits"
+case does write. Candidates, none verified: the result never leaves the FPR
+because `SWC1` does not store; the write is discarded before WB; or the operands
+are never loaded (`LWC1`), so the test observes its own sentinel throughout.
+Establish which by dumping the FPR immediately after an `ADD.S` retires.
 
 ## 5. Deliberate deviations from hardware
 

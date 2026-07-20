@@ -931,7 +931,13 @@ impl Pipeline {
             | Op::Ldc1
             | Op::Swc1
             | Op::Sdc1
-            | Op::Cop1Unimplemented => 1,
+            | Op::Cop1Unimplemented
+            // FP arithmetic is a COP1 instruction like any other and must raise
+            // Coprocessor Unusable with `CU1` clear. It was omitted when
+            // `FpArith` was introduced, which left the arithmetic executing
+            // unconditionally -- a program that had not enabled COP1 would get
+            // results instead of an exception.
+            | Op::FpArith => 1,
             Op::Cop2 => 2,
             _ => return None,
         };
