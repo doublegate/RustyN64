@@ -28,6 +28,17 @@ desktop.ini
 /perf.data*
 /flamegraph.svg
 
+# Workflow output reproduced locally (e.g. under `act`): pages.yml assembles the
+# Pages artifact in _site/, release.yml stages packaged archives in dist/.
+/_site/
+/dist/
+/site/
+
+# Release archives, if built by hand rather than by the release workflow
+/rustyn64-*.tar.gz
+/rustyn64-*.zip
+/SHA256SUMS
+
 # Per-developer
 .envrc
 .direnv/

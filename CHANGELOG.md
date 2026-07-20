@@ -32,6 +32,15 @@ All notable changes to RustyN64 are documented here. The format is based on
   by three independent guards (`.gitignore`, a pre-commit hook over the staged file list,
   and a server-side CI scan). The hook also enforces that any allowlisted ROM ships a
   `LICENSE` beside it.
+- Full phase and sprint planning in `to-dos/`: the ROADMAP gains a status section, a phase spine
+  with per-phase goal/exit criteria, cross-phase dependencies, and the open questions that gate
+  deeper planning. All nine phase overviews adopt the seven-section skeleton (Goal, Exit criteria,
+  Scope, Sprints, Dependencies, Risks, Reference docs), and ten sprint files mint **49 tickets**
+  (`T-PS-NNN`, P = phase, S = sprint) with acceptance criteria, dependencies, spec references, and
+  complexity. Phase 0's tickets are checked off against what actually shipped; the rest are
+  forward plans grounded in the register-level detail from the wiki mirror.
+- `docs/DOCUMENTATION_INDEX.md`, the docs map both sibling projects carry — subsystem specs,
+  cross-cutting references, subdirectories, and the material outside `docs/`.
 - Reference emulators and test suites cloned for study under the gitignored `ref-proj/`
   (ares, cen64, gopher64, simple64, parallel-rdp, parallel-rsp, angrylion-rdp-plus,
   n64-systemtest, n64-tests, libdragon, PeterLemon/N64). Per-repo licences are verified and
@@ -52,8 +61,19 @@ All notable changes to RustyN64 are documented here. The format is based on
   would misrepresent progress.
 - `docs/testing-strategy.md` documents the corpus tiers, the commercial-ROM guards, and the
   per-corpus licensing that decides which tier a corpus lands in.
-- `README.md` now carries a platform-support matrix, the Linux system-dependency commands,
-  a link to the published API docs, and an explicit not-playable status banner.
+- `README.md` rebuilt to the structure RustyNES and RustySNES share — centred title block with a
+  three-row badge set, Overview, Why RustyN64, Highlights, Features, Quick Start, Default
+  Controls, Architecture with crate and layout tables, Compatibility and Accuracy, Performance,
+  Platform Support, Documentation, Current Release, Roadmap, Contributing, License,
+  Acknowledgments, Citation, and the shared footer. Adapted honestly for a pre-alpha: the
+  accuracy badges read "not started" rather than borrowing the siblings' 0-diff claims, the
+  Highlights table separates working from stubbed, and the Performance section states that no
+  measurements exist rather than inventing any.
+- `.gitignore` covers output our own workflows produce when run locally (`_site/` from pages.yml,
+  `dist/` and the release archives from release.yml) plus `site/` for a future docs handbook.
+- `docs/adr/0004-determinism-contract.md` gained the `Consequences` section the Nygard format and
+  the project's own docs rules require — it was the only ADR without one. Records the costs the
+  contract imposes and the fact that it is currently specified but unexercised.
 - Root `Cargo.toml` excludes `ref-proj/` and `n64brew_wiki/` from the workspace. Cargo's
   upward workspace discovery otherwise makes any nested project there — `n64-systemtest`,
   `gopher64` — resolve *this* workspace as its root and fail to parse our members.
@@ -68,6 +88,13 @@ All notable changes to RustyN64 are documented here. The format is based on
 - `release.yml` pins the toolchain to 1.96 instead of `@stable`. `rust-toolchain.toml`
   takes precedence over the action's default, so the previous config installed one
   toolchain and built with another.
+- The nine phase overviews cited "the skill's references/roadmap_template.md" for their exit
+  criteria — a dangling reference to the generator skill, which is not part of this repository, so
+  no phase had a stated exit bar. Every phase now carries real, checkable criteria.
+- `AGENTS.md` claimed the repository used three incompatible ticket-ID schemes. It does not:
+  `T-PS-NNN` is a template where P is the phase digit and S the sprint digit, and the overviews
+  instantiate it correctly as `T-01-NNN` through `T-81-NNN`. Only the pre-ticket code TODOs use a
+  separate subsystem-scoped form.
 - `README.md` cited the "Mesen2 / ares / higan" accuracy bar, which belongs to the NES/SNES
   projects. The N64 reference set is ares / CEN64 / Gopher64 / ParaLLEl, per
   `docs/architecture.md`. It also listed only 8 of the 10 workspace crates, and its

@@ -119,8 +119,10 @@ Linux frontend needs system deps (wgpu/winit/cpal). Arch/CachyOS:
   `#![forbid(unsafe_code)]`. There is zero `unsafe` in the tree today — keep it that way.
 - Stubs are `TODO(T-XXX-NN)` comments in no-op bodies that still compile, NOT `todo!()`. So a
   green `cargo test` does not mean a subsystem works — check `docs/STATUS.md`.
-- Ticket IDs are inconsistent across the repo (`T-PS-NNN` in CONTRIBUTING/ROADMAP, `T-01-NNN` in
-  phase overviews, `T-CPU-01` in code TODOs) and no tickets exist yet. Ask before minting one.
+- Ticket IDs are `T-PS-NNN`, where **P is the phase digit and S the sprint digit** — so
+  phase 1 sprint 1 mints `T-11-001`, phase 3 sprint 2 mints `T-32-004`. CONTRIBUTING/ROADMAP
+  state the template; the phase overviews instantiate it. Code TODOs use a separate
+  subsystem-scoped form (`T-CPU-01`, `T-HARNESS-02`) for pre-ticket scaffolding.
 - Never commit commercial ROMs.
 - Versioning starts clean at v0.1.0 — RustyNES "v2.0 / engine-lineage" anchors are NOT this
   project's releases.
