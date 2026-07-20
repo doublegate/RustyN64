@@ -25,10 +25,11 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
       shift-right-arithmetic bug, and the sign-extension bugs (`n64brew_wiki/markdown/VR4300.md`).
 - [ ] The load-delay interlock is modelled, since it is observable through the pipeline.
 - [ ] `n64-systemtest` reports `Failed: 0` for the CPU, COP0, and TLB categories.
-      **Not reachable until Sprint 2**: the suite needs COP1 control, COP0 and exception
-      dispatch before it can report anything at all (it dies on `CTC1 $31`, three statements
-      after entry). Sprint 1's first real pass/fail comes from `basic.z64` instead — see
-      T-11-006's re-scope note.
+      **Confirmed by reading the suite's source, not assumed**: `entrypoint()` calls
+      `set_fcsr` — i.e. `ctc1::<31>` — as its fourth statement, so COP1 *control* access is
+      required before any COP0 test runs; `main()` then immediately installs handlers at all
+      three of `0x8000_0000`/`0x080`/`0x180`. Sprint 1's first real pass/fail came from
+      `basic.z64` instead (5/5). Owned by T-12-007.
 - [ ] The golden-log differ finds no divergence across the captured trace, reporting the first
       mismatched instruction rather than a bare failure.
 - [ ] A determinism regression test exists: two runs from the same seed produce byte-identical
@@ -71,8 +72,9 @@ Out-of-scope:
 
 - [Sprint 1 — Register file, decode, and the integer core](sprint-1-integer-core.md) —
   the datapath to first-pass completeness against the simplest test ROMs.
-- Sprint 2 — COP0, the TLB, and the exception model.
-  **Status:** stub — refine when Sprint 1 is close to complete.
+- [Sprint 2 — COP0, the TLB, and the exception model](sprint-2-cop0-tlb-exceptions.md) —
+  gets n64-systemtest to report a genuine number, which is the first oracle this project did not
+  write itself. **Status:** planned; tickets T-12-001…T-12-007 minted.
 - Sprint 3 — COP1 (FPU), the errata, and the golden-log 0-diff.
   **Status:** stub — refine when Sprint 2 is close to complete.
 

@@ -23,10 +23,12 @@ it again and say so; do not nudge it.
 
 ## Status
 
-**Empty of results.** No chip executes instructions yet (`docs/STATUS.md`), so nothing has been
-measured and no residual has been observed. The entries below are *placeholders with known
-provenance* — constants we already know we will have to measure, recorded now so the first
-implementation does not silently invent a value and move on.
+**The CPU executes instructions; nothing has been *measured* yet.** Sprint 1 landed the integer
+core, so residuals can now be observed in principle — none has been. What has changed is that
+three entries (C-2, C-3, S-3) turned out to be **documented all along** and are resolved by
+citation rather than measurement; C-7 is new and likewise documented. The remaining constants are
+still placeholders with known provenance, recorded so the first implementation does not silently
+invent a value and move on.
 
 ---
 
@@ -35,8 +37,9 @@ implementation does not silently invent a value and move on.
 | # | Constant | Value | How measured | Status |
 | --- | --- | --- | --- | --- |
 | C-1 | `M` — memory access time (PCycles) | — | — | **not yet measured** |
-| C-2 | Exception epilogue cost (PCycles) | — | — | **not yet measured** |
-| C-3 | CP0I (CP0 bypass interlock) cost | — | — | **not yet measured** |
+| C-2 | Exception epilogue cost (PCycles) | **2** | ~~measurement~~ **documented** — UM §4.7 p. 114 | **resolved; not a measured constant** |
+| C-3 | CP0I (CP0 bypass interlock) cost | **1** | **documented** — UM §4.6.9 p. 113 | **resolved; not a measured constant** |
+| C-7 | ITM (instruction micro-TLB miss) penalty | **3** | **documented** — UM §4.6.2 p. 107 | **resolved; not a measured constant** |
 | C-4 | RDRAM row-hit / row-miss / dirty-miss | — | — | **not yet measured** |
 | C-5 | `DIV` quotient when divisor bits 63 and 31 differ | *32x35 division* | **guessed** | needs hardware |
 | C-6 | Divide-by-zero `HI`/`LO` values | conventional | **guessed** | needs hardware |
@@ -64,18 +67,56 @@ how a fitted constant becomes a fudge factor.
 
 **Owner:** T-11-008.
 
-### C-2 — exception epilogue cost
+### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
-Widely quoted as 2 PCycles. **Not documented**: no figure appears in UM §4.7 or chapter 6. The
-number originates in CEN64, whose own source says: *"TODO: Is the cycle count just the killing of
-IC/RF, or do we actually delay an additional two cycles?"* Treat 2 as a starting hypothesis to
-be confirmed, not as a fact inherited from the manual.
+**2 PCycles, and the manual says so.** UM §4.7 (p. 114), the opening sentence of the section:
 
-### C-3 — CP0I
+> *"When a pipeline exception condition occurs, the pipeline stalls for 2 PCycles and the
+> instruction causing the exception as well as all those that follow it in the pipeline are
+> aborted."*
 
-Named in UM Table 4-3 and §4.6.9 as one of the eight interlocks; no cycle count located in the
-manual text. Low priority until COP0 lands (Phase 1 Sprint 2), and note that n64-systemtest's
-`cop0hazard` set is default-off upstream because the rules are not fully derived by anyone.
+This entry previously read *"**Not documented**: no figure appears in UM §4.7 or chapter 6"* —
+naming the exact section the figure is in. The mistake was searching §4.7's *tables* and
+Chapter 6's exception-processing prose, and never reading §4.7's own first paragraph.
+
+So CEN64's 2 is **independent corroboration**, not the origin, and its source comment asking
+*"do we actually delay an additional two cycles?"* is answered: yes.
+
+**This is not a measured constant and does not belong in this section's spirit** — it is kept
+here only so the correction is visible where the wrong claim was. The same error propagated to
+`docs/cpu.md` and `ref-docs/2026-07-20-vr4300-timing-supplement.md`; both are corrected (the
+latter by a new dated supplement, since `ref-docs/` is immutable).
+
+**The lesson, which is the part worth keeping:** *"undocumented"* is a claim **about** the
+manual, and it decays. Once written down it gets copied between files and stops being
+re-checked — three files asserted it here. Before recording anything as undocumented, cite the
+specific pages checked; before *relying* on such a record, re-check it.
+
+### C-3 — CP0I — **RESOLVED, same cause as C-2**
+
+**1 PCycle.** UM §4.6.9 (p. 113): *"This interlock causes a pipeline stall for one PCycle to
+allow the CP0 register to be written in the WB stage before allowing any CP0 register to be read
+in the DC stage."* The trigger is equally specific: an instruction that caused an exception
+reaches WB while the subsequent instruction in DC requests a read of any CP0 register.
+
+This entry previously said *"no cycle count located in the manual text"* while citing §4.6.9,
+which is the paragraph containing it.
+
+Separately, and still true: n64-systemtest's `cop0hazard` set is default-off upstream because
+the *hazard* rules are not fully derived by anyone. That is a different question from this
+interlock's cost — CP0 hazards are explicitly **not interlocked** (UM Ch. 19), so they are a
+software-visible ordering constraint rather than a stall. Sprint 2 decides whether to model them.
+
+### C-7 — ITM, the instruction micro-TLB miss penalty — **documented**
+
+**3 PCycles.** UM §4.6.2 (p. 107): *"A miss penalty of 3 PCycles is incurred when the micro-TLB
+is updated from the JTLB."*
+
+Worth stating the structure, because it is easy to conflate: the VR4300 has a **two-entry
+instruction micro-TLB (ITLB)** in front of the 32-entry joint TLB. A micro-TLB miss is a
+**stall**; a JTLB miss is an **exception**. Modelling only the JTLB loses this cost entirely.
+Whether Sprint 2 models the micro-ITLB separately is an open decision recorded in that sprint's
+plan.
 
 ### C-4 — RDRAM bank state
 
@@ -108,6 +149,25 @@ Unverified against hardware. What *is* non-negotiable and tested is that it does
 not panic — a guest program can divide by zero at will.
 
 ---
+
+## 1b. Genuinely undocumented — needs a hardware pin, not a guess
+
+Distinct from section 1: these are not constants to fit, they are *behaviours* the manual
+declines to define. Each must be pinned against n64-systemtest or hardware before any
+implementation choice here is treated as correct.
+
+| # | Question | What the manual says | Owner |
+| --- | --- | --- | --- |
+| U-1 | `MFC0`/`MTC0` on COP0 registers 7, 21–25, 31 | *"Reserved for future use"* (UM Table 1-2 p. 46) and nothing further — no read value, no write effect | Sprint 2 |
+| U-2 | `TLBP` low `Index` bits on a miss | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
+| U-3 | The N64's full `PRId` value | `Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151) | Sprint 2 |
+| U-4 | Which `Int[4:0]` line the MI drives | Board-level, outside the CPU manual entirely | Sprint 2 |
+| U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | Sprint 2 |
+| U-6 | `Config.EC` on the N64 | `0b111` (1:1.5) is allowed *"with the 100 MHz model only"* (UM Appendix A note 1, p. 628), and the N64's ratio is 1:1.5 — so `0b111` is a strong **inference**, but the manual never names the N64 | Sprint 2 |
+
+U-6 is the one to watch: it is consistent with ADR 0006's clock derivation, which makes it
+tempting to promote to a fact. It is an inference from a part-number restriction, and it stays
+labelled as one until something reads the register on hardware.
 
 ## 2. Open residuals
 
@@ -143,8 +203,37 @@ Not our bugs, but they will look like ours if undocumented.
 | --- | --- | --- | --- |
 | S-1 | `SYSCMD` bit 4 polarity: command = 0 or 1? | UM §12.11.1 vs `SysAD Interface.md` cheat sheet | **RESOLVED — not a contradiction at all**; see below |
 | S-2 | Pipeline stage names | `ref-docs/research-report.md` §1 says IF/RF/EX/DF/WB; UM §4.1 Fig 4-1 says IC/RF/EX/DC/WB | **resolved** — manual wins; see `ref-docs/2026-07-20-vr4300-timing-supplement.md` §1 |
-| S-3 | Exception vector for an exception with `EXL` already set | MIPS docs say `0x80`; CEN64 routes to `0x180` with a source comment that `0x80` "doesn't make any sense" | **unresolved** — pin with n64-systemtest |
+| S-3 | Exception vector for an exception with `EXL` already set | UM Fig. 6-15 (p. 203) says `0x080`; UM Table 6-4 + §6.4.8 say `0x180`; CEN64 routes to `0x180` | **RESOLVED — `0x180`**; the manual contradicts *itself*, and Fig. 6-15 is the defective source. See below |
 | S-4 | D-cache fill cost | CEN64 charges 44 PClocks; ares charges 40 | **unresolved** — neither is spec-derived; supersede both with C-1 |
+
+### S-3 — resolved: the contradiction is *inside* the manual, and `0x180` wins
+
+Recorded as MIPS-docs-vs-CEN64. It is neither: the VR4300 manual disagrees with itself, and the
+majority of it says `0x180`.
+
+**For `0x180` — three places, two of them normative tables:**
+
+- **Tables 6-3/6-4 (p. 181)** define the refill offsets *only* for `EXL=0`: the rows are labelled
+  `TLB Miss, EXL=0` → `0x000` and `XTLB Miss, EXL=0` → `0x080`. Everything else is `Other` →
+  `0x180`. There is no `EXL=1` refill row to select.
+- **§6.4.8 (p. 187)**, *Processing*: *"All TLB Miss exceptions use these two special vectors when
+  the EXL bit is set to 0 in the Status register, and they use the common exception vector when
+  the EXL bit is set to 1 in the Status register."*
+- **§6.4.8 (p. 188)**, *Servicing*, describing a nested refill: *"This second exception goes to
+  the common exception vector because the EXL bit of the Status register is set."*
+
+**For `0x080` — one flowchart:** Fig. 6-15 (p. 203) has a branch `EXL = 0?` whose **No** arm
+leads to a box reading *"General Purpose Exception, Vec. Off. = 0x080"*. That figure is wrong. It
+contradicts both tables, the §6.4.8 prose twice, and Fig. 6-14 (p. 201), which is the
+general-purpose handler and unconditionally uses `+ 0x180`.
+
+**So CEN64 is right**, and its source comment that `0x080` *"doesn't make any sense"* is a
+reaction to exactly this figure. Resolution is by document, not by measurement, so no test ROM is
+required — but a pin is still worth having as a regression gate, and n64-systemtest exercises it
+directly (it installs handlers at all three of `0x000`, `0x080` and `0x180`).
+
+Kept rather than deleted: Fig. 6-15 is still in the manual, so the next reader will find `0x080`
+and have to re-derive this. **Owner:** Sprint 2, with the pin.
 
 ### S-1 — resolved: the sources agree on the bits and disagree on the English
 

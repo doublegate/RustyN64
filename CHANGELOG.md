@@ -9,6 +9,81 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — `LL` / `SC` / `LLD` / `SCD`, closing a Sprint 1 gap (T-11-003)
+
+The synchronisation pair was listed in T-11-003's acceptance criteria and in the Phase 1 exit
+criteria, and had **not** been implemented — the four opcodes decoded to `Reserved`. Found while
+verifying Sprint 1's criteria against the code rather than against the ticket's own checkboxes.
+
+- `LL`/`LLD` arm the link bit and record `PA(31:4)` in `LLAddr` (COP0 reg 17, diagnostic-only per
+  UM §5.4.7). `SC`/`SCD` test it, store only if set, and write 1/0 to `rt` **either way**.
+- A misaligned `SC` **raises** rather than reporting failure — *"If this instruction both fails
+  and causes an exception, the exception takes precedence"* (UM §16 p. 487). A misaligned `LL`
+  leaves the link disarmed.
+
+### Fixed — three "undocumented" timing constants were documented all along
+
+A research pass for Sprint 2 re-opened the VR4300 manual and found that three constants recorded
+across `docs/accuracy-ledger.md`, `docs/cpu.md` and the timing supplement as *undocumented* are
+stated plainly in the sections those notes cited as lacking them:
+
+| Constant | Value | Where it actually is |
+| --- | --- | --- |
+| Exception epilogue stall | **2 PCycles** | UM §4.7 p. 114 — the section's opening sentence |
+| CP0I (CP0 bypass interlock) | **1 PCycle** | UM §4.6.9 p. 113 |
+| ITM (instruction micro-TLB miss) | **3 PCycles** | UM §4.6.2 p. 107 — never looked for |
+
+The ledger said *"no figure appears in UM §4.7 or chapter 6"* while the figure is §4.7's first
+paragraph. The cause was search shape, not misreading: numbers were looked for in tables, and
+these are in prose. CEN64's 2 is therefore corroboration rather than the origin.
+
+Ledger entries C-2 and C-3 are reclassified from *not yet measured* to documented-with-citation,
+C-7 is added for ITM, and the general lesson is recorded as `docs/engineering-lessons.md` §3.3b:
+*"undocumented" is a claim about a document, and unlike a claim about behaviour, nothing ever
+fails when it is wrong* — so it spreads between files and licenses fitted constants. The
+`ref-docs/` correction lands as a new dated supplement, since that corpus is immutable.
+
+### Fixed — ledger S-3 resolved: the `EXL=1` vector is `0x180`
+
+Recorded as MIPS-docs-versus-CEN64. It is neither — **the manual contradicts itself**. Tables
+6-3/6-4 (p. 181) define the refill offsets only for `EXL=0`, and §6.4.8 says twice (pp. 187, 188)
+that with `EXL=1` you take the common vector. One flowchart, Fig. 6-15 (p. 203), says `0x080` and
+is wrong. CEN64 is right, and its source comment that `0x080` *"doesn't make any sense"* is a
+reaction to that figure. Kept as a ledger entry rather than deleted, because Fig. 6-15 is still
+in the manual and the next reader will find it.
+
+### Added — Sprint 2 planned (T-12-001 … T-12-007)
+
+`to-dos/phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md`: COP0, the TLB (including the
+two-entry instruction micro-TLB in front of the JTLB), the exception model, `CACHE`, and COP1
+*control* access. The goal is n64-systemtest reporting a genuine number — the first oracle this
+project did not write itself. Its blockers were established by reading the suite's source rather
+than assuming: `entrypoint()` calls `CTC1 $31` as its fourth statement, and `main()` immediately
+installs handlers at all three exception vectors.
+
+### Added — `SYNC` retires as a NOP instead of raising
+
+Found by the same audit: `SYNC` (SPECIAL funct `0o17`) decoded to `Reserved`, so it would have
+raised a reserved-instruction exception on code that runs fine on hardware — and compilers emit
+it. *"all load/store instructions in this processor are executed in program order since the SYNC
+instruction is handled as a NOP"* (UM §3.1).
+
+The audit's other findings were all legitimately out of Sprint 1 scope — COP0 (`0o20`), COP1
+(`0o21`), `CACHE` (`0o57`) and the coprocessor load/store forms belong to Sprints 2 and 3 — or
+genuinely unassigned encodings that *should* raise.
+
+### Fixed — `docs/cpu.md` had the link-bit clearing rule wrong
+
+The spec said *"Any intervening store (or ERET) clears the link"*. The manual's list is
+exhaustive and does not include stores: *"set by the LL instruction, cleared by an ERET, and
+tested by the SC instruction"* (UM §3.1). `SC` is a **tester, not a clearer** — clearing it there
+looks right, matches other architectures, and makes the second iteration of an `LL`/`SC` retry
+loop fail forever. Now pinned by `sc_does_not_clear_the_link_bit`, and all five mutations of the
+new behaviour were checked to fail the suite before the tests were kept.
+
+`ERET` is the one thing that does clear it, and it arrives with the exception model in Sprint 2;
+until then nothing clears the bit, which `docs/cpu.md` now states rather than leaving implied.
+
 ### Added — the `SysAD` transaction model (T-11-008, partial)
 
 `sysad.rs` models the CPU↔RCP bus as a **packet protocol** — an address cycle carrying a

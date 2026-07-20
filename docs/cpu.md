@@ -94,8 +94,11 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
   cache (16-byte lines), 24 KB L1 total, both direct-mapped, virtually-indexed
   and physically-tagged (UM §11.2). Model coherency against DMA: cart/RSP DMA writes land in
   RDRAM behind the cache, and games explicitly `CACHE`-flush/invalidate.
-- **LL/SC link bit** — set by `LL`/`LLD`, cleared by intervening stores; `SC`/
-  `SCD` succeed only if still set.
+- **LL/SC link bit** (`LLbit`) — set by `LL`/`LLD`, cleared by `ERET`; `SC`/`SCD`
+  *test* it and succeed only if it is set. **Not** cleared by an intervening
+  store, and **not** cleared by `SC` itself — see the gotcha below.
+  `LLAddr` (COP0 reg 17) holds `PA(31:4)` of the last `LL` and is diagnostic
+  only: nothing in the CPU reads it back (UM §5.4.7).
 
 ## Behavior
 
@@ -146,11 +149,36 @@ The cache figures are the sum of the table rows; the 1-cycle spread is the
 that ADR 0006's seeded phase models. CEN64 corroborates the D-cache number: its
 `DCACHE_ACCESS_DELAY` of 44 is exactly 8 + its `MEMORY_WORD_DELAY` of 38.
 
-**The exception epilogue cost is NOT documented**, despite being commonly quoted
-as 2 PCycles. No figure appears in UM §4.7 or Chapter 6; CEN64 charges 2 and its
-own source asks *"Is the cycle count just the killing of IC/RF, or do we actually
-delay an additional two cycles?"*. Treat it like `M` below — a measured constant
-with its provenance recorded, never a number cited as if the manual supplied it.
+**The exception epilogue cost IS documented, and this doc previously said it was
+not.** UM §4.7 (p. 114), the section's opening sentence:
+
+> *"When a pipeline exception condition occurs, the pipeline stalls for **2
+> PCycles** and the instruction causing the exception as well as all those that
+> follow it in the pipeline are aborted."*
+
+The earlier note here — and ledger entry C-2, and the timing supplement — all
+claimed no figure appeared in UM §4.7, which is precisely where it appears. The
+error came from searching Chapter 6 (exception *processing*) and the §4.7 tables
+rather than reading §4.7's prose. CEN64's 2 is therefore **corroboration**, not
+the source; its source comment asking whether the delay is real is answered.
+
+Two more interlock costs that were likewise wrongly filed as undocumented:
+
+- **CP0I (CP0 bypass interlock) = 1 PCycle** — *"This interlock causes a pipeline
+  stall for one PCycle to allow the CP0 register to be written in the WB stage
+  before allowing any CP0 register to be read in the DC stage"* (UM §4.6.9,
+  p. 113). It fires when an instruction that caused an exception reaches WB while
+  the next instruction in DC reads any CP0 register.
+- **ITM (instruction micro-TLB miss) = 3 PCycles** — *"A miss penalty of 3
+  PCycles is incurred when the micro-TLB is updated from the JTLB"* (UM §4.6.2,
+  p. 107). Note this is the **two-entry instruction micro-TLB** in front of the
+  32-entry JTLB, not the JTLB itself: a micro-TLB miss is a *stall*, a JTLB miss
+  is an *exception*. Whether to model the micro-ITLB separately is an open
+  Sprint 2 decision, recorded in that sprint's plan rather than decided here.
+
+The general lesson, recorded because it cost three files: *"undocumented"* is a
+claim about the manual that has to be checked against the manual, not inherited
+from a previous note. See `docs/engineering-lessons.md`.
 
 Integer multiply and divide **stall the entire pipeline** for the listed count
 (UM Table 3-12) — they are not background operations.
@@ -240,8 +268,36 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   Games flush/invalidate explicitly — model `CACHE` ops and the dirty-line
   write-back, or framebuffer/DMA data goes stale (`ref-docs/research-report.md`
   §1, §Open questions 4).
-- **`LL`/`SC` link-bit clearing.** Any intervening store (or ERET) clears the
-  link; `SC` must then fail and write 0 to its target register.
+- **`LL`/`SC` link-bit clearing — this doc previously had it wrong.** The
+  manual's list is exhaustive and short: *"The load link bit (`LLbit`) is set by
+  the LL instruction, cleared by an ERET, and tested by the SC instruction. The
+  only operation to the `LLbit` that can be implemented is a reset due to cache
+  invalidation"* (UM §3.1). So an intervening ordinary store does **not** clear
+  it, and neither does `SC`. Clearing it in `SC` is the natural-looking mistake —
+  several architectures do work that way — and it makes the second iteration of
+  a retry loop fail forever. Pinned by `sc_does_not_clear_the_link_bit`.
+
+  What the manual *does* say about intervening accesses is weaker and different:
+  a cache miss between `LL` and `SC` "hinders execution of the SC instruction",
+  so software is told not to put loads or stores there at all (UM §16 p. 453).
+  That is a caution to programmers, not an architectural clear.
+
+  `ERET` is the one clearer, and it lands with the exception model in Sprint 2.
+  Until then nothing clears the bit — correct as far as it goes, and incomplete.
+- **`SC` is a store with a register destination.** It writes 1/0 to `rt` whether
+  or not the store happened, which is a shape no other integer instruction has.
+  Decoding it with the store form (no destination) silently loses the flag, and
+  folding it into `is_load` stalls a cycle the hardware does not.
+- **`SYNC` is a NOP, not a reserved encoding.** *"the SYNC instruction is handled
+  as a NOP"* (UM §3.1), which is also why the VR4300 needs no memory barrier
+  model: loads and stores already execute in program order. Decoding it to
+  `Reserved` would raise on code that runs on hardware.
+- **`CACHE` (`0o57`) is still `Reserved`** — deliberately, until the cache model
+  lands in Sprint 2. Note this means it currently *raises*; IPL3 and libdragon
+  both use it, so this is a known blocker for anything past a bare test ROM.
+- **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
+  detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
+  entry rather than a special case.
 - **SysAD is the only window out.** Every non-cached access becomes a SysAD
   transaction the RCP arbitrates against RSP/RDP/DMA traffic
   (`ref-docs/research-report.md` §1) — relevant to the bus-contention model

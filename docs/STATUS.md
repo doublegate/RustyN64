@@ -3,35 +3,46 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.1.0 (SKELETON).** The workspace compiles, CI is green on
-stubs, and the architecture (Bus + the one-directional crate graph + the narrow
-chip bus traits) is in place. **The scheduler shipped in v0.1.0 is the
-superseded ADR 0001 model** — a 93.75 MHz master tick with a 3:2 fractional
-accumulator. ADR 0006 replaces it with a canonical 187.5 MHz clock and integer
-divisors, and ADR 0007 makes the CPU a cycle-accurate five-stage pipeline; both
-are **decided and documented but not yet implemented** (ticket T-11-001). The
-accuracy work — the LLE RSP, the LLE RDP, the VR4300 interpreter — has **not
-started**; those are the major roadmap phases (`to-dos/ROADMAP.md`).
+**Current release:** **v0.1.0 (SKELETON)** — but the tree has moved well past it.
+**Phase 1 Sprint 1 is complete** (T-11-001 … T-11-008): the scheduler now counts
+one canonical 187.5 MHz master clock with every other cycle position derived
+from it (ADR 0006), and the VR4300 is a real five-stage pipeline executing the
+MIPS III integer instruction set (ADR 0007). The superseded ADR 0001 timebase —
+a 93.75 MHz tick with a 3:2 fractional accumulator — is **gone from the tree**,
+not merely deprecated.
 
-**Read this before trusting any green checkmark:** CI passing means the skeleton
-compiles and its 42 unit tests pass. It does **not** mean any chip emulates
-anything. Stubs are `TODO(T-XXX-NN)` comments inside no-op bodies that compile
-and return, not `todo!()` panics, so nothing fails loudly. Likewise, the test-ROM
-corpora described below are **staged but not yet executed by anything** — the
-harness runner is still a stub. Availability of an oracle is not the same as a
-wired gate.
+The remaining accuracy work is unstarted: COP0, the TLB, the exception model
+(Sprint 2), COP1 and the golden-log 0-diff (Sprint 3), then the LLE RSP and RDP
+(Phases 2–3). See `to-dos/ROADMAP.md`.
 
-## What compiles today (v0.1.0)
+**Read this before trusting any green checkmark:** CI passing means the
+workspace compiles and its **135** tests pass. The CPU genuinely executes
+instructions now — that is new — but every other chip is still an LLE-shaped
+stub. Stubs are `TODO(T-XXX-NN)` comments inside no-op bodies that compile and
+return, not `todo!()` panics, so nothing fails loudly. And of the test-ROM
+corpora below, exactly one ROM is actually executed by a gate (`basic.z64`);
+the rest are staged only. Availability of an oracle is not the same as a wired
+gate.
+
+## What works today
 
 - The Cargo workspace: all `rustyn64-*` crates build; `cargo test --workspace`
-  passes on the skeleton unit tests.
+  passes 135 tests.
 - `rustyn64-core`: the `Bus` (owns RDRAM + every chip + the RCP/MI register
-  state), the `System` run loop with the **3:2 fractional master-clock**
-  accumulator and **seeded power-on phase alignment**, and the chip split-borrow
-  stepping. The fractional-divisor and reset-preserves-phase tests pass.
-  *This is the superseded ADR 0001 timebase; the ADR 0006 rework is T-11-001.*
-- The chip crates: register-file / state skeletons with `tick` methods that are
-  **LLE-shaped stubs** (decode/execute marked TODO).
+  state), and the **canonical 187.5 MHz scheduler** (ADR 0006) — `master_ticks`
+  is the only incremented counter; CPU (÷2), RCP (÷3) and COP0 `Count` (÷4)
+  positions are derived accessors. Seeded per-domain power-on phase offsets;
+  reset re-derives the same phase. Pinned by a residue-invariant test in the
+  default test path.
+- `rustyn64-cpu`: a **five-stage pipeline** (IC/RF/EX/DC/WB) of four inter-stage
+  latches advanced one PClock per step in reverse stage order, with the operand
+  bypass network, the imprecise load-delay interlock, delay slots and
+  branch-likely nullification, the MIPS III integer set (including the 64-bit
+  `D*` forms and the unaligned `LWL`/`LWR`/`LDL`/`LDR` family), the documented
+  errata reproduced-not-corrected, and a `SysAD` transaction model that cannot
+  complete inside its address phase.
+- The other chip crates: register-file / state skeletons with `tick` methods
+  that are **LLE-shaped stubs** (decode/execute marked TODO).
 - `rustyn64-cart`: real ROM-format detection + byte-order normalization
   (`.z64`/`.n64`/`.v64`), header parse, and the `SaveType`/`Cic`/`RomFormat`
   enums. PI/SI DMA, CIC handshake, and FlashRAM are stubbed.
@@ -48,15 +59,15 @@ actually stands.
 
 | Area | State |
 | --- | --- |
-| Repository | `github.com/doublegate/RustyN64`, **private**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
-| CI | **Green, verified.** All 8 jobs pass on `ubuntu`/`macOS`/`windows`: fmt, clippy, test, rustdoc, `test-roms`, `no_std`, `no-commercial-roms`, `wasm-bindgen-pin`. |
+| Repository | `github.com/doublegate/RustyN64`, **public**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
+| CI | **Green, verified.** All jobs pass on `ubuntu`/`macOS`/`windows`: `setup`, `test` (fmt + clippy + test + `no_std`), `rustdoc` (`-D warnings`, an independent job so a doc break cannot ride in behind a green test job), `test-roms`, `no-commercial-roms`, `wasm-bindgen-pin`. Split light/full: the `test-roms` job and the macOS/Windows matrix run only on push-to-main, the merge queue, `release/*` PRs, dispatch, and a weekly cron. |
 | Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
 | Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Never yet exercised — no tag has been cut. |
 | wasm | Compiles for `wasm32-unknown-unknown`, but there is **no browser entry point** (no `wasm-bindgen` dep, no `#[wasm_bindgen(start)]`, no `index.html`), so `trunk build` cannot produce a demo. Phase 6. |
 | Hardware reference | `n64brew_wiki/` — offline mirror of the N64brew Wiki (324 pages, 96 media, gitignored). Rebuild with `scripts/mirror_n64brew_wiki.py`. |
 | Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licences vary and several forbid copying** — read `ref-proj/README.md` first. |
 
-## Test-ROM corpora (staged, not yet wired)
+## Test-ROM corpora
 
 Full provenance and licence rules in `tests/roms/README.md`.
 
@@ -73,15 +84,20 @@ Commercial ROMs are blocked by three independent guards (`.gitignore`,
 `tests/roms/n64-systemtest/` is allowlisted, and a committed ROM must ship its
 upstream `LICENSE` beside it.
 
-**None of these are executed yet.** Wiring them up is Phase 1 onward: the
-harness `run_until_complete` sentinel decode is stubbed and always returns
-`Timeout`, and the golden-log source returns an empty `Vec`.
+**Exactly one of these is executed by a gate today**: `basic.z64` from the
+`dillon-n64-tests` corpus, which the harness runs end to end and judges by its
+completion protocol (T-11-006). Everything else is staged only — the
+n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
+(Sprint 2), and the golden-log source still returns an empty `Vec`.
 
 ## What is stubbed (the roadmap)
 
 | Subsystem | State | Phase |
 | --- | --- | --- |
-| VR4300 decode/execute, TLB, FPU, caches | stub | Phase 1 |
+| VR4300 integer core, pipeline, delay slots, errata, SysAD | **done** (Sprint 1) | Phase 1 |
+| VR4300 COP0, TLB, exception model | stub | Phase 1 (Sprint 2) |
+| VR4300 COP1 (FPU), golden-log 0-diff | stub | Phase 1 (Sprint 3) |
+| VR4300 I/D caches | stub | Phase 1 (Sprint 2, to observable depth) |
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
@@ -98,7 +114,7 @@ harness `run_until_complete` sentinel decode is stubbed and always returns
 | `rustyn64-rdp` | RDP rasterizer + VI scan-out | `docs/rdp.md` |
 | `rustyn64-audio` | AI DAC + sample DMA | `docs/audio.md` |
 | `rustyn64-cart` | PI cart + PIF/CIC + SI + saves | `docs/cart.md` |
-| `rustyn64-core` | Bus + scheduler (ADR 0001 timebase shipped; ADR 0006 pending) | `docs/scheduler.md` |
+| `rustyn64-core` | Bus + scheduler (ADR 0006 canonical 187.5 MHz clock) | `docs/scheduler.md` |
 | `rustyn64-frontend` | egui/wgpu/cpal/winit shell (bin `rustyn64`) | `docs/frontend.md` |
 | `rustyn64-test-harness` | golden-log + accuracy + frame comparators | `docs/testing-strategy.md` |
 | `rustyn64-netplay` | rollback netplay (frontend-side) | `docs/frontend.md` |
@@ -160,11 +176,12 @@ implemented yet (Phase 5).
 - **Three different things get called "finer timing"** and must never be conflated
   in release notes or docs, coarse to fine:
   1. The **canonical 187.5 MHz master clock** (ADR 0006) — CPU every 2 ticks, RCP
-     every 3. *Decided; not yet implemented.* The v0.1.0 core still ships ADR
-     0001's 93.75 MHz tick with a 3:2 fractional accumulator.
+     every 3. **Implemented** (T-11-001). ADR 0001's 93.75 MHz tick with its 3:2
+     fractional accumulator is gone from the tree.
   2. The **SysAD command/data split** at SClock, 62.5 MHz (ADR 0007). Note this is
-     *coarser* than one PClock, so it is not sub-cycle resolution. *Decided; not
-     yet implemented.*
+     *coarser* than one PClock, so it is not sub-cycle resolution. **Modelled**
+     (T-11-008) — the transaction exists and cannot complete in its address
+     phase, but the scheduler does not yet step the RCP between phases (Sprint 2).
   3. **Resolution finer than one PClock** — the deferred ADR 0005 refactor. Does
      not exist, is not scheduled, and is the one expected to break byte-identity
      and save-state compatibility.

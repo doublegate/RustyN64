@@ -175,6 +175,20 @@ pub enum Op {
     /// `SD rt, off(base)`.
     Sd,
 
+    // --- the synchronisation pair (UM §16, pp. 453 and 487)
+    //
+    // The VR4300 is not a multiprocessor, but it implements these "in order to
+    // maintain compatibility with VR4400 and VR4200" (UM §3.1), so they are real
+    // instructions with observable behaviour, not reserved encodings.
+    /// `LL rt, off(base)` — load word, sign-extend, set `LLbit` and `LLAddr`.
+    Ll,
+    /// `LLD rt, off(base)` — the doubleword form.
+    Lld,
+    /// `SC rt, off(base)` — store word iff `LLbit`; write the outcome to `rt`.
+    Sc,
+    /// `SCD rt, off(base)` — the doubleword form.
+    Scd,
+
     // --- the unaligned family (used in pairs; see [`crate::mem`])
     /// `LWL rt, off(base)`.
     Lwl,
@@ -264,6 +278,12 @@ pub enum Op {
     /// `TNEI rs, imm`.
     Tnei,
 
+    /// `SYNC` — *"handled as a NOP"* on this processor (UM §3.1).
+    ///
+    /// Not folded into [`Op::Sll`]-as-NOP: it is a distinct encoding that
+    /// compilers emit, and decoding it to [`Op::Reserved`] would raise a
+    /// reserved-instruction exception on code that runs fine on hardware.
+    Sync,
     /// `SYSCALL`.
     Syscall,
     /// `BREAK`.
@@ -398,7 +418,29 @@ impl Decoded {
                 | Op::Lwr
                 | Op::Ldl
                 | Op::Ldr
+                | Op::Ll
+                | Op::Lld
         )
+    }
+
+    /// Does this instruction write `rt` with a value the `DC` stage produces
+    /// *without* going to memory for it?
+    ///
+    /// `SC`/`SCD` are the only such forms: they write the success flag to `rt`
+    /// whether or not the store happens (UM §16 p. 487, *"A successful SC
+    /// instruction sets the contents of general purpose register rt to 1; an
+    /// unsuccessful SC instruction sets it to 0"*). They are therefore stores
+    /// that also have a register destination — a shape nothing else in the
+    /// integer set has, and one that a `is_load`-vs-store dichotomy silently
+    /// gets wrong in both directions.
+    ///
+    /// Deliberately **not** folded into [`Self::is_load`]: the load-delay
+    /// interlock exists because a *memory* result is not ready in time, and the
+    /// `SC` flag is not a memory result. Treating it as a load would stall a
+    /// cycle the hardware does not.
+    #[must_use]
+    pub const fn is_store_conditional(self) -> bool {
+        matches!(self.op, Op::Sc | Op::Scd)
     }
 
     /// Does this instruction target a floating-point register?
@@ -441,6 +483,10 @@ const OP_SW: u32 = 0o53;
 const OP_SDL: u32 = 0o54;
 const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
+const OP_LL: u32 = 0o60;
+const OP_LLD: u32 = 0o64;
+const OP_SC: u32 = 0o70;
+const OP_SCD: u32 = 0o74;
 const OP_LD: u32 = 0o67;
 const OP_SD: u32 = 0o77;
 const OP_REGIMM: u32 = 0o01;
@@ -563,6 +609,10 @@ pub const fn decode(word: u32) -> Decoded {
                 op: Op::Break,
                 ..base
             },
+            0o17 => Decoded {
+                op: Op::Sync,
+                ..base
+            },
             0o60 => Decoded {
                 op: Op::Tge,
                 ..base
@@ -619,6 +669,14 @@ pub const fn decode(word: u32) -> Decoded {
         OP_LWR => i!(Op::Lwr),
         OP_LDL => i!(Op::Ldl),
         OP_LDR => i!(Op::Ldr),
+        // LL/SC write `rt`, so they take the `i!` (destination = rt) shape even
+        // though SC also stores. A store form with a destination is unusual
+        // enough that giving SC the store shape here is the natural mistake:
+        // the success flag would then never reach the register file.
+        OP_LL => i!(Op::Ll),
+        OP_LLD => i!(Op::Lld),
+        OP_SC => i!(Op::Sc),
+        OP_SCD => i!(Op::Scd),
         OP_SB => Decoded { op: Op::Sb, ..base },
         OP_SH => Decoded { op: Op::Sh, ..base },
         OP_SW => Decoded { op: Op::Sw, ..base },
@@ -795,5 +853,55 @@ mod tests {
         // MFHI/MFLO read them and DO have a destination.
         assert_eq!(decode(r(0o20, 0, 0, 9, 0)).dest, 9);
         assert!(!decode(r(0o20, 0, 0, 9, 0)).op.writes_hi_lo());
+    }
+
+    /// `SC` is a store that nonetheless writes `rt`, so it must decode with a
+    /// destination. The unit tests in `pipeline` construct `MemOp` directly and
+    /// therefore cannot catch a decode that drops it — this one can.
+    #[test]
+    fn the_synchronisation_pair_decodes_with_rt_as_the_destination() {
+        // opcode, rs=1 (base), rt=9, imm=0x20
+        let enc = |opcode: u32| (opcode << 26) | (1 << 21) | (9 << 16) | 0x20;
+
+        for (opcode, op) in [
+            (0o60u32, Op::Ll),
+            (0o64, Op::Lld),
+            (0o70, Op::Sc),
+            (0o74, Op::Scd),
+        ] {
+            let d = decode(enc(opcode));
+            assert_eq!(d.op, op, "opcode {opcode:#o}");
+            assert_eq!(d.rs, 1, "{op:?} base");
+            assert_eq!(d.imm, 0x20, "{op:?} offset");
+            assert_eq!(
+                d.dest, 9,
+                "{op:?} must write rt -- SC reports success there even when it stores nothing"
+            );
+        }
+    }
+
+    /// The interlock must treat `LL`/`LLD` as loads (their value comes from
+    /// memory) but `SC`/`SCD` as not loads (the flag does not).
+    #[test]
+    fn only_the_linked_loads_count_as_loads_for_the_interlock() {
+        let enc = |opcode: u32| (opcode << 26) | (1 << 21) | (9 << 16);
+        assert!(decode(enc(0o60)).is_load(), "LL");
+        assert!(decode(enc(0o64)).is_load(), "LLD");
+        assert!(!decode(enc(0o70)).is_load(), "SC is not a load");
+        assert!(!decode(enc(0o74)).is_load(), "SCD is not a load");
+        assert!(decode(enc(0o70)).is_store_conditional(), "SC");
+        assert!(decode(enc(0o74)).is_store_conditional(), "SCD");
+        assert!(!decode(enc(0o53)).is_store_conditional(), "SW is not");
+    }
+
+    /// `SYNC` is a real encoding the VR4300 retires as a NOP (UM §3.1).
+    /// Decoding it to `Reserved` raises a reserved-instruction exception on
+    /// code that runs fine on hardware — compilers emit it.
+    #[test]
+    fn sync_decodes_to_a_nop_not_a_reserved_instruction() {
+        let d = decode(0o17);
+        assert_eq!(d.op, Op::Sync);
+        assert_ne!(d.op, Op::Reserved, "SYNC must not raise");
+        assert_eq!(d.dest, 0, "SYNC writes no register");
     }
 }

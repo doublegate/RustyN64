@@ -22,33 +22,33 @@ without rewriting the scheduler and every chip's step contract at once.
 
 *The timebase (ADR 0006):*
 
-- [ ] `MASTER_HZ = 187_500_000`; `CPU_DIVIDER = 2`, `RCP_DIVIDER = 3`, `COUNT_DIVIDER = 4`.
-- [ ] `master_ticks: u64` is the **only** incremented counter in the core. `cpu_cycles()` and
+- [x] `MASTER_HZ = 187_500_000`; `CPU_DIVIDER = 2`, `RCP_DIVIDER = 3`, `COUNT_DIVIDER = 4`.
+- [x] `master_ticks: u64` is the **only** incremented counter in the core. `cpu_cycles()` and
       `rcp_cycles()` are derived accessors, not fields. The old `rcp_accum` is gone.
-- [ ] The scheduler advances **edge to edge**, never iterating the master tick.
-- [ ] **The residue invariant test**: affine offsets between `master_ticks` and every derived
+- [x] The scheduler advances **edge to edge**, never iterating the master tick.
+- [x] **The residue invariant test**: affine offsets between `master_ticks` and every derived
       position are sampled at frame boundaries and asserted never to move after the first.
       In the default `cargo test` path, not behind a feature.
-- [ ] 3 CPU steps and 2 RCP steps per 6 master ticks, for every seed.
-- [ ] `reset()` re-derives the same phase; `master_ticks` starts at `phase`, not zero.
+- [x] 3 CPU steps and 2 RCP steps per 6 master ticks, for every seed.
+- [x] `reset()` re-derives the same phase; `master_ticks` starts at `phase`, not zero.
 
 *The pipeline (ADR 0007):*
 
-- [ ] Four inter-stage latches (`ic_rf`, `rf_ex`, `ex_dc`, `dc_wb`), each carrying
+- [x] Four inter-stage latches (`ic_rf`, `rf_ex`, `ex_dc`, `dc_wb`), each carrying
       `{ pc, fault: Option<Fault>, in_delay_slot }`.
-- [ ] `tick` advances **one PClock**, running stages in **reverse order WB → DC → EX → RF → IC**.
+- [x] `tick` advances **one PClock**, running stages in **reverse order WB → DC → EX → RF → IC**.
       A comment states why: the reverse order *is* the latching, so no double-buffering is
       needed. A test asserts no value propagates two stages in one cycle.
-- [ ] Interlocks are expressed as `(stall_cycles, resume_stage)`; a stage that cannot complete
+- [x] Interlocks are expressed as `(stall_cycles, resume_stage)`; a stage that cannot complete
       back-pressures every upstream stage in the same cycle.
-- [ ] `in_delay_slot` travels with the instruction. **Pinned by a test where a multi-cycle stall
+- [x] `in_delay_slot` travels with the instruction. **Pinned by a test where a multi-cycle stall
       separates a branch from its delay slot** and `Cause.BD`/`EPC` are still correct — the
       global-flag version of this passes the naive test and fails this one.
-- [ ] 64-bit GPRs with `$zero` hardwired; `HI`/`LO` present.
-- [ ] `Bus::poll_irq_at_phase` is **removed**. Interrupts are sampled once per PClock in DC,
+- [x] 64-bit GPRs with `$zero` hardwired; `HI`/`LO` present.
+- [x] `Bus::poll_irq_at_phase` is **removed**. Interrupts are sampled once per PClock in DC,
       accepted only if the previous PCycle was a run cycle, via exactly **one** recognition
       predicate in the tree.
-- [ ] `docs/cpu.md` and `docs/scheduler.md` reflect the shipped code (already written ahead).
+- [x] `docs/cpu.md` and `docs/scheduler.md` reflect the shipped code (already written ahead).
 
 **Dependencies:** T-01-002, T-01-003
 **Reference:** ADR 0006, ADR 0007; `docs/scheduler.md`; `docs/cpu.md`;
@@ -64,16 +64,16 @@ both 32- and 64-bit forms, with the correct sign-extension rules for the 32-bit 
 
 **Acceptance criteria:**
 
-- [ ] `ADD`/`ADDU`/`SUB`/`SUBU`/`DADD`/`DADDU`/`DSUB`/`DSUBU` with overflow trapping where the
+- [x] `ADD`/`ADDU`/`SUB`/`SUBU`/`DADD`/`DADDU`/`DSUB`/`DSUBU` with overflow trapping where the
       instruction specifies it.
-- [ ] All logical and shift families including the `D*` 64-bit and `*32` variants.
-- [ ] `MULT`/`MULTU`/`DIV`/`DIVU` and the `D*` forms write `HI`/`LO` and **stall the entire
+- [x] All logical and shift families including the `D*` 64-bit and `*32` variants.
+- [x] `MULT`/`MULTU`/`DIV`/`DIVU` and the `D*` forms write `HI`/`LO` and **stall the entire
       pipeline** for the documented count — 5 / 37 / 8 / 69 PCycles (UM Table 3-12). These are
       not background operations.
-- [ ] The `MFHI`/`MFLO` two-instruction hazard is modelled as a *non-interlocked* hazard
+- [x] The `MFHI`/`MFLO` two-instruction hazard is modelled as a *non-interlocked* hazard
       producing hardware's wrong result, not as a stall.
-- [ ] 32-bit results are sign-extended into the 64-bit register as hardware does.
-- [ ] Unit tests per family in both widths.
+- [x] 32-bit results are sign-extended into the 64-bit register as hardware does.
+- [x] Unit tests per family in both widths.
 
 **Dependencies:** T-11-001
 **Reference:** `docs/cpu.md`; `n64brew_wiki/markdown/MIPS III instructions.md`
@@ -89,12 +89,14 @@ exception rules.
 
 **Acceptance criteria:**
 
-- [ ] All widths implemented, signed and unsigned, with correct sign extension.
-- [ ] The unaligned family merges partial words exactly, at every byte offset.
-- [ ] `LL`/`SC` set and test the link bit, and `SC` reports success correctly.
-- [ ] Unaligned access on an instruction that requires alignment raises the address exception
+- [x] All widths implemented, signed and unsigned, with correct sign extension.
+- [x] The unaligned family merges partial words exactly, at every byte offset.
+- [x] `LL`/`SC` set and test the link bit, and `SC` reports success correctly.
+- [x] Unaligned access on an instruction that requires alignment raises the address exception
       rather than silently succeeding.
-- [ ] n64-systemtest's RAM/ROM/SPMEM/PIF access categories pass at 8, 16, 32, and 64 bits.
+- [ ] **Blocked, not skipped** — n64-systemtest's RAM/ROM/SPMEM/PIF access categories cannot
+      report anything yet: the suite dies on `CTC1 $31` three statements after entry, so it
+      needs COP1 control and COP0/exception dispatch first. Re-scoped to T-11-009 (Sprint 2).
 
 **Dependencies:** T-11-002
 **Reference:** `docs/cpu.md` §memory; `n64brew_wiki/markdown/SysAD Interface.md`
@@ -109,11 +111,13 @@ plus `BREAK` and `SYSCALL`, each raising the correct exception.
 
 **Acceptance criteria:**
 
-- [ ] Every branch and jump form computes the right target, including the register-indirect and
+- [x] Every branch and jump form computes the right target, including the register-indirect and
       the 26-bit region forms.
-- [ ] Branch-likely nullifies the delay slot when not taken; ordinary branches do not.
-- [ ] `TRAP` conditions, `BREAK`, and `SYSCALL` raise their exceptions with the right cause.
-- [ ] n64-systemtest's `TRAP`/`BREAK`/`SYSCALL` categories pass.
+- [x] Branch-likely nullifies the delay slot when not taken; ordinary branches do not.
+- [x] `TRAP` conditions, `BREAK`, and `SYSCALL` raise their exceptions with the right cause.
+- [ ] **Blocked, not skipped** — same cause as T-11-003's n64-systemtest criterion; the suite
+      cannot start. `TRAP`/`BREAK`/`SYSCALL` are implemented and unit-tested; what is missing is
+      the *oracle*, not the behaviour. Re-scoped to T-11-009 (Sprint 2).
 
 **Dependencies:** T-11-003
 **Reference:** `docs/cpu.md` §control flow
@@ -135,7 +139,7 @@ multiplication bug, the 32-bit shift-right-arithmetic bug, and the sign-extensio
 - [x] Each test cites `n64brew_wiki/markdown/VR4300.md` so the intent is obvious to the next
       reader.
 - [x] `docs/cpu.md` records each erratum as intended behaviour.
-- [ ] **The FP multiplication bug is deferred to Sprint 3**, where COP1 lands. It is also the
+- [x] **The FP multiplication bug is deferred to Sprint 3**, where COP1 lands. It is also the
       only erratum that is *not* universal — NUS-01/02/03 only — so it needs the console
       revision as a machine parameter, and its exact corrupted output is undocumented and will
       have to be characterised. Recorded here rather than silently dropped.
@@ -176,21 +180,21 @@ a dangling reference that looks tracked and is not.
 
 **Acceptance criteria:**
 
-- [ ] KSEG0/KSEG1 segment stripping in the CPU, so a virtual address becomes physical before
+- [x] KSEG0/KSEG1 segment stripping in the CPU, so a virtual address becomes physical before
       it reaches the Bus. Nothing does this today, and no ROM can execute without it.
-- [ ] A direct-load path that does what IPL3 would: copy **`0x10_0000` bytes** from ROM
+- [x] A direct-load path that does what IPL3 would: copy **`0x10_0000` bytes** from ROM
       offset `0x1000` to RDRAM `0x1000`, clamped to the ROM's actual length, and set
       `PC = 0x8000_1000`. No CIC handshake, no PI DMA. The byte count is the documented boot
       behaviour (`ref-proj/n64-tests/README.md`: *"copy 0x100000 bytes from 0x10001000 to
       0x00001000"*), not `basic.z64`'s size — the two coincide here, and hard-coding either an
       end offset or "the whole ROM" breaks on the next target. Clamping matters because RDRAM
       is 8 MiB and a commercial ROM is up to 64 MiB.
-- [ ] `run_until_complete` polls `r30` and returns `Passed` / `Failed(index)` / `Timeout`
+- [x] `run_until_complete` polls `r30` and returns `Passed` / `Failed(index)` / `Timeout`
       instead of always timing out.
-- [ ] `basic.z64` reports a genuine result, and a failure names *which* of the five tests failed.
-- [ ] The test **skips, not fails**, when the ROM is absent — Dillon's suite has **no licence**
+- [x] `basic.z64` reports a genuine result, and a failure names *which* of the five tests failed.
+- [x] The test **skips, not fails**, when the ROM is absent — Dillon's suite has **no licence**
       and is external-tier, so it cannot be committed and CI must stay green without it.
-- [ ] `docs/STATUS.md`'s accuracy table gains its first real number.
+- [x] `docs/STATUS.md`'s accuracy table gains its first real number.
 
 **Dependencies:** T-11-004 (the branch/jump family, incl. branch-likely)
 **Reference:** `ref-proj/n64-tests/README.md` §"If your emulator is very young";
@@ -291,9 +295,11 @@ from the same seed and input must produce byte-identical traces.
 
 ## Sprint review checklist
 
-- [ ] All tickets checked off or explicitly deferred (with reason).
-- [ ] The residue invariant test passes and is in the default test path.
-- [ ] No `+= 1` on any cycle position in the core except `master_ticks`.
-- [ ] n64-systemtest reports a real number for the integer categories.
-- [ ] CHANGELOG.md updated.
-- [ ] `docs/cpu.md` updated in the same change as the code it describes.
+- [x] All tickets checked off or explicitly deferred (with reason).
+- [x] The residue invariant test passes and is in the default test path.
+- [x] No `+= 1` on any cycle position in the core except `master_ticks`.
+- [ ] **Not met, and re-scoped rather than quietly dropped** — n64-systemtest reports no
+      number for the integer categories because it cannot reach them (`CTC1 $31` at entry).
+      Sprint 1's real pass/fail came from `basic.z64` instead, 5/5. → T-11-009 (Sprint 2).
+- [x] CHANGELOG.md updated.
+- [x] `docs/cpu.md` updated in the same change as the code it describes.
