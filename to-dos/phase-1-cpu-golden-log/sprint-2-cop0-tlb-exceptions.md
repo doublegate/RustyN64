@@ -504,6 +504,28 @@ short of asking it.
    Do **not** guess a mechanism here. The three wrong hypotheses earlier in this ticket were all
    mechanism guesses, and the cheap state questions were what actually resolved it.
 
+   **Update — that blocker is fixed, and it was the stack.** The suite's SP-DMA tests build their
+   source data in a **stack array**, so `MemoryMap::uncached_mut(source_data.as_mut_ptr())` is
+   asserting on `$sp`. We seeded `$sp` into SP DMEM (`0xA400_1FF0`, KSEG1) and the assert demands
+   KSEG0. Not heap corruption at all — the bisect was never needed. `$sp` now sits in KSEG0 above
+   `MemoryMap::HEAP_END`, and SP DMA is implemented (`SP_RD_LEN`/`SP_WR_LEN`, with the packed
+   length word's row/count/skip fields).
+
+   Note the shape of the earlier note: it correctly ruled out the DMA test itself and correctly
+   said "do not guess a mechanism", but its own suggested framing — *heap corruption, so bisect* —
+   was itself a mechanism guess, and wrong. The answer came from reading what the failing line
+   actually operates on.
+
+   **Current blocker:** `TLB: Execute mapped branch which has a non-mapped delay slot`, reporting
+   `Cause during TLB exception` where the suite expects raw `0x8` (`ExcCode 2`, `TLBL`, nothing
+   else set).
+
+   **One hypothesis already refuted, so nobody re-spends it:** a spurious `IP2` from the PI
+   interrupt, which the Bus now mirrors on every PI write and which software must clear
+   explicitly. **Ruled out by inspection** — `Bus::poll_irq` ANDs each MI line against
+   `mi_mask`, and the reset mask is all-false, so `IP2` cannot assert until software enables it.
+   Refuted by reading the code, at no runtime cost.
+
 Disassembling `0x8018_32E8` separated these in one step. Note what made it possible: the
 **instruction word**, not the address. `0x42800060` is meaningless as an address and unambiguous
 as an encoding.
