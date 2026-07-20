@@ -576,6 +576,16 @@ impl Pipeline {
             {
                 self.cop1.ctc1(dest, value);
             }
+            if let Some(Cop0Access::Cop1(Cop1Access::Arith {
+                fmt,
+                funct,
+                ft,
+                fs,
+                fd,
+            })) = self.dc_wb.cop0
+            {
+                self.fp_arith(fmt, funct, ft, fs, fd);
+            }
             if let Some(Cop0Access::Tlb(op)) = self.dc_wb.cop0 {
                 match op {
                     TlbOp::Read => {
@@ -1408,6 +1418,73 @@ impl Pipeline {
             cop0: None,
         };
         *next_pc = pc.wrapping_add(4);
+    }
+
+    /// Perform a COP1 arithmetic operation against the FPR file.
+    ///
+    /// Lives here rather than in `exec::execute` because it reads two FPRs and
+    /// writes a third, and `execute` has no access to the register file — the
+    /// same reason the COP1 moves are split this way.
+    ///
+    /// # Register access goes through the `FR` view
+    ///
+    /// Operands are read with [`Fpr::read_s`]/[`Fpr::read_d`], **not**
+    /// `read_raw`. Using the raw register was ledger U-7's bug: with `FR = 0` a
+    /// double lives across an FGR *pair*, and a raw read returns half of it.
+    ///
+    /// # `FCSR`
+    ///
+    /// `Cause` (bits 16:12) reports what *this* operation raised and is replaced
+    /// each time; `Flags` (6:2) is the sticky accumulation and is OR-ed in.
+    /// `Flags::to_fcsr_bits` produces both, so clearing only `Cause` before
+    /// OR-ing preserves the sticky half.
+    ///
+    /// # Not yet handled
+    ///
+    /// An **enabled** trap must raise `Exception::FloatingPoint` rather than
+    /// merely setting the bits. That is deliberately absent here: this wires the
+    /// arithmetic, which previously did not execute at all, and the trap path is
+    /// the next step. Until it lands, a program that enables FP traps sees the
+    /// flags but not the exception — recorded so this is not mistaken for
+    /// complete.
+    fn fp_arith(&mut self, fmt: u8, funct: u8, ft: u8, fs: u8, fd: u8) {
+        use crate::fpu;
+        /// `FCSR` Cause field, bits 16:12 — replaced per operation.
+        const CAUSE_MASK: u32 = 0x1F << 12;
+
+        let fr = fr_of(&self.cop0);
+        // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
+        // into `FpArith`, so this is a two-way split, not a table.
+        let flags = if fmt == 0o20 {
+            {
+                let a = f32::from_bits(self.fpr.read_s(fs));
+                let b = f32::from_bits(self.fpr.read_s(ft));
+                let out = match funct {
+                    0 => fpu::add_s(a, b),
+                    1 => fpu::sub_s(a, b),
+                    2 => fpu::mul_s(a, b),
+                    _ => fpu::div_s(a, b),
+                };
+                self.fpr.write_s(fd, out.value.to_bits());
+                out.flags
+            }
+        } else {
+            {
+                let a = f64::from_bits(self.fpr.read_d(fs, fr));
+                let b = f64::from_bits(self.fpr.read_d(ft, fr));
+                let out = match funct {
+                    0 => fpu::add_d(a, b),
+                    1 => fpu::sub_d(a, b),
+                    2 => fpu::mul_d(a, b),
+                    _ => fpu::div_d(a, b),
+                };
+                self.fpr.write_d(fd, fr, out.value.to_bits());
+                out.flags
+            }
+        };
+        let fcsr = self.cop1.fcsr();
+        self.cop1
+            .ctc1(31, (fcsr & !CAUSE_MASK) | flags.to_fcsr_bits());
     }
 }
 
@@ -3547,14 +3624,16 @@ mod tests {
     #[test]
     fn an_unimplemented_cop1_encoding_does_not_raise_when_cu1_is_set() {
         use crate::cop0::reg;
-        // ADD.S -- a real COP1 arithmetic encoding, not implemented here.
-        const ADD_S: u32 = (0o21 << 26) | (0o20 << 21);
+        // SQRT.S -- a real COP1 arithmetic encoding still not wired. (This was
+        // ADD.S until the S/D arithmetic landed; the point of the test is the
+        // *unimplemented* path, so it moves to an encoding that still is.)
+        const SQRT_S: u32 = (0o21 << 26) | (0o20 << 21) | 4;
         assert_eq!(
-            decode(ADD_S).op,
+            decode(SQRT_S).op,
             crate::decode::Op::Cop1Unimplemented,
             "valid encoding, not Reserved"
         );
-        let mut bus = Ram::new(alloc::vec![ADD_S]);
+        let mut bus = Ram::new(alloc::vec![SQRT_S]);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set

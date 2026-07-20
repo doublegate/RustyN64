@@ -641,6 +641,28 @@ short of asking it.
    re-run between formats, since COP1 is 2,413 failures and a regression here would be invisible
    against that background.
 
+   **First slice landed: S/D `ADD`/`SUB`/`MUL`/`DIV`. It moved the failure count by zero.**
+   2,897 before, 2,897 after. The wiring is correct and unit-tested — decode reaches `Op::FpArith`,
+   the pipeline reads through the `FR` view, dispatches into `fpu`, and merges `Cause`/`Flags` into
+   `FCSR` — but eight operations out of roughly sixty did not move the needle.
+
+   **Do not read that as "COP1 is hopeless"; read it as "the breakdown is still too coarse."**
+   Grouping by the `COP1` prefix told me where the mass is, not which operations or which
+   *assertions* fail. Two candidate explanations, both unverified:
+
+   - the failures are concentrated in the operations still unwired (`SQRT`, `ABS`, `NEG`, `MOV`,
+     the conversions, the `C.cond.fmt` compares and the `BC1*` branches), so a wired `ADD.S` is a
+     small share; or
+   - the arithmetic executes correctly but each test *also* asserts exception behaviour, and the
+     **enabled-trap path is deliberately absent** (see `Pipeline::fp_arith`), so every one still
+     fails on the trap even when the value is right.
+
+   **Next probe, before writing more code:** group the COP1 failures by *test name* rather than by
+   prefix, and check whether an `ADD.S` case now fails on its value or on its exception. That
+   distinguishes the two explanations in one run and decides whether the next work is more
+   operations or the trap path. Writing the remaining fifty operations first would be the same
+   mistake as picking targets by reading failure text — one level finer, but the same shape.
+
    **Deferred area: PI direct-I/O writes are asynchronous, with a decaying latch.**
 
    The `cart-writing:` group. The same N64brew *Memory map* section documents it:

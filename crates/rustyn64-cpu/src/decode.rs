@@ -351,6 +351,14 @@ pub enum Op {
     /// the suite expects `ExcCode 11` and got `10` five times running, which
     /// tripped its recovery limit and truncated the whole run.
     Cop2,
+    /// A COP1 **arithmetic** operation, format and operation carried in the
+    /// already-decoded fields: `rs` is the format, `funct` the operation, with
+    /// `rt`=ft, `rd`=fs and `sa`=fd.
+    ///
+    /// One variant rather than ~60, because the pipeline dispatches into
+    /// `crate::fpu` on `(fmt, funct)` anyway and a variant per opcode would just
+    /// be a second copy of that table.
+    FpArith,
     /// `TLBR` — read the TLB entry `Index` names into the COP0 registers.
     Tlbr,
     /// `TLBWI` — write the COP0 registers into the entry **`Index`** names.
@@ -839,12 +847,6 @@ pub const fn decode(word: u32) -> Decoded {
                 _ => base,
             }
         }
-        // COP1. The CONTROL moves (T-12-006) and the DATA moves (T-13-001) are
-        // implemented; FP **arithmetic** is not, and the FP load/store forms
-        // have their own primary opcodes below. Everything else in this opcode
-        // decodes to `Cop1Unimplemented` rather than `Reserved`, because the
-        // encodings are valid and must raise Coprocessor Unusable, not Reserved
-        // Instruction.
         // COP2. Every encoding is valid on the VR4300, so the usability check
         // in EX decides between executing and Coprocessor Unusable. No COP2
         // operation is implemented, which is why one arm covers the opcode.
@@ -852,6 +854,12 @@ pub const fn decode(word: u32) -> Decoded {
             op: Op::Cop2,
             ..base
         },
+        // COP1. The CONTROL moves (T-12-006), the DATA moves (T-13-001) and the
+        // S/D arithmetic below are implemented; the remaining formats and the
+        // conversions are not, and the FP load/store forms have their own
+        // primary opcodes. Everything unhandled decodes to `Cop1Unimplemented`
+        // rather than `Reserved`, because the encodings are valid and must raise
+        // Coprocessor Unusable, not Reserved Instruction.
         OP_COP1 => {
             let rs = ((word >> 21) & 31) as u8;
             match rs {
@@ -871,6 +879,13 @@ pub const fn decode(word: u32) -> Decoded {
                 0o02 => Decoded {
                     op: Op::Cfc1,
                     dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                // Format 16 = single, 17 = double. `funct` 0..=3 are
+                // ADD/SUB/MUL/DIV; everything else in these formats stays
+                // `Cop1Unimplemented` until it is wired.
+                0o20 | 0o21 if (word & 0o77) <= 3 => Decoded {
+                    op: Op::FpArith,
                     ..base
                 },
                 0o04 => Decoded {
@@ -1197,5 +1212,32 @@ mod tests {
                 "COP2 rs={rs:#o} is a valid encoding"
             );
         }
+    }
+
+    /// COP1 S/D arithmetic decodes to [`Op::FpArith`], not `Cop1Unimplemented`.
+    ///
+    /// The FPU has been implemented in `fpu.rs` since Sprint 3, but nothing
+    /// decoded to it, so the whole unit was unreachable from an instruction
+    /// stream — which is why COP1 accounted for 85% of n64-systemtest's
+    /// failures.
+    #[test]
+    fn cop1_single_and_double_arithmetic_decode_to_fp_arith() {
+        // COP1, fmt, ft, fs, fd, funct
+        let enc = |fmt: u32, funct: u32| {
+            (0o21 << 26) | (fmt << 21) | (2 << 16) | (3 << 11) | (4 << 6) | funct
+        };
+        for fmt in [0o20u32, 0o21] {
+            for funct in 0..=3u32 {
+                let d = decode(enc(fmt, funct));
+                assert_eq!(d.op, Op::FpArith, "fmt {fmt:#o} funct {funct}");
+                assert_eq!(d.rs, fmt as u8, "rs carries the format");
+                assert_eq!(d.rt, 2, "rt = ft");
+                assert_eq!(d.rd, 3, "rd = fs");
+                assert_eq!(d.sa, 4, "sa = fd");
+            }
+        }
+        // funct 4 (SQRT) is not wired yet and must stay unimplemented, NOT
+        // become a wrong ADD.
+        assert_eq!(decode(enc(0o20, 4)).op, Op::Cop1Unimplemented);
     }
 }
