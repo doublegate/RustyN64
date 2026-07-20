@@ -283,6 +283,133 @@ pub const fn is_snan_f64(v: f64) -> bool {
     b & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 && b & 0x0008_0000_0000_0000 != 0
 }
 
+/// Is this a **subnormal** — a non-zero value with a zero exponent field?
+///
+/// Load-bearing on the VR4300 in a way it is not on most FPUs: this processor
+/// **cannot compute with subnormals at all**. A subnormal operand, or a
+/// subnormal result with `FCSR.FS` clear, raises the unmaskable
+/// *unimplemented operation* cause rather than producing a number. See
+/// [`arith_unimplemented_s`].
+#[must_use]
+pub const fn is_subnormal_f32(v: f32) -> bool {
+    let b = v.to_bits();
+    b & 0x7F80_0000 == 0 && b & 0x007F_FFFF != 0
+}
+
+/// Is this `f64` a subnormal? See [`is_subnormal_f32`].
+#[must_use]
+pub const fn is_subnormal_f64(v: f64) -> bool {
+    let b = v.to_bits();
+    b & 0x7FF0_0000_0000_0000 == 0 && b & 0x000F_FFFF_FFFF_FFFF != 0
+}
+
+/// Is this a NaN the VR4300's arithmetic cannot handle?
+///
+/// A NaN with the significand MSB **clear** — quiet by this processor's own
+/// inverted convention (ledger C-12). It cannot propagate one in hardware, so
+/// arithmetic on it raises *unimplemented operation*.
+///
+/// The complementary case is the opposite of what IEEE would lead you to
+/// expect: an MSB-**set** NaN is *signalling* here and raises the ordinary
+/// Invalid, which [`is_snan_f32`] covers. Both NaN classes trap — they trap
+/// **differently**, and swapping them is invisible until `FCSR` is read back.
+#[must_use]
+pub const fn is_unimplemented_nan_f32(v: f32) -> bool {
+    let b = v.to_bits();
+    b & 0x7F80_0000 == 0x7F80_0000 && b & 0x007F_FFFF != 0 && b & 0x0040_0000 == 0
+}
+
+/// See [`is_unimplemented_nan_f32`].
+#[must_use]
+pub const fn is_unimplemented_nan_f64(v: f64) -> bool {
+    let b = v.to_bits();
+    b & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000
+        && b & 0x000F_FFFF_FFFF_FFFF != 0
+        && b & 0x0008_0000_0000_0000 == 0
+}
+
+/// Do these arithmetic operands force *unimplemented operation* before the
+/// operation is even attempted?
+///
+/// **Operand subnormality wins over everything**, including a NaN that would
+/// otherwise raise Invalid: n64-systemtest pairs a quiet NaN with a subnormal
+/// and expects unimplemented, not invalid.
+///
+/// Applies to `ADD`/`SUB`/`MUL`/`DIV` only. **Compares are exempt** — the
+/// suite's compare tests expect a subnormal operand to compare as an ordinary
+/// number with no flags at all. Worth stating, because "this FPU cannot do
+/// subnormals" sounds like it should be universal and is not.
+#[must_use]
+pub const fn arith_unimplemented_s(a: f32, b: f32) -> bool {
+    is_subnormal_f32(a)
+        || is_subnormal_f32(b)
+        || is_unimplemented_nan_f32(a)
+        || is_unimplemented_nan_f32(b)
+}
+
+/// See [`arith_unimplemented_s`].
+#[must_use]
+pub const fn arith_unimplemented_d(a: f64, b: f64) -> bool {
+    is_subnormal_f64(a)
+        || is_subnormal_f64(b)
+        || is_unimplemented_nan_f64(a)
+        || is_unimplemented_nan_f64(b)
+}
+
+/// Flush a subnormal result to zero or to the smallest normal, per `FCSR.FS`.
+///
+/// **Which one depends on the rounding mode**, and that is the part most easily
+/// got wrong: "flush to zero" is the whole story only for round-to-nearest and
+/// toward-zero. A directed mode that rounds *away* from zero must deliver the
+/// smallest **normal** of that sign instead, because zero is on the wrong side
+/// of the true result.
+///
+/// n64-systemtest pins all four: a tiny negative result gives `-0` under
+/// nearest, toward-zero and toward-`+inf`, and `-f32::MIN_POSITIVE` under
+/// toward-`-inf`.
+#[must_use]
+pub fn flush_subnormal_f32(v: f32, mode: Rounding) -> f32 {
+    let negative = v.is_sign_negative();
+    if flushes_away_from_zero(negative, mode) {
+        if negative {
+            -f32::MIN_POSITIVE
+        } else {
+            f32::MIN_POSITIVE
+        }
+    } else if negative {
+        -0.0
+    } else {
+        0.0
+    }
+}
+
+/// See [`flush_subnormal_f32`].
+#[must_use]
+pub fn flush_subnormal_f64(v: f64, mode: Rounding) -> f64 {
+    let negative = v.is_sign_negative();
+    if flushes_away_from_zero(negative, mode) {
+        if negative {
+            -f64::MIN_POSITIVE
+        } else {
+            f64::MIN_POSITIVE
+        }
+    } else if negative {
+        -0.0
+    } else {
+        0.0
+    }
+}
+
+/// Does the rounding mode push this sign away from zero?
+const fn flushes_away_from_zero(negative: bool, mode: Rounding) -> bool {
+    match mode {
+        Rounding::Nearest | Rounding::TowardZero => false,
+        Rounding::TowardPlusInf => !negative,
+        Rounding::TowardMinusInf => negative,
+    }
+}
+
+/// `ADD.S`, `SUB.S`, `MUL.S`, `DIV.S` and their `.D` counterparts.
 ///
 /// Each is a thin adapter over [`crate::softfloat`], which computes the
 /// correctly-rounded result **and** the exact IEEE exception flags in one pass.

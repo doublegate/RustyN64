@@ -691,11 +691,64 @@ reader. The tests name their patterns `vr_snan`/`vr_qnan` for the same reason,
 and one asserts `is_snan_f32(f32::NAN)` explicitly — that is the case most
 likely to be "fixed" back to IEEE by someone who has not read this entry.
 
-**Still open, and adjacent:** an **IEEE-signalling / VR4300-quiet** NaN operand
-(MSB clear) to an arithmetic operation is expected to raise **unimplemented
-operation**, not nothing — the VR4300 apparently cannot propagate one in hardware. That is part
-of the unimplemented-operation work below rather than of this entry, and it is
-why the arithmetic tests still fail on NaN inputs.
+**Adjacent, and since RESOLVED in C-13:** an **IEEE-signalling / VR4300-quiet**
+NaN operand (MSB clear) to an arithmetic operation raises **unimplemented
+operation** rather than nothing — the VR4300 cannot propagate one in hardware.
+When this entry was written that was still open and the arithmetic tests failed
+on NaN inputs; **C-13** implements it, and they no longer do.
+
+Marked rather than rewritten, per this file's own rule: what each entry believed
+when it was written is the record worth keeping.
+
+### C-13 — the VR4300 cannot compute with subnormals, and says so
+
+**Claim.** This FPU has no subnormal datapath. Rather than producing a
+subnormal, or silently flushing one, it raises the **unmaskable
+unimplemented-operation cause** (`FCSR.Cause.E`, bit 17) and traps. There are
+four distinct occasions, and they are not interchangeable:
+
+| Occasion | Applies to |
+| --- | --- |
+| A **subnormal operand** | `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`NEG`, the conversions |
+| A **subnormal result** with `FCSR.FS` clear | the same, plus narrowing `CVT.S.D` |
+| A **subnormal result** with `FS` set *and* underflow or inexact **enabled** | as above |
+| An **MSB-clear NaN** operand (quiet by this processor's convention, C-12) | arithmetic, `ABS`/`NEG`, conversions |
+
+Only with `FS` set and both of those enables clear does it flush — and **where
+it flushes to depends on the rounding mode**: `±0` under nearest and
+toward-zero, but the smallest **normal** of that sign under a mode that rounds
+away from zero, because zero is on the wrong side of the true result.
+
+**Effect:** n64-systemtest 1,098 → **584**. `ADD.S`, `SUB.S`, `ADD.D`, `DIV.D`,
+`ABS.*` and `NEG.*` reached zero failures; the `CVT.W`/`CVT.L` families and
+`CVT.D.fmt` fell off the list entirely.
+
+**Three things this surfaced that are easy to get wrong:**
+
+1. **`MOV` is not `ABS`/`NEG`.** All three look like sign-or-bit manipulation
+   and only `MOV` is: `ABS`/`NEG` classify their operand, raise Invalid on a
+   signalling NaN, and **replace** `FCSR.Cause`, while `MOV` transports the
+   bits and leaves `FCSR` completely alone. The oracle settles it by
+   *construction* rather than by description — `MOV.S` is driven through
+   `test_floating_point_f32_which_preserves_cause_bits` and `ABS.S`/`NEG.S`
+   through the ordinary harness that asserts `Cause` was cleared. Treating all
+   three alike was worth 52 assertions. Note the earlier finding that `MOV`
+   must *not* touch `Cause` (C-10) remains correct; it simply does not
+   generalise to its neighbours.
+2. **Compares are exempt.** "This FPU cannot do subnormals" sounds like it
+   should be universal and is not: `C.cond.fmt` compares a subnormal as an
+   ordinary number and raises nothing. Applying the rule there would have
+   regressed all sixteen compare tests, which had just reached zero.
+3. **An out-of-range float-to-integer conversion is unimplemented, not
+   Invalid.** IEEE says Invalid and `fpu::to_i32` reports that; the VR4300
+   declines instead. The translation happens at the call site, so the IEEE
+   answer stays available to anything that wants it.
+
+**Still open in this area:** `CVT.S.D` does not honour `FCSR.RM` and computes
+its flags by hand rather than through `softfloat`, so the directed-rounding and
+overflow cases still fail (21 assertions). That is the conversions' version of
+C-11 and wants the same fix: a narrowing `softfloat::convert` that rounds once.
+`SQRT` (funct 4) remains neither decoded nor implemented (58 assertions).
 
 ## 5. Deliberate deviations from hardware
 

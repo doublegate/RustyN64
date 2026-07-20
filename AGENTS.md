@@ -77,11 +77,11 @@ the VR4300's refusal to produce subnormals as a separate layer.
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**Phase 1's exit criterion is not met**: n64-systemtest reports **1,098 failing assertions**
+**Phase 1's exit criterion is not met**: n64-systemtest reports **584 failing assertions**
 (it does now run its whole corpus and report). Do **not** tag v0.2.0 until it is `Failed: 0` —
-the criterion is an oracle number, and that is the point of it. The dominant remaining block is
-the unmaskable **unimplemented-operation** cause (bit 17), which the VR4300 raises for subnormal
-operands/results and for a quiet-NaN operand to an arithmetic operation.
+the criterion is an oracle number, and that is the point of it. COP1 is nearly clear; what remains
+is `SQRT` (undecoded and unimplemented), `CVT.S.D`'s rounding modes, and then the **LLE RSP**,
+cart DMA and SP registers — i.e. mostly Phase 2 work.
 
 ## Where things live
 
@@ -296,6 +296,12 @@ in this repo, which is worth fixing even when the suggested wording is not.
   every reading and is not — it is the legacy MIPS convention, corroborated by the processor's own
   default NaN result (`0x7FBF_FFFF`, MSB clear) being quiet only under it. Never "correct" it back
   to IEEE; see ledger **C-12** and the test that asserts `is_snan_f32(f32::NAN)` on purpose.
+- **The VR4300 has no subnormal datapath.** A subnormal operand *or result* raises the unmaskable
+  unimplemented-operation cause (bit 17), not a number — `FCSR.FS` flushing is the only exception,
+  and even that only when underflow and inexact are both disabled. Ledger **C-13**. Two traps
+  here: `MOV` is a pure bit move while `ABS`/`NEG` classify their operand and replace `Cause`; and
+  **compares are exempt** — `C.cond.fmt` treats a subnormal as an ordinary number, so applying the
+  rule there regresses all sixteen compare tests.
 - Say "master clock" only with its rate. The sources use **MasterClock = 62.5 MHz**; this
   project's master tick is **187.5 MHz**; ADR 0001 used it for 93.75 MHz. See `docs/glossary.md`.
 - `unsafe` is allowed only in the frontend and FFI. Enforced: every chip crate and `-core` carry
