@@ -107,6 +107,17 @@ jobs:
           targets: thumbv7em-none-eabihf
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features
 
+  no-commercial-roms:
+    name: no commercial ROMs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Layer 3 of the ROM guard (see .gitignore and the pre-commit hook).
+      # Server-side and unskippable: a contributor can bypass the local hook
+      # with --no-verify, but not this. Scans the whole tracked tree, so it
+      # also catches a ROM that slipped in via an earlier commit.
+      - run: bash scripts/check_no_roms.sh
+
   wasm-bindgen-pin:
     name: trunk pin matches Cargo.lock
     runs-on: ubuntu-latest

@@ -11,3 +11,22 @@ repos:
         entry: cargo fmt --all --check
         language: system
         pass_filenames: false
+
+      # Layer 2 of 3 guarding against committing a commercial ROM (see
+      # .gitignore and the no-commercial-roms CI job). This fires on the staged
+      # file list, so it still catches a ROM added with `git add -f`, which
+      # bypasses .gitignore entirely.
+      - id: no-commercial-roms
+        name: block commercial ROM commits
+        entry: scripts/check_no_roms.sh
+        language: system
+        pass_filenames: true
+
+      # A commercial N64 ROM is 4-64 MB. Nothing legitimately committed to this
+      # repo is that big, so a size ceiling catches renamed or unknown-extension
+      # ROMs that the extension check would miss.
+      - id: no-large-files
+        name: block large files
+        entry: scripts/check_no_roms.sh --size-only
+        language: system
+        pass_filenames: true
