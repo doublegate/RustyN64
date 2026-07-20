@@ -1502,8 +1502,17 @@ impl Pipeline {
     /// `expected_unimplemented` cases still fail.
     fn fp_arith(&mut self, fmt: u8, funct: u8, ft: u8, fs: u8, fd: u8) -> bool {
         use crate::fpu;
-        /// `FCSR` Cause field, bits 16:12 — replaced per operation.
-        const CAUSE_MASK: u32 = 0x1F << 12;
+        /// `FCSR` Cause field, bits **17:12** — replaced wholesale per
+        /// operation.
+        ///
+        /// The range includes bit 17, `Unimplemented Operation`, which is part
+        /// of `Cause` even though it is not an IEEE exception and has no
+        /// corresponding `Enable` or sticky `Flags` bit. Masking only 16:12 —
+        /// which this did — leaves a *stale* bit 17 set forever, because no
+        /// later operation can clear a bit the mask does not cover. Software
+        /// reading `FCSR` after a successful conversion would then still see
+        /// the previous unimplemented operation.
+        const CAUSE_MASK: u32 = 0x3F << 12;
         /// `FCSR.C`, the compare condition — bit 23, above the Cause field and
         /// written only by `C.cond.fmt`.
         const FCSR_C: u32 = 1 << 23;
@@ -1589,10 +1598,8 @@ impl Pipeline {
         if unimplemented || (raised >> 12) & self.cop1.enables() != 0 {
             // Cause only. The sticky `Flags` field is deliberately left
             // untouched — see the doc comment.
-            self.cop1.ctc1(
-                31,
-                (fcsr & !CAUSE_MASK) | (raised & (CAUSE_MASK | fpu::CAUSE_UNIMPLEMENTED)),
-            );
+            self.cop1
+                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
             self.abort_from(Stage::Wb, Exception::FloatingPoint);
             return true;
         }
@@ -4208,6 +4215,46 @@ mod tests {
             p.cop1.fcsr() & CAUSE_INEXACT,
             0,
             "and must not have cleared the ADD.S's Cause"
+        );
+    }
+
+    /// **A later COP1 operation clears a stale `Cause.E` (bit 17).**
+    ///
+    /// `Cause` is bits **17:12** and is replaced wholesale by each operation.
+    /// The mask here originally covered only 16:12, so the unimplemented-
+    /// operation bit — which has no `Enable` and no sticky `Flags` twin, and so
+    /// is only ever cleared by that mask — stayed set forever once raised.
+    /// Software reading `FCSR` after a perfectly good conversion would still
+    /// see the previous failure.
+    ///
+    /// Found by a review bot, not by this suite, which had no case that raised
+    /// bit 17 and then ran another COP1 instruction.
+    #[test]
+    fn a_later_operation_clears_a_stale_unimplemented_cause() {
+        use crate::cop0::reg;
+        /// `ADD.S $f4, $f0, $f2` — an ordinary, entirely successful operation.
+        const ADD_S: u32 = 0x4602_0100;
+        /// `FCSR.Cause.E`, bit 17.
+        const CAUSE_E: u32 = 1 << 17;
+
+        let mut bus = Ram::new(alloc::vec![ADD_S]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        // Pre-set the bit, as a previous unimplemented operation would have.
+        p.cop1.ctc1(31, CAUSE_E);
+        p.fpr.write_s(0, 1.0f32.to_bits());
+        p.fpr.write_s(2, 2.0f32.to_bits());
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.fpr.read_s(4), 3.0f32.to_bits(), "the ADD.S ran");
+        assert_eq!(
+            p.cop1.fcsr() & CAUSE_E,
+            0,
+            "a successful operation must clear the whole Cause field"
         );
     }
 

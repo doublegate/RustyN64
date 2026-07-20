@@ -1,30 +1,47 @@
 # CodeRabbit configuration — https://docs.coderabbit.ai/guides/configure-coderabbit
+# Validated against https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
 #
-# Added as a second review bot alongside GitHub Copilot. Installing the app
-# itself is a repository-owner action on github.com; this file only tunes the
-# review once it is installed.
+# A second review bot alongside GitHub Copilot. Installing the app is a
+# repository-owner action on github.com; this file only tunes the review.
 #
-# The instructions below are deliberately about THIS project's decided rules
-# rather than generic Rust style. Generic advice is already covered by
-# `cargo clippy -D warnings` (pedantic + nursery) in CI, so a bot repeating it
-# adds noise; what a reviewer here cannot get from a linter is whether a change
-# contradicts an ADR or invents a fact.
+# The guiding principle: `cargo clippy` (pedantic + nursery, `-D warnings`),
+# rustdoc `-D warnings`, `cargo fmt` and markdownlint already gate everything
+# mechanical, and they gate it harder than any bot will. So the tool
+# integrations that would duplicate them are turned OFF, and the review budget
+# is pointed at the one thing a linter cannot check: whether a change
+# contradicts a decision recorded in an ADR or the accuracy ledger.
 
 language: en-GB
 early_access: false
+
+tone_instructions: >-
+  Be direct and technical. Cite the specific rule, ADR or ledger entry a finding
+  violates. Do not restate what the code does. Say plainly when something is
+  correct.
 
 reviews:
   profile: chill
   request_changes_workflow: false
   high_level_summary: true
+  high_level_summary_in_walkthrough: true
   poem: false
   review_status: true
   collapse_walkthrough: true
 
+  auto_review:
+    enabled: true
+    # Review work in progress too: this repo's PRs are long-lived and the
+    # expensive mistakes are the ones caught before the branch is finished.
+    drafts: true
+    auto_incremental_review: true
+    base_branches:
+      - main
+
   path_filters:
     # Immutable research and vendored reference material. `ref-proj/` is
     # gitignored, but list it so a stray commit is never reviewed as if it were
-    # ours -- several of those clones are study-only for licence reasons.
+    # ours — several of those clones are study-only for licence reasons and
+    # must never be copied from.
     - "!ref-docs/**"
     - "!ref-proj/**"
     - "!n64brew_wiki/**"
@@ -40,40 +57,129 @@ reviews:
         - Any new `cycles`/`ticks` counter that is INCREMENTED. Only
           `master_ticks` may be incremented; every other cycle position is a
           derived accessor (ADR 0006).
-        - Any invented constant or side effect with no cited source. Undocumented
-          hardware facts must be measured and recorded in
-          `docs/accuracy-ledger.md`, never fitted until a test passes.
-        - A comment that asserts what the code does but disagrees with it. This
-          project has been bitten by that four times; treat comment and code as
-          independent claims.
-        - An instruction or handler that decodes to a silent no-op. Assert the
-          effect, not the absence of an exception.
+        - Any invented constant or incidental side effect with no cited source.
+          Undocumented hardware facts must be measured and recorded in
+          `docs/accuracy-ledger.md`, never fitted until a test passes. An
+          invented *side effect* (clearing a field, zeroing a half-register) is
+          worse than an invented number, because it does not land in the ledger
+          where it can be argued with.
+        - A comment that asserts what the code does but disagrees with it.
+          Treat comment and code as independent claims; this project has been
+          bitten by that four times.
+        - An instruction or handler that decodes to a silent no-op. Tests must
+          assert the EFFECT, not merely that no exception was raised.
+        - A bit-field mask that does not cover the whole architectural field.
+          A stale bit in an uncovered position can never be cleared.
         - `unsafe` anywhere outside `rustyn64-frontend`. Every chip crate carries
-          `#![forbid(unsafe_code)]` and the tree currently has zero `unsafe`.
+          `#![forbid(unsafe_code)]` and the tree has zero `unsafe` today.
 
-        Do NOT flag as bugs (these are deliberate and documented):
-        - The pipeline cascade running in REVERSE stage order (WB->DC->EX->RF->IC)
-          — ADR 0007.
-        - Reproduced VR4300 errata, e.g. `sra`/`srav`. They are behaviour software
-          depends on, not defects to fix.
-        - NaN classification treating significand-MSB-SET as *signalling*. That is
-          inverted from IEEE-754:2008 and is correct for this processor — the
-          legacy MIPS convention, accuracy ledger C-12.
-        - Soft-float arithmetic instead of native `f32`/`f64` operators. The native
-          ones discard the exact pre-rounding result, so IEEE flags and `FCSR.RM`
-          cannot be implemented on them (ledger C-11).
+        Do NOT flag as bugs — these are deliberate and documented:
+        - The pipeline cascade running in REVERSE stage order
+          (WB -> DC -> EX -> RF -> IC), ADR 0007.
+        - Reproduced VR4300 errata such as `sra`/`srav`. They are behaviour
+          software depends on, not defects to correct.
+        - NaN classification treating significand-MSB-SET as *signalling*. That
+          is inverted from IEEE-754:2008 and is correct for this processor —
+          the legacy MIPS convention, accuracy ledger C-12.
+        - Soft-float arithmetic instead of native `f32`/`f64` operators. The
+          native ones discard the exact pre-rounding result, so IEEE flags and
+          `FCSR.RM` cannot be implemented on them (ledger C-11).
+        - Octal literals (`0o21`) for instruction fields. The MIPS manuals use
+          octal for opcode tables and matching them is deliberate.
+
+    - path: "crates/**/tests/**"
+      instructions: |
+        A test that passes when its fix is reverted is worthless. Flag tests
+        whose success and failure paths can converge — for example comparing a
+        total across two runs that differ for an unrelated reason, or asserting
+        a destination equals a value it already held.
 
     - path: "docs/**/*.md"
       instructions: |
-        `docs/STATUS.md` is the single source of truth for counts and state; flag
-        any number here that contradicts it. Docs are treated as the spec, so a
+        `docs/STATUS.md` is the single source of truth for counts and state;
+        flag any number elsewhere that contradicts it. Docs are the spec, so a
         behaviour change with an untouched spec is a finding. Claims of the form
         "X is undocumented" decay — flag them unless a page reference is cited.
+        The accuracy ledger is append-mostly: flag a superseded claim that was
+        edited in place rather than marked resolved.
 
     - path: "docs/adr/**"
       instructions: |
         ADRs are immutable once accepted. A superseded ADR must be replaced by a
         NEW numbered ADR that cross-links it, never rewritten in place.
 
+    - path: ".github/workflows/**"
+      instructions: |
+        Flag any gate whose exit status is piped into `tail`, `grep` or `head` —
+        the pipeline reports the filter's status, so a failing gate reads as
+        passing. This has hidden three real failures here. Also flag
+        `--all-features` on any cargo command: this workspace has
+        mutually-exclusive backend features and CI must use explicit sets.
+
+  # Everything below duplicates a gate this repo already runs, and runs harder.
+  # Leaving them on spends review comments on findings CI has already blocked.
+  tools:
+    clippy:
+      enabled: false
+    markdownlint:
+      enabled: false
+    # Kept on: these cover ground no local gate does.
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+  # This project writes its own docs and tests deliberately — rustdoc is a
+  # blocking gate and every test carries a rationale comment explaining what it
+  # would catch. Generated stand-ins would have to be rewritten.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: >-
+        Conventional Commits: type(scope): subject, imperative mood, no trailing
+        period, at most 72 characters. Types: feat, fix, docs, refactor, test,
+        chore, perf, build, ci.
+    description:
+      mode: warning
+    custom_checks:
+      - name: Oracle number is stated
+        mode: warning
+        instructions: >-
+          A change to emulation behaviour should state its measured effect on
+          n64-systemtest's failing-assertion count, or say explicitly that it
+          was not measured. Accuracy claims here are oracle numbers, not
+          self-assessments. Docs-only, tooling and CI changes are exempt.
+      - name: Spec updated with behaviour
+        mode: warning
+        instructions: >-
+          A change to a chip's behaviour should touch that chip's doc under
+          docs/ in the same PR, and user-visible changes should appear in
+          CHANGELOG.md under [Unreleased].
+
 chat:
   auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "docs/accuracy-ledger.md"
+      - "docs/engineering-lessons.md"
+      - "CONTRIBUTING.md"

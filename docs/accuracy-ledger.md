@@ -642,10 +642,15 @@ plausible-looking one-liners with no citation.
 **What remains, and it is not flags.** Every surviving `ADD.S` failure is a
 subnormal case: either `Err(())` — the suite expecting the unmaskable
 unimplemented-operation cause — or an `FS = 1` flush-to-zero case whose result
-is rounding-mode dependent. The normal range passes. The dominant remaining
-block across the whole suite is the still-undecoded COP1 funct space:
-`C.cond.fmt` (16 tests × 84 assertions) and the `CVT`/`ROUND`/`TRUNC`/`FLOOR`/
-`CEIL` conversions, together roughly 1,700 of the 2,682.
+is rounding-mode dependent. The normal range passes.
+
+**Where things stood at the time of this entry** (kept in past tense, because a
+ledger read top-to-bottom should show what was believed *when* each entry was
+written, not be silently back-edited): the dominant remaining block was the
+still-undecoded COP1 funct space — `C.cond.fmt` and the `CVT`/`ROUND`/`TRUNC`/
+`FLOOR`/`CEIL` conversions, roughly 1,700 of the 2,682. Both are now wired and
+the compares pass outright; see **C-12** below, and `docs/STATUS.md` for the
+current count.
 
 ### C-12 — the VR4300's NaN convention is inverted from IEEE-754:2008
 
