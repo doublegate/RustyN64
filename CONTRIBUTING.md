@@ -80,3 +80,7 @@ explaining the why (not the what — the diff shows the what).
   specification.
 - Discussion is preferred over deferral; if a comment can't be resolved in
   review, file a follow-up ticket explicitly.
+- Every change ships via a pull request, and the automated reviewers (Copilot,
+  Gemini Code Assist) are part of that review. Their comments are adjudicated,
+  answered individually, and resolved — see `AGENTS.md` §Shipping, which also
+  records who holds merge authority and when to stop and ask instead.
