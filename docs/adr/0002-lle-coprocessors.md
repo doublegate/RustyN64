@@ -48,7 +48,7 @@ RDP rasterises the real command list through a faithful per-pixel pipeline.
   (§4, §Architecture options B; `docs/rdp.md`, `docs/performance.md`).
 - **v0.1 stubs the LLE behind the chip traits.** `Rsp::tick` and `Rdp::tick` are LLE-shaped no-ops
   with decode/execute marked TODO (`docs/STATUS.md`). The scheduler already co-schedules them on
-  one timeline (ADR 0001), so filling them in is additive.
+  one timeline (ADR 0006, superseding ADR 0001), so filling them in is additive.
 - **An HLE fast path may be added later behind an off-by-default feature flag** for speed — never
   the default, never the accuracy oracle.
 

@@ -38,12 +38,20 @@ one canonical counter took a full scheduler rewrite, preceded by 17+ failed poin
 dozens of audit documents, plus a save-state/movie format epoch break because the change
 arrived after those formats had shipped.
 
-Two results from that rewrite are worth carrying separately. First, the accuracy payoff was
-real: 100% versus 94.24% on their oracle. Second, and more surprising, **the one-clock model
-ended up ~9% faster than the design it replaced** once ordinary optimisation was applied — the
-first cut was ~10% slower, and the whole deficit plus more came back from unrelated tuning. The
-throughput objection to a canonical master clock does not survive contact with that data, which
-matters because that objection is the usual reason projects avoid the design.
+Two results from that rewrite are worth carrying separately, and the second is a lesson in its
+own right. First, the accuracy payoff was real: 100% versus 94.24% on their oracle. Second, the
+performance story is easy to misreport — and I misreported it here in an earlier revision of this
+document. Their direct A/B, same host and session, put the one-clock model **6–8% slower** in
+end-to-end frame time, while its *isolated CPU loop* got ~35% faster; the cost is entirely
+bus-side. Later model-independent optimisation (LTO, lookup tables) brought the one-clock build
+below the legacy build's original absolute time — but legacy was never re-measured with those
+same optimisations, so quoting that as "~9% faster overall" compares an optimised build against
+an unoptimised one.
+
+**The meta-lesson: a number that conveniently refutes the main objection to a decision you have
+already made deserves more scrutiny than one that supports it, not less.** The throughput cost of
+a canonical master clock is real and bounded at single-digit percent. That is still worth paying;
+it is not the same claim as "free".
 
 **What it means here.** ADR 0006 makes the 187.5 MHz tick the only incremented counter, with
 `cpu_cycles()` and `rcp_cycles()` as derived accessors rather than fields. We got this for free:

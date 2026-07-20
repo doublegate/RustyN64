@@ -28,12 +28,15 @@ SI) the CPU drives every subsystem through.
 These cross-cutting decisions span multiple files. They are the reason the
 per-chip docs read the way they do.
 
-### 1. The VR4300 is the master clock; everything is lockstep
+### 1. One canonical master clock; everything is lockstep
 
-The scheduler advances one **master tick = one VR4300 cycle** per
-`System::tick_one_unit()`; the RCP (RSP + RDP + interfaces) advances on a
-**3:2 fractional accumulator** — 2 RCP ticks per 3 master ticks, per
-`ref-docs/research-report.md` §1 (the R4300i `DivMode` 1.5:1 ratio). This is
+The scheduler counts **187.5 MHz master ticks** — the LCM of the 93.75 MHz CPU
+and 62.5 MHz RCP clocks — so every emulated domain is an **integer divisor**:
+the CPU steps every 2nd tick, the RCP every 3rd, COP0 `Count` every 4th, SI
+every 12th, PIF every 96th. `master_ticks` is the only counter ever incremented;
+every other cycle position is derived and pinned by a residue invariant test
+(ADR 0006, superseding ADR 0001's fractional accumulator). Only VI and AI, which
+genuinely run off a different crystal, keep a fractional accumulator. This is
 **lockstep, not catch-up**: a mid-instruction RCP event (a DP-done IRQ, an SP
 halt, an AI buffer drain) is visible to the very next CPU step. It is the central
 architectural choice and the reason mid-frame coprocessor effects (framebuffer

@@ -18,7 +18,7 @@
 **RustyN64 is a cycle-accurate Nintendo 64 emulator written in pure Rust.** Following the
 lineage of [`RustyNES`](https://github.com/doublegate/RustyNES) and
 [`RustySNES`](https://github.com/doublegate/RustySNES), it targets the ares / CEN64 / Gopher64 /
-ParaLLEl accuracy bar: one fractional master-clock timeline co-scheduling three asynchronous
+ParaLLEl accuracy bar: one canonical 187.5 MHz master-clock timeline co-scheduling three asynchronous
 compute engines, a Bus that owns everything mutable, low-level emulation of the programmable
 coprocessors, and a hard determinism contract.
 
@@ -212,9 +212,10 @@ load-bearing facts that explain why the per-chip specs read the way they do.
 
 Three of those facts, in brief:
 
-1. **The VR4300 is the master tick; everything is lockstep.** One master tick is one VR4300
-   cycle; the RCP advances on a 3:2 fractional accumulator, derived from the R4300i `DivMode`
-   1.5:1 ratio off the 14.31818 MHz NTSC colourburst.
+1. **One canonical master clock; everything is lockstep.** The master tick is 187.5 MHz — the
+   LCM of the 93.75 MHz CPU and 62.5 MHz RCP clocks — so every emulated domain is an integer
+   divisor (CPU 2, RCP 3, COP0 `Count` 4, SI 12, PIF 96) and drift is unrepresentable rather
+   than merely avoided. `master_ticks` is the only counter ever incremented (ADR 0006).
 2. **The Bus owns everything mutable.** One owner, narrow per-chip traits, split-borrow stepping
    — which avoids the "CPU holds the coprocessor, but the coprocessor needs the CPU bus" cycle.
 3. **The crate graph is one-directional,** with exactly one permitted chip-to-chip edge:
@@ -230,7 +231,7 @@ Three of those facts, in brief:
 | `rustyn64-rdp` | RDP rasteriser + VI scan-out |
 | `rustyn64-audio` | AI DAC + sample DMA |
 | `rustyn64-cart` | PI cart + PIF/CIC boot + SI + saves |
-| `rustyn64-core` | The Bus + fractional master-clock scheduler tie crate |
+| `rustyn64-core` | The Bus + canonical master-clock scheduler tie crate |
 | `rustyn64-frontend` | The `winit + wgpu + cpal + egui` shell (binary `rustyn64`) |
 | `rustyn64-test-harness` | Golden-log differ, accuracy scorer, frame comparator |
 | `rustyn64-netplay` | Rollback netplay orchestration (placeholder) |
@@ -308,7 +309,7 @@ wgpu-compute backend, and stays the oracle that backend is graded against (ADR 0
 | --- | --- |
 | [Project status](docs/STATUS.md) | **Single source of truth** — per-subsystem state, infrastructure, corpora, version policy |
 | [Architecture](docs/architecture.md) | The eight load-bearing facts — read before any chip doc |
-| [Scheduler](docs/scheduler.md) | The fractional master-clock model |
+| [Scheduler](docs/scheduler.md) | The canonical 187.5 MHz master-clock model |
 | [Testing strategy](docs/testing-strategy.md) | The oracle, the five test layers, and the corpus tiers |
 | [Roadmap](to-dos/ROADMAP.md) | The phase spine, Phase 0 through Phase 8 |
 | [Version plan](to-dos/VERSION-PLAN.md) | The named release ladder from `v0.1.0` to `v1.0.0` and beyond |
@@ -444,7 +445,7 @@ If you use RustyN64 in academic research, please cite:
   year    = {2026},
   version = {0.1.0},
   url     = {https://github.com/doublegate/RustyN64},
-  note    = {Cycle-accurate N64 emulator on a 3:2 fractional master-clock scheduler with
+  note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,
              a one-directional no_std chip-crate graph, and a hard determinism contract;
              pure-Rust winit/wgpu/cpal/egui frontend. v0.1.0 is an architectural skeleton:

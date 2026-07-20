@@ -15,18 +15,19 @@ already standing on the old shape (`docs/engineering-lessons.md` §1.2).
 
 Three things the hardware documentation settles, which the current docs get wrong:
 
-**The stages are IC / RF / EX / DC / WB.** `docs/cpu.md` and `ref-docs/research-report.md` §1
-both say "IF, RF, EX, DF, WB". The VR4300 User's Manual §4.1 Figure 4-1 names them
+**The stages are IC / RF / EX / DC / WB.** `docs/cpu.md` said "IF, RF, EX, DF, WB" when this ADR
+was drafted and has since been corrected; `ref-docs/research-report.md` §1 still says it and is
+immutable, so the correction is recorded here and in `docs/cpu.md` rather than edited in place. The VR4300 User's Manual §4.1 Figure 4-1 names them
 **IC** (Instruction Cache Fetch), **RF** (Register Fetch), **EX** (Execution), **DC** (Data
 Cache Fetch), **WB** (Write Back). This is not cosmetic: every interlock and exception in the
 manual's taxonomy is named against these stages (DCM = Data Cache Miss, DCB = Data Cache Busy,
 ICB = Instruction Cache Busy, LDI = Load Interlock, CP0I = CP0 Bypass Interlock), and the
 priority rules are stated stage-relative.
 
-**One instruction per tick is not a timing model.** `docs/cpu.md` currently says the CPU
-"advances one issued instruction per master tick". The manual's Table 3-12 gives `DDIV` a
-**69-PCycle** full-pipeline stall, and Tables 11-1/11-2 give cache misses as 7–8 + M and
-13–14 + M PCycles. At minimum "at least 5 PCycles are required to execute an instruction"
+**One instruction per tick is not a timing model.** `docs/cpu.md` said the CPU
+"advances one issued instruction per master tick" when this ADR was drafted. The manual's Table 3-12 gives `DDIV` a
+**69-PCycle** full-pipeline stall, and Tables 11-1/11-2 give cache misses as 8–9 + M and
+14–15 + M PCycles. At minimum "at least 5 PCycles are required to execute an instruction"
 (§4.1).
 
 **Interrupt sampling is not tied to the SysAD command/data phase.** The current
@@ -48,11 +49,18 @@ Five stages have four boundaries. Carry the state on the boundaries:
 ```rust
 struct Latch {
     pc: u64,
-    fault: Option<Fault>,
+    abort: Option<Exception>,   // NOT named `fault` -- see below
     in_delay_slot: bool,
 }
 struct Pipeline { ic_rf: Latch, rf_ex: Latch, ex_dc: Latch, dc_wb: Latch, /* ... */ }
 ```
+
+The field is `abort: Option<Exception>` rather than `fault`, deliberately. UM §4.5 defines
+**fault** as the *union* of interlocks and exceptions (Figure 4-11: Faults = Interlocks ∪
+Exceptions, split into Stalls vs Abort), and CEN64 follows that wider usage — its
+`VR4300_FAULT_LDI`/`_DCB`/`_ICB` sit alongside `_INTR` and `_SYSC`. What travels in the latch
+here is only the *aborting* subset. Using `fault` for the narrow meaning would contradict the
+manual's taxonomy in the very ADR that corrects `IF`/`DF` to `IC`/`DC`.
 
 `in_delay_slot` travels **with the instruction**, set when the branch is decoded and read at
 exception time several cycles later. It is not global CPU state: a multi-cycle stall between a
@@ -71,17 +79,21 @@ it is documented as such in `docs/cpu.md`.
 
 An interlock is "stall N cycles, then restart the cascade from stage S". A stage that cannot
 complete returns an interlock rather than advancing; because the order is reversed, that
-naturally back-pressures every upstream stage in the same cycle. Faults are separate: a fault
-is stamped into its latch and every latch upstream of it, which is the kill-younger-instructions
-step.
+naturally back-pressures every upstream stage in the same cycle. Aborting conditions take the
+other path: an exception is stamped into its own latch **and every latch upstream of it**, which
+is the kill-younger-instructions step. In the manual's vocabulary both are *faults* (§4.5); they
+differ in whether the outcome is a stall or an abort.
 
-### Documented costs, encoded directly
+### Cycle costs
 
-From the User's Manual, all in PCycles:
+All in PCycles. Most are transcribed directly from the User's Manual — but **not all of them
+are documented**, and the table says which. A row marked undocumented is a value to be measured
+and recorded in the accuracy ledger, never a number to quote as if the manual supplied it. See
+Risks for the two that bite: `M`, and the exception epilogue.
 
 | Class | Cost | Source |
 |---|---|---|
-| Integer ALU / most instructions | 1 | §7.5.6 |
+| Integer ALU / most instructions | 1 | §7.5.6 (see note) |
 | `MULT` / `MULTU` | 5 (full pipeline stall) | Table 3-12 |
 | `DIV` / `DIVU` | 37 | Table 3-12 |
 | `DMULT` / `DMULTU` | 8 | Table 3-12 |
@@ -89,12 +101,26 @@ From the User's Manual, all in PCycles:
 | FPU add/sub | 3 | Table 7-14 |
 | FPU mul (S / D) | 5 / 8 | Table 7-14 |
 | FPU div, sqrt (S / D) | 29 / 58 | Table 7-14 |
-| Load-delay interlock (LDI) | 1 | `VR4300.md`, §4.6.3 |
-| Store data-cache-busy (DCB) | 1 | §4.4, §11.2 |
+| Load-delay interlock (LDI) | 1 | §4.6.5; `VR4300.md` |
+| Store data-cache-busy (DCB) | 1 | §4.6.7 |
 | Instruction micro-TLB miss (ITM) | 3 | §4.6.2 |
-| Exception epilogue | 2 | §4.7 |
-| D-cache miss | 7–8 + M | Table 11-1 |
-| I-cache miss | 13–14 + M | Table 11-2 |
+| Instruction cache busy (ICB) | — | §4.6.3 |
+| Multi-cycle interlock (MCI) | — | §4.6.4 |
+| Data cache miss (DCM) | 1 + the fill below | §4.6.6 |
+| CP0 bypass interlock (CP0I) | **undocumented** | §4.6.9 names it, gives no count |
+| D-cache miss (fill) | 8–9 + M | Table 11-1 |
+| I-cache miss (fill) | 14–15 + M | Table 11-2 |
+
+The cache-miss figures are the sum of the table rows, and the 1-cycle spread is the
+*"1 to 2 PCycles: synchronize with SClock"* row — the vendor-documented PClock:SClock phase beat
+that ADR 0006's seeded phase models. CEN64 independently corroborates the D-cache figure: its
+`DCACHE_ACCESS_DELAY` of 44 is exactly `8 + 38`, its `MEMORY_WORD_DELAY`.
+
+**Note on the 1-cycle baseline:** UM §7.5.6's supporting sentence ("All CPU/FPU instruction delay
+times that are not mentioned in these tables have a latency of one pipeline clock cycle") is a
+*latency* statement inside the FPU chapter, used here as an *issue cost* for integer ALU ops.
+Defensible, and consistent with §4.1's throughput model, but it is an inference rather than a
+direct citation.
 
 Two rules that are easy to miss and are part of this decision:
 
@@ -105,13 +131,15 @@ Two rules that are easy to miss and are part of this decision:
   whether or not that field is actually used as a source. So a load followed by `LUI` into the
   same register stalls, and two consecutive loads into the same register stall. GPR loads
   interlock only with non-float instructions and vice versa, and a load into `$zero` never
-  interlocks (`n64brew_wiki/markdown/VR4300.md` §Load Delay Interlock).
+  interlocks (`n64brew_wiki/markdown/VR4300.md`, § Microarchitecture → Load Delay Interlock).
 
 ### Interrupts sampled per PCycle, gated on run-vs-stall
 
-`Bus::poll_irq_at_phase(BusPhase)` is **removed**. Interrupts are sampled once per PClock in
-the DC stage, accepted only when the previous PCycle was a run cycle, against the documented
-predicate (an unmasked `Cause.IP` bit with `Status.IE` set and `EXL`/`ERL` clear). Exactly one
+`Bus::poll_irq_at_phase(BusPhase)` is **removed**. Interrupts are sampled once per PClock in the
+**DC** stage — which is documented, not merely CEN64's choice: UM Figure 4-12 places `INTR` in
+the DC column and §4.7.6 "DC-Stage Interlock and Exception Priorities" lists the interrupt
+exception among them. They are accepted only when the previous PCycle was a run cycle (§4.7.1),
+against the documented predicate (an unmasked `Cause.IP` bit with `Status.IE` set and `EXL`/`ERL` clear). Exactly one
 recognition predicate exists in the tree; CEN64 carries two subtly different ones and that is a
 known source of one-cycle discrepancies.
 
@@ -150,8 +178,10 @@ interleaves around — the Phase 1 exit criterion.
 
 - Substantially more work than an instruction-stepped core, and the pipeline must be right
   before the instruction count grows.
-- ~5 stage advances per instruction against a budget of roughly 32 host cycles per emulated
-  component step at full speed. Hot-path discipline is a design input from the first line, not
+- ~5 stage advances per instruction against a budget of roughly **32 host cycles per emulated
+  component step** at full speed. That figure is an estimate, not a measurement: 93.75M CPU +
+  62.5M RSP = 156.25M component-steps/s against a ~5 GHz core, before the RDP. It needs a real
+  benchmark in Sprint 1 to become a number worth defending. Hot-path discipline is a design input from the first line, not
   a later optimisation pass: latches cache-resident, no per-cycle branching on cold conditions,
   no allocation in `tick`.
 - Two mechanisms for time (integer divisors, plus VI's accumulator) and two for bus cost (modelled
@@ -159,6 +189,12 @@ interleaves around — the Phase 1 exit criterion.
 
 ### Risks
 
+- **The exception epilogue cost is NOT documented, despite being widely used as if it were.**
+  CEN64 charges 2 PCycles and its own source says it does not know whether that is right:
+  *"TODO: Is the cycle count just the killing of IC/RF, or do we actually delay an additional two
+  cycles?"* (`ref-proj/cen64/vr4300/fault.c`). No figure appears in UM §4.7 or Chapter 6. Treat it
+  exactly like `M`: a fitted constant recorded in the accuracy ledger with its provenance, never a
+  number quoted as though the manual supplied it.
 - **`M` — memory access time in PCycles — is undocumented.** Both cache-miss formulas are
   parameterised on it and no source gives a value; the only hints are informal ("RDRAM has about
   10-20+ clock wait time"; RCP registers "5-6 PClock cycles"; MI registers "about 2 cycles";
@@ -168,10 +204,12 @@ interleaves around — the Phase 1 exit criterion.
   authors' words, there is not yet enough coverage to derive the rules. Passing them is not a
   v1.0 gate; the CPU/COP0/TLB categories are.
 - **Performance is unproven at this accuracy level.** No public N64 core sustains full speed
-  fully cycle-accurate. The counter-evidence is that a sibling project's equivalent rewrite
-  measured ~9% *faster* than the design it replaced; the CEN64 evidence is from a stalled C
-  project benchmarked on 2013-era hardware whose bus was not cycle-accurate anyway. Treated as
-  an open engineering risk with a measurement gate, not as a settled impossibility.
+  fully cycle-accurate. A sibling project's equivalent rewrite measured **6–8% slower**
+  end-to-end (its isolated CPU loop got ~35% faster — the cost is bus-side), so the timebase
+  model itself is a single-digit-percent cost rather than an order-of-magnitude one. The
+  discouraging CEN64 evidence is from a stalled C project benchmarked on 2013-era hardware whose
+  bus was not cycle-accurate anyway. Treated as an open engineering risk with a measurement gate,
+  not as a settled impossibility — and not as refuted either.
 - **SYSCMD bit-4 polarity is contradictory between sources** — the manual says command =
   `SysCmd4` 0, the wiki cheat sheet says 1. Pin with a test ROM before encoding either.
 

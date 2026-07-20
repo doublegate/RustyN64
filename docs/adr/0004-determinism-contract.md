@@ -63,7 +63,7 @@ Concretely:
 
 - Optimisations that trade reproducibility for speed are permanently off the table in the
   core: no wall-clock-driven frame skipping, no "catch-up" that varies with host load, no
-  parallelising the three engines against each other. ADR 0001's single-timeline lockstep is
+  parallelising the three engines against each other. ADR 0006's single-timeline lockstep (superseding ADR 0001) is
   partly a consequence of this contract.
 - Every new piece of hidden state must be reachable by the save-state serialiser, or it
   becomes a silent divergence source. This is an ongoing tax on every subsystem, not a

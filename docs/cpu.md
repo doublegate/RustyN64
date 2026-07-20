@@ -135,12 +135,22 @@ them. Baseline is 1 PCycle for essentially all integer ALU work (UM §7.5.6).
 | FPU add / sub | 3 | UM Table 7-14 |
 | FPU mul (S / D) | 5 / 8 | UM Table 7-14 |
 | FPU div, sqrt (S / D) | 29 / 58 | UM Table 7-14 |
-| Load-delay interlock (LDI) | 1 | `VR4300.md`; UM §4.6.3 |
-| Store data-cache-busy (DCB) | 1 | UM §4.4, §11.2 |
+| Load-delay interlock (LDI) | 1 | UM §4.6.5; `VR4300.md` |
+| Store data-cache-busy (DCB) | 1 | UM §4.6.7 |
 | Instruction micro-TLB miss (ITM) | 3 | UM §4.6.2 |
-| Exception epilogue | 2 | UM §4.7 |
-| D-cache miss | 7–8 + M | UM Table 11-1 |
-| I-cache miss | 13–14 + M | UM Table 11-2 |
+| D-cache miss (fill) | 8–9 + M | UM Table 11-1 |
+| I-cache miss (fill) | 14–15 + M | UM Table 11-2 |
+
+The cache figures are the sum of the table rows; the 1-cycle spread is the
+*"1 to 2 PCycles: synchronize with SClock"* row — the PClock:SClock phase beat
+that ADR 0006's seeded phase models. CEN64 corroborates the D-cache number: its
+`DCACHE_ACCESS_DELAY` of 44 is exactly 8 + its `MEMORY_WORD_DELAY` of 38.
+
+**The exception epilogue cost is NOT documented**, despite being commonly quoted
+as 2 PCycles. No figure appears in UM §4.7 or Chapter 6; CEN64 charges 2 and its
+own source asks *"Is the cycle count just the killing of IC/RF, or do we actually
+delay an additional two cycles?"*. Treat it like `M` below — a measured constant
+with its provenance recorded, never a number cited as if the manual supplied it.
 
 Integer multiply and divide **stall the entire pipeline** for the listed count
 (UM Table 3-12) — they are not background operations.

@@ -4,8 +4,12 @@ This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
 **Current release:** **v0.1.0 (SKELETON).** The workspace compiles, CI is green on
-stubs, and the architecture (Bus + fractional master-clock scheduler + the
-one-directional crate graph + the narrow chip bus traits) is in place. The
+stubs, and the architecture (Bus + the one-directional crate graph + the narrow
+chip bus traits) is in place. **The scheduler shipped in v0.1.0 is the
+superseded ADR 0001 model** — a 93.75 MHz master tick with a 3:2 fractional
+accumulator. ADR 0006 replaces it with a canonical 187.5 MHz clock and integer
+divisors, and ADR 0007 makes the CPU a cycle-accurate five-stage pipeline; both
+are **decided and documented but not yet implemented** (ticket T-11-001). The
 accuracy work — the LLE RSP, the LLE RDP, the VR4300 interpreter — has **not
 started**; those are the major roadmap phases (`to-dos/ROADMAP.md`).
 
@@ -25,6 +29,7 @@ wired gate.
   state), the `System` run loop with the **3:2 fractional master-clock**
   accumulator and **seeded power-on phase alignment**, and the chip split-borrow
   stepping. The fractional-divisor and reset-preserves-phase tests pass.
+  *This is the superseded ADR 0001 timebase; the ADR 0006 rework is T-11-001.*
 - The chip crates: register-file / state skeletons with `tick` methods that are
   **LLE-shaped stubs** (decode/execute marked TODO).
 - `rustyn64-cart`: real ROM-format detection + byte-order normalization
@@ -93,7 +98,7 @@ harness `run_until_complete` sentinel decode is stubbed and always returns
 | `rustyn64-rdp` | RDP rasterizer + VI scan-out | `docs/rdp.md` |
 | `rustyn64-audio` | AI DAC + sample DMA | `docs/audio.md` |
 | `rustyn64-cart` | PI cart + PIF/CIC + SI + saves | `docs/cart.md` |
-| `rustyn64-core` | Bus + fractional master-clock scheduler | `docs/scheduler.md` |
+| `rustyn64-core` | Bus + scheduler (ADR 0001 timebase shipped; ADR 0006 pending) | `docs/scheduler.md` |
 | `rustyn64-frontend` | egui/wgpu/cpal/winit shell (bin `rustyn64`) | `docs/frontend.md` |
 | `rustyn64-test-harness` | golden-log + accuracy + frame comparators | `docs/testing-strategy.md` |
 | `rustyn64-netplay` | rollback netplay (frontend-side) | `docs/frontend.md` |
@@ -138,10 +143,17 @@ implemented yet (Phase 5).
   default-off flags so the shipped / native / `no_std` / wasm builds stay
   byte-identical with the flags off.
 - **Do NOT import RustyNES engine-lineage "v2.0" anchors as RustyN64 releases.**
-  The fractional master-clock scheduler exists today (the v0.1.0 core). The
-  *future* sub-cycle bus-timing refactor is ADR 0005 — a later milestone, not
-  a current release, and the one expected to break byte-identity / save-state
-  compatibility.
+- **Three different things get called "finer timing"** and must never be conflated
+  in release notes or docs, coarse to fine:
+  1. The **canonical 187.5 MHz master clock** (ADR 0006) — CPU every 2 ticks, RCP
+     every 3. *Decided; not yet implemented.* The v0.1.0 core still ships ADR
+     0001's 93.75 MHz tick with a 3:2 fractional accumulator.
+  2. The **SysAD command/data split** at SClock, 62.5 MHz (ADR 0007). Note this is
+     *coarser* than one PClock, so it is not sub-cycle resolution. *Decided; not
+     yet implemented.*
+  3. **Resolution finer than one PClock** — the deferred ADR 0005 refactor. Does
+     not exist, is not scheduled, and is the one expected to break byte-identity
+     and save-state compatibility.
 - v1.0.0 is the production cut (Phases 1–8 complete; README/CHANGELOG/docs/STATUS
   in sync; release matrix + Pages green). See `to-dos/ROADMAP.md`. Of those
   release-readiness items, **Pages is already green** and the release matrix is

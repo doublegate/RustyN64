@@ -21,11 +21,18 @@ finer timebase.
 ### What "sub-cycle" actually means on this machine
 
 The original wording of this decision described the refactor as "a φ1/φ2 access split (the
-Mesen2-style fractional master clock)". That framing was carried over from the sibling NES and
-SNES projects and does not describe N64 hardware. φ1/φ2 is 6502 two-phase clock vocabulary, where
-φ2 is the bus-access phase — it is the natural frame for a 6502 or 65816 bus model. It is not
-used anywhere in the N64 hardware documentation, and Mesen2 is an NES/SNES emulator, so it is the
-wrong reference implementation to name.
+Mesen2-style fractional master clock)". The *label* was carried over from the sibling NES and SNES
+projects: φ1/φ2 is 6502 two-phase clock vocabulary where φ2 is the bus-access phase, natural for a
+6502 or 65816 bus model, and Mesen2 is an NES/SNES emulator — the wrong reference implementation
+to name for this machine.
+
+But the underlying *concept* is not foreign to the VR4300, and an earlier revision of this ADR
+overstated the case by claiming two-phase clocking appears nowhere in the N64 documentation. It
+does. UM §4.1 Figure 4-1 states that **"The PCycle has two stages, F1 and F2"**, and Figure 4-12
+places interlock and exception detection against that split. So if this refactor ever lands,
+**F1/F2 — not φ1/φ2 — is its documented frame**, and the manual hands it a real structure rather
+than leaving it ill-defined. That strengthens the case that the refactor is *possible*; it does
+not change the decision to defer it, which rests on evidence, not on definability.
 
 The N64's genuine sub-cycle concerns are these, and they are what this ADR is actually about:
 
@@ -99,7 +106,7 @@ chips, so that increasing resolution is a change to one component and not to eve
   exists); (2) the SysAD command/data split at SClock, 62.5 MHz, which is *coarser* than a
   PClock (ADR 0007 — this exists); and (3) resolution finer than one PClock, which is **this
   ADR and does not exist**. The sibling projects have a version-numbering history showing how
-  easily these get merged in prose. All three senses are named explicitly here, in
-  `docs/scheduler.md`, and in `docs/STATUS.md` §Version policy.
+  easily these get merged in prose. All three senses are named explicitly here and in
+  `docs/scheduler.md`.
 - **Scope creep into a rewrite.** Bus-accurate modelling can absorb unlimited effort. The gate is
   a named failing test, not an aspiration to be maximally accurate.

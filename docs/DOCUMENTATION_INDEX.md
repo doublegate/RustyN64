@@ -25,7 +25,7 @@ corrected.
 | [audio.md](audio.md) | AI — the DAC, sample DMA, and the rate derivation |
 | [cart.md](cart.md) | PI cart, PIF/CIC boot, SI joybus, and the four save backends |
 | [cartridge-format.md](cartridge-format.md) | ROM header, the `.z64`/`.n64`/`.v64` byte orders, save-type and CIC detection |
-| [scheduler.md](scheduler.md) | The 3:2 fractional master-clock scheduler and the lockstep contract |
+| [scheduler.md](scheduler.md) | The canonical 187.5 MHz master-clock scheduler and the lockstep contract |
 | [architecture.md](architecture.md) | Cross-cutting design — the eight load-bearing facts |
 | [frontend.md](frontend.md) | The `rustyn64` shell (winit + wgpu + cpal + egui), audio ring, pacing |
 

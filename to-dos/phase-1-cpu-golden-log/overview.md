@@ -110,9 +110,11 @@ Phase 0 criterion (T-02-005) and must land before the 0-diff gate can be met.
   fully cycle-accurate, and this project's goal is exactly that. Mitigated by treating the
   budget (~32 host cycles per emulated component step) as a design input from the first line:
   latches cache-resident, no allocation in `tick`, no per-cycle branching on cold conditions.
-  Counter-evidence worth holding onto: a sibling's equivalent rewrite measured ~9% *faster* than
-  the design it replaced, and CEN64's discouraging numbers come from a stalled C project on
-  2013-era hardware whose bus was not cycle-accurate anyway.
+  Bounding evidence: a sibling's equivalent timebase rewrite cost **6–8%** in end-to-end frame
+  time (its isolated CPU loop got ~35% faster — the cost is bus-side), so the clock model itself
+  is a single-digit-percent tax rather than an order-of-magnitude one. CEN64's discouraging
+  numbers come from a stalled C project on 2013-era hardware whose bus was not cycle-accurate
+  anyway. Neither refutes the goal; neither establishes it.
 - **n64-systemtest's `cycle` and `cop0hazard` sets are default-off upstream**, because the
   authors state the rules are not yet fully derived. Mitigated by not making them a v1.0 gate;
   the CPU/COP0/TLB categories are the bar.
