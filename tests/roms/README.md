@@ -43,9 +43,9 @@ corpora do not get a negation, however convenient that would be.
 ### n64-systemtest
 
 **The strict CPU/COP0/TLB/RSP gate** (`docs/testing-strategy.md` Layer 3). It is
-*self-judging* — it decides pass/fail itself and ends with a line like
-a summary line matching `Failed (\d+) of (\d+) tests`, so no framebuffer
-comparison is needed. (Earlier revisions of this file quoted
+*self-judging* — it decides pass/fail itself and ends with a summary line
+matching `Failed (\d+) of (\d+) tests`, so no framebuffer comparison is
+needed. (Earlier revisions of this file quoted
 `Done! Tests: 262. Failed: 0` — that is upstream's 2021 wording and does **not**
 appear in the committed v2.1.0 ROM.) Covers
 MFC0/DMFC0/MTC0/DMTC0 64-bit register semantics, LLD/LD/SC/SCD, exceptions

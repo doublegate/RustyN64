@@ -17,8 +17,9 @@ have cost real debugging time, and a dependency the plan had wrong.
 - **The n64-systemtest completion string in our docs was from 2021.** `docs/testing-strategy.md`
   and `tests/roms/README.md` both quoted `Done! Tests: 262. Failed: 0`. That string does **not**
   appear in the committed v2.1.0 ROM — verified with `strings`, zero occurrences. The real
-  summary is `Finished in 12.34s. Base: Failed 3 of 262 tests (98% success rate)`, so the
-  sentinel regex must target `Failed (\d+) of (\d+) tests`. Anything written against the old
+  summary has the form `Finished in <T>s. Base: Failed <F> of <N> tests (<P>% success rate)`,
+  whose counts vary per run — so the sentinel must match the stable pattern
+  `Failed (\d+) of (\d+) tests` rather than any literal line. Anything written against the old
   string would have matched nothing, silently. Both documents corrected, and the three text
   sinks the ROM actually uses (emux COP0 hooks, ISViewer, SC64) are now documented — it writes
   to **no fixed RDRAM address**, and with no sink implemented `text_out` is a silent no-op.

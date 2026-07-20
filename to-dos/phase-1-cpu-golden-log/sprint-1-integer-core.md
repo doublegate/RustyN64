@@ -150,7 +150,10 @@ showed that is **not reachable in Sprint 1**: n64-systemtest dies at `src/main.r
 control, COP0 (`Status`/`Count`/`CACHE`), MI, PI status, VI init, a working heap, and exception
 vectors, because a large fraction of its tests fault deliberately and would otherwise hang
 rather than fail. There is no flag around it: category selection is compile-time `cfg!()` and
-COP0 sits on the pre-test path regardless. That work is Sprint 2 — see T-12-00X.
+COP0 sits on the pre-test path regardless. That work is Sprint 2 (COP0, the TLB and the
+exception model); the remaining harness-side piece is captured as T-11-009 below. No Sprint 2
+ticket ID is cited because that sprint's tickets are not minted yet — inventing one would give
+a dangling reference that looks tracked and is not.
 
 `basic.z64` is the right first target and needs almost nothing beyond this sprint:
 
@@ -168,8 +171,13 @@ COP0 sits on the pre-test path regardless. That work is Sprint 2 — see T-12-00
 
 - [ ] KSEG0/KSEG1 segment stripping in the CPU, so a virtual address becomes physical before
       it reaches the Bus. Nothing does this today, and no ROM can execute without it.
-- [ ] A direct-load path: copy `rom[0x1000..0x10_1000]` into RDRAM at `0x1000` and set
-      `PC = 0x8000_1000`. No CIC handshake, no PI DMA.
+- [ ] A direct-load path that does what IPL3 would: copy **`0x10_0000` bytes** from ROM
+      offset `0x1000` to RDRAM `0x1000`, clamped to the ROM's actual length, and set
+      `PC = 0x8000_1000`. No CIC handshake, no PI DMA. The byte count is the documented boot
+      behaviour (`ref-proj/n64-tests/README.md`: *"copy 0x100000 bytes from 0x10001000 to
+      0x00001000"*), not `basic.z64`'s size — the two coincide here, and hard-coding either an
+      end offset or "the whole ROM" breaks on the next target. Clamping matters because RDRAM
+      is 8 MiB and a commercial ROM is up to 64 MiB.
 - [ ] `run_until_complete` polls `r30` and returns `Passed` / `Failed(index)` / `Timeout`
       instead of always timing out.
 - [ ] `basic.z64` reports a genuine result, and a failure names *which* of the five tests failed.

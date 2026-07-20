@@ -52,13 +52,14 @@ comparison is needed for the CPU/COP0/TLB/RSP gate.
 **The completion string is not what earlier revisions of this document claimed.**
 They quoted `Done! Tests: 262. Failed: 0`, which is from upstream's 2021 README.
 That string does **not** appear in the committed v2.1.0 ROM — verified with
-`strings`. The actual final line is:
+`strings`. The final line has the form (elapsed time and counts vary per run):
 
 ```text
-Finished in 12.34s. Base: Failed 3 of 262 tests (98% success rate)
+Finished in <T>s. Base: Failed <F> of <N> tests (<P>% success rate)
 ```
 
-So the sentinel regex must target `Failed (\d+) of (\d+) tests`. Anything written
+The stable part is the format string, so the sentinel must match
+`Failed (\d+) of (\d+) tests` rather than any literal line. Anything written
 against the old string matches nothing, silently.
 
 It emits text through one of three auto-detected sinks, not to a fixed RDRAM
