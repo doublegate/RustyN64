@@ -446,6 +446,22 @@ established.
 Stated this way deliberately: the two previous conclusions in this entry were
 recorded as facts on comparable evidence and both had to be retracted.
 
+**Falsification test run; the lead is REFUTED.** `ADD.S` is fetched **3,074**
+times against **70** reported `COP1: ADD.S` cases, so the instruction executes
+freely. The zero correlated hits was precisely the pipeline artefact flagged
+above — operands sampled at fetch have not been loaded yet by instructions still
+in flight.
+
+The caveat did its job: the hypothesis died on its own test instead of becoming a
+third retraction. That is the only method in this entry that has worked.
+
+**Where COP1 actually stands.** Excluded by measurement, not argument:
+unwired operations; exception behaviour; rounding mode; a write-back width fix;
+operand-load failure; and now "the instruction never runs". The cause remains
+**unidentified**, and the honest position is that a correlated capture at
+*retirement* — matching the specific failing case — has still not been performed.
+Every shortcut around that has cost a wrong answer.
+
 **A fix was attempted and reverted.** Writing the full 64-bit FGR
 (`write_raw`, zeroing the upper half) moved the failure count by **nothing**
 (2,897 either way) and bypasses the `FR` view — the precise mistake ledger U-7
