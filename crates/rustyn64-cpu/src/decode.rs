@@ -278,6 +278,12 @@ pub enum Op {
     /// `TNEI rs, imm`.
     Tnei,
 
+    /// `SYNC` — *"handled as a NOP"* on this processor (UM §3.1).
+    ///
+    /// Not folded into [`Op::Sll`]-as-NOP: it is a distinct encoding that
+    /// compilers emit, and decoding it to [`Op::Reserved`] would raise a
+    /// reserved-instruction exception on code that runs fine on hardware.
+    Sync,
     /// `SYSCALL`.
     Syscall,
     /// `BREAK`.
@@ -603,6 +609,10 @@ pub const fn decode(word: u32) -> Decoded {
                 op: Op::Break,
                 ..base
             },
+            0o17 => Decoded {
+                op: Op::Sync,
+                ..base
+            },
             0o60 => Decoded {
                 op: Op::Tge,
                 ..base
@@ -882,5 +892,16 @@ mod tests {
         assert!(decode(enc(0o70)).is_store_conditional(), "SC");
         assert!(decode(enc(0o74)).is_store_conditional(), "SCD");
         assert!(!decode(enc(0o53)).is_store_conditional(), "SW is not");
+    }
+
+    /// `SYNC` is a real encoding the VR4300 retires as a NOP (UM §3.1).
+    /// Decoding it to `Reserved` raises a reserved-instruction exception on
+    /// code that runs fine on hardware — compilers emit it.
+    #[test]
+    fn sync_decodes_to_a_nop_not_a_reserved_instruction() {
+        let d = decode(0o17);
+        assert_eq!(d.op, Op::Sync);
+        assert_ne!(d.op, Op::Reserved, "SYNC must not raise");
+        assert_eq!(d.dest, 0, "SYNC writes no register");
     }
 }

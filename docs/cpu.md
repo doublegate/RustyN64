@@ -263,6 +263,13 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   or not the store happened, which is a shape no other integer instruction has.
   Decoding it with the store form (no destination) silently loses the flag, and
   folding it into `is_load` stalls a cycle the hardware does not.
+- **`SYNC` is a NOP, not a reserved encoding.** *"the SYNC instruction is handled
+  as a NOP"* (UM §3.1), which is also why the VR4300 needs no memory barrier
+  model: loads and stores already execute in program order. Decoding it to
+  `Reserved` would raise on code that runs on hardware.
+- **`CACHE` (`0o57`) is still `Reserved`** — deliberately, until the cache model
+  lands in Sprint 2. Note this means it currently *raises*; IPL3 and libdragon
+  both use it, so this is a known blocker for anything past a bare test ROM.
 - **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
   detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
   entry rather than a special case.

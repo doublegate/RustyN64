@@ -487,6 +487,15 @@ pub const fn execute(
         Op::Teqi => trap_if(rs_val == sext_imm(d.imm)),
         Op::Tnei => trap_if(rs_val != sext_imm(d.imm)),
 
+        // "all load/store instructions in this processor are executed in program
+        // order since the SYNC instruction is handled as a NOP" (UM §3.1). It
+        // retires normally -- what it must NOT do is raise reserved-instruction.
+        Op::Sync => Ok(Executed {
+            write_back: WriteBack::None,
+            stall_cycles: 0,
+            mem: None,
+            redirect: None,
+        }),
         Op::Syscall => Err(Exception::Syscall),
         Op::Break => Err(Exception::Breakpoint),
 

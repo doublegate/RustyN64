@@ -21,6 +21,17 @@ verifying Sprint 1's criteria against the code rather than against the ticket's 
   and causes an exception, the exception takes precedence"* (UM §16 p. 487). A misaligned `LL`
   leaves the link disarmed.
 
+### Added — `SYNC` retires as a NOP instead of raising
+
+Found by the same audit: `SYNC` (SPECIAL funct `0o17`) decoded to `Reserved`, so it would have
+raised a reserved-instruction exception on code that runs fine on hardware — and compilers emit
+it. *"all load/store instructions in this processor are executed in program order since the SYNC
+instruction is handled as a NOP"* (UM §3.1).
+
+The audit's other findings were all legitimately out of Sprint 1 scope — COP0 (`0o20`), COP1
+(`0o21`), `CACHE` (`0o57`) and the coprocessor load/store forms belong to Sprints 2 and 3 — or
+genuinely unassigned encodings that *should* raise.
+
 ### Fixed — `docs/cpu.md` had the link-bit clearing rule wrong
 
 The spec said *"Any intervening store (or ERET) clears the link"*. The manual's list is
