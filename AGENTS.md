@@ -71,6 +71,11 @@ stubs** — accuracy work has not started. Do not assume any chip executes instr
 - `crates/rustyn64-cheevos/` — RetroAchievements FFI (later, off by default) · empty stub today
 - `docs/` — the spec (update in the same PR as code); `docs/STATUS.md` = single source of truth;
   `docs/adr/` — ADRs. `ref-docs/` — immutable research. `ref-proj/` — study clones (gitignored).
+  **Read `ref-proj/README.md` before copying anything from a reference emulator.** RustyN64 is
+  MIT OR Apache-2.0; only ares, cen64, parallel-rdp, parallel-rsp (MIT arm), n64-systemtest,
+  libdragon, and PeterLemon-N64 are permissive enough to vendor. simple64/gopher64 (GPLv3),
+  n64-tests (no licence), and angrylion-rdp-plus (**non-commercial MAME licence, despite having
+  no `LICENSE` file**) are study-only — compare their outputs, never their source.
 - `n64brew_wiki/` — gitignored offline mirror of the N64brew Wiki, the primary hardware
   reference. Search `n64brew_wiki/markdown/`; browse `n64brew_wiki/html/`. Rebuild or update
   with `python3 scripts/mirror_n64brew_wiki.py [--refresh]`. CC BY-SA 4.0 — attribute if quoted.
