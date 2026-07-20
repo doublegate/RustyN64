@@ -57,7 +57,7 @@ the Boss Game Studios titles (World Driver Championship, Top Gear Rally 2) to co
 - [ ] `docs/compatibility.md` records the result as the concrete payoff of ADR 0002.
 
 **Dependencies:** T-71-002
-**Reference:** `docs/adr/0002-fractional-timebase-refactor.md`; `docs/compatibility.md`
+**Reference:** `docs/adr/0002-lle-coprocessors.md`; `docs/compatibility.md`
 **Estimated complexity:** L
 
 ---
@@ -71,12 +71,12 @@ companion to `docs/STATUS.md`'s pass counts.
 **Acceptance criteria:**
 
 - [ ] Every residual from T-71-002 has an entry and a disposition.
-- [ ] Entries deferred to the ADR 0002 sub-cycle refactor say so explicitly.
+- [ ] Entries deferred to the ADR 0005 sub-cycle refactor say so explicitly.
 - [ ] The ledger is linked from `docs/STATUS.md` and the README.
 - [ ] Nothing is silently dropped: a residual with no entry is a process failure.
 
 **Dependencies:** T-71-002
-**Reference:** `docs/STATUS.md`; `docs/adr/0002-fractional-timebase-refactor.md`
+**Reference:** `docs/STATUS.md`; `docs/adr/0002-lle-coprocessors.md`
 **Estimated complexity:** M
 
 ---

@@ -48,7 +48,7 @@ pub enum BusPhase {
 ///
 /// Implemented by `rustyn64-core::Bus`. Kept as a trait so the CPU can be
 /// fuzzed and benchmarked against a tiny in-crate bus without pulling in the
-/// rest of the machine — the same split `RustyNES` uses for its `cpu::Bus`.
+/// rest of the machine.
 pub trait Bus {
     /// Read a byte at a 32-bit physical address (post-TLB).
     fn read_u8(&mut self, addr: u32) -> u8;

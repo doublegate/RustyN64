@@ -9,7 +9,7 @@
 //! Part of the one-directional chip-crate graph (see `docs/architecture.md`):
 //! this crate does NOT depend on any other chip crate. The RDP depends on it
 //! ONLY for the shared RDRAM memory-bus trait ([`RdramBus`]) — the N64 analog
-//! of how `rustynes-ppu` reaches CHR/nametable storage through `rustynes-mappers`.
+//! shared RDRAM access path that the RDP also borrows.
 //! `#![no_std]` + `alloc`; only the frontend carries `std` + `unsafe`.
 
 #![no_std]
@@ -181,7 +181,8 @@ pub enum CartError {
     UnknownFormat,
 }
 
-/// The cartridge / board trait (the N64 analog of `RustyNES`'s `Mapper`).
+/// The cartridge trait. One cart model, parameterized by save type, CIC, and
+/// region (ADR 0003) — the N64 has no mapper equivalent.
 ///
 /// Board-specific behavior — PI/SI-mediated reads and writes, save backing,
 /// optional bootstrap — lives behind it, not in the CPU. All hooks default to

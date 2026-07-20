@@ -55,5 +55,5 @@ per-quirk fudges. See `docs/scheduler.md` for the full derivation.
   under LLE (`ref-docs/research-report.md` §challenge 7) — addressed by a later
   dynarec layer that keeps the interpreter as the deterministic oracle
   (`docs/performance.md`).
-- The future sub-cycle φ1/φ2 refinement (if a hard-tier ROM needs it) is a
-  separate milestone (ADR 0002), not this scheduler.
+- The future sub-cycle bus-timing refinement (if a hard-tier ROM needs it) is a
+  separate milestone (ADR 0005), not this scheduler.

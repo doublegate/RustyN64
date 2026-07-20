@@ -80,9 +80,10 @@ n64-systemtest, Dillonb, and PeterLemon ROMs. Behind the `test-roms` feature
 ### Layer 4 — accuracy battery
 
 `accuracy::AccuracyScorer` runs a battery of named probes and reports a pass-rate
-(`AccuracyReport`) — the AccuracyCoin-equivalent. The battery itself is **stubbed**
+(`AccuracyReport`) — a first-party probe set, since the N64 has no single
+all-in-one oracle ROM. The battery itself is **stubbed**
 until the probes are authored. Gate: ≥90% by v1.0, 100% the goal; hard residuals
-deferred to the ADR 0002 refactor, documented not point-fixed.
+deferred to the ADR 0005 refactor, documented not point-fixed.
 
 ### Layer 5 — visual golden + screenshots
 

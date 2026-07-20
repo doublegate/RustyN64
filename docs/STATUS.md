@@ -109,7 +109,7 @@ nothing loads or scores a ROM yet, so no gate can report a number.
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
 | n64-systemtest "Failed: 0" (CPU/COP0/TLB/RSP) | **yes** — ROM committed | not started (no CPU to run it) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
-| Accuracy battery (AccuracyCoin-equivalent) | probes not authored | 0% (battery stubbed) |
+| Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
@@ -118,7 +118,7 @@ gate reports a real number, and today the second never is.
 
 See `docs/testing-strategy.md` for the oracle and the five test layers.
 
-## Board / mapper matrix
+## Cart model matrix
 
 **Tiered (Core / Curated / BestEffort) under an honesty gate: NO.** The N64 has
 one cart model parameterized by save type + CIC + region, not hundreds of
@@ -139,7 +139,7 @@ implemented yet (Phase 5).
   byte-identical with the flags off.
 - **Do NOT import RustyNES engine-lineage "v2.0" anchors as RustyN64 releases.**
   The fractional master-clock scheduler exists today (the v0.1.0 core). The
-  *future* sub-cycle φ1/φ2 timebase refactor is ADR 0002 — a later milestone, not
+  *future* sub-cycle bus-timing refactor is ADR 0005 — a later milestone, not
   a current release, and the one expected to break byte-identity / save-state
   compatibility.
 - v1.0.0 is the production cut (Phases 1–8 complete; README/CHANGELOG/docs/STATUS

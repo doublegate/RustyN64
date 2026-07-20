@@ -28,7 +28,7 @@ justifies (each layer rests on a verified one below it).
   scope. Cut as needed at any point before the next minor.
 - **`v1.0.0`** and beyond follow the same rule at the next digit.
 - A **MAJOR** bump (`v2.0.0`) is reserved for a public-API or save-state-format break. The
-  sub-cycle φ1/φ2 timebase refactor (ADR 0002) is the only currently-anticipated candidate, and
+  sub-cycle bus-timing refactor (ADR 0005) is the only currently-anticipated candidate, and
   only *if* Phase 7's accuracy triage concludes it is warranted.
 - **Every tag is annotated, but the annotation is short.** The long-form release note lives at
   `docs/release-notes/<tag>.md` and the release workflow uses it as the GitHub Release body; the
@@ -162,7 +162,7 @@ accuracy battery has not stabilised would invert the phase spine's whole premise
 
 - **`v1.1.0` onward** — rollback netplay, RetroAchievements, TAS tooling, Lua scripting, and the
   shader pipeline, each additive and default-off, each proven byte-identical with its flag off.
-- **`v2.0.0`** — reserved for the sub-cycle φ1/φ2 timebase refactor (ADR 0002), *only if* the
+- **`v2.0.0`** — reserved for the sub-cycle bus-timing refactor (ADR 0005), *only if* the
   v0.8.0 residual triage concludes it is warranted. This is the one release expected to break
   byte-identity and save-state compatibility, and it will be announced in advance.
 

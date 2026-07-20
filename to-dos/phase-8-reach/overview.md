@@ -73,6 +73,6 @@ contract being *proven*, not merely specified — the ADR 0004 regression test f
 - [docs/frontend.md](../../docs/frontend.md) — where these features attach.
 - [docs/adr/0004-determinism-contract.md](../../docs/adr/0004-determinism-contract.md) —
   what netplay depends on.
-- [docs/adr/0002-fractional-timebase-refactor.md](../../docs/adr/0002-fractional-timebase-refactor.md)
+- [docs/adr/0002-lle-coprocessors.md](../../docs/adr/0002-lle-coprocessors.md)
   — why HLE is still barred.
 - [docs/STATUS.md](../../docs/STATUS.md) — the byte-identity claim this phase must not break.

@@ -82,7 +82,7 @@ how microcode gets uploaded and started in the first place. The Bus already expo
 
 - [docs/rsp.md](../../docs/rsp.md) — the SU/VU spec.
 - [docs/scheduler.md](../../docs/scheduler.md) — the lockstep contract.
-- [docs/adr/0002-fractional-timebase-refactor.md](../../docs/adr/0002-fractional-timebase-refactor.md)
+- [docs/adr/0002-lle-coprocessors.md](../../docs/adr/0002-lle-coprocessors.md)
   — the LLE decision.
 - `n64brew_wiki/markdown/Reality Signal Processor/CPU Core.md` — the SU and VU ISA.
 - `n64brew_wiki/markdown/Reality Signal Processor/CPU Pipeline.md` — dual issue.

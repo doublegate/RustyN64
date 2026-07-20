@@ -7,7 +7,7 @@
 //!    golden log (the golden source is STUBBED until a reference trace lands).
 //! 2. [`runner`] — [`run_until_complete`], which steps a [`System`] until a
 //!    completion sentinel (the n64-systemtest result protocol).
-//! 3. [`accuracy`] — the `AccuracyCoin`-equivalent scorer over a battery of
+//! 3. [`accuracy`] — a first-party probe scorer over a battery of
 //!    named probes (the battery itself is STUBBED).
 //! 4. [`frame`] — a `.snap` / screenshot frame-hash comparator for the visual
 //!    golden corpus (the hash is real; the corpus loader is a frontend job).

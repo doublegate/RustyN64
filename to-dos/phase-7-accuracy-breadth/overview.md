@@ -45,8 +45,8 @@ Out-of-scope:
 
 - Per-game hacks. If a title needs one, that is a modelling failure recorded in the ledger, not
   a fix.
-- The sub-cycle φ1/φ2 timebase refactor. Residuals that genuinely require it are deferred to
-  ADR 0002, beyond v1.0.
+- The sub-cycle bus-timing refactor. Residuals that genuinely require it are deferred to
+  ADR 0005, beyond v1.0.
 - Netplay, achievements, and tooling (Phase 8).
 
 ## Sprints

@@ -80,6 +80,6 @@ Concretely:
   iteration, or a future backend (wgpu-compute RDP) whose floating-point results differ across
   drivers. The software reference RDP stays the oracle precisely so a nondeterministic
   accelerator cannot become the definition of correct (ADR 0002).
-- ADR 0002's future sub-cycle timebase refactor is expected to break byte-identity with
+- ADR 0005's future sub-cycle bus-timing refactor is expected to break byte-identity with
   earlier versions. That is an accepted, announced, one-time break — not a relaxation of this
   contract, which continues to hold *within* any given version.

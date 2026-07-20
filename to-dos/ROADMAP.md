@@ -98,7 +98,7 @@ additive and off by default.
   `docs/STATUS.md` in sync; the release matrix and Pages green. Of those readiness items, Pages
   is already green and the release workflow is written but has never run, because no tag has
   been cut.
-- **Beyond v1.0** — the sub-cycle φ1/φ2 timebase refactor (ADR 0002), *only if* hard residuals
+- **Beyond v1.0** — the sub-cycle bus-timing refactor (ADR 0005), *only if* hard residuals
   from Phase 7 warrant it. The one release expected to break byte-identity and save-state
   compatibility; it will be announced in advance.
 

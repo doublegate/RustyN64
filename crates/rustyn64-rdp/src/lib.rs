@@ -13,7 +13,7 @@
 //!
 //! Part of the one-directional chip-crate graph (see `docs/architecture.md`):
 //! this crate depends on **exactly one** chip crate, `rustyn64-cart`, purely for
-//! its [`RdramBus`] memory-bus trait — the N64 analog of how `rustynes-ppu`
+//! its [`RdramBus`] memory-bus trait — the RDP reads texture and framebuffer
 //! reaches its tile storage through `rustynes-mappers`. `#![no_std]` + `alloc`.
 
 #![no_std]

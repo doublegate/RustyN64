@@ -8,7 +8,8 @@
 //! implements. See `docs/architecture.md` (the load-bearing facts).
 //!
 //! Per the `TetaNES` postmortem (carried over from `RustyNES`): one owner for
-//! all mutable state avoids the "CPU holds PPU but PPU also needs the CPU bus"
+//! all mutable state avoids the "CPU holds the RSP/RDP, but they also need the
+//! CPU's memory bus"
 //! borrow-checker fight. Each chip sees only the smaller trait it actually needs.
 
 // The MI interrupt block is a row of orthogonal hardware-latch booleans that map
@@ -130,7 +131,7 @@ impl Bus {
     /// The RSP is owned by the bus and `Rsp::tick` borrows `&mut impl RspBus`
     /// (which is the bus itself), so we move the chip out for the duration of
     /// the tick to satisfy the borrow checker, then move it back — the same
-    /// split-borrow pattern `RustyNES` uses for its PPU/APU tick. No allocation.
+    /// split-borrow pattern used to step each chip against the Bus. No allocation.
     pub fn rsp_tick(&mut self) {
         let mut rsp = core::mem::take(&mut self.rsp);
         rsp.tick(self);

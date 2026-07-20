@@ -64,8 +64,8 @@ of either core clock:
 A fractional accumulator (plus an event queue for timed completions, below)
 absorbs all of these without per-quirk fudging. This is the same direction
 RustyNES v2.0.0 "Timebase" is heading, designed in from day one here. The
-*future* refinement to sub-cycle φ1/φ2 bus phases (if a hard-tier ROM needs it)
-is ADR 0002 — a separate, later milestone, not the v0.1 scheduler.
+*future* refinement to sub-cycle bus-transaction resolution (if a hard-tier ROM needs it)
+is ADR 0005 — a separate, later milestone, not the v0.1 scheduler.
 
 ## Interfaces
 
@@ -172,5 +172,5 @@ progress per RCP tick; the event-queue refinement is a Phase-1/2 ticket.
 - The exact bus-arbitration cost model (CPU vs RSP vs RDP vs DMA on the shared
   RDRAM) — how deep before commercial-game correctness is reached vs CEN64's RTL
   depth (`ref-docs/research-report.md` §Open questions 1). Needs a prototype.
-- Whether any commercial title needs sub-cycle φ1/φ2 phase resolution (the ADR
+- Whether any commercial title needs sub-cycle bus-transaction resolution (the ADR
   0002 refactor) or whether whole-master-tick lockstep suffices through v1.0.
