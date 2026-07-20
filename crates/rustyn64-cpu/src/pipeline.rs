@@ -505,9 +505,35 @@ impl Pipeline {
             self.ic_rf = Latch::default();
             return;
         }
+        let pc = *next_pc;
+
+        // An instruction fetch must be word-aligned. An unaligned PC raises an
+        // address error (AdEL) rather than fetching -- so the bus is NOT touched,
+        // because the access itself is what is invalid.
+        //
+        // Not reachable from straight-line execution, which advances by 4 from an
+        // aligned reset vector. It becomes reachable with the jump and branch
+        // family (T-11-004), where a computed target can be unaligned, and it is
+        // already reachable through the public `Cpu::set_pc` the golden-log
+        // harness uses.
+        if !pc.is_multiple_of(4) {
+            self.abort_from(Stage::Ic, Exception::AddressError);
+            self.ic_rf = Latch {
+                occupied: true,
+                pc,
+                abort: Some(Exception::AddressError),
+                ..Latch::default()
+            };
+            // `next_pc` is deliberately NOT realigned. Rounding it down would
+            // silently "fix" the faulting address and let execution continue on a
+            // path hardware never takes -- turning a raised exception into a
+            // wrong answer. TODO(T-11-004): redirect to the exception vector,
+            // which is where hardware actually goes.
+            return;
+        }
+
         // TODO(T-11-003): fetch through the I-cache rather than straight off the
         // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
-        let pc = *next_pc;
         let word = bus.read_u32(pc as u32);
         // Decode here rather than at RF: the decoded branch must set
         // `in_delay_slot` on the instruction fetched NEXT cycle, so the decode
@@ -915,6 +941,50 @@ mod tests {
         }
         assert_eq!(regs.read(1), 0x7FFF_FFFF, "LUI+ORI built i32::MAX");
         assert_eq!(regs.read(3), 0, "the overflowing ADD must not commit");
+    }
+
+    /// An unaligned instruction fetch raises an address error instead of
+    /// fetching, and must not silently realign the PC — that would convert a
+    /// raised exception into a wrong answer on a path hardware never takes.
+    #[test]
+    fn an_unaligned_fetch_raises_address_error_without_realigning() {
+        struct Watch {
+            fetched: bool,
+        }
+        impl Bus for Watch {
+            fn read_u8(&mut self, _addr: u32) -> u8 {
+                0
+            }
+            fn write_u8(&mut self, _addr: u32, _val: u8) {}
+            fn read_u32(&mut self, _addr: u32) -> u32 {
+                self.fetched = true;
+                0
+            }
+        }
+        let mut bus = Watch { fetched: false };
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x8000_0002; // deliberately unaligned
+
+        p.advance(&mut bus, &mut regs, &mut pc);
+
+        assert_eq!(
+            p.ic_rf.abort,
+            Some(Exception::AddressError),
+            "an unaligned fetch must raise AdEL"
+        );
+        assert!(
+            !bus.fetched,
+            "the bus must not be accessed for a bad address"
+        );
+        assert_eq!(pc, 0x8000_0002, "the PC must NOT be silently realigned");
+
+        // And the faulting instruction must never retire.
+        let retired = p.retired;
+        for _ in 0..8 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.retired, retired, "a faulting fetch retired anyway");
     }
 
     /// The load interlock reproduces the hardware's documented imprecision.
