@@ -9,6 +9,28 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the determinism contract is exercised (T-11-007)
+
+ADR 0004 said "same seed + ROM ⇒ bit-identical output" and nothing checked it. Four tests now do.
+
+- **Bit-identical across runs** — the *whole* machine, not a summary: registers, `HI`/`LO`, PC,
+  all three cycle positions, and a content hash of all of RDRAM. A partial hash can hide a
+  divergence in a field that only later leaks into the hashed region. Repeated eleven times,
+  because an entropy dependency surfaces intermittently rather than on the very next run.
+- **Different seeds produce different machines**, added beyond the stated criteria — without it,
+  a build that ignored the seed entirely would pass the first test.
+- **Reset is reproducible** regardless of what ran before it.
+- **A source-level guard** rejects `std::time`, `SystemTime`, `Instant::now`, `getrandom`,
+  `thread::spawn`, `HashMap` and `HashSet` anywhere in the core crates. Deliberately *not*
+  behavioural: such dependencies are intermittent, so a run-twice test can pass for months
+  before the first divergence. This fails on the commit that introduces one, naming file and line.
+
+The content hash is FNV-1a rather than `DefaultHasher`, whose output is randomised per process
+— using it would have made the determinism test itself nondeterministic.
+
+Mutation-tested: ignoring the seed fails the second test, and naming a banned construct in any
+core crate fails the fourth.
+
 ### Added — the documented errata are recorded and pinned (T-11-005)
 
 `docs/cpu.md` gains a **"reproduced, not corrected"** section stating each VR4300 erratum as
