@@ -618,6 +618,29 @@ short of asking it.
    one probe, and I spent several rounds on mechanism-adjacent target selection without asking it.
    The same mistake as guessing mechanisms, one level up.
 
+   **Design for the COP1 wiring, derived from reading the existing paths.** FP arithmetic cannot
+   go through `exec::execute`: that function has no access to the FPR file, and an FP op reads two
+   FPRs and writes a third. The existing COP1 moves already solve this shape — `exec` returns a
+   `Cop0Access::Cop1(Cop1Access::…)` request and the **pipeline** performs it against `self.fpr`
+   (see the `ReadFpr` / `WriteFpr` handling). Follow that, do not invent a second mechanism:
+
+   1. **Decode.** In `OP_COP1`, the `rs` field is the format (`16`=S, `17`=D, `20`=W, `21`=L) and
+      `funct` is the operation. `Decoded` already carries what is needed: `rs`=fmt, `rt`=ft,
+      `rd`=fs, `sa`=fd. Add one `Op::FpArith` rather than ~60 variants.
+   2. **Request.** Add a `Cop1Access::Arith { fmt, funct, ft, fs, fd }` variant.
+   3. **Execute in the pipeline.** Read the operands via `fpr.read_s`/`read_d` (which apply the
+      `FR` view — do **not** use `read_raw`, that was ledger U-7's bug), dispatch into the existing
+      `fpu::add_s` / `mul_d` / `compare_s` / `cvt_*` / `to_i32` functions, merge the returned
+      `Outcome::flags` into `FCSR`, and write the result back through `write_s`/`write_d`.
+   4. **Exceptions.** `Outcome` already reports the IEEE flags; an enabled trap must raise
+      `Exception::FloatingPoint`, and `cvt_s_l`/`cvt_d_l` return `Err` for the bits-63:55 case that
+      must become `Unimplemented` (bit 17), **not** Invalid.
+
+   The FPU semantics are already written and tested in `fpu.rs`; this is wiring, and the risk is
+   in the flag/exception merge rather than the arithmetic. Do it format-by-format with the suite
+   re-run between formats, since COP1 is 2,413 failures and a regression here would be invisible
+   against that background.
+
    **Deferred area: PI direct-I/O writes are asynchronous, with a decaying latch.**
 
    The `cart-writing:` group. The same N64brew *Memory map* section documents it:
