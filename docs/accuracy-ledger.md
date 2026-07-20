@@ -258,6 +258,26 @@ than silence.
 
 ---
 
+### C-8 — COP0 CO `funct` 0x20-0x3F retires as a no-op
+
+**Claim.** A COP0 CO-class instruction whose `funct` is in `0x20..=0x3F` retires
+with no architectural effect, rather than raising Reserved Instruction.
+
+**Basis: inference, not a manual citation.** The VR4300 manual does not enumerate
+this range. The inference is from n64-systemtest's own structure: it probes for
+the `emux` emulator by executing `COP0 CO funct 0x20` from `init_allocator`,
+inside `entrypoint` — **before** `main` installs any exception handler. An RI
+there would derail the suite on every N64 it has ever run on, before it printed a
+line. The suite's constant for the probe is named
+`XDETECT_CODE_EXTENSIONS_20_3F`, i.e. emux claims exactly this range as extension
+space, which only works if hardware leaves it inert.
+
+**Untested.** Whether the target GPR is written (and with what) is unknown; we
+leave it untouched, so a probe reads back its prior value and concludes emux is
+absent. That is the correct outcome here but is not evidence about hardware.
+
+**Confirm with:** a hardware run of an `XDETECT` word with a known GPR value.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

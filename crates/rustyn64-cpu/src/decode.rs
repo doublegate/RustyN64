@@ -289,6 +289,30 @@ pub enum Op {
     /// both use it, so a `Reserved` decode blocks every real ROM. See
     /// `docs/cpu.md` and accuracy-ledger D-5.
     Cache,
+    /// A COP0 **CO-class instruction in the `funct` 0x20-0x3F extension range**,
+    /// executed as a no-op.
+    ///
+    /// # Why this is not `Reserved`
+    ///
+    /// n64-systemtest probes for the `emux` emulator by executing
+    /// `COP0 CO funct 0x20` (its `XDETECT`) and reading the result out of a GPR.
+    /// It does this from `init_allocator`, inside `entrypoint` -- **before**
+    /// `main` installs any exception handler. If a real VR4300 raised Reserved
+    /// Instruction there, the suite would derail on every N64 it has ever run
+    /// on, before printing a single line. It does not, so hardware must retire
+    /// these encodings harmlessly.
+    ///
+    /// The range is not a guess: the suite's own constant for the probe is named
+    /// `XDETECT_CODE_EXTENSIONS_20_3F`, i.e. emux claims `funct` 0x20-0x3F as
+    /// extension space precisely because the VR4300 leaves it inert.
+    ///
+    /// Decoding these to `Reserved` is what made the suite appear to hang: the
+    /// RI dispatched to an uninstalled `0x8000_0180`, ran zeros as `NOP`s into
+    /// `.text`, and faulted there instead.
+    ///
+    /// Recorded as an **inference** in the accuracy ledger (C-8), not a manual
+    /// citation -- the writeback behaviour of the target GPR is untested.
+    Cop0Extension,
     /// `CFC1 rt, fs` — read a COP1 **control** register.
     Cfc1,
     /// `CTC1 rt, fs` — write a COP1 **control** register.
@@ -790,6 +814,12 @@ pub const fn decode(word: u32) -> Decoded {
                         op: Op::Eret,
                         ..base
                     },
+                    // funct 0x20-0x3F: the emux extension space, inert on
+                    // hardware. See `Op::Cop0Extension`.
+                    0o40..=0o77 => Decoded {
+                        op: Op::Cop0Extension,
+                        ..base
+                    },
                     _ => base,
                 },
                 _ => base,
@@ -1095,5 +1125,37 @@ mod tests {
         assert_eq!(d.op, Op::Sync);
         assert_ne!(d.op, Op::Reserved, "SYNC must not raise");
         assert_eq!(d.dest, 0, "SYNC writes no register");
+    }
+
+    /// COP0 CO `funct` 0x20-0x3F is the **emux extension range** and must retire
+    /// as a no-op, not raise Reserved Instruction.
+    ///
+    /// n64-systemtest probes it from `init_allocator`, inside `entrypoint`,
+    /// **before** `main` installs an exception handler -- so an RI here derails
+    /// the suite before it prints a line. Decoding it to `Reserved` is exactly
+    /// what made the suite appear to hang: the RI dispatched to an uninstalled
+    /// `0x8000_0180`, ran zeros as `NOP`s into `.text`, and faulted there.
+    #[test]
+    fn cop0_co_extension_functs_are_inert_not_reserved() {
+        // The exact word n64-systemtest executes: COP0, rs = CO, funct = 0x20.
+        assert_eq!(decode(0x4280_0060).op, Op::Cop0Extension, "emux XDETECT");
+        // The rest of the documented extension space.
+        for funct in 0x20u32..=0x3F {
+            let word = (0x10 << 26) | (0x10 << 21) | funct;
+            assert_eq!(
+                decode(word).op,
+                Op::Cop0Extension,
+                "COP0 CO funct {funct:#04X} is extension space"
+            );
+        }
+        // Below 0x20 the real CO instructions and the genuinely reserved
+        // encodings are unaffected.
+        assert_eq!(decode((0x10 << 26) | (0x10 << 21) | 0x18).op, Op::Eret);
+        assert_eq!(decode((0x10 << 26) | (0x10 << 21) | 0x02).op, Op::Tlbwi);
+        assert_eq!(
+            decode((0x10 << 26) | (0x10 << 21) | 0x1F).op,
+            Op::Reserved,
+            "funct 0x1F is still reserved -- the range starts at 0x20"
+        );
     }
 }

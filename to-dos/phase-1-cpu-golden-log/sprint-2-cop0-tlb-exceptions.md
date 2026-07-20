@@ -412,29 +412,40 @@ short of asking it.
    `0x8000_0400`. It is benign precisely because the suite overwrites the vectors — which is the
    step that is failing.
 
-   **Not lost stores — the installer is never reached.** Probing for `0x8017_7C08`
-   (`install_exception_handlers`, from the symtab) reports `reached_install = false`: the PC never
-   arrives there before the fault. So this is a control-flow divergence upstream, not a memory-
-   write bug, and the store-side instrumentation would have found nothing.
+   **Resolved. The bug was ours, in the decoder.**
 
-   Note also that `install_handler` NOP-fills the target up to `capacity` after copying, so even a
-   partially-working install would have overwritten `0x8000_0000`. It still holds the ELF header,
-   which independently confirms the function never ran.
+   `init_allocator`'s print was not a panic — the function legitimately ends with
+   `println!("Heap range: …")`, and its own comment explains printing must wait for the allocator.
+   So the suite prints from `entrypoint`, *before* `main` installs handlers, by design.
 
-   **The RI site is inside `text_out::text_out`** (`0x8018_3270`, size `0x32C`) — the backend probe
-   that tries emux first. `text_out` running *before* the handlers are installed is the anomaly:
-   on hardware the emux probe deliberately raises RI and relies on the handler existing, so the
-   suite would never call it this early on purpose. The most likely explanation is that we are on
-   the **panic path** — a panic handler calls `text_out` to report — meaning something earlier in
-   `entrypoint`/`main` already failed.
+   That reframed the question: if the emux probe at `0x8018_32E8` raised Reserved Instruction on a
+   real VR4300, n64-systemtest would derail on every N64 it has ever run on, before printing a
+   line. It does not. **COP0 CO `funct` 0x20-0x3F must retire inertly**, and our decoder was
+   raising RI. The range is not a guess — the suite's probe constant is named
+   `XDETECT_CODE_EXTENSIONS_20_3F`, i.e. emux claims exactly that space because hardware leaves it
+   inert. Added as `Op::Cop0Extension`, recorded as ledger **C-8** (an inference, not a manual
+   citation; the target-GPR writeback is untested), with a decode test whose range boundary was
+   mutation-checked.
 
-   **Next probe:** capture `$ra` on entry to `text_out`, and the last few function entries before
-   it, to identify the caller. If it is the panic handler, the message argument points straight at
-   the failed check.
+   **The suite now boots and runs its tests:**
 
-   **Method note.** Every round of this diagnosis that guessed at a cause (run it longer, seed
-   `$gp`) was wrong; every round that asked *what is actually in memory at the faulting moment*
-   was right. The winning probe here was three words of RDRAM, not another million instructions.
+   ```text
+   Heap range: 801ad150 to 80300000
+   Running StartupTest...
+   Test 'StartupTest' failed: a=0x7006e460 b=0x7006e463. Initial COP0 Config
+   Running Unaligned LW exception...
+   Test 'Unaligned LW exception' failed: a=0x8010 b=0x10. Cause during AdEL exception
+   ```
+
+   Two genuine defects are now visible and exactly quantified, where before there was only
+   silence — COP0 `Config` reset low bits (`K0`), and a spurious `IP7` in `Cause` during AdEL
+   (`0x8010` vs `0x10`). Neither was reachable while the decoder swallowed the probe.
+
+   **Method note.** Four hypotheses, three wrong, and the wrong ones were all *mechanism* guesses
+   (`$gp` unset, lost stores, an early panic) that would each have taken real work to "fix". The
+   three cheap questions that actually moved it were: what is in memory at the faulting moment,
+   which symbol owns this address, and was this function ever executed. `readelf` and a
+   fourteen-entry control-transfer trace did more than 100M extra instructions ever did.
 
 Disassembling `0x8018_32E8` separated these in one step. Note what made it possible: the
 **instruction word**, not the address. `0x42800060` is meaningless as an address and unambiguous

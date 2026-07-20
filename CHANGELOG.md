@@ -82,35 +82,41 @@ Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set. Bu
 with `EPC` surviving exactly as the `EXL` gate requires. That also explains why `0x180` (general,
 `EXL=1`) was hotter than `0x000` (refill, `EXL=0`).
 
-The `$gp` hypothesis was **wrong**, and one command showed it: `_gp` is
-`NOTYPE LOCAL HIDDEN ABS 0x00000000` — the linker never assigns it, because Rust's MIPS backend
-does not use `$gp`-relative addressing. `$gp = 0` is correct, and seeding it would have invented a
-value and buried the real fault.
+### Fixed — n64-systemtest now boots and runs its tests
 
-**Root cause identified: the suite's exception vectors are never installed.** At the instant of the
-Reserved Instruction, `0x8000_0180` reads `0x0000_0000` and `0x8000_0000` still reads `0x7F454C46`
-(`\x7fELF`) — yet `main()` calls `install_exception_handlers` *before* the emux probe, so both
-should hold `la $26, <vector>; j generic; nop`. The installer's stores are being lost.
+**COP0 CO `funct` 0x20-0x3F decoded to `Reserved` instead of retiring inertly.**
+n64-systemtest probes for the `emux` emulator by executing `COP0 CO funct 0x20` from
+`init_allocator`, inside `entrypoint` — **before** `main` installs any exception handler. We raised
+Reserved Instruction; the RI dispatched to an uninstalled `0x8000_0180`, where zeros decode as
+`SLL $0, $0, 0` (`NOP`), so the CPU NOP-slid from `0x180` into `.text` at `0x8000_0400` and faulted
+there on a load through a zero base. `EXL` was set by then, so `EPC` retained the *first*
+exception, which is why the reported `ExcCode` (`TLBL`) and `EPC` (the RI site) disagreed and made
+this read as a TLB bug for three rounds.
 
-That accounts for the entire signature: the RI dispatches to `0x180`; zeros there decode as
-`SLL $0, $0, 0` (`NOP`); the CPU NOPs from `0x180` to `0x8000_0400` — precisely the recorded PC
-trail — and enters `.text` mid-function with no register context, faulting on a load through a zero
-base (`BadVAddr = 0xC`). `EXL` is set by then, so `EPC` retains the *first* exception's value,
-which is why the reported `ExcCode` (`TLBL`) and `EPC` (the RI site) disagreed and made this look
-like a TLB bug for three rounds.
+The range is not a guess: the suite's own probe constant is named
+`XDETECT_CODE_EXTENSIONS_20_3F` — emux claims `funct` 0x20-0x3F as extension space precisely
+because the VR4300 leaves it inert. Recorded as ledger **C-8**, an inference rather than a manual
+citation, since the writeback behaviour of the target GPR remains untested.
 
-Separately noted and **not** a bug: the image's first `PT_LOAD` is `off=0 vaddr=0x8000_0000
-filesz=0x400` — the ELF header itself, which the linker maps over the vector region. Loading it is
-correct ELF behaviour, and is harmless only because the suite is supposed to overwrite the vectors.
+The suite now boots and reports:
 
-Refined once more: the stores are not lost — `install_exception_handlers` (`0x8017_7C08`) is
-**never reached**. The RI site is inside `text_out::text_out`, the backend probe that tries emux
-first, and `text_out` running before the handlers are installed is itself the anomaly: on hardware
-that probe deliberately raises RI and relies on the handler existing. The likely explanation is
-that we are on the **panic path**, meaning something earlier in `entrypoint`/`main` already failed.
+```text
+Heap range: 801ad150 to 80300000
+Running StartupTest...
+Test 'StartupTest' failed: a=0x7006e460 b=0x7006e463. Initial COP0 Config
+Running Unaligned LW exception...
+Test 'Unaligned LW exception' failed: a=0x8010 b=0x10. Cause during AdEL exception
+```
 
-Every round of this diagnosis that guessed at a cause was wrong; every round that asked what was
-actually in memory, or actually executed, at the faulting moment was right.
+Two genuine accuracy defects are now visible and precisely quantified, where previously there was
+only silence: COP0 `Config` reset value low bits (`K0`), and a spurious `IP7` bit in `Cause` during
+an AdEL exception (`0x8010` vs `0x10`). Neither was reachable before.
+
+Wrong turns worth recording, since each cost a round: `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0`
+is correct); lost installer stores (the installer was never *reached*); and an early panic (the
+print was `init_allocator`'s legitimate `println!`, not a panic). Every round that guessed at a
+cause was wrong; every round that asked what was actually in memory, or actually executed, at the
+faulting moment was right.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems

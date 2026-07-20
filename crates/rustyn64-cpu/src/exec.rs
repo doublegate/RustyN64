@@ -686,11 +686,20 @@ pub const fn execute(
             })),
             ..NOTHING
         }),
-        // A valid COP1 encoding we do not implement. Raising here would be
-        // wrong: with `Status.CU1` SET, hardware would execute it, and pretending
-        // otherwise would make Sprint 3's arrival a behaviour change rather than
-        // an addition. The coprocessor-usable check happens in the pipeline.
-        Op::Cop1Unimplemented => Ok(NOTHING),
+        // Two distinct cases that share one behaviour -- retire with no
+        // architectural effect -- and are merged only because clippy rejects
+        // identical arms:
+        //
+        // - `Cop1Unimplemented`: a valid COP1 encoding we do not implement.
+        //   Raising here would be wrong -- with `Status.CU1` SET hardware would
+        //   execute it, so pretending otherwise would make Sprint 3's arrival a
+        //   behaviour change rather than an addition. The coprocessor-usable
+        //   check happens in the pipeline.
+        // - `Cop0Extension`: a COP0 CO instruction in the emux `funct`
+        //   0x20-0x3F extension range, inert on hardware (ledger C-8). Notably
+        //   the target GPR is **not** written, so a probe reads back whatever
+        //   was already there and concludes emux is absent.
+        Op::Cop1Unimplemented | Op::Cop0Extension => Ok(NOTHING),
         Op::Tlbr => Ok(Executed {
             cop0: Some(Cop0Access::Tlb(TlbOp::Read)),
             ..NOTHING
