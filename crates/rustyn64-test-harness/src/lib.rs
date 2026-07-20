@@ -77,3 +77,26 @@ mod tests {
         let _sys = system_for_tests(0);
     }
 }
+
+#[cfg(test)]
+mod feature_probe {
+    /// Proves the `test-roms` feature actually reached this crate.
+    ///
+    /// This exists because a sibling project hit a Cargo feature-unification
+    /// quirk where `cargo test --workspace --features test-roms` exited 0 while
+    /// silently never enabling the feature for its harness crate — so the entire
+    /// ROM-oracle gate ran zero tests and still reported success for an extended
+    /// period.
+    ///
+    /// The failure mode is invisibility, not breakage: an oracle that runs
+    /// nothing looks exactly like an oracle that passes. This test is named
+    /// distinctively so CI can assert it actually executed
+    /// (`.github/workflows/ci.yml`, the `test-roms` job), turning a silent skip
+    /// into a hard failure.
+    ///
+    /// Verified on this workspace: `--workspace --features test-roms` DOES
+    /// enable it here, and a bare `--workspace` does not.
+    #[test]
+    #[cfg(feature = "test-roms")]
+    fn probe_test_roms_feature_is_enabled() {}
+}

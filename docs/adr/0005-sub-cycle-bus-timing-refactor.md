@@ -58,6 +58,14 @@ analogue to what "Mesen2-style" was gesturing at for the other consoles.
 - Gate the refactor on **evidence**: a specific, reproducible test-ROM or commercial-title
   failure that is understood well enough to say which of the three mechanisms above is
   responsible. "Might need it eventually" is not a trigger.
+- Before a residual may be attributed to sub-cycle resolution at all, classify the failing
+  measurement as **absolute** or **differential**. A test that measures the interval between two
+  events on the same clock is invariant under any uniform change to when a subsystem is serviced
+  within the step — finer resolution cannot move it, and the real cause is a wrong duration, a
+  wrong divisor, or a missing event. A sibling project implemented and rolled back five successive
+  re-phasings of one timing track before recognising the whole family was immune. Differential
+  residuals do not count as evidence for this refactor; recording that classification is the
+  cheapest possible screen and costs one line in the ledger.
 - When it does land, treat it as a **major version** (`v2.0.0`), because it is expected to break
   byte-identity and save-state compatibility. It is announced in advance, and it is the only
   currently-anticipated candidate for a MAJOR bump (`to-dos/VERSION-PLAN.md`).

@@ -6,8 +6,41 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-Nothing yet. The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
+The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+### Added
+
+- [`docs/engineering-lessons.md`](docs/engineering-lessons.md) — failure patterns carried over
+  from two prior cycle-accurate emulators, generalised to this machine rather than copied.
+  Ordered by when each lesson must be acted on: structural decisions that are cheap now and
+  expensive-to-impossible later, then what "green" is permitted to mean, then debugging
+  discipline. Phase-specific entries are also filed as risks in the relevant phase overview.
+- Explicit `timeout-minutes` on every job in all three workflows (CI 30, Pages 20, release 45).
+  Jobs previously inherited GitHub's 6-hour default, where a hang holds a concurrency slot and
+  presents as "CI is slow" rather than as a hang.
+- Phase 1 exit criterion requiring an instruction's memory access to be a point the scheduler can
+  interleave around, with `Bus::poll_irq_at_phase` reaching a genuinely per-phase branch pinned by
+  a test. Retrofitting that structure later means rewriting the scheduler and every chip's step
+  contract at once.
+- `docs/testing-strategy.md`: re-blessing a visual golden now requires justification against an
+  external reference (ParaLLEl-RDP, Angrylion, hardware docs), never against our own previous
+  output, with the reference named in the commit message.
+
+### Changed
+
+- ADR 0005 now requires a residual to be classified as an absolute or differential measurement
+  before it can be attributed to sub-cycle bus timing. Differential measurements are invariant
+  under uniform re-phasing and cannot be evidence for the refactor.
+- Phase 5 records the per-game database as a bounded-authority data file: it may describe
+  cartridge identity only, the core never consults it, and a frontend-only reproduction is
+  treated as a load-path problem until proven otherwise.
+
+### Fixed
+
+- `Bus::poll_irq_at_phase` documented as not yet phase-sensitive. It ignores its `BusPhase`
+  argument in both the trait default and the `rustyn64-core` implementation, so the signature
+  implied per-phase interrupt sampling that does not exist yet.
 
 ## [0.1.0] "Foundation" — 2026-07-20
 

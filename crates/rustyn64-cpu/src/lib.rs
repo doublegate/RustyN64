@@ -90,6 +90,15 @@ pub trait Bus {
     ///
     /// Default: no interrupt pending. `rustyn64-core` overrides to OR the MI
     /// interrupt mask against the live RCP interrupt lines.
+    ///
+    /// **`phase` is not yet load-bearing.** Neither this default nor the
+    /// `rustyn64-core` implementation branches on it, so the hook currently
+    /// returns the same answer for both halves. Do not conclude from this
+    /// signature that interrupts are sampled per phase — they are not, yet.
+    /// Wiring it up is Phase 1 work (`to-dos/phase-1-cpu-golden-log/`), and the
+    /// requirement there is a test that fails if both phases behave identically.
+    /// See `docs/engineering-lessons.md` §3.2: instrumentation that cannot vary
+    /// looks like evidence and is not.
     fn poll_irq_at_phase(&mut self, _phase: BusPhase) -> bool {
         false
     }

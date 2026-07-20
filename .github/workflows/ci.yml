@@ -38,6 +38,7 @@ jobs:
   setup:
     name: select matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       os: ${{ steps.pick.outputs.os }}
       full: ${{ steps.pick.outputs.full }}
@@ -66,6 +67,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.setup.outputs.os) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96
@@ -88,6 +90,7 @@ jobs:
     needs: setup
     if: ${{ needs.setup.outputs.full == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96
@@ -96,10 +99,25 @@ jobs:
           targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
       - uses: ./.github/actions/linux-build-deps
-      - run: cargo test --workspace --features test-roms
+      # Assert the feature actually reached the harness rather than trusting the
+      # exit code. A sibling project hit a Cargo feature-unification quirk where
+      # this exact command exited 0 while silently never enabling `test-roms` for
+      # its harness crate, so the ROM-oracle gate ran nothing and still reported
+      # green. An oracle that runs zero tests looks identical to one that passes,
+      # so the exit code cannot distinguish them -- only the probe can.
+      - name: Run the test-ROM battery, and prove the feature was on
+        run: |
+          set -euo pipefail
+          cargo test --workspace --features test-roms 2>&1 | tee /tmp/test-roms.log
+          if ! grep -q "probe_test_roms_feature_is_enabled ... ok" /tmp/test-roms.log; then
+            echo "::error::the test-roms feature did not reach rustyn64-test-harness -- the battery ran nothing"
+            exit 1
+          fi
+          echo "test-roms feature confirmed active in the harness"
 
   no_std:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96
@@ -110,6 +128,7 @@ jobs:
   no-commercial-roms:
     name: no commercial ROMs
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # Layer 3 of the ROM guard (see .gitignore and the pre-commit hook).
@@ -121,6 +140,7 @@ jobs:
   wasm-bindgen-pin:
     name: trunk pin matches Cargo.lock
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # Trunk resolves the wasm-bindgen CLI from its own pin, which must equal

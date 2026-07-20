@@ -31,6 +31,7 @@ jobs:
           - { os: macos-latest,   target: aarch64-apple-darwin,     ext: "",     archive: tar.gz }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,   ext: ".exe", archive: zip }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +107,7 @@ jobs:
     # pipeline can be exercised without creating a release.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:

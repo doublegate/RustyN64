@@ -29,6 +29,11 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
       mismatched instruction rather than a bare failure.
 - [ ] A determinism regression test exists: two runs from the same seed produce byte-identical
       traces (closes the ADR 0004 gap that `docs/STATUS.md` currently records as unexercised).
+- [ ] An instruction's memory access is a point the scheduler can interleave around, not an
+      opaque interior step, and `Bus::poll_irq_at_phase` reaches at least one branch that
+      behaves differently per `BusPhase` — pinned by a test that fails if `Command` and `Data`
+      are made to behave identically. See the risk below for why this is an exit criterion
+      rather than later work.
 
 ## Scope
 
@@ -78,6 +83,18 @@ Phase 0 criterion (T-02-005) and must land before the 0-diff gate can be met.
 - **Delay slots and the load interlock leak into every instruction** — retrofitting them after
   the fact is a rewrite. Mitigated by building them into the step function in Sprint 1, before
   the instruction count grows.
+- **The step's internal structure is decided here, permanently** — this is the highest-leverage
+  and least-reversible decision in the phase. A CPU written as one indivisible `tick` per
+  instruction cannot later express "the memory access happened partway through, and a device saw
+  the bus in between"; adding that distinction afterwards means rewriting the scheduler and every
+  chip's step contract simultaneously, with accuracy work already standing on the old shape. A
+  sibling project reached exactly that point and paid for it. Note this is *not* the ADR 0005
+  sub-cycle refactor, which is genuinely deferrable — this is the coarser question of whether the
+  access is an addressable point at all, and it is not deferrable. `BusPhase` already models the
+  right hardware fact (`SYSCMD` multiplexes command and data on the same `SysAD` lines) but is
+  inert plumbing today: `poll_irq_at_phase` ignores its argument in both the trait default and
+  the `rustyn64-core` impl. Mitigated by the exit criterion above, and by
+  `docs/engineering-lessons.md` §1.2 / §3.2.
 
 ## Reference docs
 

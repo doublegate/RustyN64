@@ -76,6 +76,19 @@ so this phase is far easier to verify after Phase 3.
 - **PI domain timing looks ignorable** — it affects DMA duration, which affects the games that
   poll rather than wait for the interrupt. Mitigated by implementing the timing registers as
   timing, not as storage.
+- **The per-game database is a high-blast-radius data file** — one wrong row imitates a deep
+  engine bug perfectly, and will be investigated as one. A sibling project chased threading,
+  run-ahead, audio pacing, and achievements at length for a freeze whose cause was a load-time
+  override forcing a setting the emulated board controls itself; the core had been correct the
+  whole time. On N64 the DB is genuinely authoritative for save type (the header has no reliable
+  field), so the answer is not to stop using it but to bound it. Mitigated by three rules:
+  the DB may describe cartridge **identity** (save type, CIC variant, region) and must never
+  override state the hardware determines at runtime; the **core never consults the DB** — test
+  suites construct the machine directly, which keeps every accuracy gate and the ADR 0004
+  determinism contract DB-immune by construction; and a bug reproducing through the frontend but
+  not headless is treated as a load-path problem until proven otherwise. See
+  `docs/engineering-lessons.md` §3.4 for the full diagnostic, including why a partial state hash
+  can hide the divergence.
 
 ## Reference docs
 

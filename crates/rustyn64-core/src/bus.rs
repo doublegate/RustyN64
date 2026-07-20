@@ -191,6 +191,11 @@ impl CpuBus for Bus {
     }
 
     fn poll_irq_at_phase(&mut self, _phase: BusPhase) -> bool {
+        // TODO(T-CORE-02): `_phase` is ignored -- this returns the same answer
+        // for Command and Data, so the hook carries no phase information today.
+        // Real per-phase sampling lands with the Phase 1 interpreter; see the
+        // trait doc in `rustyn64-cpu` for the requirement attached to it.
+        //
         // IP2 asserts when an unmasked MI line is set.
         let i = self.rcp.mi_intr;
         let m = self.rcp.mi_mask;

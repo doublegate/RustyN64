@@ -93,6 +93,26 @@ committed golden (`tests/golden/`, `screenshots/`). Commercial ROMs live in
 baselines are committed. The RDP/VI bit-exactness is graded here against an
 Angrylion reference scan-out.
 
+#### Re-blessing a golden requires an external justification
+
+A stored baseline proves output is **unchanged**, never that it is **correct**.
+Re-blessing to make CI green converts the oracle into a rubber stamp, and the
+defect then ships green — a sibling project shipped a visual regression through
+four consecutive releases exactly this way, because the change re-baselined both
+the snapshot and screenshot corpora to accept its own output.
+
+So: a golden may only be updated after the **new** output is shown correct
+against something outside this project — ParaLLEl-RDP's fuzz suite, Angrylion
+reference output, or hardware documentation. Never against our own previous
+output, and never because the diff "looks right". The commit message must state
+which external reference was consulted; a baseline change with no stated
+justification fails review.
+
+This is also why Layer 3 matters disproportionately: n64-systemtest is
+self-judging, decides pass/fail internally, and therefore **cannot be
+re-blessed**. Keep at least one oracle with that property as the primary
+CPU/RSP gate.
+
 #### The commercial corpus (`tests/roms/external/commercial/`)
 
 A curated local oracle set, staged per-developer from personally-owned
