@@ -1528,14 +1528,16 @@ impl Pipeline {
         let fr = fr_of(&self.cop0);
         // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
         // into `FpArith`, so this is a two-way split, not a table.
-        // `funct` 5/6/7 — ABS/MOV/NEG — are **not** arithmetic: they read only
-        // `fs`, touch no exponent or significand, round nothing, and raise
-        // nothing. Handled ahead of the arithmetic split so `ft` is never read
-        // for an instruction whose `ft` field is architecturally zero.
+        // `funct` 5/6/7 read only `fs`, so they are handled ahead of the
+        // arithmetic split and `ft` is never read for an instruction whose
+        // `ft` field is architecturally zero.
+        //
         // **`MOV` (funct 6) alone is the pure bit move.** `ABS` (5) and `NEG`
         // (7) look like sign flips and are not: they classify their operand,
         // raising Invalid on a signalling NaN and unimplemented-operation on a
         // subnormal or an MSB-clear NaN, and they REPLACE the `Cause` field.
+        // An earlier version of this comment described all three as raising
+        // nothing, which was true of `MOV` and never of its neighbours.
         //
         // n64-systemtest settles which is which by construction rather than by
         // description: `MOV.S` is driven through
