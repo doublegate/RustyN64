@@ -30,6 +30,18 @@ Three distinctions that are easy to collapse, each pinned:
 Flags populate **both** the `Cause` and sticky `Flags` fields, since hardware sets them together;
 writing only one leaves software unable to distinguish "raised now" from "raised at some point".
 
+**`C.cond.fmt` derives all sixteen conditions from the bit encoding** rather than enumerating
+mnemonics. The 4-bit field is systematic (UM Table 7-11): bit 3 raises Invalid when unordered, and
+bits 2/1/0 select less / equal / unordered. So `C.EQ` is 2, `C.OLT` is 4, `C.OLE` is 6, and every
+signalling variant is its ordinary form plus 8. Sixteen hand-written cases invites getting one
+wrong; deriving them makes all sixteen correct or none.
+
+Two things that fall out of the encoding and are worth stating: **`Greater` matches no bit** —
+`fs > ft` is "none of less, equal or unordered", which is why three condition bits suffice — and
+**the signalling forms raise Invalid on a merely quiet NaN**, which is the entire difference
+between `C.EQ` and `C.SEQ` and means the quiet/signalling test used elsewhere is not sufficient
+here on its own.
+
 The **FP multiplication erratum is deliberately absent**: it is a property of specific early console
 revisions and belongs with the revision model. Implementing it inline would make every multiply on
 every console wrong.

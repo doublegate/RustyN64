@@ -312,6 +312,116 @@ pub const fn neg_d(a: f64) -> f64 {
     f64::from_bits(a.to_bits() ^ 0x8000_0000_0000_0000)
 }
 
+/// The outcome of an ordered comparison: which of the three mutually exclusive
+/// relations holds.
+///
+/// Named rather than three bools, because exactly one is true and a bool triple
+/// makes the impossible states representable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Relation {
+    /// `fs < ft`.
+    Less,
+    /// `fs == ft`.
+    Equal,
+    /// `fs > ft`.
+    Greater,
+    /// At least one operand is a NaN, so no ordering exists.
+    Unordered,
+}
+
+/// `C.cond.fmt` — compare two single-precision values.
+///
+/// # The condition encoding
+///
+/// The 4-bit `cond` field is **systematic**, not sixteen unrelated mnemonics
+/// (UM Table 7-11):
+///
+/// | Bit | Meaning |
+/// | --- | --- |
+/// | 3 | raise Invalid when the operands are **unordered** (the signalling forms) |
+/// | 2 | true when `fs < ft` |
+/// | 1 | true when `fs == ft` |
+/// | 0 | true when the operands are **unordered** |
+///
+/// So `C.EQ` is `cond = 2`, `C.OLT` is `4`, `C.OLE` is `6`, `C.UN` is `1`, and
+/// each signalling variant is its ordinary form plus 8. Writing the sixteen
+/// mnemonics as sixteen cases invites getting one wrong; deriving them from the
+/// bits makes all sixteen correct or none.
+///
+/// Note **`Greater` appears in no bit**: `fs > ft` is simply "none of less,
+/// equal or unordered", which is why three condition bits suffice. Software
+/// tests it by branching on the complement of `C.OLE`.
+#[must_use]
+pub fn compare_s(a: f32, b: f32, cond: u8) -> Outcome<bool> {
+    let rel = relation_f32(a, b);
+    compare_result(rel, cond, is_snan_f32(a) || is_snan_f32(b))
+}
+
+/// `C.cond.fmt` — compare two double-precision values.
+#[must_use]
+pub fn compare_d(a: f64, b: f64, cond: u8) -> Outcome<bool> {
+    let rel = relation_f64(a, b);
+    compare_result(rel, cond, is_snan_f64(a) || is_snan_f64(b))
+}
+
+/// Which relation holds between two `f32`s.
+///
+/// Exact equality is **correct here and epsilon comparison would be wrong**:
+/// `C.EQ` is defined as IEEE equality, not approximate equality, so a tolerance
+/// would make the instruction report a relation the hardware does not.
+#[allow(clippy::float_cmp)]
+fn relation_f32(a: f32, b: f32) -> Relation {
+    if a.is_nan() || b.is_nan() {
+        Relation::Unordered
+    } else if a < b {
+        Relation::Less
+    } else if a == b {
+        Relation::Equal
+    } else {
+        Relation::Greater
+    }
+}
+
+/// Which relation holds between two `f64`s.
+///
+/// Exact equality is **correct here and epsilon comparison would be wrong**:
+/// `C.EQ` is defined as IEEE equality, not approximate equality, so a tolerance
+/// would make the instruction report a relation the hardware does not.
+#[allow(clippy::float_cmp)]
+fn relation_f64(a: f64, b: f64) -> Relation {
+    if a.is_nan() || b.is_nan() {
+        Relation::Unordered
+    } else if a < b {
+        Relation::Less
+    } else if a == b {
+        Relation::Equal
+    } else {
+        Relation::Greater
+    }
+}
+
+/// Apply the condition bits to a computed relation.
+fn compare_result(rel: Relation, cond: u8, snan: bool) -> Outcome<bool> {
+    let unordered = matches!(rel, Relation::Unordered);
+    let value = (matches!(rel, Relation::Less) && cond & 0b100 != 0)
+        || (matches!(rel, Relation::Equal) && cond & 0b010 != 0)
+        || (unordered && cond & 0b001 != 0);
+
+    let mut flags = Flags::NONE;
+    // Bit 3 selects the SIGNALLING forms, which raise Invalid on *any*
+    // unordered comparison -- including one caused by a merely quiet NaN. That
+    // is the whole difference between `C.EQ` and `C.SEQ`, and it is why the
+    // quiet/signalling test used elsewhere is not sufficient on its own here.
+    if unordered && cond & 0b1000 != 0 {
+        flags.invalid = true;
+    }
+    // A signalling NaN operand raises Invalid whatever the condition.
+    if snan {
+        flags.invalid = true;
+    }
+    Outcome { value, flags }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,7 +560,92 @@ mod tests {
                 assert_eq!(out.flags, Flags::NONE, "{a} op {b} raised something");
             }
         }
-        assert_eq!(add_d(1.0, 2.0).value, 3.0);
-        assert_eq!(mul_d(3.0, 4.0).value, 12.0);
+        // Exact bit comparison, not a tolerance: these values are exactly
+        // representable, so anything but the exact result is a bug -- and a
+        // tolerance would hide it.
+        assert_eq!(add_d(1.0, 2.0).value.to_bits(), 3.0f64.to_bits());
+        assert_eq!(mul_d(3.0, 4.0).value.to_bits(), 12.0f64.to_bits());
+    }
+
+    /// The condition field is **systematic**, so this checks the named mnemonics
+    /// against the derivation rather than trusting it.
+    #[test]
+    fn the_named_compare_conditions_fall_out_of_the_bit_encoding() {
+        // cond, name, expected for [1<2, 2==2, 3>2, NaN]
+        let cases: &[(u8, &str, [bool; 4])] = &[
+            (0, "F", [false, false, false, false]),
+            (1, "UN", [false, false, false, true]),
+            (2, "EQ", [false, true, false, false]),
+            (3, "UEQ", [false, true, false, true]),
+            (4, "OLT", [true, false, false, false]),
+            (5, "ULT", [true, false, false, true]),
+            (6, "OLE", [true, true, false, false]),
+            (7, "ULE", [true, true, false, true]),
+        ];
+        for &(cond, name, want) in cases {
+            let got = [
+                compare_s(1.0, 2.0, cond).value,
+                compare_s(2.0, 2.0, cond).value,
+                compare_s(3.0, 2.0, cond).value,
+                compare_s(f32::NAN, 2.0, cond).value,
+            ];
+            assert_eq!(got, want, "C.{name} (cond {cond})");
+        }
+    }
+
+    /// **The signalling forms raise Invalid on any unordered compare**, even for
+    /// a *quiet* NaN. That is the entire difference between `C.EQ` and `C.SEQ`,
+    /// and it means the quiet/signalling test used elsewhere is not sufficient
+    /// on its own here.
+    #[test]
+    fn the_signalling_compare_forms_raise_on_a_quiet_nan() {
+        let qnan = f32::from_bits(0x7FC0_0001);
+        assert!(!is_snan_f32(qnan), "it really is quiet");
+
+        let out = compare_s(qnan, 1.0, 2); // C.EQ
+        assert!(!out.value);
+        assert!(!out.flags.invalid, "the non-signalling form stays quiet");
+
+        let out = compare_s(qnan, 1.0, 10); // C.SEQ
+        assert!(!out.value, "the comparison result is unchanged");
+        assert!(out.flags.invalid, "only the exception differs");
+    }
+
+    /// A **signalling** NaN raises Invalid whatever the condition, including the
+    /// non-signalling forms.
+    #[test]
+    fn a_signalling_nan_operand_raises_for_every_condition() {
+        let snan = f32::from_bits(0x7F80_0001);
+        for cond in 0..16u8 {
+            assert!(
+                compare_s(snan, 1.0, cond).flags.invalid,
+                "cond {cond} must raise on a signalling NaN"
+            );
+        }
+    }
+
+    /// `Greater` appears in **no** condition bit — it is "none of less, equal or
+    /// unordered", which is why three bits suffice for the relation.
+    #[test]
+    fn greater_matches_no_condition_bit() {
+        for cond in 0..8u8 {
+            assert!(
+                !compare_s(3.0, 2.0, cond).value,
+                "cond {cond}: greater matches no bit"
+            );
+        }
+    }
+
+    /// Doubles use the same derivation, and `-0.0 == 0.0` as IEEE requires.
+    #[test]
+    fn double_compares_agree_and_signed_zeros_are_equal() {
+        assert!(compare_d(1.0, 2.0, 4).value, "C.OLT");
+        assert!(compare_d(2.0, 2.0, 2).value, "C.EQ");
+        assert!(compare_d(-0.0, 0.0, 2).value, "-0.0 == 0.0 (IEEE)");
+        assert!(compare_d(f64::NAN, 1.0, 1).value, "C.UN");
+        assert!(
+            !compare_d(f64::NAN, 1.0, 2).value,
+            "C.EQ is false when unordered"
+        );
     }
 }
