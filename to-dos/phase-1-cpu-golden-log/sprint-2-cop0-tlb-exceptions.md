@@ -579,6 +579,41 @@ short of asking it.
 
    Confirm against the `cart: Read32` cases that currently **pass**, so this does not regress them.
 
+   **Done** — and smaller than the three steps above predicted. No `CpuBus::read_u16` was needed:
+   a halfword load is already issued as two byte reads, and both land correctly under the byte
+   rule `byte = (addr & !1) + (addr & 3)`. Only `read_u32` needed an override, to read the PI
+   window raw instead of applying the shift per byte. One real trap: **ISViewer lives inside the
+   PI range** and must keep claiming its window first, or the debug channel's read-back handshake
+   breaks — the existing round-trip test caught it immediately. Failure count 2,901 to **2,899**.
+
+   **Next area: PI direct-I/O writes are asynchronous, with a decaying latch.**
+
+   The `cart-writing:` group. The same N64brew *Memory map* section documents it:
+
+   > All writes are performed **asynchronously** by the PI. Making a write in this area will in
+   > fact just cause the PI to latch the value internally, and release the VR4300 immediately. The
+   > write will then happen in background. The status of the ongoing write will be reflected by the
+   > PI "I/O busy" status bit, which will be set to 1 until the write is finalized. While a write
+   > is ongoing, further writes are ignored, and reads (from any address) return the 32-bit value
+   > that is being written.
+
+   So a cart write must: latch the 32-bit value; set `PI_STATUS.IOBUSY`; make **every** PI-bus read
+   return the latched value while busy; and ignore further writes until it finalises. Note the PI
+   does not know a device is read-only, so ROM-area writes follow the same path and are simply
+   dropped by the ROM.
+
+   That much is documented and directly testable — it covers `Write32/Read32`, the `Write8/16/64`
+   variants, and `check PI.STATUS IOBUSY`.
+
+   **The decay duration is NOT documented here, and must not be invented.** The
+   `cart-writing: Temp value decay` tests bound it only relatively: still visible after 0 loop
+   iterations, gone after 110. Turning that into a cycle count requires knowing the loop's cost,
+   and the honest options are to derive the finalisation time from the PI domain timing registers
+   (`PGS`/`RLS`/`PWD`/`LAT`, which we do not model) or to leave those four tests failing and say
+   so. Implementing the latch **without** a decay would flip them from failing-absent to
+   failing-stuck, which is not progress — the previous note in this ticket made exactly that
+   mistake in the opposite direction and it was worth recording, so do not repeat it.
+
    **One hypothesis already refuted, so nobody re-spends it:** a spurious `IP2` from the PI
    interrupt, which the Bus now mirrors on every PI write and which software must clear
    explicitly. **Ruled out by inspection** — `Bus::poll_irq` ANDs each MI line against
