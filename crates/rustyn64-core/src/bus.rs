@@ -250,6 +250,41 @@ impl Bus {
         &self.isviewer_out
     }
 
+    /// Is this address on the **PI external bus** — the memory-mapped window
+    /// through which the CPU reaches cart ROM, SRAM and `FlashRAM`?
+    ///
+    /// Ranges from N64brew *Memory map*: `0x0500_0000-0x1FBF_FFFF` and
+    /// `0x1FD0_0000-0x7FFF_FFFF`. Addresses outside them are DMA-only.
+    const fn is_pi_bus(addr: u32) -> bool {
+        matches!(addr, 0x0500_0000..=0x1FBF_FFFF | 0x1FD0_0000..=0x7FFF_FFFF)
+    }
+
+    /// Map a PI-bus address through the **16-bit-bus off-by-two**.
+    ///
+    /// The PI external bus is 16 bits wide and the RCP ignores access size, so
+    /// every VR4300 read becomes two 16-bit bus reads: the MSB at the CPU's
+    /// address with bit 0 ignored, then the LSB at `address + 2`. The RCP thus
+    /// returns the word starting at `addr & !1`, while the CPU selects its byte
+    /// lane assuming a word at `addr & !3`. **That two-byte disagreement is the
+    /// bug**, and it is hardware behaviour, not an approximation:
+    ///
+    /// > effectively a 16-bit read at `0x1000'0002` returns the 16-bit word at
+    /// > `0x1000'0004`
+    /// > — N64brew, *Memory map*, PI external bus
+    ///
+    /// Working it through, `byte = (addr & !1) + (addr & 3)`, which collapses to
+    /// "add two when bit 1 is set". A halfword load needs no special case
+    /// because it is issued as two byte reads and both land correctly; a **word**
+    /// load must bypass this entirely, which is why [`Bus::read_u32`] reads the
+    /// PI window raw.
+    const fn pi_bus_byte(addr: u32) -> u32 {
+        if addr & 2 != 0 {
+            addr.wrapping_add(2)
+        } else {
+            addr
+        }
+    }
+
     /// Is this address in the PI register block?
     const fn is_pi_register(addr: u32) -> bool {
         addr >= rustyn64_cart::pi::PI_BASE && addr < rustyn64_cart::pi::PI_BASE + 0x34
@@ -395,9 +430,40 @@ impl CpuBus for Bus {
                 .copied()
                 .unwrap_or(0);
         }
+        if Self::is_pi_bus(addr) {
+            return self.cart.pi_read(Self::pi_bus_byte(addr));
+        }
         // TODO(T-CORE-01): decode the remaining RCP register windows
         // (SP/DP/VI/AI/SI/RI/MI) and the PIF ROM/RAM.
         self.cart.pi_read(addr)
+    }
+
+    /// Read an aligned big-endian word.
+    ///
+    /// Overridden for the **PI external bus** only. The default composes four
+    /// [`Bus::read_u8`] calls, which would apply the 16-bit-bus off-by-two to
+    /// each byte independently and mangle bytes 2 and 3 of every word. A word
+    /// access puts its own address on the bus, so `addr & !1 == addr` and the
+    /// word is simply the four bytes there.
+    fn read_u32(&mut self, addr: u32) -> u32 {
+        // ISViewer lives INSIDE the PI bus range and is claimed first, exactly
+        // as it is on the byte path. Letting the cart branch win here routes the
+        // debug channel's read-back to ROM and breaks the detection handshake
+        // the suite uses to select it.
+        if Self::is_pi_bus(addr) && !Self::is_isviewer(addr) {
+            return u32::from_be_bytes([
+                self.cart.pi_read(addr),
+                self.cart.pi_read(addr.wrapping_add(1)),
+                self.cart.pi_read(addr.wrapping_add(2)),
+                self.cart.pi_read(addr.wrapping_add(3)),
+            ]);
+        }
+        u32::from_be_bytes([
+            self.read_u8(addr),
+            self.read_u8(addr.wrapping_add(1)),
+            self.read_u8(addr.wrapping_add(2)),
+            self.read_u8(addr.wrapping_add(3)),
+        ])
     }
 
     fn write_u8(&mut self, addr: u32, val: u8) {
@@ -908,5 +974,56 @@ mod pi_tests {
         bus.write_u32(Bus::SP_RD_LEN, 7);
         assert_eq!(bus.spmem[0x1000], 0x99, "landed in IMEM");
         assert_eq!(bus.spmem[0], 0, "and NOT in DMEM");
+    }
+
+    /// **The PI external bus is 16 bits wide and the RCP ignores access size**,
+    /// so a byte or halfword read returns data two bytes further on than the
+    /// address asked for, while a word read does not. This is a hardware bug we
+    /// must reproduce, not an approximation.
+    ///
+    /// n64-systemtest pins all three against a ROM beginning
+    /// `01 23 45 67 89 AB CD EF`.
+    #[test]
+    fn a_pi_bus_sub_word_read_lands_two_bytes_late() {
+        let mut bus = Bus::new();
+        // A `.z64` header, then a byte-index pattern from 0x40 on.
+        let mut rom = alloc::vec![0u8; 0x1000];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        for (i, b) in rom.iter_mut().enumerate().skip(0x40) {
+            *b = (i & 0xFF) as u8;
+        }
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("valid z64");
+        let base = 0x1000_0040u32;
+
+        // A WORD read is unaffected: the access puts its own address on the bus.
+        assert_eq!(
+            bus.read_u32(base),
+            0x4041_4243,
+            "a word read is the four bytes at its own address"
+        );
+
+        // A BYTE read at offset 2 returns the byte at offset 4.
+        assert_eq!(bus.read_u8(base + 2), 0x44, "offset 2 reads byte 4");
+        assert_eq!(bus.read_u8(base + 3), 0x45, "offset 3 reads byte 5");
+        // ...but offsets 0 and 1 are unaffected: bit 1 is clear.
+        assert_eq!(bus.read_u8(base), 0x40);
+        assert_eq!(bus.read_u8(base + 1), 0x41);
+
+        // A HALFWORD needs no special case -- it is two byte reads, and both
+        // land correctly by the same rule.
+        let hi = (u16::from(bus.read_u8(base + 2)) << 8) | u16::from(bus.read_u8(base + 3));
+        assert_eq!(hi, 0x4445, "halfword at offset 2 reads offset 4");
+    }
+
+    /// The quirk is confined to the PI window. RDRAM must be untouched, or every
+    /// ordinary load in the machine shifts by two bytes.
+    #[test]
+    fn the_pi_off_by_two_does_not_leak_into_rdram() {
+        let mut bus = Bus::new();
+        for (i, b) in bus.rdram[0..8].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        assert_eq!(bus.read_u8(0x0000_0002), 2, "RDRAM is NOT shifted");
+        assert_eq!(bus.read_u32(0x0000_0000), 0x0001_0203);
     }
 }

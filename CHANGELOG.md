@@ -164,6 +164,23 @@ where hardware gives `0x8` — a `CE = 2` left behind by the COP2 usability chec
 batch. `CE` is now written on every exception: the unit for CpU, zero otherwise. Failure count
 2,932 to **2,901**, and the run reaches deeper into the TLB group.
 
+**11. PI external-bus sub-word reads ignored the 16-bit-bus off-by-two.** The PI bus is 16 bits
+wide and the RCP ignores access size, so every VR4300 read becomes two 16-bit bus reads — the MSB
+at the CPU's address with bit 0 ignored, then the LSB at `address + 2`. The RCP therefore returns
+the word starting at `addr & !1` while the CPU selects its byte lane assuming a word at
+`addr & !3`, and that two-byte disagreement is a **hardware bug we must reproduce**: a 16-bit read
+at `0x1000_0002` returns the halfword at `0x1000_0004`. Byte reads take the same shift; word reads
+do not, since a word access puts its own address on the bus. `Bus::read_u32` is now overridden to
+read the PI window raw, because the four-`read_u8` default would apply the shift per byte and
+mangle bytes 2 and 3 of every word.
+
+Two things this nearly got wrong, both caught by checking rather than reasoning. The mechanism is
+**not** an advancing address latch, which is what the two failing data points suggested — the
+N64brew *Memory map* page states the real cause. And it needs no `CpuBus::read_u16`: a halfword
+load is already issued as two byte reads, and both land correctly under the byte rule. ISViewer
+lives *inside* the PI range and must keep claiming its window first, or the debug channel's
+read-back handshake breaks — which the existing round-trip test caught immediately.
+
 This is the fourth time in this project that a comment asserting a rule has turned out to assert
 more than the evidence supported — alongside the `$sp` placement, the `DIV` numerator condition,
 and the `CACHE` translation split. The pattern is specific enough to be worth naming: prose that
