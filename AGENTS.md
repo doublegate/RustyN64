@@ -160,8 +160,8 @@ this section does not override it. Reconciling the two:
 
 - The **repo owner is the reviewer of record.** This is a single-maintainer
   repository; there is no reviewer pool, and pretending otherwise would make the
-  requirement ceremonial. (It is public as of 2026-07-20; that changes who can
-  *read* it, not who reviews.)
+  requirement ceremonial. (Public visibility changes who can *read* it, not who
+  reviews.)
 - Authorization for an agent to run the ceremony and squash-merge is **standing,
   not per-PR** — granted once, and it covers routine work: implementing a decided
   ticket, docs, dependency bumps, test additions.
