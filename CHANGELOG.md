@@ -9,6 +9,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — a stale test-ROM sentinel, and T-11-006 re-scoped
+
+Investigating whether Sprint 1 could actually close turned up a documentation error that would
+have cost real debugging time, and a dependency the plan had wrong.
+
+- **The n64-systemtest completion string in our docs was from 2021.** `docs/testing-strategy.md`
+  and `tests/roms/README.md` both quoted `Done! Tests: 262. Failed: 0`. That string does **not**
+  appear in the committed v2.1.0 ROM — verified with `strings`, zero occurrences. The real
+  summary is `Finished in 12.34s. Base: Failed 3 of 262 tests (98% success rate)`, so the
+  sentinel regex must target `Failed (\d+) of (\d+) tests`. Anything written against the old
+  string would have matched nothing, silently. Both documents corrected, and the three text
+  sinks the ROM actually uses (emux COP0 hooks, ISViewer, SC64) are now documented — it writes
+  to **no fixed RDRAM address**, and with no sink implemented `text_out` is a silent no-op.
+- **T-11-006 re-scoped.** n64-systemtest cannot report anything in Sprint 1: it dies at
+  `src/main.rs:68` on `CTC1 $31`, the third statement after entry, and needs COP1 control,
+  COP0, MI, PI, VI, a heap and exception vectors first — a large fraction of its tests fault
+  deliberately and would hang rather than fail. No flag avoids this; category selection is
+  compile-time. Retargeted at **`basic.z64`**, which is uniquely suitable: it is the only
+  Dillon ROM that does not PI-DMA itself at startup, its result protocol is a single GPR
+  (`r30`: 0 running, `-1` pass, `1..=5` failing index), and it needs only the integer core plus
+  the T-11-004 branch/jump family. The n64-systemtest goal moves to T-11-009 in Sprint 2.
+- Two prerequisites nobody had written down are now acceptance criteria: **KSEG0/KSEG1 segment
+  stripping** (nothing does it today, so no ROM can execute) and a **direct-load path**. Also
+  recorded that Dillon's suite has no licence, so its test must **skip** rather than fail when
+  the ROM is absent.
+- T-11-008 notes that fitting `M` needs a ROM that runs long enough to measure — realistically
+  n64-systemtest's default-off `timing` set, which is Sprint 2. The transaction model is Sprint
+  1 work; the measurement may not be.
+
 ### Added — loads, stores, and the unaligned family (T-11-003)
 
 - `mem.rs` — load/store data shaping as pure byte-level transforms. Width and signedness rules
