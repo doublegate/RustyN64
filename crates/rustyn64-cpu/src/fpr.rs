@@ -3,10 +3,17 @@
 //! 32 physical 64-bit **FGRs**. How software sees them depends on
 //! `Status.FR` (UM §6.3.5, and the FPR/FGR figures in Ch. 7):
 //!
-//! | `FR` | View |
+//! The view applies to **64-bit accesses only**:
+//!
+//! | `FR` | 64-bit (double / `DMxC1`) view |
 //! | --- | --- |
-//! | 1 | 32 independent 64-bit FPRs — FPR *n* **is** FGR *n* |
-//! | 0 | 16 usable FPRs, **even-numbered only**; a double is the FGR **pair** `FGR[n+1]:FGR[n]` |
+//! | 1 | FPR *n* **is** FGR *n* — 32 independent 64-bit registers |
+//! | 0 | 64-bit values use **even** indices; the value is the FGR **pair** `FGR[n+1]:FGR[n]` |
+//!
+//! **Single precision is unaffected**: all 32 indices are valid under both
+//! settings, and a `.S` value is always the low 32 bits of FGR *n*. `FR = 0`
+//! does not make half the register file disappear — it changes how a *double*
+//! is laid out across it.
 //!
 //! # Why this indirection is not optional
 //!
@@ -73,8 +80,11 @@ impl Fpr {
         if fr {
             self.fgr[i]
         } else {
-            // FR = 0: only even FPRs exist. An odd `n` is architecturally
-            // undefined; forcing it even is a documented choice, not a fact.
+            // FR = 0: 64-bit accesses use even indices. An odd `n` here is
+            // architecturally *undefined* (UM Ch. 17) -- forcing it even is a
+            // documented choice, not a fact. Single-precision access to odd
+            // registers remains perfectly valid; only this 64-bit path is
+            // constrained.
             let even = i & !1;
             ((self.fgr[even | 1] & 0xFFFF_FFFF) << 32) | (self.fgr[even] & 0xFFFF_FFFF)
         }
@@ -184,9 +194,12 @@ mod tests {
         );
     }
 
-    /// `FR = 0` forces the register number even, so FPR 3 aliases FPR 2. That is
-    /// a **documented choice** for an architecturally undefined case, not a
-    /// hardware fact — this test pins the choice so changing it is deliberate.
+    /// For **64-bit** accesses, `FR = 0` forces the register number even, so a
+    /// double at FPR 3 aliases FPR 2. That is a **documented choice** for an
+    /// architecturally undefined case (UM Ch. 17), not a hardware fact — this
+    /// test pins the choice so changing it is deliberate.
+    ///
+    /// Single-precision access to odd registers is unaffected and valid.
     #[test]
     fn fr_clear_forces_the_register_even_by_choice_not_by_evidence() {
         let mut f = Fpr::new();

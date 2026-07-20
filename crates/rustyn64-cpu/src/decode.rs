@@ -795,10 +795,12 @@ pub const fn decode(word: u32) -> Decoded {
                 _ => base,
             }
         }
-        // COP1. Only the CONTROL moves are implemented (T-12-006); arithmetic
-        // is Sprint 3. Everything else in this opcode decodes to
-        // `Cop1Unimplemented` rather than `Reserved`, because the encodings are
-        // valid and must raise Coprocessor Unusable, not Reserved Instruction.
+        // COP1. The CONTROL moves (T-12-006) and the DATA moves (T-13-001) are
+        // implemented; FP **arithmetic** is not, and the FP load/store forms
+        // have their own primary opcodes below. Everything else in this opcode
+        // decodes to `Cop1Unimplemented` rather than `Reserved`, because the
+        // encodings are valid and must raise Coprocessor Unusable, not Reserved
+        // Instruction.
         OP_COP1 => {
             let rs = ((word >> 21) & 31) as u8;
             match rs {

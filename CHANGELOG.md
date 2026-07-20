@@ -13,17 +13,21 @@ The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 
 32 physical 64-bit **FGRs**, with the `Status.FR` view applied on access rather than assumed:
 
-| `FR` | View |
+The view applies to **64-bit accesses only**:
+
+| `FR` | 64-bit (double / `DMxC1`) view |
 | --- | --- |
-| 1 | 32 independent 64-bit FPRs — FPR *n* **is** FGR *n* |
-| 0 | 16 usable FPRs, even-numbered only; a double is the FGR **pair** `FGR[n+1]:FGR[n]` |
+| 1 | FPR *n* **is** FGR *n* — 32 independent 64-bit registers |
+| 0 | 64-bit values use **even** indices; the value is the FGR **pair** `FGR[n+1]:FGR[n]` |
+
+`FR = 0` does not make half the register file disappear — **single precision is unaffected**, with
+all 32 indices valid under both settings. It changes how a *double* is laid out across the file.
 
 Storing 32 `u64`s and indexing directly is right for `FR = 1` and silently wrong for `FR = 0`,
 where a double written to FPR 2 must land in FGRs 2 **and** 3. Both modes occur on real N64
-software — IPL3 leaves `FR` set, but plenty of games clear it.
-
-**Single precision is identical under both settings**, which is what makes the bug survive casual
-testing: every `.S` operation works and only doubles break. A single-precision write therefore
+software — IPL3 leaves `FR` set, but plenty of games clear it. And because single precision is
+identical under both, the bug survives casual testing: every `.S` operation works and only doubles
+break. A single-precision write therefore
 **preserves** the upper half of its FGR, since with `FR = 0` that half is the other word of a
 double the program never touched.
 
