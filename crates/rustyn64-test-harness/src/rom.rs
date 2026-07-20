@@ -30,6 +30,8 @@ pub const RDRAM_LOAD_OFFSET: usize = 0x1000;
 pub enum LoadError {
     /// Smaller than the header, so there is no payload at all.
     TooSmall,
+    /// No ELF header, so there is no IPL3 handoff to synthesise.
+    NoElfHeader,
 }
 
 /// Load `rom` into RDRAM the way IPL3 would, and set the PC to `entry`.
@@ -59,4 +61,60 @@ pub fn load_direct(system: &mut System, rom: &[u8], entry: u64) -> Result<usize,
 pub fn entry_point(rom: &[u8]) -> Result<u64, LoadError> {
     let b = rom.get(8..12).ok_or(LoadError::TooSmall)?;
     Ok(u64::from(u32::from_be_bytes([b[0], b[1], b[2], b[3]])))
+}
+
+/// Seed RSP DMEM with what **IPL3 would have written**, for a harness that
+/// loads a ROM directly instead of running the boot ROM.
+///
+/// The direct-load path skips IPL3 entirely, which is fine for a ROM that only
+/// needs its code in RDRAM — and wrong for one that reads IPL3's handoff area.
+/// n64-systemtest does exactly that on its **second and third instructions**:
+///
+/// ```text
+/// let memory_size       = SPMEM::read(0);
+/// let elf_header_offset = (SPMEM::read(12) >> 16) << 8;
+/// MemoryMap::init(memory_size, elf_header_offset);
+/// ```
+///
+/// With DMEM reading zero it built a memory map from nothing and jumped into a
+/// zero-filled region, NOP-sliding until it fell off the top of RDRAM — 191
+/// instructions in, which is why raising the instruction budget never helped.
+///
+/// `elf_offset` is located by searching the image for the ELF magic rather than
+/// hard-coded, so this does not silently rot if the ROM is rebuilt.
+///
+/// # Errors
+///
+/// [`LoadError::NoElfHeader`] if the image carries no ELF header, since then
+/// there is nothing meaningful to hand over.
+pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadError> {
+    let elf_offset = find_elf_offset(rom).ok_or(LoadError::NoElfHeader)?;
+
+    // Word 0: the RDRAM size IPL3 detected.
+    let size = u32::try_from(system.bus.rdram.len()).unwrap_or(u32::MAX);
+    write_spmem_word(system, 0, size);
+    // Word 12: the ELF offset, in the packed form the suite unpacks with
+    // `(v >> 16) << 8`. Storing the offset directly would be read as a
+    // different number entirely.
+    write_spmem_word(
+        system,
+        12,
+        u32::try_from(elf_offset >> 8).unwrap_or(0) << 16,
+    );
+    Ok(elf_offset)
+}
+
+/// Find the ELF header's offset within a ROM image.
+fn find_elf_offset(rom: &[u8]) -> Option<usize> {
+    rom.windows(4).position(|w| w == b"\x7fELF")
+}
+
+/// Write a big-endian word into RSP DMEM.
+fn write_spmem_word(system: &mut System, offset: usize, value: u32) {
+    let bytes = value.to_be_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if let Some(dst) = system.bus.spmem.get_mut(offset + i) {
+            *dst = *b;
+        }
+    }
 }

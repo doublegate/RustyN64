@@ -19,8 +19,17 @@ The cause is in the suite's own `entrypoint()` — `memory_size` and `elf_header
 **SP DMEM**, which is a stub returning 0. IPL3 writes the detected RDRAM size there at boot; we do
 not, so the suite builds its memory map from zeros and jumps into nothing.
 
-The fix is small and specific: make SP DMEM readable and seed it as IPL3 does. That is a
-harness/boot concern rather than the RSP LLE core, so it does not pull Phase 2 forward.
+SP DMEM is now readable (`Bus::spmem`) and seeded by `rom::seed_ipl3_handoff` with what IPL3 would
+have written. That was **necessary but not sufficient**: the suite runs far longer and still
+diverges at the same instruction, because of a second, larger problem underneath.
+
+**n64-systemtest is an ELF and the harness does a flat copy.** Its `PT_LOAD` segments target
+`0x8000_0000` onward, while `load_direct` places `ROM[0x1000 + k]` at `entry + k`. Every address in
+the image is therefore wrong, which is why the first jump — to a perfectly valid `0x8018368C` —
+lands in zeros. The ROM-header entry point is *not* the problem; the load mapping is.
+
+The next step is concrete: parse the ELF and load each `PT_LOAD` to its `vaddr`, zeroing
+`memsz - filesz` for BSS. A harness concern — an IPL3 stand-in — not emulation.
 
 Recorded because the *method* mattered more than the finding: three budget increases
 (2 → 30k → 3M → 45M) all looked like progress and none were. Probing for the first divergence

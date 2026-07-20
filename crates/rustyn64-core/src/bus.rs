@@ -76,6 +76,14 @@ pub struct Bus {
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
+    /// RSP DMEM + IMEM as plain memory (`0x0400_0000..0x0400_2000`).
+    ///
+    /// The RSP does not execute yet, but its memory must be **readable**: boot
+    /// code and IPL3 use DMEM as a handoff area, and n64-systemtest reads its
+    /// RDRAM size and ELF offset straight out of it on its second and third
+    /// instructions. A stub returning 0 made it build a memory map from zeros
+    /// and jump into nothing.
+    pub spmem: alloc::boxed::Box<[u8]>,
     /// The `ISViewer` buffer, as guest-visible memory.
     isviewer: alloc::boxed::Box<[u8]>,
     /// Text the guest has flushed through the `ISViewer` channel.
@@ -115,6 +123,7 @@ impl Default for Bus {
             // `vec![..].into_boxed_slice()` allocates straight on the heap —
             // no 8 MiB stack temporary (which `Box::new([0; N])` would create).
             pi: rustyn64_cart::pi::Pi::new(),
+            spmem: alloc::vec![0u8; Self::SPMEM_LEN].into_boxed_slice(),
             isviewer: alloc::vec![0u8; 0x20 + Self::ISVIEWER_LEN].into_boxed_slice(),
             isviewer_out: alloc::vec::Vec::new(),
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
@@ -172,6 +181,16 @@ impl Bus {
 
     /// Map a CPU physical address into RDRAM (`0..RDRAM_SIZE`), or `None` if it
     /// targets a memory-mapped register region instead.
+    /// Base of RSP DMEM. IMEM follows at `+0x1000`.
+    pub const SPMEM_BASE: u32 = 0x0400_0000;
+    /// DMEM + IMEM, 4 KiB each.
+    pub const SPMEM_LEN: usize = 0x2000;
+
+    /// Is this address in RSP DMEM/IMEM?
+    const fn is_spmem(addr: u32) -> bool {
+        addr >= Self::SPMEM_BASE && addr < Self::SPMEM_BASE + Self::SPMEM_LEN as u32
+    }
+
     /// Base of the **`ISViewer`** debug window, in cart address space.
     ///
     /// Not real N64 hardware — it is a flashcart/emulator convention that
@@ -260,6 +279,13 @@ impl CpuBus for Bus {
             let w = self.pi.read(addr);
             return (w >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_spmem(addr) {
+            return self
+                .spmem
+                .get((addr - Self::SPMEM_BASE) as usize)
+                .copied()
+                .unwrap_or(0);
+        }
         if Self::is_isviewer(addr) {
             // Readable as ordinary memory, which is what makes the suite's
             // write-magic-then-read-back probe succeed and select this channel
@@ -300,6 +326,12 @@ impl CpuBus for Bus {
                 let shift = 8 * (3 - (addr & 3));
                 let w = (self.pi.read(addr) & !(0xFF << shift)) | (u32::from(val) << shift);
                 self.pi_write_word(addr, w);
+            }
+            return;
+        }
+        if Self::is_spmem(addr) {
+            if let Some(b) = self.spmem.get_mut((addr - Self::SPMEM_BASE) as usize) {
+                *b = val;
             }
             return;
         }

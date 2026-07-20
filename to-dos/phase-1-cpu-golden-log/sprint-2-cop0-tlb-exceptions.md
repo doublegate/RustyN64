@@ -283,9 +283,30 @@ MemoryMap::init(memory_size, elf_header_offset);
 SP DMEM at boot**; we do not, so the suite builds its memory map from zeros and jumps into
 nothing. Everything after that is noise.
 
-**Next step is therefore small and specific**: make SP DMEM readable and seed it as IPL3 does —
-word 0 = RDRAM size, and the ELF-header offset the suite reads from word 12. That is a harness/boot
-concern, not the RSP LLE core, so it does not pull Phase 2 forward.
+**SP DMEM was necessary but not sufficient.** Seeding it (word 0 = RDRAM size, word 12 = the
+packed ELF offset) is now implemented and let the suite run far longer — but it still diverges at
+the same instruction, because there is a second, larger problem underneath.
+
+**The real blocker: n64-systemtest is an ELF and the harness does a flat copy.** Its `PT_LOAD`
+segments are:
+
+| Segment | ROM offset | vaddr | `filesz` | `memsz` |
+| --- | --- | --- | --- | --- |
+| 0 | `0x1900` | `0x8000_0000` | `0x400` | `0x400` |
+| 1 | `0x1D00` | `0x8000_0400` | `0x18F560` | `0x18F560` |
+| 2 | `0x191260` | `0x8018_F960` | `0x1D340` | `0x1D340` |
+| 3 | `0x1AE5A0` | `0x801A_CCA0` | `0x60` | `0x4B0` (BSS) |
+
+`load_direct` places `ROM[0x1000 + k]` at `entry + k`, i.e. `0x800A15E8 + k`. The segments want to
+land at `0x8000_0000` onward. So **every address in the image is wrong**, which is why the first
+jump — to a perfectly valid `0x8018368C` — lands in zeros.
+
+**Next step, concrete:** parse the ELF at the offset located by magic and load each `PT_LOAD` to
+its `vaddr`, zeroing `memsz - filesz` for BSS (segment 3 needs `0x450` bytes of it). That is a
+harness concern — an IPL3 stand-in — not emulation, and it does not pull Phase 2 forward.
+
+Note the entry point in the **ROM header** (`0x800A15E8`) is inside segment 1 and remains correct;
+what was wrong was the load *mapping*, not the entry.
 
 Worth recording *how* this was found: three successive budget increases (2 → 30k → 3M → 45M
 instructions) all looked like progress and none were. Probing for the **first divergence** found
