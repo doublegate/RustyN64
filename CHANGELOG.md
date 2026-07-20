@@ -107,6 +107,7 @@ reporting stage, which points at further unimplemented hardware (VI/RSP initiali
 than at the channel. Recorded as a measurement rather than a claim of progress toward `Failed: 0`.
 
 ||||||| parent of ae2d14c (feat(cpu): FPU arithmetic (T-13-002))
+
 ### Added — the PI DMA engine (T-14-001), pulled forward from Phase 5
 
 n64-systemtest loads the rest of its own ELF from cart through PI, so the Phase 1 exit criterion —

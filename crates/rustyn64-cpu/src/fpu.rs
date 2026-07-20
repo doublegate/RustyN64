@@ -5,13 +5,22 @@
 //! [`crate::cop1`] (the control registers) so each can be tested without the
 //! others.
 //!
-//! # Rounding
+//! # Rounding — and where it does *not* yet apply
 //!
 //! `FCSR.RM` selects the mode (UM §7.2.4): 0 nearest-even, 1 toward zero,
-//! 2 toward +∞, 3 toward −∞. Rust's `f32`/`f64` arithmetic is nearest-even
-//! only, so the other three modes are applied by **rounding the operands'
-//! exact result**, which is why the operations here return a value *and* the
-//! flags they raised rather than mutating `FCSR` directly — the caller owns it.
+//! 2 toward +∞, 3 toward −∞.
+//!
+//! **The conversions honour it; the arithmetic does not.** [`round_f64`] and the
+//! integer conversions take a [`Rounding`] explicitly, but `add_*`, `sub_*`,
+//! `mul_*` and `div_*` use Rust's `f32`/`f64` operators, which are nearest-even
+//! only. So a program that sets `FCSR.RM` to toward-zero and then adds will get
+//! a nearest-even result here and a toward-zero one on hardware.
+//!
+//! That gap is **stated rather than implied**, because an earlier version of
+//! this comment claimed the modes were applied throughout while the arithmetic
+//! ignored them — see `docs/engineering-lessons.md` §3.3c. Closing it needs
+//! either soft-float arithmetic or per-operation re-rounding of an
+//! exactly-computed result; it is accuracy-ledger **U-8**.
 //!
 //! # What is deliberately absent
 //!
@@ -90,6 +99,24 @@ pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
 }
 
 /// The `FCSR` cause/flag bits an operation can raise (UM §7.2.2).
+///
+/// # Completeness
+///
+/// **Not all five are fully modelled yet**, and a caller must not assume they
+/// are:
+///
+/// | Flag | State |
+/// | --- | --- |
+/// | `invalid` | complete — signalling NaNs and undefined forms |
+/// | `div_by_zero` | complete |
+/// | `overflow` | complete for arithmetic and narrowing conversions |
+/// | `inexact` | **partial** — set for overflow and conversions, not for ordinary rounding |
+/// | `underflow` | **partial** — set for conversions, not for gradual arithmetic underflow |
+///
+/// Detecting ordinary inexactness and gradual underflow needs the exact result
+/// before rounding, which the hardware float operators do not expose. Recorded
+/// as accuracy-ledger **U-8** alongside the rounding-mode gap rather than left
+/// for a caller to discover by trusting a bit that never sets.
 ///
 /// Returned rather than written, because `FCSR` belongs to
 /// [`crate::cop1::Cop1Control`] and an arithmetic helper that reached into it
@@ -203,6 +230,14 @@ pub struct Outcome<T> {
     pub flags: Flags,
 }
 
+impl<T> Outcome<T> {
+    /// Did the operation underflow?
+    #[must_use]
+    pub const fn underflowed(&self) -> bool {
+        self.flags.underflow
+    }
+}
+
 /// Is this `f32` a **signalling** NaN?
 ///
 /// The distinction matters: a signalling NaN raises Invalid, a quiet one does
@@ -298,7 +333,12 @@ pub fn div_s(a: f32, b: f32) -> Outcome<f32> {
     let mut flags = classify_f32(value, a, b);
     // Division by zero is its own flag, and only for a finite non-zero
     // numerator: 0/0 is Invalid (an undefined form), not `DivByZero`.
-    if b == 0.0 && a != 0.0 && !a.is_nan() {
+    // `a.is_finite()` is load-bearing and was missing: `inf / 0` is NOT a
+    // division-by-zero. IEEE reserves the flag for a **finite** non-zero
+    // numerator, because only there does a zero divisor create an infinity out
+    // of nothing -- `inf / 0` was already infinite. Without the check the
+    // condition disagreed with the comment directly above it.
+    if b == 0.0 && a != 0.0 && a.is_finite() {
         flags.div_by_zero = true;
         // ...and it is NOT an overflow, though the result is infinite. The
         // generic classifier would call it one, so undo that here.
@@ -343,7 +383,8 @@ pub fn mul_d(a: f64, b: f64) -> Outcome<f64> {
 pub fn div_d(a: f64, b: f64) -> Outcome<f64> {
     let value = a / b;
     let mut flags = classify_f64(value, a, b);
-    if b == 0.0 && a != 0.0 && !a.is_nan() {
+    // See `div_s`: a finite non-zero numerator, not merely a non-NaN one.
+    if b == 0.0 && a != 0.0 && a.is_finite() {
         flags.div_by_zero = true;
         flags.overflow = false;
         flags.inexact = false;
@@ -605,6 +646,12 @@ pub fn cvt_s_d(v: f64) -> Outcome<f32> {
         if value.is_infinite() {
             flags.overflow = true;
             flags.inexact = true;
+        } else if value == 0.0 && v != 0.0 {
+            // A non-zero double that narrows to zero has underflowed -- the
+            // one underflow case this module can detect without the exact
+            // pre-rounding result.
+            flags.underflow = true;
+            flags.inexact = true;
         } else if f64::from(value) != v {
             flags.inexact = true;
         }
@@ -780,6 +827,41 @@ mod tests {
         let f = div_s(0.0, 0.0).flags;
         assert!(f.invalid, "0/0 is an undefined form");
         assert!(!f.div_by_zero);
+    }
+
+    /// **`inf / 0` is not a division by zero.** IEEE reserves the flag for a
+    /// *finite* non-zero numerator, because only there does a zero divisor
+    /// create an infinity out of nothing — `inf / 0` was already infinite.
+    ///
+    /// The condition originally tested `!a.is_nan()`, which let infinities
+    /// through and disagreed with the comment directly above it.
+    #[test]
+    fn an_infinite_numerator_over_zero_is_not_a_division_by_zero() {
+        for a in [f32::INFINITY, f32::NEG_INFINITY] {
+            let f = div_s(a, 0.0).flags;
+            assert!(!f.div_by_zero, "{a} / 0 is not DivByZero");
+            assert!(!f.invalid, "nor is it an undefined form");
+        }
+        // The finite case still is.
+        assert!(div_s(1.0, 0.0).flags.div_by_zero);
+        assert!(div_d(-2.5, 0.0).flags.div_by_zero);
+        for a in [f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!div_d(a, 0.0).flags.div_by_zero);
+        }
+    }
+
+    /// A double that narrows to zero has **underflowed** — the one underflow
+    /// case detectable without the exact pre-rounding result.
+    #[test]
+    fn a_double_narrowing_to_zero_underflows() {
+        let out = cvt_s_d(1e-300);
+        assert!(out.underflowed(), "1e-300 has no f32 representation");
+        assert!(out.flags.inexact);
+        assert_eq!(out.value, 0.0);
+        // A representable small value does not.
+        assert!(!cvt_s_d(1e-30).underflowed());
+        // ...and a genuine zero is not an underflow.
+        assert!(!cvt_s_d(0.0).underflowed());
     }
 
     /// A NaN produced from **non-NaN** inputs is an undefined form and raises
