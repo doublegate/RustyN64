@@ -42,6 +42,29 @@ Two things that fall out of the encoding and are worth stating: **`Greater` matc
 between `C.EQ` and `C.SEQ` and means the quiet/signalling test used elsewhere is not sufficient
 here on its own.
 
+**Conversions** (`CVT`, and the shared rounding the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` forms use)
+carry one VR4300-specific rule worth calling out. UM §7.5.2:
+
+> *"When converting a long integer to a single- or double-precision floating-point number
+> (`CVT.[S,D].L`), bits 63:55 of the 64-bit integer must be all zeroes or ones, otherwise the
+> VR4300 processor raises a floating-point instruction exception."*
+
+That is a **hardware limitation, not IEEE behaviour** — the value is representable and the
+processor simply declines. Converting it anyway produces a *correct* number where hardware traps,
+so software's fixup path never runs and the divergence surfaces far downstream from its cause. It
+raises `Unimplemented` (`FCSR` bit 17), which is deliberately **not** Invalid: "this processor
+cannot do this" is a different thing from "the operation is undefined", and conflating them sends
+the handler down the numerical-error path.
+
+Two implementation notes that bit during development:
+
+- Rust's float→int cast **saturates**, so `i32::MAX as f32 as i32` is `i32::MAX` again and a
+  round-trip inexactness check silently never fires for exactly the value most likely to be
+  inexact. The checks go through `f64` instead.
+- `Nearest` is **ties-to-even**, not the round-half-away-from-zero that most `round` functions
+  implement and that no MIPS mode selects. This crate is `no_std`, so `trunc`/`floor`/`ceil`/
+  `round_ties_even` are implemented here rather than pulling in `libm` for four functions.
+
 The **FP multiplication erratum is deliberately absent**: it is a property of specific early console
 revisions and belongs with the revision model. Implementing it inline would make every multiply on
 every console wrong.
