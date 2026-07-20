@@ -39,9 +39,10 @@
 use crate::Bus;
 use crate::alu::HiLo;
 use crate::cop0::Cop0;
+use crate::cop1::Cop1Control;
 use crate::decode::{Decoded, decode};
 use crate::exception;
-use crate::exec::{Cop0Access, MemOp, TlbOp, WriteBack, execute};
+use crate::exec::{Cop0Access, Cop1Access, MemOp, TlbOp, WriteBack, execute};
 use crate::mem;
 use crate::regs::Regs;
 use crate::tlb::Tlb;
@@ -94,6 +95,11 @@ pub enum Exception {
     Trap,
     /// A reserved / unimplemented opcode.
     ReservedInstruction,
+    /// A coprocessor instruction with that unit disabled in `Status.CU`.
+    CoprocessorUnusable {
+        /// Which coprocessor, for `Cause.CE`.
+        unit: u8,
+    },
     /// A TLB refill — no entry matched. Takes the **refill** vector.
     TlbRefill {
         /// The faulting access was a store (`TLBS` rather than `TLBL`).
@@ -291,6 +297,8 @@ pub struct Pipeline {
     /// address and `Self::access` reports only which exception. Reconstructing
     /// it at dispatch time is impossible — the `MemOp` has been consumed.
     fault_vaddr: u64,
+    /// COP1 **control** registers (T-12-006). Arithmetic is Sprint 3.
+    pub cop1: Cop1Control,
     /// The joint TLB and its instruction micro-TLB (T-12-004).
     pub tlb: Tlb,
     /// The COP0 register file (T-12-001).
@@ -349,6 +357,7 @@ impl Pipeline {
             retired: 0,
             pending: None,
             fault_vaddr: 0,
+            cop1: Cop1Control::new(),
             tlb: Tlb::new(),
             cop0: Cop0::new(),
             ll_bit: false,
@@ -541,6 +550,11 @@ impl Pipeline {
             // CP0 operations and `TLBR`/`TLBP` write COP0 registers, so doing
             // them earlier would let a following `MFC0` read the result a cycle
             // before hardware produces it.
+            if let Some(Cop0Access::Cop1(Cop1Access::WriteControl { dest, value })) =
+                self.dc_wb.cop0
+            {
+                self.cop1.ctc1(dest, value);
+            }
             if let Some(Cop0Access::Tlb(op)) = self.dc_wb.cop0 {
                 match op {
                     TlbOp::Read => {
@@ -641,6 +655,17 @@ impl Pipeline {
         // The COP0 READ happens here, in DC (UM §4.6.9). The write does not --
         // it happens in WB, and keeping them in different stages is what makes
         // the CP0 bypass interlock expressible at all.
+        if out.occupied
+            && out.abort.is_none()
+            && let Some(Cop0Access::Cop1(Cop1Access::ReadControl { src, dest })) = out.cop0
+        {
+            out.write_back = WriteBack::Gpr {
+                dest,
+                // CFC1 is a 32-bit move, so the result is sign-extended into the
+                // 64-bit GPR exactly as MFC0's is.
+                value: u64::from(self.cop1.cfc1(src)) as u32 as i32 as i64 as u64,
+            };
+        }
         if out.occupied
             && out.abort.is_none()
             && let Some(Cop0Access::Read { src, dest, wide }) = out.cop0
@@ -797,6 +822,51 @@ impl Pipeline {
             // forms above.
             _ => WriteBack::None,
         })
+    }
+
+    /// Which coprocessor an instruction needs, if that unit is disabled.
+    ///
+    /// `Status.CU` (31:28) is one bit per unit. Two rules that are easy to miss:
+    ///
+    /// - **COP0 is usable from kernel mode regardless of `CU0`** — otherwise the
+    ///   CPU could not run an exception handler before `Status` had been set up,
+    ///   which is a chicken-and-egg the hardware does not have. Kernel mode is
+    ///   `KSU == 0`, or `EXL`/`ERL` set.
+    /// - A **valid but unimplemented** COP1 encoding still checks `CU1`. With
+    ///   `CU1` set it must *not* raise here, so that Sprint 3's arithmetic is an
+    ///   addition rather than a behaviour change.
+    fn unusable_coprocessor(&self, d: Decoded) -> Option<u8> {
+        use crate::decode::Op;
+        let unit = match d.op {
+            Op::Mfc0
+            | Op::Dmfc0
+            | Op::Mtc0
+            | Op::Dmtc0
+            | Op::Tlbr
+            | Op::Tlbwi
+            | Op::Tlbwr
+            | Op::Tlbp
+            | Op::Eret => 0,
+            Op::Cfc1 | Op::Ctc1 | Op::Cop1Unimplemented => 1,
+            _ => return None,
+        };
+        let status = self.cop0.read(crate::cop0::reg::STATUS);
+        if unit == 0 {
+            /// `Status.KSU` (4:3) — 0 is kernel, 1 supervisor, 2 user.
+            const KSU: u64 = 0b11 << 3;
+            /// `Status.EXL` (1) or `Status.ERL` (2): either forces kernel mode
+            /// regardless of `KSU`, which is what makes an exception handler's
+            /// first instructions safe.
+            const EXL_OR_ERL: u64 = 0b110;
+            let kernel = status & KSU == 0 || status & EXL_OR_ERL != 0;
+            if kernel {
+                return None;
+            }
+        }
+        if status & (1 << (28 + u64::from(unit))) == 0 {
+            return Some(unit);
+        }
+        None
     }
 
     /// Mirror a TLB shutdown into `Status.TS`.
@@ -959,6 +1029,17 @@ impl Pipeline {
             out.rs_val = self.bypass(out.decoded.rs, regs);
             out.rt_val = self.bypass(out.decoded.rt, regs);
             let hilo = self.bypass_hi_lo(regs);
+            // Coprocessor usability is checked BEFORE execution, in EX (UM
+            // §4.7.5 lists CPU among the EX-stage exceptions). COP0 is exempt in
+            // kernel mode regardless of `CU0`, which is why the CPU can run
+            // exception handlers before any `Status` setup has happened.
+            if let Some(unit) = self.unusable_coprocessor(out.decoded) {
+                self.abort_from(Stage::Ex, Exception::CoprocessorUnusable { unit });
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
             match execute(out.decoded, out.rs_val, out.rt_val, hilo, out.pc) {
                 Ok(e) => {
                     out.write_back = e.write_back;
@@ -3148,6 +3229,162 @@ mod tests {
             (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
             crate::exception::exc_code::TLBL,
             "it went straight to the refill exception"
+        );
+    }
+
+    // --- COP1 control and coprocessor usability (T-12-006) -----------------
+
+    /// The exact instruction n64-systemtest dies on: `CTC1 $rt, $31`, its fourth
+    /// statement. If this does not work the suite reports nothing at all, and
+    /// every COP0/TLB test in Sprint 2 is unreachable behind it.
+    #[test]
+    fn ctc1_to_fcr31_works_which_is_what_unblocks_the_oracle() {
+        use crate::cop0::reg;
+        // CTC1: opcode 0o21, rs = 0o06, rt = GPR, rd = fs.
+        const fn ctc1(rt: u32, fs: u32) -> u32 {
+            (0o21 << 26) | (0o06 << 21) | (rt << 16) | (fs << 11)
+        }
+        const fn cfc1(rt: u32, fs: u32) -> u32 {
+            (0o21 << 26) | (0o02 << 21) | (rt << 16) | (fs << 11)
+        }
+        //   LUI   $1, 0x0100    ; bit 24 -- flush_denorm_to_zero
+        //   ORI   $1, $1, 0x800 ; bit 11 -- enable_invalid_operation
+        //   CTC1  $1, $31
+        //   CFC1  $2, $31
+        let prog = alloc::vec![
+            (0o17 << 26) | (1 << 16) | 0x0100,
+            (0o15 << 26) | (1 << 21) | (1 << 16) | 0x0800,
+            ctc1(1, 31),
+            cfc1(2, 31),
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // CU1 enabled, as IPL3 leaves it (Status = 0x3400_0000).
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..40 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        let want = (1u64 << 24) | (1 << 11);
+        assert_eq!(u64::from(p.cop1.fcsr()), want, "CTC1 reached FCR31");
+        assert_eq!(regs.read(2), want, "and CFC1 read it back");
+        assert!(p.cop1.flush_denorm_to_zero());
+    }
+
+    /// With `CU1` clear, a COP1 instruction raises **Coprocessor Unusable** with
+    /// `Cause.CE = 1` — not Reserved Instruction, which is the natural mistake
+    /// for an unimplemented encoding.
+    #[test]
+    fn a_cop1_instruction_with_cu1_clear_raises_coprocessor_unusable() {
+        use crate::cop0::reg;
+        const CTC1: u32 = (0o21 << 26) | (0o06 << 21) | (1 << 16) | (31 << 11);
+        let mut bus = Ram::new(alloc::vec![CTC1]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // Kernel mode, but CU1 CLEAR.
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::CPU,
+            "Coprocessor Unusable, not Reserved Instruction"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 28) & 0b11,
+            1,
+            "Cause.CE names the offending unit"
+        );
+        assert_eq!(p.cop1.fcsr(), 0, "and the write did not take effect");
+    }
+
+    /// **COP0 is usable from kernel mode regardless of `CU0`.** Otherwise the CPU
+    /// could not run an exception handler before `Status` had been set up — a
+    /// chicken-and-egg the hardware does not have.
+    #[test]
+    fn cop0_is_usable_in_kernel_mode_even_with_cu0_clear() {
+        use crate::cop0::reg;
+        const MTC0: u32 = (0o20 << 26) | (0o04 << 21) | (1 << 16) | ((reg::COMPARE as u32) << 11);
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 0x77), MTC0]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // KSU = 0 (kernel), CU0 clear, EXL/ERL clear.
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.cop0.read(reg::COMPARE),
+            0x77,
+            "MTC0 must work in kernel mode without CU0"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            0,
+            "and must not have raised"
+        );
+    }
+
+    /// In **user** mode with `CU0` clear, COP0 *is* unusable — otherwise the
+    /// kernel-mode exemption would be a blanket bypass rather than a rule.
+    #[test]
+    fn cop0_is_unusable_in_user_mode_without_cu0() {
+        use crate::cop0::reg;
+        const MTC0: u32 = (0o20 << 26) | (0o04 << 21) | (1 << 16) | ((reg::COMPARE as u32) << 11);
+        let mut bus = Ram::new(alloc::vec![MTC0]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // KSU = 2 (user), CU0 clear, EXL/ERL clear.
+        p.cop0.set_hardware(reg::STATUS, 0b10 << 3);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::CPU
+        );
+        assert_eq!((p.cop0.read(reg::CAUSE) >> 28) & 0b11, 0, "unit 0");
+    }
+
+    /// An unimplemented COP1 encoding with `CU1` **set** must not raise. Sprint 3
+    /// then *adds* behaviour rather than changing it — and an emulator that
+    /// raised here would look correct until the FPU landed.
+    #[test]
+    fn an_unimplemented_cop1_encoding_does_not_raise_when_cu1_is_set() {
+        use crate::cop0::reg;
+        // ADD.S -- a real COP1 arithmetic encoding, not implemented here.
+        const ADD_S: u32 = (0o21 << 26) | (0o20 << 21);
+        assert_eq!(
+            decode(ADD_S).op,
+            crate::decode::Op::Cop1Unimplemented,
+            "valid encoding, not Reserved"
+        );
+        let mut bus = Ram::new(alloc::vec![ADD_S]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            0,
+            "no exception with CU1 set"
         );
     }
 }

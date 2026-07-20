@@ -163,6 +163,7 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
             exc_code::TLBS
         }
         Exception::TlbModified => exc_code::MOD,
+        Exception::CoprocessorUnusable { .. } => exc_code::CPU,
     }
 }
 
@@ -184,6 +185,7 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
         // Invalid and Modified take the GENERAL vector: an entry was found, so
         // there is nothing for a refill handler to refill.
         | Exception::TlbInvalid { .. }
+        | Exception::CoprocessorUnusable { .. }
         | Exception::TlbModified => VectorKind::General,
         // Only a genuine miss takes the refill vector, and only with EXL clear.
         Exception::TlbRefill { .. } => VectorKind::TlbRefill,
@@ -267,6 +269,13 @@ pub fn dispatch(
     //    Cause write mask widened, which would also let MTC0 forge it.
     let cause = cop0.read(reg::CAUSE);
     let mut new_cause = (cause & !0x7C) | (exc_code_of(exc) << 2);
+    // `Cause.CE` (29:28) names the coprocessor for a Coprocessor Unusable
+    // exception, and is meaningless otherwise -- so it is written only here
+    // rather than cleared unconditionally, which would erase a previous value
+    // the handler has not read yet.
+    if let Exception::CoprocessorUnusable { unit } = exc {
+        new_cause = (new_cause & !0x3000_0000) | ((u64::from(unit) & 0b11) << 28);
+    }
 
     // 4. EPC and Cause.BD, ONLY if EXL was clear. This is the gate; see the
     //    module docs. Note it also governs BD, not just EPC -- a stale BD with a

@@ -321,6 +321,36 @@ Entries reset to **distinct** `VPN2` tags, not zero — see ledger **D-4**. All-
 is not a usable choice: 32 entries at `VPN2 = 0` with `V` out of the matching rule
 means the first access to page-pair 0 matches all 32 and shuts the TLB down.
 
+### COP1 control, and coprocessor usability (implemented, T-12-006)
+
+**Control registers only.** `CTC1`/`CFC1` on `FCR31` (FCSR) and `FCR0`; FPU
+arithmetic is Sprint 3. This exists for exactly one reason: n64-systemtest's
+`entrypoint()` calls `set_fcsr(...)` — `ctc1::<31>` — as its **fourth
+statement**, so without it the suite dies three statements after entry and every
+COP0/TLB test in Sprint 2 is unreachable behind it.
+
+FCSR needs *storage* with correct bit semantics, not *behaviour*: nothing acts on
+the rounding mode or the enable bits yet. Bits 25 and 22..=18 are unused and read
+zero; the `Cause` bits are software-writable, since that is how a handler
+acknowledges an FP exception.
+
+#### Coprocessor Unusable
+
+Checked in `EX` (UM §4.7.5 lists `CPU` among the EX-stage exceptions), with
+`Cause.CE` naming the offending unit. Two rules that are easy to miss:
+
+- **COP0 is usable from kernel mode regardless of `CU0`.** Otherwise the CPU
+  could not run an exception handler before `Status` had been set up — a
+  chicken-and-egg the hardware does not have. Kernel is `KSU == 0`, **or** `EXL`
+  or `ERL` set.
+- The exemption is **not** a blanket bypass: in user mode with `CU0` clear, COP0
+  *is* unusable. Both directions are pinned.
+
+A **valid but unimplemented** COP1 encoding decodes to `Cop1Unimplemented`, not
+`Reserved` — the encoding is real, so with `CU1` set it must **not** raise. That
+makes Sprint 3's arithmetic an *addition* rather than a behaviour change, and an
+emulator that raised here would look correct right up until the FPU landed.
+
 ## Behavior
 
 ### Pipeline and timing

@@ -281,6 +281,16 @@ pub enum Op {
     // --- COP0 access (T-12-001). The TLB and `ERET` encodings of this opcode
     // are NOT here: they are separate instructions landing in T-12-002/T-12-004,
     // and lumping them in would make `Op` claim support this crate lacks.
+    /// `CFC1 rt, fs` — read a COP1 **control** register.
+    Cfc1,
+    /// `CTC1 rt, fs` — write a COP1 **control** register.
+    Ctc1,
+    /// A COP1 encoding this crate does not implement.
+    ///
+    /// Distinct from [`Op::Reserved`]: the encoding is *valid*, so it must raise
+    /// **Coprocessor Unusable** when `Status.CU1` is clear rather than Reserved
+    /// Instruction. Conflating the two sends the handler the wrong `ExcCode`.
+    Cop1Unimplemented,
     /// `TLBR` — read the TLB entry `Index` names into the COP0 registers.
     Tlbr,
     /// `TLBWI` — write the COP0 registers into the entry **`Index`** names.
@@ -509,6 +519,7 @@ const OP_SDL: u32 = 0o54;
 const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
 const OP_COP0: u32 = 0o20;
+const OP_COP1: u32 = 0o21;
 const OP_LL: u32 = 0o60;
 const OP_LLD: u32 = 0o64;
 const OP_SC: u32 = 0o70;
@@ -753,6 +764,28 @@ pub const fn decode(word: u32) -> Decoded {
                     _ => base,
                 },
                 _ => base,
+            }
+        }
+        // COP1. Only the CONTROL moves are implemented (T-12-006); arithmetic
+        // is Sprint 3. Everything else in this opcode decodes to
+        // `Cop1Unimplemented` rather than `Reserved`, because the encodings are
+        // valid and must raise Coprocessor Unusable, not Reserved Instruction.
+        OP_COP1 => {
+            let rs = ((word >> 21) & 31) as u8;
+            match rs {
+                0o02 => Decoded {
+                    op: Op::Cfc1,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                0o06 => Decoded {
+                    op: Op::Ctc1,
+                    ..base
+                },
+                _ => Decoded {
+                    op: Op::Cop1Unimplemented,
+                    ..base
+                },
             }
         }
         OP_LL => i!(Op::Ll),
