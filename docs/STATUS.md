@@ -95,10 +95,25 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | Subsystem | State | Phase |
 | --- | --- | --- |
 | VR4300 integer core, pipeline, delay slots, errata, SysAD | **done** (Sprint 1) | Phase 1 |
-| VR4300 COP0, TLB, exception model | stub | Phase 1 (Sprint 2) |
-| VR4300 COP1 (FPU), golden-log 0-diff | stub | Phase 1 (Sprint 3) |
+| VR4300 COP0, TLB, exception model | **done** (Sprint 2) | Phase 1 |
+| VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
+| CPU golden-log 0-diff | not started — no reference trace captured | Phase 1 (Sprint 3) |
 | VR4300 I/D caches | stub | Phase 1 (Sprint 2, to observable depth) |
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
+
+**What "partial" means for COP1.** The register file (`FR` views), the control
+registers, the data moves, and S/D `ADD`/`SUB`/`MUL`/`DIV` decode and execute.
+Two things do **not** work, and neither is visible from a green `cargo test`:
+
+- **Arithmetic is correct only in round-to-nearest-even.** `FCSR.RM`'s three
+  directed modes and the `FS` denormal flush are ignored, because the operations
+  use Rust's native `+`/`-`/`*`/`/`. This is accuracy-ledger **C-10** and is the
+  single largest contributor to n64-systemtest's remaining failures.
+- **Enabled FP traps do not raise.** `Cause`/`Flags` are set in `FCSR`, but an
+  enabled exception does not become `Exception::FloatingPoint`.
+
+`SQRT`, `ABS`, `NEG`, `MOV`, the conversions and the `C.cond.fmt` compares are
+implemented in `fpu.rs` but **not yet decoded**, so they remain unreachable.
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
@@ -142,7 +157,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | blocked on COP0/COP1/exceptions (T-11-009, Sprint 2) |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,897 failing** — blocked on COP1 rounding (ledger C-10) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
