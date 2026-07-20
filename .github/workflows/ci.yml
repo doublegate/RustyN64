@@ -79,8 +79,35 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  rustdoc:
+    name: rustdoc (-D warnings)
+    # Its OWN job, deliberately, for two reasons learned the hard way.
+    #
+    # 1. It used to be the LAST step of the `test` job, after the slow test run.
+    #    That made it the most likely thing to be lost when a follow-up push
+    #    cancelled the run (`cancel-in-progress` below), and in practice a commit
+    #    with a broken intra-doc link sailed through because the run was
+    #    CANCELLED before rustdoc ever executed -- not because it passed.
+    # 2. A rustdoc failure reported as "test (ubuntu-latest) failed", which
+    #    points at the wrong thing. Now the job name says what broke.
+    #
+    # No `needs:`, so it starts immediately and finishes in well under a minute
+    # -- fast enough to be genuinely useful feedback, and small enough that it is
+    # rarely mid-flight when a supersede happens.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97
+      - uses: Swatinem/rust-cache@v2
+      # rustdoc builds the whole workspace including the frontend, so the
+      # alsa/udev headers its build scripts need must be present.
+      - uses: ./.github/actions/linux-build-deps
+      # -D warnings turns every rustdoc lint into an error: broken intra-doc
+      # links, public docs linking to private items, and missing docs on public
+      # items (the workspace sets `missing_docs = "warn"`).
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-        if: runner.os == 'Linux'
 
   test-roms:
     name: test (test-roms feature)
