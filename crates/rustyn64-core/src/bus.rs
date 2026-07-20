@@ -183,6 +183,17 @@ impl Bus {
     /// targets a memory-mapped register region instead.
     /// Base of RSP DMEM. IMEM follows at `+0x1000`.
     pub const SPMEM_BASE: u32 = 0x0400_0000;
+
+    /// `SP_STATUS` (`0x0404_0010`).
+    pub const SP_STATUS: u32 = 0x0404_0010;
+
+    /// `SP_STATUS.halt` (bit 0).
+    ///
+    /// **Set at power-on.** The RSP comes out of reset halted and idles until
+    /// the CPU clears this bit; software reads `SP_STATUS` expecting to find it
+    /// already halted rather than racing a running RSP. n64-systemtest's
+    /// `StartupTest` checks exactly this and reads `0x1`.
+    pub const SP_STATUS_HALT: u32 = 1 << 0;
     /// DMEM + IMEM, 4 KiB each.
     pub const SPMEM_LEN: usize = 0x2000;
 
@@ -291,6 +302,13 @@ impl CpuBus for Bus {
                 .get((addr - Self::SPMEM_BASE) as usize)
                 .copied()
                 .unwrap_or(0);
+        }
+        // SP_STATUS. The RSP is an LLE-shaped stub (see `docs/STATUS.md`), so
+        // only the power-on `halt` bit is modelled -- enough for software to see
+        // a halted RSP, which is the true state here, rather than a zero that
+        // claims it is running.
+        if addr & !3 == Self::SP_STATUS {
+            return (Self::SP_STATUS_HALT >> (8 * (3 - (addr & 3)))) as u8;
         }
         if Self::is_isviewer(addr) {
             // Readable as ordinary memory, which is what makes the suite's
@@ -709,5 +727,17 @@ mod pi_tests {
         let mut bus = Bus::new();
         bus.write_u32(Bus::ISVIEWER_WRITE_LEN, 0xFFFF_FFFF);
         assert_eq!(bus.isviewer_output().len(), Bus::ISVIEWER_LEN);
+    }
+
+    /// **The RSP powers up halted.** Reading `SP_STATUS` as zero claims a
+    /// running RSP, which is false; n64-systemtest's `StartupTest` reads `0x1`.
+    #[test]
+    fn sp_status_reports_the_rsp_halted_at_power_on() {
+        let mut bus = Bus::new();
+        assert_eq!(
+            bus.read_u32(Bus::SP_STATUS) & Bus::SP_STATUS_HALT,
+            Bus::SP_STATUS_HALT,
+            "the RSP idles halted until the CPU clears it"
+        );
     }
 }

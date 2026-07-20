@@ -106,6 +106,26 @@ pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadE
         .cop0
         .set_hardware(rustyn64_core::cpu::cop0::reg::STATUS, 0x3400_0000);
 
+    // **COP0 `Config.K0` = 3.** IPL3 leaves the KSEG0 cache-coherency field at 3
+    // (cached, non-coherent, write-back); a cold VR4300 does not define it, so
+    // like `Status` this is IPL3's doing rather than a reset value, and belongs
+    // here rather than in `Cop0::new`.
+    //
+    // n64-systemtest's StartupTest reads the whole register and expects
+    // `0x7006_E463`; without this it sees `0x7006_E460` and fails on the low
+    // three bits alone.
+    {
+        let cfg = system
+            .cpu
+            .pipeline
+            .cop0
+            .read(rustyn64_core::cpu::cop0::reg::CONFIG);
+        system.cpu.pipeline.cop0.set_hardware(
+            rustyn64_core::cpu::cop0::reg::CONFIG,
+            (cfg & !0b111) | 0b011,
+        );
+    }
+
     // **The stack pointer.** IPL3 leaves `$sp` at the top of SP DMEM
     // (`0xA400_1FF0`), and every compiled entry point immediately relies on it:
     // n64-systemtest's is `ADDIU $29, $29, -0x50` followed by `SW $31, 0x4c($29)`.

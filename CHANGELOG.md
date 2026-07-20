@@ -82,9 +82,11 @@ Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set. Bu
 with `EPC` surviving exactly as the `EXL` gate requires. That also explains why `0x180` (general,
 `EXL=1`) was hotter than `0x000` (refill, `EXL=0`).
 
-### Fixed — n64-systemtest now boots and runs its tests
+### Fixed — n64-systemtest now boots and runs its full corpus
 
-**COP0 CO `funct` 0x20-0x3F decoded to `Reserved` instead of retiring inertly.**
+Four defects, each surfaced by the oracle and each previously unreachable.
+
+**1. COP0 CO `funct` 0x20-0x3F decoded to `Reserved` instead of retiring inertly.**
 n64-systemtest probes for the `emux` emulator by executing `COP0 CO funct 0x20` from
 `init_allocator`, inside `entrypoint` — **before** `main` installs any exception handler. We raised
 Reserved Instruction; the RI dispatched to an uninstalled `0x8000_0180`, where zeros decode as
@@ -93,44 +95,38 @@ there on a load through a zero base. `EXL` was set by then, so `EPC` retained th
 exception, which is why the reported `ExcCode` (`TLBL`) and `EPC` (the RI site) disagreed and made
 this read as a TLB bug for three rounds.
 
-The range is not a guess: the suite's own probe constant is named
-`XDETECT_CODE_EXTENSIONS_20_3F` — emux claims `funct` 0x20-0x3F as extension space precisely
-because the VR4300 leaves it inert. Recorded as ledger **C-8**, an inference rather than a manual
-citation, since the writeback behaviour of the target GPR remains untested.
+If a real VR4300 raised RI there, the suite would derail on every N64 it has ever run on, before
+printing a line. The range is not a guess either: the suite's probe constant is named
+`XDETECT_CODE_EXTENSIONS_20_3F`. Added `Op::Cop0Extension`, executed as a no-op that notably does
+**not** write the target GPR. Ledger **C-8** — an inference, not a manual citation.
 
-The suite now boots and reports:
+**2. `IP7` latched at power-on, because the timer tested equality rather than an edge.**
+`Count` and `Compare` both reset to zero, so `Count == Compare` held on the very first step and
+`IP7` latched before a single instruction retired. The timer fires when `Count` *becomes* equal to
+`Compare` — once per wrap — so the poll is now an edge (`Cop0::timer_edge`). The suite pinned this
+precisely: `Cause` during an AdEL read `0x8010` instead of `0x10`.
 
-```text
-Heap range: 801ad150 to 80300000
-Running StartupTest...
-Test 'StartupTest' failed: a=0x7006e460 b=0x7006e463. Initial COP0 Config
-Running Unaligned LW exception...
-Test 'Unaligned LW exception' failed: a=0x8010 b=0x10. Cause during AdEL exception
-```
+**3. `Context`/`XContext` were gated on TLB exceptions.** Hardware fills `BadVPN2` from the same
+latch that feeds `BadVAddr`, so an **address error** updates them too, with no TLB lookup involved.
+The suite expects `Context = 0x0052_0000` for `BadVAddr = 0xA400_1A42`, exactly
+`(BadVAddr >> 13) << 4`. `EntryHi` stays TLB-gated — it is the TLB's own match register, and
+writing it on an address error would corrupt the entry a later `TLBWR` installs.
 
-Two genuine accuracy defects are now visible and precisely quantified, where previously there was
-only silence: COP0 `Config` reset value low bits (`K0`), and a spurious `IP7` bit in `Cause` during
-an AdEL exception (`0x8010` vs `0x10`). Neither was reachable before.
+**4. `SP_STATUS` was unmodelled and read as zero**, claiming a running RSP. The RSP comes out of
+reset **halted**; only that power-on `halt` bit is modelled, which is honest about the RSP still
+being an LLE-shaped stub while no longer asserting something false.
 
-Wrong turns worth recording, since each cost a round: `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0`
-is correct); lost installer stores (the installer was never *reached*); and an early panic (the
-print was `init_allocator`'s legitimate `println!`, not a panic). Every round that guessed at a
-cause was wrong; every round that asked what was actually in memory, or actually executed, at the
-faulting moment was right.
+With these, `StartupTest` and the whole unaligned-access group pass, and the suite proceeds through
+its corpus (~863 KB of output) instead of hanging on its first print. The remaining failures are
+dominated by one unimplemented area — the **cart address space is not mapped**, so every
+`cart:`/`cart_memory:` read returns zero — plus 32-bit address sign-extension checks. Those are
+next; `Failed: 0` is not yet met, so v0.2.0 stays uncut.
 
-**The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
-and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
-follow: something at instruction ~6 raises a TLB refill (an emulation question), and `BEV` is
-still 1 because nothing has cleared it, so *every* exception vectors into PIF ROM and vanishes
-silently. A harness that cannot see PIF ROM should arguably fail loudly there rather than execute
-zeros.
-
-Reported as "the failure moved to X" rather than "fixed", because each of the last three fixes did
-exactly this — and each new failure was more specific than the last.
-
-Recorded because the *method* mattered more than the finding: three budget increases
-(2 → 30k → 3M → 45M) all looked like progress and none were. Probing for the first divergence
-found it immediately — the same pattern that found the `ERL` rule and the PI dependency.
+Wrong turns worth recording, since each cost a round and each would have taken real work to
+"fix": `$gp` unset (`_gp` is `ABS 0x0`, so `$gp = 0` is correct); lost installer stores (the
+installer was never *reached*); and an early panic (the print was `init_allocator`'s legitimate
+`println!`). Every round that guessed at a mechanism was wrong; every round that asked what was
+actually in memory, or actually executed, at the faulting moment was right.
 
 ### Added — a merge-conflict-marker guard (CI + pre-commit)
 

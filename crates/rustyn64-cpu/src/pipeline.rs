@@ -661,7 +661,12 @@ impl Pipeline {
         // it. Modelling it as a level tied to `Count == Compare` looks tidier
         // and silently DROPS any timer interrupt that fires while `EXL` is set,
         // because the equality holds for one tick and the handler never sees it.
-        if self.cop0.timer_matches() {
+        //
+        // The trigger is the rising EDGE of the match, not the standing
+        // equality: both `Count` and `Compare` reset to zero, so an equality
+        // test latches `IP7` before a single instruction retires. See
+        // `Cop0::timer_edge`.
+        if self.cop0.timer_edge() {
             self.cop0.set_ip(7, true);
         }
 

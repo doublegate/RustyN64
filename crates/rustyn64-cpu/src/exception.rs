@@ -298,25 +298,18 @@ pub fn dispatch(
     }
     cop0.set_hardware(reg::CAUSE, new_cause);
 
-    // 2. BadVAddr, for the exceptions that define it.
+    // 2. BadVAddr -- and with it Context/XContext -- for the exceptions that
+    //    define a faulting address.
+    //
+    //    `Context.BadVPN2` and `XContext.BadVPN2` are NOT TLB-only. Hardware
+    //    fills them from the same latch that feeds `BadVAddr`, so an **address
+    //    error** updates them too, even though no TLB lookup took place.
+    //    n64-systemtest pins this directly: on an unaligned `LW` it expects
+    //    `Context = 0x0052_0000` for `BadVAddr = 0xA400_1A42`, which is exactly
+    //    `(BadVAddr >> 13) << 4`. Gating these on the TLB exceptions leaves
+    //    `Context` at zero and fails every unaligned-access test.
     if writes_bad_vaddr(exc) {
         cop0.set_hardware(reg::BAD_VADDR, bad_vaddr);
-    }
-
-    // 3. EntryHi / Context / XContext -- TLB exceptions only. The refill handler
-    //    reads `Context` as a ready-made page-table pointer, which is the whole
-    //    reason the hardware assembles it here rather than leaving it to
-    //    software.
-    if writes_tlb_context(exc) {
-        let vpn2 = bad_vaddr & crate::tlb::VPN2_MASK;
-        let hi = cop0.read(reg::ENTRY_HI);
-        // The `R` field (63:62) comes from the faulting address too, not just
-        // `VPN2`. Leaving it zero puts every sign-extended kernel fault in
-        // region 0, so the handler's `TLBWR` would install an entry that can
-        // never match the address that faulted.
-        let region = bad_vaddr & 0xC000_0000_0000_0000;
-        // ASID is preserved; VPN2 and R are replaced.
-        cop0.set_hardware(reg::ENTRY_HI, (hi & crate::tlb::ASID_MASK) | vpn2 | region);
         // Context: PTEBase (63:23) kept, BadVPN2 (22:4) = VA(31:13).
         let ctx = cop0.read(reg::CONTEXT);
         cop0.set_hardware(
@@ -332,6 +325,22 @@ pub fn dispatch(
                 | (((bad_vaddr >> 62) & 0b11) << 31)
                 | (((bad_vaddr >> 13) & 0x7FF_FFFF) << 4),
         );
+    }
+
+    // 3. EntryHi -- TLB exceptions only. Unlike Context, this one really is
+    //    gated: it is the TLB's own match register, and an address error never
+    //    consulted the TLB, so writing it would corrupt the entry a subsequent
+    //    `TLBWR` installs.
+    if writes_tlb_context(exc) {
+        let vpn2 = bad_vaddr & crate::tlb::VPN2_MASK;
+        let hi = cop0.read(reg::ENTRY_HI);
+        // The `R` field (63:62) comes from the faulting address too, not just
+        // `VPN2`. Leaving it zero puts every sign-extended kernel fault in
+        // region 0, so the handler's `TLBWR` would install an entry that can
+        // never match the address that faulted.
+        let region = bad_vaddr & 0xC000_0000_0000_0000;
+        // ASID is preserved; VPN2 and R are replaced.
+        cop0.set_hardware(reg::ENTRY_HI, (hi & crate::tlb::ASID_MASK) | vpn2 | region);
     }
 
     // 5. EXL. Setting it puts the CPU in Kernel mode with interrupts disabled,
@@ -606,5 +615,72 @@ mod tests {
         assert_ne!(c.read(reg::STATUS) & STATUS_ERL, 0, "reset sets ERL");
         c.set_hardware(reg::ERROR_EPC, 0xBFC0_0000);
         assert_eq!(eret(&mut c), 0xBFC0_0000);
+    }
+
+    /// **`Context.BadVPN2` is written on an ADDRESS ERROR, not only on a TLB
+    /// exception.** Hardware fills it from the same latch that feeds `BadVAddr`,
+    /// so no TLB lookup need have happened.
+    ///
+    /// n64-systemtest pins the exact value: an unaligned `LW` at
+    /// `0xA400_1A42` must leave `Context = 0x0052_0000`, which is
+    /// `(BadVAddr >> 13) << 4`. Gating this on the TLB exceptions leaves it at
+    /// zero and fails every unaligned-access test.
+    #[test]
+    fn an_address_error_writes_context_even_though_no_tlb_lookup_occurred() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::STATUS, 0);
+        c.set_hardware(reg::CONTEXT, 0);
+        dispatch(
+            &mut c,
+            Exception::AddressError { store: false },
+            0x8000_1000,
+            false,
+            0xFFFF_FFFF_A400_1A42,
+        );
+        assert_eq!(
+            c.read(reg::CONTEXT),
+            0x0052_0000,
+            "BadVPN2 = (BadVAddr >> 13) << 4"
+        );
+    }
+
+    /// `Context`'s PTEBase (63:23) is **preserved** across the update -- it is
+    /// software's page-table pointer, and clobbering it would send the refill
+    /// handler to the wrong table.
+    #[test]
+    fn an_address_error_preserves_the_context_pte_base() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::STATUS, 0);
+        c.set_hardware(reg::CONTEXT, 0xFFFF_FFFF_FF80_0000);
+        dispatch(
+            &mut c,
+            Exception::AddressError { store: false },
+            0x8000_1000,
+            false,
+            0xFFFF_FFFF_A400_1A42,
+        );
+        assert_eq!(
+            c.read(reg::CONTEXT),
+            0xFFFF_FFFF_FFD2_0000,
+            "PTEBase kept, BadVPN2 replaced"
+        );
+    }
+
+    /// `EntryHi`, unlike `Context`, really is TLB-only: it is the TLB's own
+    /// match register, and writing it on an address error would corrupt the
+    /// entry a later `TLBWR` installs.
+    #[test]
+    fn an_address_error_leaves_entry_hi_alone() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::STATUS, 0);
+        c.set_hardware(reg::ENTRY_HI, 0);
+        dispatch(
+            &mut c,
+            Exception::AddressError { store: false },
+            0x8000_1000,
+            false,
+            0xFFFF_FFFF_A400_1A42,
+        );
+        assert_eq!(c.read(reg::ENTRY_HI), 0, "not a TLB exception");
     }
 }

@@ -262,6 +262,11 @@ pub struct Cop0 {
     /// Together these make `Count` **affine**: guest-writable (so it needs an
     /// offset) while still derived (so it cannot drift from the master clock).
     count_epoch_tick: u64,
+    /// The `Count` value seen at the previous [`Cop0::timer_edge`] poll, so the
+    /// timer can fire on the transition into `Count == Compare` rather than
+    /// whenever the equality happens to hold. See `timer_edge`.
+    last_count: u32,
+
     /// `Config.EC`, the PClock:MasterClock ratio, sampled from the `DivMode` pins
     /// at reset and read-only thereafter.
     ///
@@ -303,6 +308,10 @@ impl Cop0 {
             now: 0,
             count_epoch_value: 0,
             count_epoch_tick: 0,
+            // Equal to the reset `Count`, so power-on is not a transition into
+            // `Count == Compare` even though both reset to zero. See
+            // `Cop0::timer_edge`.
+            last_count: 0,
             // 0b111 = 1:1.5, which matches the N64's 62.5 MHz : 93.75 MHz and is
             // "allowed with the 100 MHz model only" (UM Appendix A note 1,
             // p. 628). The manual never names the N64, so this is an INFERENCE
@@ -340,6 +349,28 @@ impl Cop0 {
     #[must_use]
     pub const fn timer_matches(&self) -> bool {
         self.count() == self.regs[reg::COMPARE as usize] as u32
+    }
+
+    /// Has the timer *just* reached `Compare` — the rising edge of the match?
+    ///
+    /// # Why the edge and not the equality
+    ///
+    /// Both `Count` and `Compare` reset to **zero**, so a plain
+    /// [`Cop0::timer_matches`] is true on the very first step and latches `IP7`
+    /// before a single instruction retires. n64-systemtest catches this exactly:
+    /// it reads `Cause` during an `AdEL` exception and expects `0x10`, while a
+    /// spuriously-latched `IP7` (bit 15) makes it `0x8010`.
+    ///
+    /// The timer fires when `Count` *becomes* equal to `Compare`, which is once
+    /// per wrap of the 32-bit counter, not continuously while they happen to be
+    /// equal. Tracking the previous value is what distinguishes the two, and at
+    /// power-on there is no transition into equality — the two simply start
+    /// there.
+    pub const fn timer_edge(&mut self) -> bool {
+        let now = self.count();
+        let edge = now != self.last_count && now == self.regs[reg::COMPARE as usize] as u32;
+        self.last_count = now;
+        edge
     }
 
     /// Set or clear a `Cause.IP` bit.
@@ -975,5 +1006,39 @@ mod tests {
         assert!(c.timer_matches());
         c.set_now(6);
         assert!(!c.timer_matches(), "it is an equality, not a threshold");
+    }
+
+    /// **The timer must not fire at power-on.** `Count` and `Compare` both reset
+    /// to zero, so an equality test latches `IP7` before a single instruction
+    /// retires -- which n64-systemtest catches as `Cause = 0x8010` instead of
+    /// `0x10` during an AdEL exception.
+    #[test]
+    fn the_timer_does_not_fire_at_power_on_despite_count_equalling_compare() {
+        let mut c = Cop0::new();
+        assert_eq!(c.count(), 0);
+        assert_eq!(c.read(reg::COMPARE), 0, "both reset to zero");
+        assert!(
+            c.timer_matches(),
+            "the equality genuinely holds -- that is the trap"
+        );
+        assert!(
+            !c.timer_edge(),
+            "but there is no TRANSITION into it, so the timer must not fire"
+        );
+    }
+
+    /// The timer fires on the transition into `Count == Compare`, once, and not
+    /// again while the equality merely persists.
+    #[test]
+    fn the_timer_fires_on_the_edge_and_only_once() {
+        let mut c = Cop0::new();
+        c.mtc0(reg::COMPARE, 3);
+        assert!(!c.timer_edge(), "Count = 0, Compare = 3");
+        c.set_now(3);
+        assert!(c.timer_edge(), "Count reached Compare");
+        assert!(
+            !c.timer_edge(),
+            "the equality still holds, but the edge has passed"
+        );
     }
 }
