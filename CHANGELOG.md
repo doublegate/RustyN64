@@ -9,6 +9,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the `SysAD` transaction model (T-11-008, partial)
+
+`sysad.rs` models the CPU↔RCP bus as a **packet protocol** — an address cycle carrying a
+command, then a data cycle carrying the payload, with an unbounded wait between them where real
+RDRAM latency lives. Neither reference emulator models this: both complete the access atomically
+and charge a flat constant, and they disagree on the value.
+
+- A `Transaction` is a **state machine** that is structurally incapable of completing in its
+  address phase — pinned by `a_transaction_can_never_complete_in_its_address_phase`, since the
+  whole point is that a device can observe the bus mid-transaction.
+- The inter-phase wait is a **caller-supplied parameter**, not a constant, so it cannot be
+  quietly tuned. The caller must justify what it passes.
+- Block transfer orderings, including the **sub-block quirk**: a D-cache 128-bit read whose
+  address bit 4 is set returns the addressed 64 bits and then the 64 bits *below* it — not the
+  ones after. I-cache reads are always sequential regardless.
+
+**`SYSCMD` bit-4 polarity resolved, and it was never a contradiction.** Ledger entry S-1 recorded
+the manual and the wiki as disagreeing. Reading both carefully, they **agree on every bit**: a
+request has bit 4 clear, a data beat has it set. They differ only in that the wiki calls the
+*data-identifier* cycle "Command". No test ROM was needed. Kept as a ledger entry rather than
+deleted, because the next reader will hit the same apparent conflict.
+
+**Two criteria are deferred and say so.** The RCP is not yet stepped *between* the phases — the
+model supports it, but driving it needs the scheduler to own the transaction rather than `DC`
+completing inline, which is a `Bus`-trait change belonging with the cache model in Sprint 2. And
+`M` is still unmeasured, exactly as this ticket's own note predicted: `basic.z64` is too short to
+constrain it. `M` stays an explicit ledger entry with **no value** rather than a fitted-looking
+number without provenance.
+
 ### Added — the determinism contract is exercised (T-11-007)
 
 ADR 0004 said "same seed + ROM ⇒ bit-identical output" and nothing checked it. Four tests now do.

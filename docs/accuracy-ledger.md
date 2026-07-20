@@ -141,10 +141,29 @@ Not our bugs, but they will look like ours if undocumented.
 
 | # | Contradiction | Sources | Resolution |
 | --- | --- | --- | --- |
-| S-1 | `SYSCMD` bit 4 polarity: command = 0 or 1? | UM §12.11.1 says command = `SysCmd4` **0**; `SysAD Interface.md` cheat sheet says **1** | **unresolved** — pin with a test ROM before encoding either |
+| S-1 | `SYSCMD` bit 4 polarity: command = 0 or 1? | UM §12.11.1 vs `SysAD Interface.md` cheat sheet | **RESOLVED — not a contradiction at all**; see below |
 | S-2 | Pipeline stage names | `ref-docs/research-report.md` §1 says IF/RF/EX/DF/WB; UM §4.1 Fig 4-1 says IC/RF/EX/DC/WB | **resolved** — manual wins; see `ref-docs/2026-07-20-vr4300-timing-supplement.md` §1 |
 | S-3 | Exception vector for an exception with `EXL` already set | MIPS docs say `0x80`; CEN64 routes to `0x180` with a source comment that `0x80` "doesn't make any sense" | **unresolved** — pin with n64-systemtest |
 | S-4 | D-cache fill cost | CEN64 charges 44 PClocks; ares charges 40 | **unresolved** — neither is spec-derived; supersede both with C-1 |
+
+### S-1 — resolved: the sources agree on the bits and disagree on the English
+
+Recorded as a contradiction, and it is not one. Reading both carefully:
+
+- **UM §12.11.1**: *"During address cycles \[`SysCmd4` = 0\] … contains a System
+  interface command"*; *"During data cycles \[`SysCmd4` = 1\]"*.
+- **The wiki cheat sheet**: read/write **requests** carry bit 4 = **0** (its
+  column says "Data req"); data-carrying cycles carry bit 4 = **1** (its column
+  says "Command").
+
+So both sources put a request at bit 4 clear and a data beat at bit 4 set. They
+differ only in that the wiki calls the *data-identifier* cycle "Command". No test
+ROM is needed. We follow the manual's naming, since it is the vendor spec and the
+rest of the CPU crate cites it.
+
+Worth keeping as an entry rather than deleting: the next reader will hit the same
+apparent conflict, and "resolved, and here is why it looked wrong" is more useful
+than silence.
 
 ---
 
