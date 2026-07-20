@@ -245,6 +245,12 @@ rather than quietly drop. Get the suite to start, run, and report a real pass/fa
 
 **Acceptance criteria:**
 
+- [ ] **Blocked on PI/cart, which is Phase 5.** Measured rather than assumed: with the `ERL`
+      rule implemented the suite now retires **30,679 instructions** with no exception (up from
+      **2**), and then runs past the end of the 1 MiB IPL3 window at `entry + 0x100000`. It reads
+      the rest of its own ELF from cart **via PI DMA**, which does not exist yet — so the
+      remaining criteria below cannot be met inside Phase 1 without pulling PI forward.
+      → re-scoped; see the note at the end of this ticket.
 - [ ] The suite gets past `entrypoint()` — SP/DMEM reads, `CTC1` FCR31, MI mask writes, KSEG0
       cached and KSEG1 uncached translation, and a working store path into KSEG0.
 - [ ] `install_exception_handlers()` succeeds: handler code is copied to all three of
@@ -258,7 +264,19 @@ rather than quietly drop. Get the suite to start, run, and report a real pass/fa
 - [ ] The ledger's `U-1`…`U-5` undocumented entries are pinned against the suite where it
       exercises them, and remain open where it does not.
 
-**Dependencies:** T-12-002, T-12-003, T-12-004, T-12-006
+**Re-scope note (measured, 2026-07-20).** Running the ROM was itself the most valuable thing
+this ticket did, and it found a real bug nothing else would have: `Status.ERL = 1` makes KUSEG
+unmapped (UM §5.2.2), cold reset **sets** `ERL`, and without that rule the suite died on its
+second instruction with `ExcCode = TLBS`, `BadVAddr = 0`. Fixed and pinned.
+
+What it then hits is a **dependency, not a defect**: n64-systemtest loads the rest of its own ELF
+from cart through PI DMA. PI is Phase 5. So `Failed: 0` on the CPU/COP0/TLB categories — which is
+also the **v0.2.0 cut criterion** — is not reachable without either pulling PI DMA forward into
+Phase 1 or building a harness-side loader that stages the whole ROM image rather than IPL3's
+1 MiB. That is a scoping decision, not something to quietly work around; it is recorded here so
+it is made deliberately.
+
+**Dependencies:** T-12-002, T-12-003, T-12-004, T-12-006, **and PI/cart DMA (Phase 5)**
 **Reference:** `ref-proj/n64-systemtest/src/main.rs`, `src/exception_handler.rs`,
 `src/tests/testlist.rs`
 **Estimated complexity:** L

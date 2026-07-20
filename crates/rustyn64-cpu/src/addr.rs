@@ -71,8 +71,22 @@ pub enum Segment {
 /// This is the half of translation that does **not** need the TLB, split out so
 /// callers with no TLB (and the many unmapped accesses) do not pay for one.
 #[must_use]
-pub const fn segment(vaddr: u64) -> Segment {
+pub const fn segment(vaddr: u64, erl: bool) -> Segment {
     let v = vaddr as u32;
+    // "If the ERL bit of the Status register is 1, the user address area is a
+    // 2 GB area that cannot be cached without TLB mapping (i.e., the virtual
+    // addresses are used as physical addresses as is)" (UM §5.2.2, p. 129).
+    //
+    // This is not an obscure corner: **cold reset sets ERL** (UM §6.4.4), so it
+    // is the state every boot ROM starts in. Without it, the first store to a
+    // low address takes a TLB refill before any mapping could possibly exist --
+    // which is exactly how n64-systemtest failed, two instructions in.
+    if erl && v < 0x8000_0000 {
+        return Segment::Direct {
+            addr: v,
+            cached: Cached::No,
+        };
+    }
     match v {
         0x8000_0000..=0x9FFF_FFFF => Segment::Direct {
             addr: v - 0x8000_0000,
@@ -98,8 +112,9 @@ pub fn translate_via(
     vaddr: u64,
     asid: u8,
     store: bool,
+    erl: bool,
 ) -> Result<Physical, TlbFault> {
-    match segment(vaddr) {
+    match segment(vaddr, erl) {
         Segment::Direct { addr, cached } => Ok(Physical { addr, cached }),
         Segment::Mapped => {
             let t = tlb.lookup(vaddr, asid, store)?;
@@ -121,7 +136,7 @@ mod tests {
     /// Resolve an unmapped address, panicking if it is mapped — a test helper,
     /// so the assertions below stay about addresses rather than about `match`.
     fn direct(vaddr: u64) -> Physical {
-        match segment(vaddr) {
+        match segment(vaddr, false) {
             Segment::Direct { addr, cached } => Physical { addr, cached },
             Segment::Mapped => panic!("{vaddr:#X} is TLB-mapped, not direct"),
         }
@@ -185,9 +200,64 @@ mod tests {
             0xFFFF_FFFF,
         ] {
             assert_eq!(
-                segment(v),
+                segment(v, false),
                 Segment::Mapped,
                 "{v:#X} must go through the TLB"
+            );
+        }
+    }
+
+    /// **`ERL = 1` makes KUSEG unmapped and uncached** (UM §5.2.2, p. 129):
+    /// *"the user address area is a 2 GB area that cannot be cached without TLB
+    /// mapping (i.e., the virtual addresses are used as physical addresses as
+    /// is)."*
+    ///
+    /// This is not a corner case — **cold reset sets `ERL`** (UM §6.4.4), so it
+    /// is the state every boot ROM starts in. Without it the first store to a low
+    /// address takes a TLB refill before any mapping could exist, which is
+    /// exactly how n64-systemtest failed: two instructions in, `ExcCode = TLBS`,
+    /// `BadVAddr = 0`.
+    #[test]
+    fn erl_makes_kuseg_unmapped_and_uncached() {
+        for v in [0x0000_0000u64, 0x1000, 0x0040_0000, 0x7FFF_FFFF] {
+            assert_eq!(
+                segment(v, false),
+                Segment::Mapped,
+                "{v:#X} is TLB-mapped with ERL clear"
+            );
+            assert_eq!(
+                segment(v, true),
+                Segment::Direct {
+                    addr: v as u32,
+                    cached: Cached::No
+                },
+                "{v:#X} is identity-mapped and uncached with ERL set"
+            );
+        }
+    }
+
+    /// `ERL` affects **only** the user area. The kernel segments keep their own
+    /// rules, and the mapped kernel segments stay mapped — a blanket
+    /// `if erl { Direct }` would silently unmap KSSEG and KSEG3 too.
+    #[test]
+    fn erl_does_not_change_the_kernel_segments() {
+        // Unmapped kernel segments are unaffected in both directions.
+        assert_eq!(
+            segment(0x8000_1000, true),
+            segment(0x8000_1000, false),
+            "KSEG0"
+        );
+        assert_eq!(
+            segment(0xA400_0000, true),
+            segment(0xA400_0000, false),
+            "KSEG1"
+        );
+        // Mapped kernel segments stay MAPPED even with ERL set.
+        for v in [0xC000_0000u64, 0xE000_0000] {
+            assert_eq!(
+                segment(v, true),
+                Segment::Mapped,
+                "{v:#X} must stay TLB-mapped -- ERL covers the user area only"
             );
         }
     }

@@ -9,6 +9,24 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — `Status.ERL = 1` makes KUSEG unmapped (found by running n64-systemtest)
+
+> *"If the ERL bit of the Status register is 1, the user address area is a 2 GB area that cannot
+> be cached without TLB mapping (i.e., the virtual addresses are used as physical addresses as
+> is)."* — UM §5.2.2, p. 129
+
+**Cold reset sets `ERL`**, so this is the state every boot ROM starts in. Without the rule, the
+first store to a low address takes a TLB refill before any mapping could possibly exist.
+
+Found by *running the oracle*, not by reading: n64-systemtest died **two instructions in** with
+`ExcCode = TLBS`, `BadVAddr = 0`. With the rule implemented it retires **30,679** instructions
+with no exception. No amount of re-reading the TLB code would have surfaced this — the TLB was
+behaving exactly as written; the missing piece was upstream of it.
+
+The rule covers the **user area only**: mapped kernel segments stay mapped, so a blanket
+"`ERL` ⇒ direct" would silently unmap KSSEG and KSEG3 too. Both directions are pinned and both
+mutations fail the suite.
+
 ### Changed — README and `.gitignore` brought up to date
 
 `README.md` described the superseded fractional scheduler, claimed Phase 1 had not started, and

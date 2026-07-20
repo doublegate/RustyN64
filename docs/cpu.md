@@ -294,6 +294,24 @@ reads `Context` as a ready-made page-table pointer, which is why hardware
 assembles it. Address errors leave them **undefined** (UM §6.4.7, p. 186) and
 bus errors do not touch them at all.
 
+#### `ERL = 1` makes KUSEG unmapped
+
+> *"If the ERL bit of the Status register is 1, the user address area is a 2 GB
+> area that cannot be cached without TLB mapping (i.e., the virtual addresses are
+> used as physical addresses as is)."* — UM §5.2.2, p. 129
+
+**Cold reset sets `ERL`** (UM §6.4.4), so this is the state every boot ROM starts
+in — not a corner case. Without it, the first store to a low address takes a TLB
+refill before any mapping could possibly exist.
+
+It covers the **user area only**: the mapped kernel segments (KSSEG, KSEG3) stay
+mapped, so a blanket "`ERL` ⇒ direct" would silently unmap them too. Both
+directions are pinned.
+
+Found by running n64-systemtest rather than by reading: the suite died two
+instructions in with `ExcCode = TLBS`, `BadVAddr = 0`. With the rule
+implemented it retires **30,679** instructions before hitting the next limit.
+
 #### Sizes, PFN, and cacheability
 
 `PageMask` bits 24:13 select 4K…16M (UM Table 5-7, p. 149). **`PFN` is always in
