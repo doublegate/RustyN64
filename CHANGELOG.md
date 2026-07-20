@@ -9,6 +9,27 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — `CACHE` executes instead of raising (T-12-005, partial)
+
+`CACHE` decoded to `Reserved` and therefore **raised**. IPL3 and libdragon both issue it, so that
+blocked every real ROM — the last hard blocker of its kind in Sprint 2.
+
+It now decodes, resolves its effective address — so it can still raise a TLB fault, like any other
+memory instruction — and performs no data transfer. Its `rt` slot is the **operation selector**,
+not a destination; decoding it as a load clobbers whichever GPR the cache-op encoding names, so
+the register destroyed would depend on which operation was requested.
+
+**The cache depth question is answered explicitly, and the answer is zero.** Phase 1 listed
+"how exact must the cache model be" as an open question. Cache *contents* are not modelled at all,
+so invalidate and write-back have nothing to act on — which is observationally sound **only**
+because no cache state exists to become stale. Recorded as ledger **D-5**, together with the point
+it stops being sound: Phase 5, when cart/RSP DMA writes land in RDRAM behind a cache games
+explicitly flush.
+
+Cache-miss costs are **deferred with the model** rather than applied to a cache that does not
+exist, and **`M` remains unmeasured with no value** (ledger C-1). That criterion is met by *not*
+producing a number: a fitted `M` would make every later timing result unfalsifiable.
+
 ### Added — COP1 control registers and coprocessor usability (T-12-006)
 
 **Control registers only** — `CTC1`/`CFC1` on `FCR31` and `FCR0`. FPU arithmetic is Sprint 3, and

@@ -82,6 +82,18 @@ pub enum MemOp {
         /// Destination register for the success flag.
         dest: u8,
     },
+    /// A `CACHE` maintenance operation.
+    ///
+    /// Carries the effective address so `DC` translates it — the instruction can
+    /// raise a TLB fault — and the 5-bit operation selector so a trace can name
+    /// what was requested. No data moves.
+    Cache {
+        /// Effective address.
+        addr: u64,
+        /// The `op` field (the instruction's `rt` slot): bits 1..=0 select the
+        /// cache, bits 4..=2 the operation.
+        op: u8,
+    },
     /// One half of an unaligned access. `rt` is needed for both directions: a
     /// partial load merges into it, and a partial store merges out of it.
     Unaligned {
@@ -647,6 +659,16 @@ pub const fn execute(
                 dest: d.rd,
                 value: rt_val,
                 wide: matches!(d.op, Op::Dmtc0),
+            }),
+            ..NOTHING
+        }),
+        // CACHE resolves its effective address like any load/store -- so it can
+        // raise a TLB fault, and DC must perform the translation -- but performs
+        // no data transfer. Modelled as a zero-width probe: see `MemOp::Cache`.
+        Op::Cache => Ok(Executed {
+            mem: Some(MemOp::Cache {
+                addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                op: d.rt,
             }),
             ..NOTHING
         }),

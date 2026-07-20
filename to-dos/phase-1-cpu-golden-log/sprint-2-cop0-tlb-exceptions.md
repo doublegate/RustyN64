@@ -194,15 +194,17 @@ front of it, and the full 32-/64-bit segment map.
 
 **Acceptance criteria:**
 
-- [ ] `CACHE` (opcode `0o57`) decodes and executes rather than raising.
-- [ ] The I- and D-caches are modelled to the depth the test ROMs actually observe, and **the
-      chosen depth is written down with its justification** — Phase 1's stated open question is
-      exactly this, and the answer belongs in an ADR or the ledger, not in the code's shape.
-- [ ] Cache-miss costs use the documented formulas — D-cache fill **8–9 + M**, I-cache fill
-      **14–15 + M** (UM Tables 11-1/11-2) — with `M` still an explicit ledger entry (C-1).
-- [ ] **`M` may be measured here if and only if a real measurement is available.** If not, it
-      stays absent. A fitted `M` that makes a ROM pass is the single most damaging thing this
-      sprint could produce, because every later timing result would inherit it (ledger preamble).
+- [x] `CACHE` (opcode `0o57`) decodes and executes rather than raising.
+- [x] The I- and D-caches are modelled to the depth the test ROMs actually observe, and **the
+      chosen depth is written down with its justification** — the answer is **zero depth**: cache
+      contents are not modelled at all, so `CACHE` is a translating no-op. Sound only because no
+      cache state exists to become stale. Recorded as ledger **D-5**, with the point it stops
+      being sound (Phase 5 DMA coherency) stated rather than left to be discovered.
+- [ ] **Deferred with the cache model.** Cache-miss costs need a cache to miss in; with zero
+      modelled depth there is no miss to charge. The formulas and `M` (ledger C-1) stay recorded
+      and unimplemented rather than being applied to a cache that does not exist.
+- [x] **`M` was not measured, and stays absent.** No real measurement became available, so no
+      value was invented. This criterion is met by *not* producing a number.
 - [ ] The deferred T-11-008 criterion — **stepping the RCP between SysAD phases** — lands here,
       since it needs the scheduler to own the transaction rather than `DC` completing it inline.
       That is the `Bus`-trait change T-11-008 named and deferred to this sprint.
