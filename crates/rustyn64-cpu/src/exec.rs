@@ -116,13 +116,18 @@ pub struct Redirect {
     pub nullify_delay_slot: bool,
 }
 
-/// A COP0 register access that `EX` resolved but must not itself perform.
+/// A **coprocessor** access that `EX` resolved but must not itself perform.
+///
+/// Despite the name this now covers COP0, the TLB **and** COP1 control (`Cop1`).
+/// They share a variant because they share the stage split below, not because
+/// they are the same unit — the name is kept for churn reasons and this note
+/// exists so it does not mislead as COP1 grows in Sprint 3.
 ///
 /// The stage split is the manual's, not a convenience: UM §4.6.9 describes the
 /// CP0 bypass interlock as firing when *"an instruction which caused an
 /// exception reaches the WB stage and the subsequent instruction in the DC stage
-/// requests a read of any CP0 register"* — so a COP0 **read happens in DC** and a
-/// COP0 **write happens in WB**. Performing both in `EX` would make that
+/// requests a read of any CP0 register"* — so a coprocessor **read happens in
+/// DC** and a **write happens in WB**. Performing both in `EX` would make that
 /// interlock unexpressible, which is the same mistake ADR 0007 exists to prevent
 /// one level up.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

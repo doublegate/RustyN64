@@ -663,7 +663,7 @@ impl Pipeline {
                 dest,
                 // CFC1 is a 32-bit move, so the result is sign-extended into the
                 // 64-bit GPR exactly as MFC0's is.
-                value: u64::from(self.cop1.cfc1(src)) as u32 as i32 as i64 as u64,
+                value: crate::alu::sext32(self.cop1.cfc1(src)),
             };
         }
         if out.occupied
