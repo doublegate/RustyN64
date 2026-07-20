@@ -14,7 +14,7 @@ self-validating oracle analogous to blargg/kevtris/AccuracyCoin for the NES
 ## The oracle (what "accurate" means)
 
 | Suite | Lang | Role | Gate |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **n64-systemtest** | Rust | CPU / COP0 / TLB / RSP, hardware-verified, self-judging | "Failed: 0" (strict) |
 | **ParaLLEl-RDP fuzz** | — | RDP bit-exactness vs Angrylion (~150 tests) | exact match (strict) |
 | **Dillonb n64-tests** | C/asm | targeted CPU/RSP, hardware-verified | result-code pass |
@@ -35,7 +35,7 @@ committed tier is a licensing decision, not a convenience — full rules and
 provenance in `tests/roms/README.md`.
 
 | Corpus | Licence (verified) | Tier | Staged |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `n64-systemtest/` | MIT | **committed** | 1 ROM, 2.7 MB — built from source |
 | `external/krom/` | Unlicense (public domain) | external (size) | 196 ROMs, 182 MB |
 | `external/dillon-n64-tests/` | **none** | external (no grant) | 26 ROMs, 38 MB |
@@ -126,7 +126,7 @@ region" — so save type is what `rustyn64-cart` actually implements, and it is
 mutually exclusive (a ROM has exactly one save backend):
 
 | Folder | Backend | Exercises |
-|---|---|---|
+| --- | --- | --- |
 | `eeprom-4k/` | EEPROM 512 B | the most common backend |
 | `eeprom-16k/` | EEPROM 2 KB | same protocol, larger address space (off-by-one trap) |
 | `sram/` | SRAM 32 KB | battery-backed, PI-mapped |

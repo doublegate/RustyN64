@@ -135,7 +135,7 @@ regression corpus. See `docs/testing-strategy.md` and ADR 0003.
 ## Chip → crate map
 
 | Crate | Chip / role | Spec doc |
-|---|---|---|
+| --- | --- | --- |
 | `rustyn64-cpu` | NEC VR4300 (MIPS III, TLB, FPU, SysAD) | `docs/cpu.md` |
 | `rustyn64-rsp` | RSP (SU + VU, DMEM/IMEM, microcode) | `docs/rsp.md` |
 | `rustyn64-rdp` | RDP (rasterizer) + VI scan-out | `docs/rdp.md` |

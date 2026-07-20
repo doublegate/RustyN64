@@ -45,7 +45,7 @@ remains byte-identical and is what the determinism contract is defined against.
 ## Targets (provisional — refine after the interpreter lands)
 
 | Metric | Target |
-|---|---|
+| --- | --- |
 | Headless emulated frame | ≤ 16.67 ms (60 fps NTSC) on a modern desktop core |
 | RSP interpreter | the watch item — measure first, dynarec if it misses |
 | Software RDP at native res | interactive; quantify vs the compute backend need |

@@ -94,7 +94,7 @@ extra cycles by advancing `cycles` / stalling the issue.
 Standard MIPS segment layout (`ref-docs/research-report.md` §1):
 
 | Segment | Range | Mapping |
-|---|---|---|
+| --- | --- | --- |
 | KUSEG | `0x0000_0000`–`0x7FFF_FFFF` | TLB-mapped |
 | KSEG0 | `0x8000_0000`–`0x9FFF_FFFF` | direct, **cached** |
 | KSEG1 | `0xA000_0000`–`0xBFFF_FFFF` | direct, **uncached** |

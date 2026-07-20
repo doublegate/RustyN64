@@ -20,7 +20,7 @@ The first 4 bytes encode both the PI bus config and the byte order
 (`ref-docs/research-report.md` §6):
 
 | Magic (first 4 bytes) | Format | Byte order | Normalization |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `80 37 12 40` | `.z64` | big-endian (native) | none |
 | `37 80 40 12` | `.v64` | byte-swapped 16-bit halfwords | swap each 2-byte pair |
 | `40 12 37 80` | `.n64` | little-endian (32-bit word swap) | reverse each 4-byte word |
@@ -32,7 +32,7 @@ extension is unreliable** — always sniff (`ref-docs/research-report.md` §6).
 ## Header layout (offsets, big-endian / `.z64`)
 
 | Offset | Size | Field |
-|---|---|---|
+| --- | --- | --- |
 | `0x00` | 4 | PI / clock / endian config dword (the magic) |
 | `0x04` | 4 | clock rate |
 | `0x08` | 4 | boot address / entry PC |

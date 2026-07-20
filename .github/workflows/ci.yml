@@ -69,8 +69,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
@@ -92,8 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
@@ -119,8 +119,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97
         with:
           targets: thumbv7em-none-eabihf
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Layer 3 of the ROM guard (see .gitignore and the pre-commit hook).
       # Server-side and unskippable: a contributor can bypass the local hook
       # with --no-verify, but not this. Scans the whole tracked tree, so it
@@ -142,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Trunk resolves the wasm-bindgen CLI from its own pin, which must equal
       # the wasm-bindgen LIBRARY version cargo resolved. A mismatch fails the
       # wasm build at bindgen time -- but nothing else notices, so the pin drifts

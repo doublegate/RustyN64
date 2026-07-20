@@ -83,7 +83,7 @@ impl Shell {
         state: &ShellState,
         actions: &mut Vec<MenuAction>,
     ) {
-        egui::Panel::top("menu_bar").show_inside(root_ui, |ui| {
+        egui::Panel::top("menu_bar").show(root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open ROM...").clicked() {
@@ -139,7 +139,7 @@ impl Shell {
     }
 
     fn status_bar(root_ui: &mut egui::Ui, state: &ShellState) {
-        egui::Panel::bottom("status_bar").show_inside(root_ui, |ui| {
+        egui::Panel::bottom("status_bar").show(root_ui, |ui| {
             ui.horizontal(|ui| {
                 let status = if state.rom_loaded {
                     if state.paused {

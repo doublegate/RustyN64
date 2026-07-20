@@ -42,7 +42,7 @@ Distinct from emulation progress: the scaffolding around the code, and where it
 actually stands.
 
 | Area | State |
-|---|---|
+| --- | --- |
 | Repository | `github.com/doublegate/RustyN64`, **private**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
 | CI | **Green, verified.** All 8 jobs pass on `ubuntu`/`macOS`/`windows`: fmt, clippy, test, rustdoc, `test-roms`, `no_std`, `no-commercial-roms`, `wasm-bindgen-pin`. |
 | Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
@@ -56,7 +56,7 @@ actually stands.
 Full provenance and licence rules in `tests/roms/README.md`.
 
 | Corpus | Licence | Tier | Staged |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `n64-systemtest` | MIT | committed | 1 ROM, 2.7 MB — built from source |
 | `krom` (PeterLemon) | Unlicense | external | 196 ROMs, 182 MB |
 | `dillon-n64-tests` | none | external (run-only) | 26 ROMs, 38 MB |
@@ -75,7 +75,7 @@ harness `run_until_complete` sentinel decode is stubbed and always returns
 ## What is stubbed (the roadmap)
 
 | Subsystem | State | Phase |
-|---|---|---|
+| --- | --- | --- |
 | VR4300 decode/execute, TLB, FPU, caches | stub | Phase 1 |
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
@@ -87,7 +87,7 @@ harness `run_until_complete` sentinel decode is stubbed and always returns
 ## Chip → crate map
 
 | Crate | Chip / role | Spec doc |
-|---|---|---|
+| --- | --- | --- |
 | `rustyn64-cpu` | NEC VR4300 (MIPS III, TLB, FPU, SysAD) | `docs/cpu.md` |
 | `rustyn64-rsp` | RSP (SU + VU, DMEM/IMEM, microcode) | `docs/rsp.md` |
 | `rustyn64-rdp` | RDP rasterizer + VI scan-out | `docs/rdp.md` |
@@ -105,7 +105,7 @@ Every gate is **not started**. The ROMs now exist locally for most of them, but
 nothing loads or scores a ROM yet, so no gate can report a number.
 
 | Gate | Oracle available? | Status |
-|---|---|---|
+| --- | --- | --- |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
 | n64-systemtest "Failed: 0" (CPU/COP0/TLB/RSP) | **yes** — ROM committed | not started (no CPU to run it) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |

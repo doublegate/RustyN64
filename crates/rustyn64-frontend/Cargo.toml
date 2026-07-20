@@ -43,14 +43,24 @@ workspace = true
 [dependencies]
 rustyn64-core = { path = "../rustyn64-core", version = "0.1.0" }
 
-# Frontend stack — pinned to the same known-good tier RustyNES uses (winit 0.30 /
-# wgpu 29 / egui 0.34 / cpal 0.18 / gilrs 0.11 / rfd 0.17).
+# Frontend stack. The egui trio must move together (egui-wgpu and egui-winit
+# both require an exactly-matching `egui`), and wgpu is NOT independent of them.
+#
+# GOTCHA — wgpu is held at 29 deliberately, not by neglect. wgpu 30 is released,
+# but no published egui-wgpu accepts it: 0.35.0, the newest, requires
+# `wgpu = "^29.0"`, and egui's unreleased `main` still pins 29.0 as well. Bumping
+# wgpu alone does not fail resolution -- cargo would link BOTH wgpu 29 (for
+# egui-wgpu) and wgpu 30 (for us), since semver-incompatible versions coexist.
+# The two `wgpu::Device` types are then distinct, and the frontend fails to
+# compile with "expected `wgpu::Device`, found `wgpu::Device`". Move wgpu only
+# when egui-wgpu's requirement moves with it; verify with
+# `cargo tree -p wgpu -d` (a duplicate wgpu in that output is the failure).
 winit = "0.30"
 wgpu = { version = "29", features = ["webgl"] }
-egui = "0.34"
-egui-wgpu = "0.34"
-egui-winit = { version = "0.34", default-features = false, features = ["links", "wayland", "x11"] }
-pollster = "0.4"
+egui = "0.35"
+egui-wgpu = "0.35"
+egui-winit = { version = "0.35", default-features = false, features = ["links", "wayland", "x11"] }
+pollster = "1.0"
 bytemuck = "1"
 thiserror = { version = "2.0", default-features = false }
 web-time = "1.1"
@@ -62,4 +72,4 @@ web-time = "1.1"
 cpal = "0.18"
 gilrs = "0.11"
 rfd = "0.17"
-directories = "5"
+directories = "6"

@@ -33,12 +33,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned to the toolchain in rust-toolchain.toml rather than @stable.
       # rust-toolchain.toml takes precedence over the action's default anyway,
       # so @stable meant installing one toolchain and building with another.
-      - uses: dtolnay/rust-toolchain@1.96
+      - uses: dtolnay/rust-toolchain@1.97
         with:
           targets: ${{ matrix.target }}
 
@@ -93,7 +93,7 @@ jobs:
           Compress-Archive -Path $staging -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force $staging
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: dist/*
@@ -115,12 +115,12 @@ jobs:
       # can leave the annotated tag OBJECT unavailable, which would make the
       # `git tag -l --format=%(contents)` read below come back empty and
       # silently fall through to auto-generated notes.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

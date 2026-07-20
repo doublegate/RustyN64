@@ -8,7 +8,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.1.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96-orange.svg" alt="Rust: 1.96"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.1.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97-orange.svg" alt="Rust: 1.97"></a><br>
   <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-v0.1.0%20SKELETON-yellow.svg" alt="Status: skeleton"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/accuracy-not%20started-lightgrey.svg" alt="Accuracy: not started"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
@@ -132,7 +132,7 @@ retrofitted:
 
 **Prerequisites:**
 
-- **Rust 1.96** — pinned via `rust-toolchain.toml` and auto-installed by
+- **Rust 1.97** — pinned via `rust-toolchain.toml` and auto-installed by
   [rustup](https://rustup.rs).
 - **Linux desktop dependencies** for `winit` / `wgpu` / `cpal` / `egui` (see below).
 - **Git.**
@@ -294,7 +294,7 @@ wgpu-compute backend, and stays the oracle that backend is graded against (ADR 0
 
 ### System requirements
 
-- **Rust 1.96 stable** (pinned via `rust-toolchain.toml`; auto-installed by `rustup`).
+- **Rust 1.97 stable** (pinned via `rust-toolchain.toml`; auto-installed by `rustup`).
 - A GPU with a `wgpu`-supported backend (Vulkan / Metal / DX12).
 - Linux additionally needs the alsa/udev/xkbcommon/wayland development headers listed above.
 

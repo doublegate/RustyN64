@@ -64,7 +64,7 @@ which claimed "Angrylion-Plus is GPL and ParaLLEl-RDP is per-repo". Both were wr
 angrylion error *understated* the restriction. Verified against the clones in `ref-proj/`:
 
 | Reference | Actual licence | What that permits |
-|---|---|---|
+| --- | --- | --- |
 | **angrylion-rdp-plus** | **MAME licence** — ships `MAME License.txt` and **no `LICENSE` file at all**; `CREDITS.txt` states "The code comes under MAME license" | **Non-commercial.** Stricter than the GPL, and incompatible with MIT OR Apache-2.0 in *both* directions. Read to understand behaviour, then write your own — which the MAME licence text itself instructs. Compare outputs, never source. |
 | **ParaLLEl-RDP** | **MIT** (`Copyright (c) 2020 Themaister`) | Permissive. Vendorable with attribution, though the value here is its ~150-test fuzz suite as a bit-exactness oracle rather than its source. |
 | **CEN64** | BSD-3-Clause | Permissive. The closest reference for bus-level timing behaviour. |

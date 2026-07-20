@@ -41,9 +41,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@1.96
+      - uses: dtolnay/rust-toolchain@1.97
 
       - uses: Swatinem/rust-cache@v2
 
@@ -74,9 +74,9 @@ jobs:
           cp _site/index.html _site/api/index.html
           sed -i 's|\./api/rustyn64_core|./rustyn64_core|g' _site/api/index.html
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
@@ -90,4 +90,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

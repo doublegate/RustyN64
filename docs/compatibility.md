@@ -17,7 +17,7 @@ Region differences are timing/data, not separate cores
 the AI video-clock divisor differ:
 
 | Region | Field rate | Lines/field | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | NTSC | 60 Hz | ~262.5 | 14.31818 MHz crystal, 3.579545 MHz colour-burst |
 | PAL | 50 Hz | ~312.5 | PAL VI timing tables + AI video-clock divisor differ |
 

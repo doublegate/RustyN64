@@ -19,7 +19,7 @@ from a single 14.31818 MHz NTSC colour-burst crystal via PLLs. The two numbers
 the scheduler cares about:
 
 | Clock | Rate | Source |
-|---|---|---|
+| --- | --- | --- |
 | VR4300 pipeline (PClock) | **93.75 MHz** | R4300i `DivMode` = 1.5:1 off MasterClock |
 | RCP / system (MasterClock) | **62.5 MHz** | RSP + RDP + the interfaces |
 
@@ -97,7 +97,7 @@ impl System {
 ## State and the divisor table
 
 | Engine | Advances | Divisor vs. master |
-|---|---|---|
+| --- | --- | --- |
 | VR4300 (master) | every master tick | 1 (the tick unit) |
 | RSP (in `step_rcp`) | every RCP tick | 2 per 3 master ticks |
 | RDP (in `step_rcp`) | every RCP tick | 2 per 3 master ticks |

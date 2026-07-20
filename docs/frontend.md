@@ -48,7 +48,7 @@ resolution and AA per frame. PAL field timing differs (`docs/compatibility.md`).
 The N64 controller (default P1 mapping; configurable):
 
 | N64 input | Suggested default |
-|---|---|
+| --- | --- |
 | Analog stick | left thumbstick (gamepad) / WASD or arrows (keyboard) |
 | D-pad | gamepad d-pad / arrow keys |
 | A / B | South / West (gamepad) / Z / X (keyboard) |

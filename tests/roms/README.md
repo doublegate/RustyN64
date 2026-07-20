@@ -73,7 +73,7 @@ different ROM; the committed one is the default set.
 ## External corpora (gitignored — local only)
 
 | Corpus | Upstream | Licence (verified) | Why external | Footprint |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `external/krom/` | [PeterLemon/N64](https://github.com/PeterLemon/N64) | Unlicense (public domain) | Permissive, but upstream is 2.0 GB; even this curated subset is 182 MB | 182 MB, 196 ROMs |
 | `external/dillon-n64-tests/` | [Dillonb/n64-tests](https://github.com/Dillonb/n64-tests) | **NONE** — no licence file, no README statement | No licence means no grant to redistribute | 38 MB, 26 ROMs |
 | `external/commercial/` | personal cartridge dumps | copyrighted | Never redistributable | 1.5 GB, 66 ROMs |
@@ -87,7 +87,7 @@ directories only, leaving ~1.8 GB of graphics demos in
 `ref-proj/PeterLemon-N64/`.
 
 | Directory | ROMs | Covers |
-|---|---:|---|
+| --- | ---: | --- |
 | `CPUTest/` | 114 | VR4300 instructions, COP0, PI DMA alignment |
 | `RSPTest/` | 56 | RSP scalar + vector ISA |
 | `CP1/` | 12 | FPU / COP1 |
@@ -150,7 +150,7 @@ podman run --rm -v "$PWD/240psuite/N64:/workspace:Z" -w /workspace \
 Provenance of the staged build:
 
 | Component | Commit |
-|---|---|
+| --- | --- |
 | 240pTestSuite | `184d6f8d53645139992c9bfc97e91cae14f2595d` |
 | libdragon (`preview`) | `f13b48985edbf4310f07779c76d9a68c7605037b` |
 | Tiny3D (`main`) | `e84172f29f719680ac3213a7f408c2f721ef7b24` |

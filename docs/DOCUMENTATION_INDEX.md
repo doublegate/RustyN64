@@ -18,7 +18,7 @@ spec, not a history log; when a passing test ROM and a doc disagree, the ROM win
 corrected.
 
 | Document | Subsystem |
-|----------|-----------|
+| ---------- | ----------- |
 | [cpu.md](cpu.md) | NEC VR4300 — MIPS III instruction set, TLB, COP0, FPU, SysAD, the documented errata |
 | [rsp.md](rsp.md) | RSP — the scalar unit, the 8-lane vector unit, DMEM/IMEM, downloadable microcode |
 | [rdp.md](rdp.md) | RDP — the command list, the texture/combiner/blender pipeline, and VI scan-out |
@@ -32,7 +32,7 @@ corrected.
 ## Cross-cutting references
 
 | Document | Topic |
-|----------|-------|
+| ---------- | ------- |
 | [STATUS.md](STATUS.md) | **Single source of truth** — per-subsystem state, infrastructure, corpora, accuracy gates, version policy |
 | [testing-strategy.md](testing-strategy.md) | The oracle, the five test layers, the corpus tiers, and the commercial-ROM guards |
 | [compatibility.md](compatibility.md) | Regions, memory configuration, per-game save and CIC, the custom-microcode risk |
@@ -50,7 +50,7 @@ corrected.
 ## Related, outside `docs/`
 
 | Location | Contents |
-|----------|----------|
+| ---------- | ---------- |
 | [`../ref-docs/`](../ref-docs/) | Immutable primary research — never rewritten in place; corrections land as new dated supplemental files. |
 | `../n64brew_wiki/` | Gitignored offline mirror of the N64brew Wiki (324 pages, 96 media) — the primary hardware reference. Search `markdown/`, browse `html/`, rebuild with `scripts/mirror_n64brew_wiki.py`. CC BY-SA 4.0. |
 | `../ref-proj/` | Gitignored study clones of reference emulators and test suites. **Licences vary and several forbid copying** — read `ref-proj/README.md` before lifting anything. |

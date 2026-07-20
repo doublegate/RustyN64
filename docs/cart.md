@@ -77,7 +77,7 @@ handshake and the PIF can **halt the CPU** if the check fails
 (`ref-docs/research-report.md` §6). Variants and their effect:
 
 | CIC (NTSC / PAL) | Notes |
-|---|---|
+| --- | --- |
 | 6101 | early NTSC (Star Fox 64) |
 | 6102 / 7101 | the common variant (~88% of games) |
 | 6103 / 7103 | RAM entry point **+ `0x100000`** |
@@ -102,7 +102,7 @@ save-type field — resolve via the per-game DB by serial/CRC). Access path matt
 (`ref-docs/research-report.md` §6):
 
 | Type | Size | Path |
-|---|---|---|
+| --- | --- | --- |
 | EEPROM 4kbit | 512 B | joybus via PIF/SI |
 | EEPROM 16kbit | 2 KiB | joybus via PIF/SI |
 | SRAM | 32 KiB (some 96 KiB) | PI bus (DOM2), needs battery |

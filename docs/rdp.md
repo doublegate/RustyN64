@@ -75,7 +75,7 @@ test/writes depth against a Z image in RDRAM.
 The RDP runs in one of four modes (`ref-docs/research-report.md` §4):
 
 | Mode | Use |
-|---|---|
+| --- | --- |
 | **1-cycle** | full pipeline, one combiner/blender pass |
 | **2-cycle** | full pipeline, a second combiner/blender pass |
 | **copy** | fast rectangle blit (texture → framebuffer, no pipeline) |

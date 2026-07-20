@@ -9,6 +9,32 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — dependency and toolchain refresh
+
+Everything moved to the newest mutually-compatible versions available.
+
+- Rust toolchain 1.96 → **1.97.1** (`rust-toolchain.toml`, workspace `rust-version`, and the
+  `dtolnay/rust-toolchain` pin in all three workflows).
+- egui / egui-wgpu / egui-winit 0.34 → **0.35** (MSRV 1.92, satisfied). `Panel::show_inside` is
+  deprecated in favour of `Panel::show`; both call sites in `ui_shell` updated.
+- `directories` 5 → **6**, `pollster` 0.4 → **1.0**, plus patch/minor moves across `winit`,
+  `cpal`, `gilrs`, `rfd`, `bytemuck`, `thiserror`, `bitflags`, and `insta` via `cargo update`.
+- GitHub Actions: `checkout` v4 → **v7**, `upload-artifact` v4 → **v7**, `download-artifact`
+  v4 → **v8**, `configure-pages` v5 → **v6**, `upload-pages-artifact` v3 → **v5**,
+  `deploy-pages` v4 → **v5**. `Swatinem/rust-cache` stays on the floating `v2` (currently 2.9.1).
+- `markdownlint-cli` v0.39.0 → **v0.49.1**, which adds MD060 (table-column-style). Delimiter
+  rows are normalised to padded form across 15 documents, and MD060 is pinned to
+  `style: "padded"` rather than the default per-table inference — inference classified two
+  single-row tables with 300-character cells as "aligned" and demanded header padding that
+  cannot be met.
+
+**`wgpu` is deliberately held at 29.** wgpu 30 is released, but no published `egui-wgpu`
+accepts it — 0.35.0 requires `wgpu = "^29.0"`, and egui's unreleased `main` still pins 29.0.
+Bumping wgpu alone would not fail resolution; cargo would link both wgpu 29 (for egui-wgpu) and
+wgpu 30 (for the frontend), making the two `wgpu::Device` types distinct and breaking the build
+with "expected `wgpu::Device`, found `wgpu::Device`". The rationale is recorded at the
+dependency itself, with `cargo tree -p wgpu -d` given as the check.
+
 ### Added
 
 - [`docs/engineering-lessons.md`](docs/engineering-lessons.md) — failure patterns carried over
