@@ -30,10 +30,14 @@ justifies (each layer rests on a verified one below it).
 - A **MAJOR** bump (`v2.0.0`) is reserved for a public-API or save-state-format break. The
   sub-cycle φ1/φ2 timebase refactor (ADR 0002) is the only currently-anticipated candidate, and
   only *if* Phase 7's accuracy triage concludes it is warranted.
-- **Every tag is annotated, and the annotation IS the release note** — dense technical prose
-  grouped by area (CPU / RSP / RDP / audio / cart / frontend / infrastructure), closing with an
+- **Every tag is annotated, but the annotation is short.** The long-form release note lives at
+  `docs/release-notes/<tag>.md` and the release workflow uses it as the GitHub Release body; the
+  tag annotation is a summary that points at it. Notes live in the repository so they can be
+  reviewed in a PR, corrected without rewriting a published tag, and linted like any other
+  document. Each note is dense technical prose grouped by area (CPU / RSP / RDP / audio / cart /
+  frontend / infrastructure), carries a **Known limitations** section, and closes with an
   explicit accuracy statement ("oracle suites: N/N held", or "no accuracy gates active yet" while
-  that remains true).
+  that remains true). See `docs/release-notes/README.md`.
 
 ## The ladder
 

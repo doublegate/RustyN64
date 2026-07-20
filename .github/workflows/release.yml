@@ -109,7 +109,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # fetch-depth 0 plus an explicit tag fetch: the default shallow checkout
+      # can leave the annotated tag OBJECT unavailable, which would make the
+      # `git tag -l --format=%(contents)` read below come back empty and
+      # silently fall through to auto-generated notes.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/download-artifact@v4
         with:
@@ -138,6 +145,33 @@ jobs:
           fi
           echo "version $manifest matches tag"
 
+      - name: Resolve the release notes
+        # Precedence, most specific first:
+        #   1. docs/release-notes/<tag>.md  -- the long-form notes, reviewed in a
+        #      PR like any other doc rather than typed into a tag message.
+        #   2. the annotated tag body       -- for a patch cut without its own file.
+        #   3. --generate-notes             -- last resort; an auto commit list.
+        # The tag annotation stays short and points at the file; see
+        # to-dos/VERSION-PLAN.md.
+        run: |
+          set -euo pipefail
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            cp "$notes" "$RUNNER_TEMP/release-notes.md"
+            echo "using $notes ($(wc -l < "$notes") lines)"
+            echo "have_body=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          body=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+          if [ -n "${body//[[:space:]]/}" ]; then
+            printf '%s\n' "$body" > "$RUNNER_TEMP/release-notes.md"
+            echo "no $notes; using the tag annotation instead"
+            echo "have_body=true" >> "$GITHUB_ENV"
+          else
+            echo "no $notes and no tag annotation; falling back to --generate-notes"
+            echo "have_body=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,6 +180,11 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "release $GITHUB_REF_NAME already exists; uploading assets only"
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          elif [ "${have_body}" = "true" ]; then
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "RustyN64 $GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --verify-tag
           else
             gh release create "$GITHUB_REF_NAME" dist/* \
               --title "RustyN64 $GITHUB_REF_NAME" \

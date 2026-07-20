@@ -6,6 +6,16 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
+Nothing yet. The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
+[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+## [0.1.0] "Foundation" — 2026-07-20
+
+The architectural skeleton. The workspace compiles, CI is green across three platforms, the
+reference corpus is acquired and licence-classified — and **no chip executes an instruction yet**.
+This tag exists so the foundation is a fixed, citable point rather than an ever-growing
+`[Unreleased]` section.
+
 ### Added
 
 - Initial workspace scaffold (cycle-accurate emulator architecture, ported from RustyNES).
@@ -105,3 +115,6 @@ All notable changes to RustyN64 are documented here. The format is based on
   wasm build would have failed at bindgen time. A new `wasm-bindgen-pin` CI job now
   compares the two and fails on drift, which is otherwise invisible until someone runs
   `trunk build`.
+
+[Unreleased]: https://github.com/doublegate/RustyN64/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/doublegate/RustyN64/releases/tag/v0.1.0
