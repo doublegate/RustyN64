@@ -37,6 +37,7 @@ pub mod exec;
 pub mod mem;
 pub mod pipeline;
 pub mod regs;
+pub mod sysad;
 
 pub use addr::{Cached, Physical, translate};
 pub use alu::{HiLo, MulDiv};
@@ -45,6 +46,7 @@ pub use exec::{Executed, WriteBack, execute};
 pub use mem::{LoadKind, StoreKind};
 pub use pipeline::{Exception, Interlock, Latch, Pipeline, Stage};
 pub use regs::Regs;
+pub use sysad::{BlockOrder, Phase, Transaction, Width, block_order};
 
 /// Which half of a `SysAD` bus transaction is on the wire.
 ///

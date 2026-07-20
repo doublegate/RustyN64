@@ -231,16 +231,25 @@ time and charge a flat constant, and they disagree on what that constant is.
 
 **Acceptance criteria:**
 
-- [ ] A transaction occupies command and data cycles on the SClock grid; the RCP is stepped
-      between them, so a device can observe the bus mid-transaction.
-- [ ] `EOK`/`Pvalid`/`Evalid` handshake semantics, with the inter-phase wait unbounded.
-- [ ] Block transfer orderings: D-cache 128-bit reads use **sub-block** ordering when address
-      bit 4 is set (requested 64 bits first, then the 64 *below* it); I-cache 256-bit reads are
-      always sequential.
-- [ ] SYSCMD bit-4 polarity resolved against hardware — the User's Manual (§12.11.1) and the
-      wiki cheat sheet **contradict each other**. Record which won and how it was determined.
-- [ ] `M` is fitted from test ROMs and recorded in the accuracy ledger as a measured constant
-      with its measurement cited. It is never adjusted to make a specific ROM pass.
+- [x] A transaction is a **state machine** with distinct address and data phases on the SClock
+      grid, and it is structurally incapable of completing in its address phase — pinned by
+      `a_transaction_can_never_complete_in_its_address_phase`.
+- [x] The inter-phase wait is **unbounded** and supplied by the caller rather than being a
+      constant, so it cannot be quietly tuned.
+- [x] Block transfer orderings, including the sub-block quirk when address bit 4 is set and the
+      rule that I-cache reads are always sequential regardless.
+- [x] `SYSCMD` bit-4 polarity resolved — and it turned out **not to be a contradiction**: both
+      sources put a request at bit 4 clear and a data beat at bit 4 set, and differ only in
+      which cycle they call "command". Recorded in `docs/accuracy-ledger.md` S-1.
+- [ ] **Deferred — the RCP is not yet stepped between the phases.** The transaction model
+      supports it (that is why it is a state machine), but driving it requires the scheduler to
+      own the transaction rather than the `DC` stage completing the access inline. That is a
+      change to the `Bus` trait and the scheduler contract, and it belongs with the cache model
+      in Sprint 2, where `DC` gains a reason to stall for multiple cycles anyway.
+- [ ] **Deferred — `M` is not measured.** As this ticket's own note predicted, `basic.z64` is
+      too short to constrain it and the realistic source is n64-systemtest's default-off
+      `timing` set, which needs Sprint 2. `M` remains an explicit ledger entry (C-1) with no
+      value rather than a fitted-looking number without provenance.
 
 **Note on the `M` measurement.** Fitting `M` needs a ROM that runs long enough to measure, and
 `basic.z64` (T-11-006) is too short and too simple to constrain it. The realistic source is
