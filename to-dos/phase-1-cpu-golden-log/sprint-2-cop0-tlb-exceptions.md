@@ -586,7 +586,39 @@ short of asking it.
    PI range** and must keep claiming its window first, or the debug channel's read-back handshake
    breaks — the existing round-trip test caught it immediately. Failure count 2,901 to **2,899**.
 
-   **Next area: PI direct-I/O writes are asynchronous, with a decaying latch.**
+   **Measured failure breakdown — and a correction.** I asserted several times that the remaining
+   gap was dominated by the LLE RSP. **That was wrong, and I had never measured it.** Grouping the
+   2,850 attributable failures by test prefix:
+
+   | Failures | Group |
+   | ---: | --- |
+   | **2,413** | **COP1** |
+   | 291 | RSP |
+   | 15 | SP |
+   | 14 | cart-writing |
+   | 14 | cart_memory |
+   | 13 | spmem |
+   | 9 | pifram |
+   | ~80 | everything else (CACHE, MI, RDP, RE, …) |
+
+   **COP1 is 85% of the remaining gap.** The RSP is 10%. Every PI/cart item I have been working
+   through is a rounding error against the FPU — I was optimising the tail because I picked targets
+   by reading failure text rather than by counting it.
+
+   The good news is that this is *plumbing*, not new modelling. `crates/rustyn64-cpu/src/fpu.rs`
+   already implements the arithmetic, comparisons, conversions, rounding modes, and the `MUL`
+   erratum; `fpr.rs` implements the `FR` register views. What is missing is the **decode and
+   execute wiring**: FP arithmetic still decodes to `Op::Cop1Unimplemented`, which executes as a
+   no-op, so the whole implemented FPU is unreachable from an instruction stream.
+
+   That makes COP1 the next work item, ahead of everything else in this ticket, and it is
+   `T-13-00x` Sprint 3 scope that was deferred rather than an unstarted subsystem.
+
+   **Lesson worth keeping:** "which failure is most common" is a *state question*, answerable in
+   one probe, and I spent several rounds on mechanism-adjacent target selection without asking it.
+   The same mistake as guessing mechanisms, one level up.
+
+   **Deferred area: PI direct-I/O writes are asynchronous, with a decaying latch.**
 
    The `cart-writing:` group. The same N64brew *Memory map* section documents it:
 
