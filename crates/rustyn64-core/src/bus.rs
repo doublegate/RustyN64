@@ -20,7 +20,7 @@
 
 use rustyn64_audio::{Audio, AudioBus};
 use rustyn64_cart::{Cart, Cartridge, RdramBus};
-use rustyn64_cpu::{Bus as CpuBus, BusPhase};
+use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
 use rustyn64_rsp::{Rsp, RspBus};
 
@@ -190,13 +190,10 @@ impl CpuBus for Bus {
         self.cart.pi_write(addr, val);
     }
 
-    fn poll_irq_at_phase(&mut self, _phase: BusPhase) -> bool {
-        // TODO(T-CORE-02): `_phase` is ignored -- this returns the same answer
-        // for Command and Data, so the hook carries no phase information today.
-        // Real per-phase sampling lands with the Phase 1 interpreter; see the
-        // trait doc in `rustyn64-cpu` for the requirement attached to it.
-        //
-        // IP2 asserts when an unmasked MI line is set.
+    fn poll_irq(&mut self) -> bool {
+        // IP2 asserts when an unmasked MI line is set. The run-cycle gate and the
+        // DC-stage sampling point live in the CPU pipeline (ADR 0007); this only
+        // reports the level.
         let i = self.rcp.mi_intr;
         let m = self.rcp.mi_mask;
         (i.sp && m.sp)
@@ -275,6 +272,6 @@ mod tests {
         let mut bus = Bus::new();
         bus.rcp.mi_intr.ai = true;
         bus.rcp.mi_mask.ai = true;
-        assert!(CpuBus::poll_irq_at_phase(&mut bus, BusPhase::Data));
+        assert!(CpuBus::poll_irq(&mut bus));
     }
 }

@@ -27,7 +27,7 @@ impl TraceRecord {
         Self {
             pc: cpu.pc,
             gpr: cpu.gpr,
-            cycle: cpu.cycles,
+            cycle: cpu.retired,
         }
     }
 }

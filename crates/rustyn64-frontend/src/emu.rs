@@ -17,10 +17,11 @@ use rustyn64_core::System;
 
 use crate::{FB_DEFAULT_H, FB_DEFAULT_W, FB_MAX_H, FB_MAX_W};
 
-/// Master (VR4300) ticks per emulated video frame at ~60 Hz NTSC.
+/// Canonical master ticks per emulated video frame at ~60 Hz NTSC.
 ///
-/// `93_750_000 / 60` rounded — the pacer is wall-clock authoritative, so this
-/// only sets how much the core advances per produced frame in the skeleton.
+/// `187_500_000 / 60` — the 187.5 MHz master tick of ADR 0006, NOT the VR4300
+/// cycle. The pacer is wall-clock authoritative, so this only sets how much the
+/// core advances per produced frame in the skeleton.
 const MASTER_TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
 
 /// A produced video frame: an RGBA8 buffer plus its active dimensions.
@@ -128,9 +129,12 @@ impl EmuCore {
         if self.paused {
             return;
         }
-        for _ in 0..MASTER_TICKS_PER_FRAME {
-            self.system.tick_one_unit();
-        }
+        // Edge-to-edge: the master tick is a time base, never an iteration count.
+        let target = self
+            .system
+            .master_ticks()
+            .saturating_add(MASTER_TICKS_PER_FRAME);
+        self.system.run_until(target);
         self.frames = self.frames.wrapping_add(1);
         self.produce_frame();
         self.produce_audio();

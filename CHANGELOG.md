@@ -9,6 +9,41 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — the ADR 0006 scheduler rework (T-11-001, first half)
+
+The canonical master clock is now **implemented**, not just decided.
+
+- `MASTER_HZ` is **187,500,000**. `master_ticks: u64` is the only counter in the core that is
+  ever incremented; `cpu_cycles()`, `rcp_cycles()` and `count_ticks()` are derived accessors,
+  not fields. The 3:2 fractional accumulator (`rcp_accum`, `RCP_NUM`, `RCP_DEN`) is deleted.
+- Every domain is an integer divisor, exported and asserted exact: `CPU_DIVIDER` 2,
+  `RCP_DIVIDER` 3, `COUNT_DIVIDER` 4 (half PClock), `SI_DIVIDER` 12, `PIF_DIVIDER` 96.
+- **Per-domain seeded phase offsets.** `Phases { cpu, rcp }` are constants derived from the
+  SplitMix64 seed — not counters — so the ownership rule holds while the seeded power-on phase
+  stays meaningful. A single shared offset would have made every seed produce an identical
+  interleaving from tick 6 onward.
+- `tick_one_unit()` is replaced by `step_to_next_edge()` and `run_until(target)`, which advance
+  **edge to edge**. The master tick is a time base and is never iterated; `run_until` steps every
+  edge in `(now, target]` and deliberately does not overshoot by one.
+- `Cpu::cycles` is renamed **`Cpu::retired`** — a retired-work tally, which is the one kind of
+  counter still allowed to be incremented because nothing schedules against it. `Cpu::tick` is
+  documented as advancing **one PClock, not one instruction**.
+- `Bus::poll_irq_at_phase(BusPhase)` is replaced by `Bus::poll_irq()`. `BusPhase` survives to
+  describe the bus protocol, with its doc comment stating plainly that it carries no interrupt
+  semantics and why.
+
+Seven new tests, two of which are the guards that make the rest trustworthy:
+
+- **`residue_invariants_never_move`** — samples the affine offsets between `master_ticks` and
+  every derived position across 64 periods and asserts they never move.
+- **`seeds_produce_distinct_interleavings`** — fails if the per-domain phases ever collapse.
+- Plus `every_divider_is_exact`, `three_cpu_and_two_rcp_steps_per_six_ticks` (all seeds),
+  `same_seed_same_timeline`, `edges_are_never_skipped`, `reset_preserves_phase`.
+
+Both guards were **mutation-tested**: introducing an independently-incremented counter fails the
+residue test, and collapsing the phases fails the interleaving test. A guard that cannot fail is
+not a guard.
+
 ### Added — reference corpus and the accuracy ledger
 
 - **[`docs/accuracy-ledger.md`](docs/accuracy-ledger.md)** — referenced from five documents and

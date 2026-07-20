@@ -30,22 +30,26 @@
 
 extern crate alloc;
 
-/// Which half of a `SysAD` bus transaction the lockstep scheduler is currently in.
+/// Which half of a `SysAD` bus transaction is on the wire.
 ///
 /// The VR4300 talks to the RCP over the `SysAD` bus, which multiplexes the command
-/// and the data onto the same lines. `SYSCMD` bit 4 is literally documented as
-/// "Command or Data", and this enum mirrors that split: the transaction issues a
-/// command, then transfers data.
+/// and the data onto the same lines; `SYSCMD` bit 4 is documented as "Command or
+/// Data" and this enum mirrors that split.
 ///
-/// The scheduler needs the distinction because an RCP or interface event landing
-/// between the two halves must be visible to the correct one — that is the
-/// not-catch-up property in ADR 0001. The [`Bus::poll_irq_at_phase`] hook is
-/// parameterized over it so `rustyn64-core` and the test harness can import it
-/// through `rustyn64_core::scheduler`.
+/// **This describes the bus protocol and carries no interrupt semantics.** An
+/// earlier revision paired it with a `poll_irq_at_phase(BusPhase)` hook, on the
+/// assumption that interrupts are sampled at a particular half of a transaction.
+/// No such coupling is documented anywhere — not in the User's Manual, not on the
+/// wiki. The documented rule (UM §4.7.1) is per-`PCycle` and gated on stall state:
+/// *"NMI and interrupt exception requests are accepted only if the previous
+/// `PCycle` was a run cycle."* That hook was shaped on the wrong axis and was
+/// removed rather than completed (ADR 0007).
 ///
-/// Note this is *not* a sub-cycle bus-timing model: the scheduler still advances
-/// at whole-VR4300-cycle resolution. Finer resolution is the deferred ADR 0005
-/// refactor.
+/// `SysAD` runs at `SClock` = `MClock` = 62.5 MHz, so one bus cycle is 1.5 `PCycles` — 3
+/// master ticks against the CPU's 2 (ADR 0006). This is *not* the deferred ADR
+/// 0005 refactor, which concerns resolution finer than one `PClock`.
+///
+/// TODO(T-11-008): the transaction model that actually uses this.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum BusPhase {
     /// The command half — the CPU drives `SYSCMD` and the address.
@@ -86,20 +90,16 @@ pub trait Bus {
         self.write_u8(addr.wrapping_add(3), b[3]);
     }
 
-    /// Sample the pending-interrupt level at a given `SysAD` transaction half.
+    /// Sample the pending-interrupt level: the MI lines masked by `MI_MASK`.
     ///
-    /// Default: no interrupt pending. `rustyn64-core` overrides to OR the MI
-    /// interrupt mask against the live RCP interrupt lines.
+    /// Default: no interrupt pending. `rustyn64-core` overrides it.
     ///
-    /// **`phase` is not yet load-bearing.** Neither this default nor the
-    /// `rustyn64-core` implementation branches on it, so the hook currently
-    /// returns the same answer for both halves. Do not conclude from this
-    /// signature that interrupts are sampled per phase — they are not, yet.
-    /// Wiring it up is Phase 1 work (`to-dos/phase-1-cpu-golden-log/`), and the
-    /// requirement there is a test that fails if both phases behave identically.
-    /// See `docs/engineering-lessons.md` §3.2: instrumentation that cannot vary
-    /// looks like evidence and is not.
-    fn poll_irq_at_phase(&mut self, _phase: BusPhase) -> bool {
+    /// Sampling happens **once per `PClock` in the DC stage** (UM Figure 4-12 and
+    /// §4.7.6, which lists the interrupt exception among the DC-stage priorities)
+    /// and is accepted only if the previous `PCycle` was a run cycle (§4.7.1). The
+    /// run-cycle gate lives in the pipeline, not here — this hook only reports the
+    /// level. Exactly one recognition predicate exists in the tree.
+    fn poll_irq(&mut self) -> bool {
         false
     }
 }
@@ -118,8 +118,14 @@ pub struct Cpu {
     pub lo: u64,
     /// Program counter (virtual address).
     pub pc: u64,
-    /// Retired-instruction / cycle counter (used by the golden-log differ).
-    pub cycles: u64,
+    /// Retired-work tally: instructions retired since power-on, for the
+    /// golden-log differ.
+    ///
+    /// This is **not** a time position and nothing schedules against it — the
+    /// scheduler derives every cycle position from its one `master_ticks` counter
+    /// (ADR 0006). A work tally is the one kind of counter that is still allowed
+    /// to be incremented; see `System::cpu_cycles()` for the CPU's *position*.
+    pub retired: u64,
     // TODO(T-CPU-01): branch-delay-slot latch, CP0 registers + TLB entries,
     // CP1 (FPU) register file + control/status, LL/SC link bit — see `docs/cpu.md`.
 }
@@ -143,7 +149,7 @@ impl Cpu {
             hi: 0,
             lo: 0,
             pc: 0xBFC0_0000,
-            cycles: 0,
+            retired: 0,
         }
     }
 
@@ -152,17 +158,23 @@ impl Cpu {
         self.pc = pc;
     }
 
-    /// Advance the CPU by one issued instruction.
+    /// Advance the CPU by **one `PClock`** — not one instruction.
+    ///
+    /// The scheduler calls this on every CPU edge (every 2nd master tick, ADR
+    /// 0006). At least 5 `PCycles` are required to execute an instruction (UM
+    /// §4.1), and `DDIV` stalls the whole pipeline for 69 (UM Table 3-12), so a
+    /// tick is emphatically not an instruction.
     ///
     /// Hot path: keep allocation-free (no `Vec`/`Box` in `tick`). The `bus`
     /// argument is the `&mut Bus` the scheduler hands down each step.
     pub fn tick<B: Bus>(&mut self, bus: &mut B) {
-        // TODO(T-CPU-01): fetch at `pc` via `bus.read_u32`, decode the MIPS III
-        // opcode, execute (incl. the branch-delay slot), advance CP0 Count, and
-        // raise exceptions. Skeleton: just retire a cycle and keep $zero pinned.
+        // TODO(T-11-001): the five-stage pipeline (IC/RF/EX/DC/WB) as four
+        // inter-stage latches advanced in REVERSE order (WB -> DC -> EX -> RF ->
+        // IC), which is what makes the latching implicit — see ADR 0007.
+        // Skeleton: retire one unit of work and keep $zero pinned.
         let _ = bus;
         self.gpr[0] = 0;
-        self.cycles = self.cycles.wrapping_add(1);
+        self.retired = self.retired.wrapping_add(1);
     }
 }
 
@@ -192,11 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn tick_retires_a_cycle() {
+    fn tick_retires_a_unit_of_work() {
         let mut cpu = Cpu::new();
         let mut bus = NullBus;
         cpu.tick(&mut bus);
-        assert_eq!(cpu.cycles, 1);
+        assert_eq!(cpu.retired, 1);
     }
 
     #[test]

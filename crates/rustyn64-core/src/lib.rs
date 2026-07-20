@@ -34,7 +34,10 @@ pub use rustyn64_rdp as rdp;
 pub use rustyn64_rsp as rsp;
 
 pub use bus::{Bus, MiInterrupt, RDRAM_SIZE, RcpRegs};
-pub use scheduler::{MASTER_HZ, RCP_HZ, System};
+pub use scheduler::{
+    COUNT_DIVIDER, CPU_DIVIDER, CPU_HZ, MASTER_HZ, PHASE_PERIOD, PIF_DIVIDER, RCP_DIVIDER, RCP_HZ,
+    SI_DIVIDER, System,
+};
 
 /// Returns the crate version string.
 #[must_use]

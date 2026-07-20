@@ -27,8 +27,9 @@ pub enum CompletionStatus {
 /// loop + budget are real so this is a drop-in gate once the decode lands.
 #[must_use]
 pub fn run_until_complete(system: &mut System, max_ticks: u64) -> CompletionStatus {
-    for _ in 0..max_ticks {
-        system.tick_one_unit();
+    let deadline = system.master_ticks().saturating_add(max_ticks);
+    while system.master_ticks() < deadline {
+        system.step_to_next_edge();
         // TODO(T-HARNESS-02): poll the n64-systemtest result word (a known
         // RDRAM/IO address) and return Passed / Failed(code) when it is set.
     }
