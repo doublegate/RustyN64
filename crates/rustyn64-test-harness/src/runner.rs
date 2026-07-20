@@ -36,9 +36,11 @@ pub enum CompletionStatus {
 
 /// Step `system` until the completion signal fires or `max_ticks` elapse.
 ///
-/// Polls once per CPU edge rather than once per master tick: the register can
-/// only change when the CPU retires a write, so polling faster would be pure
-/// overhead on the hot path.
+/// Polls once per scheduler edge — which is *any* domain's edge, CPU or RCP, not
+/// only the CPU's. That is still far cheaper than polling every master tick, and
+/// the extra RCP-only polls are harmless because the register simply has not
+/// changed. Narrowing it to CPU edges specifically would need the scheduler to
+/// report which domain it stepped, which it deliberately does not expose.
 #[must_use]
 pub fn run_until_complete(system: &mut System, max_ticks: u64) -> CompletionStatus {
     let deadline = system.master_ticks().saturating_add(max_ticks);

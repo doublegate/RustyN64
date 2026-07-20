@@ -559,10 +559,13 @@ impl Pipeline {
     fn read_width<B: Bus>(bus: &mut B, addr: u32, width: u64) -> u64 {
         match width {
             1 => u64::from(bus.read_u8(addr)),
-            2 => (u64::from(bus.read_u8(addr)) << 8) | u64::from(bus.read_u8(addr + 1)),
+            2 => (u64::from(bus.read_u8(addr)) << 8) | u64::from(bus.read_u8(addr.wrapping_add(1))),
             4 => u64::from(bus.read_u32(addr)),
             // Big-endian: the high word is at the lower address.
-            8 => (u64::from(bus.read_u32(addr)) << 32) | u64::from(bus.read_u32(addr + 4)),
+            8 => {
+                (u64::from(bus.read_u32(addr)) << 32)
+                    | u64::from(bus.read_u32(addr.wrapping_add(4)))
+            }
             _ => 0,
         }
     }
@@ -575,12 +578,12 @@ impl Pipeline {
             1 => bus.write_u8(addr, value as u8),
             2 => {
                 bus.write_u8(addr, (value >> 8) as u8);
-                bus.write_u8(addr + 1, value as u8);
+                bus.write_u8(addr.wrapping_add(1), value as u8);
             }
             4 => bus.write_u32(addr, value as u32),
             8 => {
                 bus.write_u32(addr, (value >> 32) as u32);
-                bus.write_u32(addr + 4, value as u32);
+                bus.write_u32(addr.wrapping_add(4), value as u32);
             }
             _ => {}
         }

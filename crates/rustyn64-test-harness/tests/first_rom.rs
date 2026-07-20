@@ -28,8 +28,14 @@ fn load() -> Option<Vec<u8>> {
 
 #[test]
 fn basic_z64_runs_and_reports_a_real_result() {
-    /// Where `basic.z64`'s five test subroutines begin.
-    const SUBROUTINES: u64 = 0x8000_12E8;
+    /// The address range `basic.z64`'s five test subroutines occupy.
+    ///
+    /// **Bounded at both ends deliberately.** A lower bound alone is not enough:
+    /// an exception vector lives at `0xBFC0_0000` in KSEG1, which is numerically
+    /// *above* the subroutines, so a crashed CPU jumping there would satisfy a
+    /// `pc >= SUBROUTINES` test and hand back the vacuous pass this guard exists
+    /// to catch.
+    const SUBROUTINES: core::ops::Range<u64> = 0x8000_12E8..0x8000_2000;
 
     let Some(image) = load() else {
         eprintln!("SKIP: {BASIC_Z64} not staged (external tier, no licence)");
@@ -59,7 +65,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
     let deadline = sys.master_ticks() + BUDGET_TICKS;
     while sys.master_ticks() < deadline {
         sys.step_to_next_edge();
-        if sys.cpu.pc >= SUBROUTINES {
+        if SUBROUTINES.contains(&sys.cpu.pc) {
             entered_subroutines = true;
         }
         match sys.cpu.regs.read(30) {
@@ -78,7 +84,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
     assert!(
         entered_subroutines,
         "r30 signalled completion but execution never reached the test \
-         subroutines at {SUBROUTINES:#X} -- this is a vacuous pass"
+         subroutines at {SUBROUTINES:#X?} -- this is a vacuous pass"
     );
     assert!(
         sys.cpu.retired > 20,
