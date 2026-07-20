@@ -116,13 +116,18 @@ pub struct Redirect {
     pub nullify_delay_slot: bool,
 }
 
-/// A COP0 register access that `EX` resolved but must not itself perform.
+/// A **coprocessor** access that `EX` resolved but must not itself perform.
+///
+/// Despite the name this now covers COP0, the TLB **and** COP1 control (`Cop1`).
+/// They share a variant because they share the stage split below, not because
+/// they are the same unit — the name is kept for churn reasons and this note
+/// exists so it does not mislead as COP1 grows in Sprint 3.
 ///
 /// The stage split is the manual's, not a convenience: UM §4.6.9 describes the
 /// CP0 bypass interlock as firing when *"an instruction which caused an
 /// exception reaches the WB stage and the subsequent instruction in the DC stage
-/// requests a read of any CP0 register"* — so a COP0 **read happens in DC** and a
-/// COP0 **write happens in WB**. Performing both in `EX` would make that
+/// requests a read of any CP0 register"* — so a coprocessor **read happens in
+/// DC** and a **write happens in WB**. Performing both in `EX` would make that
 /// interlock unexpressible, which is the same mistake ADR 0007 exists to prevent
 /// one level up.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +141,8 @@ pub enum Cop0Access {
         /// 64-bit (`DMFC0`) rather than 32-bit sign-extended (`MFC0`).
         wide: bool,
     },
+    /// A COP1 **control** access, performed where the state lives.
+    Cop1(Cop1Access),
     /// A TLB instruction. Performed where the TLB lives, not in `EX`.
     Tlb(TlbOp),
     /// `ERET` — restore `PC` from `EPC`/`ErrorEPC`, clear `EXL`/`ERL`, clear
@@ -152,6 +159,25 @@ pub enum Cop0Access {
         value: u64,
         /// 64-bit (`DMTC0`) rather than 32-bit (`MTC0`).
         wide: bool,
+    },
+}
+
+/// The COP1 control moves (T-12-006). Arithmetic is Sprint 3.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cop1Access {
+    /// `CFC1` — read control register `src` into GPR `dest`.
+    ReadControl {
+        /// COP1 control register number.
+        src: u8,
+        /// GPR destination.
+        dest: u8,
+    },
+    /// `CTC1` — write `value` to control register `dest`.
+    WriteControl {
+        /// COP1 control register number.
+        dest: u8,
+        /// Value from `rt`.
+        value: u32,
     },
 }
 
@@ -576,6 +602,26 @@ pub const fn execute(
             }),
             ..NOTHING
         }),
+        // `fs` is the COP1 control register, encoded in the `rd` field.
+        Op::Cfc1 => Ok(Executed {
+            cop0: Some(Cop0Access::Cop1(Cop1Access::ReadControl {
+                src: d.rd,
+                dest: d.dest,
+            })),
+            ..NOTHING
+        }),
+        Op::Ctc1 => Ok(Executed {
+            cop0: Some(Cop0Access::Cop1(Cop1Access::WriteControl {
+                dest: d.rd,
+                value: rt_val as u32,
+            })),
+            ..NOTHING
+        }),
+        // A valid COP1 encoding we do not implement. Raising here would be
+        // wrong: with `Status.CU1` SET, hardware would execute it, and pretending
+        // otherwise would make Sprint 3's arrival a behaviour change rather than
+        // an addition. The coprocessor-usable check happens in the pipeline.
+        Op::Cop1Unimplemented => Ok(NOTHING),
         Op::Tlbr => Ok(Executed {
             cop0: Some(Cop0Access::Tlb(TlbOp::Read)),
             ..NOTHING

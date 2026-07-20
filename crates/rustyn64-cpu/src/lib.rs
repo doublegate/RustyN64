@@ -33,6 +33,7 @@ extern crate alloc;
 pub mod addr;
 pub mod alu;
 pub mod cop0;
+pub mod cop1;
 pub mod decode;
 pub mod exception;
 pub mod exec;

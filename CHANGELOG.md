@@ -9,6 +9,26 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — COP1 control registers and coprocessor usability (T-12-006)
+
+**Control registers only** — `CTC1`/`CFC1` on `FCR31` and `FCR0`. FPU arithmetic is Sprint 3, and
+the module says so in its own docs so the ticket cannot grow into Sprint 3 by stealth.
+
+It exists for one reason: n64-systemtest calls `set_fcsr(...)` — `ctc1::<31>` — as the **fourth
+statement** of `entrypoint()`, so without it the suite dies three statements in and every COP0 and
+TLB test in Sprint 2 is unreachable behind it.
+
+**Coprocessor Unusable** is checked in `EX` with `Cause.CE` naming the unit. Two rules pinned in
+both directions: COP0 is usable from kernel mode regardless of `CU0` — otherwise a handler could
+not run before `Status` was set up — but that exemption is *not* a blanket bypass, and user mode
+without `CU0` still raises.
+
+A valid-but-unimplemented COP1 encoding decodes to `Cop1Unimplemented`, **not** `Reserved`, and
+does not raise when `CU1` is set. That makes Sprint 3's arithmetic an addition rather than a
+behaviour change; raising here would look correct until the FPU landed.
+
+All seven mutations were confirmed to fail the suite.
+
 ### Added — the TLB and the instruction micro-TLB (T-12-004)
 
 32 fully-associative joint-TLB entries mapping even/odd page pairs, plus the **two-entry

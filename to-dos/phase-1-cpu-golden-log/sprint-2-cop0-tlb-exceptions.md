@@ -222,12 +222,12 @@ FPU arithmetic — that is Sprint 3. This ticket exists solely because n64-syste
 
 **Acceptance criteria:**
 
-- [ ] `CTC1`/`CFC1` on `FCR31` (FCSR) and `FCR0` (revision) work. FCSR needs real bit semantics
+- [x] `CTC1`/`CFC1` on `FCR31` (FCSR) and `FCR0` (revision) work. FCSR needs real bit semantics
       for the flush-denorm-to-zero and enable-invalid-operation bits the suite sets, but nothing
       needs to *act* on them until Sprint 3.
-- [ ] `Coprocessor Unusable` is raised correctly per `Status.CU`, with `Cause.CE` set to the
+- [x] `Coprocessor Unusable` is raised correctly per `Status.CU`, with `Cause.CE` set to the
       offending unit.
-- [ ] **Scope is explicitly control-only.** A criterion here that starts requiring FPU arithmetic
+- [x] **Scope is explicitly control-only.** A criterion here that starts requiring FPU arithmetic
       means the ticket has grown into Sprint 3 and should be split, not stretched.
 
 **Dependencies:** T-12-001
