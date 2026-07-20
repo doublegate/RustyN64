@@ -304,6 +304,33 @@ is recorded as a fitted approximation rather than presented as accurate.
 **Confirm with:** modelling the PI domain timing registers and deriving the
 finalisation time, then deleting the constant.
 
+### C-10 — FP arithmetic is correct only in round-to-nearest-even
+
+**Claim.** `fpu::{add,sub,mul,div}_{s,d}` compute with Rust's native `+`/`-`/
+`*`/`/`, which round to nearest-even unconditionally.
+
+**Why that is wrong.** The VR4300's `FCSR.RM` selects one of four rounding modes
+(nearest, toward zero, toward +inf, toward -inf), and `FCSR.FS` flushes denormal
+results to zero. Neither is consulted. Every operation whose exact result is not
+representable therefore has a wrong last bit under any mode except `RM = 0`.
+
+**Evidence.** n64-systemtest sweeps rounding modes and reports 63 `Result after
+MUL.S`, 54 `Result after DIV.S`, 39 `Result after ADD.S` failures (and the `.D`
+equivalents) — on operations that *are* wired and do execute.
+
+**Not fixable by wiring.** The arithmetic core itself is mode-blind. `no_std`
+Rust has no `fesetround`, so directed rounding has to be produced explicitly:
+compute exactly in wider precision and round per `RM`, or use a soft-float
+implementation. Both need their own golden vectors.
+
+**Note the asymmetry.** `to_i32`/`to_i64`/`round_f64` already take a `Rounding`
+argument, so the conversions were written mode-aware and the arithmetic was not.
+The gap has existed since Sprint 3 and was invisible because nothing decoded to
+the arithmetic until COP1 was wired.
+
+**Confirm with:** per-mode golden vectors for each operation, then deleting this
+entry.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

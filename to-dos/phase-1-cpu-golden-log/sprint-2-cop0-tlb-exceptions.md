@@ -657,11 +657,40 @@ short of asking it.
      **enabled-trap path is deliberately absent** (see `Pipeline::fp_arith`), so every one still
      fails on the trap even when the value is right.
 
-   **Next probe, before writing more code:** group the COP1 failures by *test name* rather than by
-   prefix, and check whether an `ADD.S` case now fails on its value or on its exception. That
-   distinguishes the two explanations in one run and decides whether the next work is more
-   operations or the trap path. Writing the remaining fifty operations first would be the same
-   mistake as picking targets by reading failure text — one level finer, but the same shape.
+   **Probe run. Both my explanations were wrong.** Grouping COP1 failures by their message:
+
+   | Failures | Reason |
+   | ---: | --- |
+   | 63 | `Result after MUL.S` |
+   | 54 | `Result after DIV.D` |
+   | 54 | `Result after DIV.S` |
+   | 39 | `Result after ADD.D` |
+   | 39 | `Result after ADD.S` |
+   | 36 | `Result after MUL.D` |
+   | 31 | `Result after SUB.D` / `SUB.S` |
+   | 29 | `Result after CVT.S.D` |
+   | 25-28 | `CVT.L.D`, `CVT.W.D`, `CVT.W.S` |
+
+   The failures are on the **operations just wired**, on their **values** — not on unwired
+   operations, and not on exception behaviour. So neither candidate held.
+
+   **Root cause: the FPU core ignores `FCSR.RM`.** `fpu::add_s` is literally `a + b`, i.e. Rust's
+   round-to-nearest-even, always. The VR4300 has four rounding modes (`RM` 0-3) plus the `FS`
+   denormal-flush bit, and n64-systemtest sweeps them — so every operand set exercising a directed
+   rounding mode produces a wrong last bit. No amount of decode wiring reaches this; the
+   arithmetic core itself is mode-blind.
+
+   `to_i32`/`to_i64`/`round_f64` already take a `Rounding` argument, so the *conversions* were
+   built mode-aware and the *arithmetic* was not — which is why `CVT.*` appears lower in the table
+   but still fails: it is fed values that were already rounded wrongly.
+
+   **This is real work, not plumbing, and it should be scoped honestly.** `no_std` Rust has no
+   `fesetround`, so directed rounding must be produced explicitly — compute the exact result in
+   wider precision and round it per `RM`, or route these four operations through a soft-float
+   implementation. Both are substantial and both need their own golden vectors. The correction to
+   make first is to `docs/STATUS.md`, which currently implies the FPU is done: it is *arithmetically
+   correct only in round-to-nearest*, and that has been true since Sprint 3 without being written
+   down anywhere.
 
    **Deferred area: PI direct-I/O writes are asynchronous, with a decaying latch.**
 
