@@ -223,7 +223,7 @@ mod tests {
     }
 
     /// Busy is visible through **both** status flags, because software polls
-    /// them interchangeably — `n64-systemtest`'s ISViewer waits on `io_busy`.
+    /// them interchangeably — `n64-systemtest`'s `ISViewer` waits on `io_busy`.
     #[test]
     fn busy_is_visible_through_both_status_flags() {
         let mut pi = Pi::new();
