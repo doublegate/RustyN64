@@ -131,8 +131,11 @@ impl Pi {
     pub const fn write(&mut self, addr: u32, val: u32) -> Option<Transfer> {
         match addr & !3 {
             PI_DRAM_ADDR => {
-                // Bit 0 is ignored: RDRAM addresses are halfword-aligned.
-                self.dram_addr = val & 0x00FF_FFFE;
+                // Bits 2:0 are ignored: the RDRAM side is **doubleword**
+                // aligned, not halfword. Masking only bit 0 lets a transfer
+                // start mid-doubleword, which silently shifts every byte of a
+                // DMA whose caller relied on the hardware aligning it.
+                self.dram_addr = val & 0x00FF_FFF8;
                 None
             }
             PI_CART_ADDR => {
@@ -256,11 +259,19 @@ mod tests {
         assert!(!pi.interrupt());
     }
 
-    /// The RDRAM address ignores bit 0 — transfers are halfword-aligned.
+    /// The RDRAM address ignores bits 2:0 — the DRAM side is **doubleword**
+    /// aligned. Masking only bit 0 lets a transfer start mid-doubleword and
+    /// silently shifts every byte of it.
     #[test]
-    fn the_dram_address_is_halfword_aligned() {
+    fn the_dram_address_is_doubleword_aligned() {
         let mut pi = Pi::new();
-        pi.write(PI_DRAM_ADDR, 0x1001);
-        assert_eq!(pi.write(PI_WR_LEN, 0).expect("started").dram, 0x1000);
+        for probe in [0x1001u32, 0x1002, 0x1004, 0x1007] {
+            pi.write(PI_DRAM_ADDR, probe);
+            assert_eq!(
+                pi.write(PI_WR_LEN, 0).expect("started").dram,
+                0x1000,
+                "{probe:#X} must round down to the doubleword"
+            );
+        }
     }
 }

@@ -178,7 +178,13 @@ impl Bus {
     /// the cycle this architecture exists to avoid, so the engine returns a
     /// description of the transfer and the owner carries it out.
     pub fn pi_write_word(&mut self, addr: u32, val: u32) {
-        let Some(t) = self.pi.write(addr, val) else {
+        let started = self.pi.write(addr, val);
+        // Mirror the PI's interrupt state into the MI on EVERY write, not only
+        // on completion. A `PI_STATUS` write that clears the interrupt starts no
+        // transfer, so an early return here left the MI line asserted -- `IP2`
+        // stuck high forever, hanging any interrupt-driven loader.
+        self.rcp.mi_intr.pi = self.pi.interrupt();
+        let Some(t) = started else {
             return;
         };
         // Instantaneous for now. The transfer is a value, so charging it real
@@ -197,7 +203,7 @@ impl Bus {
         }
         self.pi.complete();
         // Completion raises the PI line into the MI, which the CPU sees as IP2.
-        self.rcp.mi_intr.pi = true;
+        self.rcp.mi_intr.pi = self.pi.interrupt();
     }
 
     const fn rdram_offset(addr: u32) -> Option<usize> {
@@ -209,6 +215,8 @@ impl Bus {
 }
 
 // --- The CPU's view of the whole machine. ---
+use rustyn64_cart::pi;
+
 impl CpuBus for Bus {
     fn read_u8(&mut self, addr: u32) -> u8 {
         if let Some(off) = Self::rdram_offset(addr) {
@@ -230,16 +238,55 @@ impl CpuBus for Bus {
             return;
         }
         if Self::is_pi_register(addr) {
-            // A byte write to a PI register is a read-modify-write of the word.
-            // Real code always writes words here; doing it byte-wise would make
-            // a length write fire up to four DMAs, one per byte.
-            let shift = 8 * (3 - (addr & 3));
-            let w = (self.pi.read(addr) & !(0xFF << shift)) | (u32::from(val) << shift);
-            self.pi_write_word(addr, w);
+            // PI registers are **32-bit only**, and a byte write to one is not
+            // something real code does. Assembling a word by read-modify-write
+            // is actively wrong for two of them:
+            //
+            //   * the length registers *trigger* on write, so a byte-wise RMW
+            //     starts a DMA per byte with a partly assembled length;
+            //   * `PI_STATUS`'s read bits (busy, interrupt) do not correspond to
+            //     its write bits (reset, clear-interrupt), so reading it back to
+            //     fill in the other three bytes fabricates command strobes from
+            //     status flags.
+            //
+            // Only the address registers can be safely assembled, so only they
+            // are. A byte write to anything else is dropped rather than guessed
+            // at -- an explicit nothing beats a plausible wrong action.
+            if matches!(addr & !3, pi::PI_DRAM_ADDR | pi::PI_CART_ADDR) {
+                let shift = 8 * (3 - (addr & 3));
+                let w = (self.pi.read(addr) & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.pi_write_word(addr, w);
+            }
             return;
         }
         // TODO(T-CORE-01): decode + dispatch the remaining RCP register windows.
         self.cart.pi_write(addr, val);
+    }
+
+    fn write_u32(&mut self, addr: u32, val: u32) {
+        // **A PI register write must be a single WORD write.**
+        //
+        // The default `write_u32` composes four `write_u8` calls, and PI
+        // registers were handled byte-wise -- so a normal guest `sw` to
+        // `PI_WR_LEN` started **four DMAs**, one per byte, each with a partly
+        // assembled length. Every PI transfer was wrong, and the failure looks
+        // like memory corruption rather than a DMA bug.
+        if Self::is_pi_register(addr) {
+            self.pi_write_word(addr, val);
+            return;
+        }
+        if let Some(off) = Self::rdram_offset(addr) {
+            // The fast path, avoiding four bounds checks for the common case.
+            let b = val.to_be_bytes();
+            if off + 3 < self.rdram.len() {
+                self.rdram[off..=off + 3].copy_from_slice(&b);
+                return;
+            }
+        }
+        let b = val.to_be_bytes();
+        for (i, byte) in b.iter().enumerate() {
+            self.write_u8(addr.wrapping_add(i as u32), *byte);
+        }
     }
 
     fn poll_irq(&mut self) -> bool {
@@ -395,11 +442,99 @@ mod pi_tests {
     #[test]
     fn the_pi_registers_are_reachable_from_the_cpu_bus() {
         let mut bus = Bus::new();
-        // Word-wise, as real code does.
+        // Word-wise, as real code does. Note the value read back is rounded
+        // DOWN to a doubleword -- the DRAM side ignores bits 2:0.
         bus.pi_write_word(PI_DRAM_ADDR, 0x1234);
-        assert_eq!(bus.read_u32(PI_DRAM_ADDR), 0x1234);
+        assert_eq!(bus.read_u32(PI_DRAM_ADDR), 0x1230, "doubleword-aligned");
+        // An already-aligned value survives untouched.
+        bus.pi_write_word(PI_DRAM_ADDR, 0x1238);
+        assert_eq!(bus.read_u32(PI_DRAM_ADDR), 0x1238);
         // And byte reads select within the word.
-        assert_eq!(bus.read_u8(PI_DRAM_ADDR + 3), 0x34);
+        assert_eq!(bus.read_u8(PI_DRAM_ADDR + 3), 0x38);
         assert_eq!(bus.read_u8(PI_DRAM_ADDR + 2), 0x12);
+    }
+
+    /// **A guest `sw` to a length register must start exactly ONE DMA.**
+    ///
+    /// The default `write_u32` composes four `write_u8` calls. With PI registers
+    /// handled byte-wise, a normal word store started **four** transfers, each
+    /// with a partly assembled length — so every PI transfer was wrong, and the
+    /// symptom was memory corruption rather than anything that looked like DMA.
+    #[test]
+    fn a_word_store_to_a_length_register_starts_exactly_one_dma() {
+        let mut bus = Bus::new();
+        let mut rom = alloc::vec![0u8; 0x200];
+        rom[..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        for (i, b) in rom.iter_mut().enumerate().skip(0x40) {
+            *b = i as u8;
+        }
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("loadable");
+
+        bus.write_u32(PI_DRAM_ADDR, 0x1000);
+        bus.write_u32(PI_CART_ADDR, 0x1000_0040);
+        // The write that matters: through the ordinary CPU word path.
+        bus.write_u32(PI_WR_LEN, 7); // 8 bytes
+
+        for i in 0..8u32 {
+            assert_eq!(
+                bus.rdram[(0x1000 + i) as usize],
+                (0x40 + i) as u8,
+                "byte {i}"
+            );
+        }
+        assert_eq!(
+            bus.rdram[0x1000 + 8],
+            0,
+            "exactly 8 bytes -- a per-byte trigger would have run four transfers \
+             with lengths 0x07000000+1, 0x00070000+1, ... and scribbled far past here"
+        );
+    }
+
+    /// **Clearing the PI interrupt must lower the MI line.** Only a completion
+    /// used to update it, and a `PI_STATUS` clear starts no transfer — so the
+    /// line stayed asserted, `IP2` stuck high, and any interrupt-driven loader
+    /// hung forever.
+    #[test]
+    fn clearing_the_pi_interrupt_lowers_the_mi_line() {
+        let mut bus = Bus::new();
+        let mut rom = alloc::vec![0u8; 0x80];
+        rom[..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("loadable");
+
+        bus.write_u32(PI_WR_LEN, 0);
+        assert!(bus.rcp.mi_intr.pi, "completion raised it");
+
+        bus.write_u32(PI_STATUS, rustyn64_cart::pi::STATUS_W_CLR_INTR);
+        assert!(!bus.pi.interrupt(), "the PI cleared its own flag");
+        assert!(
+            !bus.rcp.mi_intr.pi,
+            "and the MI line must follow -- otherwise IP2 stays high forever"
+        );
+    }
+
+    /// A **byte** write to a trigger or status register is dropped, not
+    /// assembled. `PI_STATUS`'s read bits (busy, interrupt) do not correspond to
+    /// its write bits (reset, clear-interrupt), so reading it back to fill in
+    /// the other three bytes fabricates command strobes out of status flags.
+    #[test]
+    fn byte_writes_to_the_trigger_and_status_registers_are_dropped() {
+        let mut bus = Bus::new();
+        let mut rom = alloc::vec![0u8; 0x80];
+        rom[..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("loadable");
+
+        bus.write_u8(PI_WR_LEN + 3, 0xFF);
+        assert!(!bus.rcp.mi_intr.pi, "no DMA was started by a byte write");
+
+        // Raise the interrupt, then confirm a byte write to STATUS cannot
+        // fabricate a clear-interrupt strobe out of the busy/interrupt bits.
+        bus.write_u32(PI_WR_LEN, 0);
+        assert!(bus.rcp.mi_intr.pi);
+        bus.write_u8(PI_STATUS + 3, 0x00);
+        assert!(bus.rcp.mi_intr.pi, "a byte write to STATUS did nothing");
+
+        // The address registers CAN be assembled, since they only latch.
+        bus.write_u8(PI_DRAM_ADDR + 3, 0x18);
+        assert_eq!(bus.read_u32(PI_DRAM_ADDR) & 0xFF, 0x18);
     }
 }

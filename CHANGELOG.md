@@ -26,6 +26,23 @@ bite both pinned:
   actually uses — moves data **cart → RDRAM**. Reversed, the first ROM load writes uninitialised
   RDRAM over the ROM image.
 
+**Review found four defects in the first version, two of them serious**, and all four are now
+pinned by mutation-checked tests:
+
+- **A guest `sw` to a length register started four DMAs.** The default `write_u32` composes four
+  `write_u8` calls, and PI registers were handled byte-wise — so every PI transfer was wrong, with
+  four partly-assembled lengths, and the symptom was memory corruption rather than anything that
+  looked like DMA. `write_u32` is now overridden so a PI write is one word write.
+- **Clearing the PI interrupt never lowered the MI line.** Only completion updated it, and a
+  `PI_STATUS` clear starts no transfer — so `IP2` stayed high forever and any interrupt-driven
+  loader would hang. The MI line now mirrors the PI's state on *every* write.
+- **Byte writes to the trigger and status registers are dropped, not assembled.** `PI_STATUS`'s
+  read bits (busy, interrupt) do not correspond to its write bits (reset, clear-interrupt), so
+  reading it back to fill in the other three bytes fabricates command strobes out of status flags.
+  Only the address registers — which merely latch — can be safely assembled.
+- **`PI_DRAM_ADDR` is doubleword-aligned**, not halfword. Masking only bit 0 lets a transfer start
+  mid-doubleword and silently shifts every byte of it.
+
 The engine **returns a description of the transfer rather than performing it**, and the Bus
 carries it out. The PI does not own RDRAM — having it reach back into its owner is precisely the
 cycle this architecture exists to avoid. It also means charging the transfer real time later is a
