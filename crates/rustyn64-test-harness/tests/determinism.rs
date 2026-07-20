@@ -155,33 +155,56 @@ fn the_core_has_no_nondeterminism_sources() {
         "../rustyn64-audio/src",
         "../rustyn64-cart/src",
     ];
-    let mut found = Vec::new();
-    for root in roots {
-        let Ok(dir) = std::fs::read_dir(root) else {
+    // Walk RECURSIVELY. A flat `read_dir` covers today's core crates only because
+    // they happen to be flat files -- the moment anything becomes a submodule
+    // directory (Sprint 2's COP0 and TLB almost certainly will), a
+    // non-recursive scan silently stops covering it while still passing.
+    let mut sources = Vec::new();
+    let mut pending: Vec<std::path::PathBuf> = roots.iter().map(Into::into).collect();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entry in dir.flatten() {
+        for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_none_or(|e| e != "rs") {
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                sources.push(path);
+            }
+        }
+    }
+
+    // A guard that scans nothing passes. If the relative paths above are ever
+    // wrong -- a moved crate, a different working directory -- every `read_dir`
+    // fails, `sources` is empty, and this test reports success having checked
+    // no code at all. Same shape as a CI gate that runs zero tests and exits 0
+    // (`docs/engineering-lessons.md` §2.2).
+    assert!(
+        sources.len() >= 10,
+        "the guard found only {} source files under {roots:?}; it is scanning \
+         nothing and would pass regardless of what the core contains",
+        sources.len()
+    );
+
+    let mut found = Vec::new();
+    for path in &sources {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for (line_no, line) in text.lines().enumerate() {
+            // Skip comments -- the rules themselves are written down in them.
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with('*') {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            for (line_no, line) in text.lines().enumerate() {
-                // Skip comments -- the rules themselves are written down in them.
-                let t = line.trim_start();
-                if t.starts_with("//") || t.starts_with('*') {
-                    continue;
-                }
-                for (needle, why) in BANNED {
-                    if line.contains(needle) {
-                        found.push(format!(
-                            "{}:{}: {needle} -- {why}",
-                            path.display(),
-                            line_no + 1
-                        ));
-                    }
+            for (needle, why) in BANNED {
+                if line.contains(needle) {
+                    found.push(format!(
+                        "{}:{}: {needle} -- {why}",
+                        path.display(),
+                        line_no + 1
+                    ));
                 }
             }
         }
