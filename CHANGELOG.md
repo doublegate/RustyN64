@@ -82,8 +82,18 @@ Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set. Bu
 with `EPC` surviving exactly as the `EXL` gate requires. That also explains why `0x180` (general,
 `EXL=1`) was hotter than `0x000` (refill, `EXL=0`).
 
-So the bug is a load inside the suite's own exception handler that TLB-misses and never resolves.
-The next probe is narrow: trace PCs between the RI and the nested `TLBL`.
+Tracing between the RI and the nested fault gave **`BadVAddr = 0x0000_000C`** — a load from
+address **12**, inside the handler at `0x8000_03F8`–`0x8000_0448`. An address that small is a base
+register of *zero* plus a small offset, not a plausible pointer.
+
+**Leading hypothesis: `$gp` (r28) is unset.** MIPS compiled code reaches small globals as
+`LW $x, off($gp)`, and `crt0`/IPL3 establishes it; `seed_ipl3_handoff` sets `$sp` and `Status` but
+not `$gp`. That is the same class of omission as the stack pointer two rounds earlier, with an
+almost identical signature — an access through a zero base.
+
+Three faults now have been missing boot-time **register state** rather than emulation defects.
+"Load the image correctly" keeps turning out to be a smaller part of an IPL3 stand-in than it
+looks.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems

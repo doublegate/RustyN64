@@ -376,9 +376,22 @@ short of asking it.
    *inside the handler*, and `EPC` survives it exactly as the `EXL` gate requires. That also
    explains the histogram: `0x180` (general, `EXL=1`) hotter than `0x000` (refill, `EXL=0`).
 
-   **So the bug is a load inside the suite's exception handler that TLB-misses and never
-   resolves.** The next probe is narrow: trace PCs *between* the RI and the nested `TLBL` to find
-   which load in the handler faults, and what address it computes.
+   **The nested fault is `BadVAddr = 0x0000_000C`** — a load from address **12**, inside the
+   handler at `0x8000_03F8`–`0x8000_0448`. An address that small is a base register of **zero**
+   plus a small offset, not a plausible data pointer.
+
+   **Leading hypothesis: `$gp` (r28) is unset.** MIPS compiled code reaches small globals as
+   `LW $x, off($gp)`, and `crt0`/IPL3 establishes it. `seed_ipl3_handoff` currently sets `$sp` and
+   `Status` but **not** `$gp` — the same class of omission as the stack pointer, which produced an
+   almost identical signature (a store through a zero base) two rounds earlier.
+
+   The ELF's `_gp` value is the thing to read: MIPS convention puts it at the start of `.sdata`
+   plus `0x7FF0`, and it is available from the ELF's symbol table or `.reginfo`/`.MIPS.options`
+   section. That is the next step, and it is bounded.
+
+   Worth noting the pattern: **three faults now have been missing boot-time register state**
+   (`$sp`, `Status`, probably `$gp`), not emulation defects. "Load the image correctly" keeps
+   turning out to be a smaller part of an IPL3 stand-in than it looks.
 3. ~~The address at `0x8018_32E8` is one the suite expects to be unmapped.~~ **Ruled out** —
    `0x8018_32E8` is the *instruction* address, in KSEG0, and it fetches fine. The faulting access
    is a data load elsewhere.
