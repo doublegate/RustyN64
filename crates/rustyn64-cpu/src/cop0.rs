@@ -183,6 +183,62 @@ pub const WRITE_MASK: [u64; 32] = {
     m
 };
 
+/// Per-register **architecturally-defined** bits — everything a read can ever
+/// return non-zero.
+///
+/// Distinct from [`WRITE_MASK`], and the difference is the point: a read-only
+/// register like `BadVAddr` has a write mask of `0` and an arch mask of all-ones,
+/// while `Cause` has a two-bit write mask and a wide arch mask. Reserved bits and
+/// bits above a 32-bit register's width appear in neither.
+///
+/// Applied on **both** read and [`Cop0::set_hardware`], so a value that is not
+/// architecturally representable cannot enter the file in the first place, let
+/// alone leave it. Enforcing only on read would leave the stored state carrying
+/// bits no hardware register can hold, which the next reader of `regs` would
+/// have to know about.
+///
+/// `Config` is absent from this table: its readable value is *composed* rather
+/// than masked, and [`Cop0::read`] handles it separately.
+pub const ARCH_MASK: [u64; 32] = {
+    let mut m = [0u64; 32];
+    m[reg::INDEX as usize] = 0x8000_003F;
+    m[reg::RANDOM as usize] = 0x3F;
+    m[reg::ENTRY_LO0 as usize] = 0x03FF_FFFF;
+    m[reg::ENTRY_LO1 as usize] = 0x03FF_FFFF;
+    // PTEBase (63:23) | BadVPN2 (22:4); bits 3:0 are always zero.
+    m[reg::CONTEXT as usize] = 0xFFFF_FFFF_FFFF_FFF0;
+    m[reg::PAGE_MASK as usize] = 0x01FF_E000;
+    m[reg::WIRED as usize] = 0x3F;
+    // A full 64-bit virtual address.
+    m[reg::BAD_VADDR as usize] = u64::MAX;
+    m[reg::COUNT as usize] = 0xFFFF_FFFF;
+    // R (63:62) | VPN2 (39:13) | ASID (7:0). Fill (61:40) reads ZERO, which is
+    // why it is absent here rather than merely unwritable.
+    m[reg::ENTRY_HI as usize] = 0xC000_00FF_FFFF_E0FF;
+    m[reg::COMPARE as usize] = 0xFFFF_FFFF;
+    m[reg::STATUS as usize] = 0xFFFF_FFFF & !(1 << 23) & !(1 << 19);
+    // BD (31) | CE (29:28) | IP (15:8) | ExcCode (6:2). Far wider than the
+    // two-bit WRITE_MASK, because hardware writes most of it.
+    m[reg::CAUSE as usize] = 0xB000_FF7C;
+    m[reg::EPC as usize] = u64::MAX;
+    // Imp (15:8) | Rev (7:0); bits 31:16 read zero.
+    m[reg::PRID as usize] = 0xFFFF;
+    m[reg::LL_ADDR as usize] = 0xFFFF_FFFF;
+    m[reg::WATCH_LO as usize] = 0xFFFF_FFFB;
+    m[reg::WATCH_HI as usize] = 0xF;
+    // PTEBase (63:33) | R (32:31) | BadVPN2 (30:4); bits 3:0 always zero.
+    m[reg::XCONTEXT as usize] = 0xFFFF_FFFF_FFFF_FFF0;
+    // Config's READ value is composed rather than masked (see `Cop0::read`), but
+    // it still needs an entry: without one, `set_hardware` would mask it to zero.
+    // These are its non-hardwired bits: EP (27:24) | BE (15) | CU (3) | K0 (2:0).
+    m[reg::CONFIG as usize] = 0x0F00_800F;
+    m[reg::PERR as usize] = 0xFF;
+    // CacheErr, TagHi and the reserved registers read as zero.
+    m[reg::TAG_LO as usize] = 0x0FFF_FFC0;
+    m[reg::ERROR_EPC as usize] = u64::MAX;
+    m
+};
+
 /// The VR4300 system control coprocessor register file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cop0 {
@@ -238,27 +294,30 @@ impl Cop0 {
         }
     }
 
-    /// Read a register's full architectural value.
+    /// Read a register's architectural value.
     ///
-    /// Applies the read-side rules that are not stored in `regs`: `Config`'s
-    /// hardwired fields and read-only `EC`, and `EntryHi.Fill` reading as zero.
+    /// [`ARCH_MASK`] is applied here as well as on the way in, so a 32-bit
+    /// register can never return non-zero upper bits and `EntryHi.Fill` always
+    /// reads zero — regardless of how the stored value arrived. That matters
+    /// because [`Cop0::set_hardware`] exists precisely to bypass the *write*
+    /// masks, and exception dispatch will feed it raw faulting addresses.
     #[must_use]
     pub const fn read(&self, n: u8) -> u64 {
         let n = n & 31;
         let raw = self.regs[n as usize];
-        match n {
-            // Merge the hardwired fields on READ rather than seeding them at
-            // construction: seeded, a wide-enough write mask would erase them
-            // and every later read would be wrong. Merged, that is impossible.
-            reg::CONFIG => {
-                (raw & 0x0F00_8000)
-                    | ((self.ec as u64) << 28)
-                    | CONFIG_HARDWIRED_HI
-                    | CONFIG_HARDWIRED_LO
-                    | (raw & 0b1111)
-            }
-            _ => raw,
+        if n == reg::CONFIG {
+            // Composed, not masked: the hardwired fields are merged on READ
+            // rather than seeded at construction, because seeded they could be
+            // erased by a wide-enough write mask and every later read would be
+            // wrong. Merged, that is structurally impossible.
+            //
+            // The writable bits are EP (27:24) | BE (15) | CU (3) | K0 (2:0).
+            return (raw & ARCH_MASK[reg::CONFIG as usize])
+                | ((self.ec as u64) << 28)
+                | CONFIG_HARDWIRED_HI
+                | CONFIG_HARDWIRED_LO;
         }
+        raw & ARCH_MASK[n as usize]
     }
 
     /// Write a register, applying its writable-bit mask.
@@ -290,7 +349,12 @@ impl Cop0 {
     /// through [`Cop0::write`] would require widening the masks, which would
     /// also let `MTC0` write them — the exact bug the masks exist to prevent.
     pub const fn set_hardware(&mut self, n: u8, value: u64) {
-        self.regs[(n & 31) as usize] = value;
+        let n = n & 31;
+        // Bypasses WRITE_MASK, NOT ARCH_MASK. Hardware may write bits software
+        // cannot; it cannot write bits the register does not have. Without this,
+        // dispatch storing a raw 64-bit faulting address into `EntryHi` would
+        // put non-zero bits in `Fill`, which architecturally reads zero.
+        self.regs[n as usize] = value & ARCH_MASK[n as usize];
     }
 
     /// `MFC0 rt, rd` — read the low 32 bits, sign-extended into the 64-bit GPR.
@@ -622,12 +686,132 @@ mod tests {
     #[test]
     fn masked_off_bits_keep_their_previous_value() {
         let mut c = Cop0::new();
+        // set_hardware itself applies ARCH_MASK, so this stores Cause's
+        // architectural bits (BD | CE | IP | ExcCode), not all 32.
         c.set_hardware(reg::CAUSE, 0xFFFF_FFFF);
+        assert_eq!(c.read(reg::CAUSE), ARCH_MASK[reg::CAUSE as usize]);
         c.dmtc0(reg::CAUSE, 0);
         assert_eq!(
             c.read(reg::CAUSE),
-            0xFFFF_FCFF,
-            "only IP1:IP0 were cleared; the rest survived"
+            ARCH_MASK[reg::CAUSE as usize] & !0x300,
+            "only IP1:IP0 were cleared; every other architectural bit survived"
         );
+    }
+
+    /// `set_hardware` must mask on the way **in**, so the stored state never
+    /// holds bits no hardware register has.
+    ///
+    /// Asserted against `regs` directly rather than through `read`, because
+    /// `read` masks too — a read-back test passes with either enforcement point
+    /// alone and so pins neither. Found by mutation testing: removing either one
+    /// individually was invisible until these two tests existed.
+    #[test]
+    fn set_hardware_masks_on_the_way_in_not_only_on_the_way_out() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::CAUSE, u64::MAX);
+        assert_eq!(
+            c.regs[reg::CAUSE as usize],
+            ARCH_MASK[reg::CAUSE as usize],
+            "stored state must already be architectural"
+        );
+        c.set_hardware(reg::ENTRY_HI, u64::MAX);
+        assert_eq!(
+            (c.regs[reg::ENTRY_HI as usize] >> 40) & 0x3F_FFFF,
+            0,
+            "EntryHi.Fill is not even stored"
+        );
+    }
+
+    /// `read` must mask on the way **out**, independently of how the value was
+    /// stored. Poked straight into `regs` for the same reason as above: going
+    /// through `set_hardware` would let that mask do the work instead.
+    #[test]
+    fn read_masks_on_the_way_out_even_if_storage_is_corrupt() {
+        let mut c = Cop0::new();
+        c.regs[reg::COUNT as usize] = u64::MAX;
+        assert_eq!(c.read(reg::COUNT), 0xFFFF_FFFF, "32 bits, not 64");
+        c.regs[reg::ENTRY_HI as usize] = u64::MAX;
+        assert_eq!(
+            (c.read(reg::ENTRY_HI) >> 40) & 0x3F_FFFF,
+            0,
+            "Fill reads zero even from corrupt storage"
+        );
+    }
+
+    /// `set_hardware` on `Config` must not erase it. `Config`'s read value is
+    /// composed rather than masked, so it is the one register whose `ARCH_MASK`
+    /// entry is easy to leave at zero — which would silently wipe it.
+    #[test]
+    fn set_hardware_does_not_wipe_config() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::CONFIG, 0x0006_E463);
+        let v = c.read(reg::CONFIG);
+        assert_ne!(v & (1 << 15), 0, "BE survived");
+        assert_eq!(v & 0b111, 3, "K0 survived");
+        assert_eq!((v >> 16) & 0xFF, 0b0000_0110, "hardwired field still there");
+    }
+
+    /// A 32-bit register must never return non-zero upper bits, no matter how
+    /// the value got in. `set_hardware` deliberately bypasses the *write* masks,
+    /// so without an architectural mask it would be a hole straight into the
+    /// stored state — and exception dispatch (T-12-002) feeds it raw addresses.
+    #[test]
+    fn a_32_bit_register_cannot_hold_upper_bits_even_via_set_hardware() {
+        for n in [
+            reg::COUNT,
+            reg::COMPARE,
+            reg::STATUS,
+            reg::CAUSE,
+            reg::LL_ADDR,
+        ] {
+            let mut c = Cop0::new();
+            c.set_hardware(n, u64::MAX);
+            assert_eq!(
+                c.read(n) >> 32,
+                0,
+                "register {n} is 32 bits wide; its upper half must read zero"
+            );
+            assert_eq!(c.dmfc0(n) >> 32, 0, "and DMFC0 must not expose them either");
+        }
+    }
+
+    /// `EntryHi.Fill` reads zero architecturally, not merely "is unwritable by
+    /// MTC0". Dispatch storing a raw 64-bit faulting address is exactly the path
+    /// that would otherwise put bits there.
+    #[test]
+    fn entryhi_fill_reads_zero_even_when_hardware_writes_a_raw_address() {
+        let mut c = Cop0::new();
+        c.set_hardware(reg::ENTRY_HI, 0xFFFF_FFFF_FFFF_FFFF);
+        assert_eq!(
+            (c.read(reg::ENTRY_HI) >> 40) & 0x3F_FFFF,
+            0,
+            "Fill (61:40) reads zero regardless of the writer"
+        );
+        assert_eq!((c.read(reg::ENTRY_HI) >> 62) & 0b11, 0b11, "R survives");
+    }
+
+    /// The two masks are different things and the difference is load-bearing:
+    /// a writable bit that is not architecturally present would be storable and
+    /// unreadable, and a read-only register needs a wide arch mask with a zero
+    /// write mask.
+    #[test]
+    fn every_writable_bit_is_also_an_architectural_bit() {
+        for n in 0..32u8 {
+            let w = WRITE_MASK[n as usize];
+            let a = ARCH_MASK[n as usize];
+            assert_eq!(
+                w & !a,
+                0,
+                "register {n} has writable bits that are not architectural"
+            );
+        }
+        // And the converse must NOT hold, or the two tables would be redundant.
+        assert_ne!(
+            ARCH_MASK[reg::CAUSE as usize],
+            WRITE_MASK[reg::CAUSE as usize],
+            "Cause is mostly hardware-written"
+        );
+        assert_eq!(WRITE_MASK[reg::BAD_VADDR as usize], 0);
+        assert_ne!(ARCH_MASK[reg::BAD_VADDR as usize], 0);
     }
 }

@@ -29,6 +29,13 @@ directly against the manual; written as `match` arms they become 32 places to fo
   exist; it is COP0 register 17, and two copies of one architectural value would have let
   `MFC0 $rt, $17` disagree with the CPU's own link address.
 
+A second mask table, `ARCH_MASK`, records which bits each register can ever *return*. It is
+applied on read **and** on `set_hardware`, so a value that is not architecturally representable
+cannot enter the file, let alone leave it. This closes a latent bug for T-12-002: exception
+dispatch bypasses the write masks by design and will feed `set_hardware` raw faulting addresses,
+which would otherwise have put non-zero bits in `EntryHi.Fill` — a field that architecturally
+reads zero — and non-zero upper halves into 32-bit registers.
+
 `MFC0`/`DMFC0` read in **DC** and `MTC0`/`DMTC0` write in **WB**, because UM §4.6.9 defines the
 CP0 bypass interlock in terms of a write reaching WB while the next instruction reads in DC.
 Doing both in EX would make that interlock unexpressible — the same mistake ADR 0007 exists to
