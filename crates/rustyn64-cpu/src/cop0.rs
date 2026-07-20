@@ -248,6 +248,20 @@ pub struct Cop0 {
     /// `Config`'s hardwired fields are **not** stored here — they are merged in
     /// on read, so no write path can erase them.
     regs: [u64; 32],
+    /// The current `Count` timeline position, supplied by the scheduler.
+    ///
+    /// ADR 0006: `master_ticks` is the only incremented counter, and every other
+    /// cycle position is **derived** from it. `Count` is therefore not stored
+    /// and not incremented here — it is computed from this timeline plus an
+    /// epoch, so that a `+= 1` on `Count` never exists to drift.
+    now: u64,
+    /// `Count`'s value at its epoch, set by the last `MTC0 Count`.
+    count_epoch_value: u32,
+    /// The timeline position at that epoch.
+    ///
+    /// Together these make `Count` **affine**: guest-writable (so it needs an
+    /// offset) while still derived (so it cannot drift from the master clock).
+    count_epoch_tick: u64,
     /// `Config.EC`, the PClock:MasterClock ratio, sampled from the `DivMode` pins
     /// at reset and read-only thereafter.
     ///
@@ -286,12 +300,86 @@ impl Cop0 {
         regs[reg::PRID as usize] = 0x0B << 8;
         Self {
             regs,
+            now: 0,
+            count_epoch_value: 0,
+            count_epoch_tick: 0,
             // 0b111 = 1:1.5, which matches the N64's 62.5 MHz : 93.75 MHz and is
             // "allowed with the 100 MHz model only" (UM Appendix A note 1,
             // p. 628). The manual never names the N64, so this is an INFERENCE
             // -- accuracy ledger U-6, not a documented fact.
             ec: 0b111,
         }
+    }
+
+    /// Advance the `Count` timeline to `now` (the scheduler's `count_ticks`).
+    ///
+    /// Called once per CPU step. Note this **sets** rather than increments: the
+    /// position is derived, so a dropped or repeated call cannot desynchronise
+    /// it from the master clock the way an increment would.
+    pub const fn set_now(&mut self, now: u64) {
+        self.now = now;
+    }
+
+    /// The current `Count` timeline position.
+    #[must_use]
+    pub const fn count_now(&self) -> u64 {
+        self.now
+    }
+
+    /// `Count`, computed rather than stored.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count_epoch_value
+            .wrapping_add((self.now.wrapping_sub(self.count_epoch_tick)) as u32)
+    }
+
+    /// Has the timer fired — `Count == Compare`?
+    ///
+    /// UM §6.3.4 (p. 165). The comparison is on the *computed* `Count`, so it
+    /// stays true regardless of how the timeline was reached.
+    #[must_use]
+    pub const fn timer_matches(&self) -> bool {
+        self.count() == self.regs[reg::COMPARE as usize] as u32
+    }
+
+    /// Set or clear a `Cause.IP` bit.
+    ///
+    /// `bit` is 0..=7. `IP1:IP0` are software interrupts and are written through
+    /// `MTC0` instead; this is the hardware path for `IP2` (RCP) and `IP7`
+    /// (timer).
+    pub const fn set_ip(&mut self, bit: u8, on: bool) {
+        let m = 1u64 << (8 + (bit & 7));
+        let cause = self.regs[reg::CAUSE as usize];
+        self.regs[reg::CAUSE as usize] = if on { cause | m } else { cause & !m };
+    }
+
+    /// Is an interrupt currently *recognised*?
+    ///
+    /// All four conditions, and each one matters (UM §6.1 p. 160, §6.3.5 p. 168,
+    /// Fig. 14-4 p. 357):
+    ///
+    /// - `Status.IE` — the global enable.
+    /// - **`Status.EXL` clear** — a handler is not interrupted by the thing it
+    ///   is handling. This is why `EXL` implies interrupts-off without `IE`
+    ///   being touched.
+    /// - **`Status.ERL` clear** — likewise for the error path.
+    /// - `Cause.IP & Status.IM` — at least one pending *and* unmasked.
+    ///
+    /// Dropping the `EXL`/`ERL` terms is the classic version of this bug: it
+    /// works until the first interrupt arrives inside a handler, and then
+    /// re-enters it forever.
+    #[must_use]
+    pub const fn interrupt_pending(&self) -> bool {
+        let status = self.regs[reg::STATUS as usize];
+        if status & 1 == 0 {
+            return false; // IE clear
+        }
+        if status & (1 << 1) != 0 || status & (1 << 2) != 0 {
+            return false; // EXL or ERL set
+        }
+        let ip = (self.regs[reg::CAUSE as usize] >> 8) & 0xFF;
+        let im = (status >> 8) & 0xFF;
+        ip & im != 0
     }
 
     /// Read a register's architectural value.
@@ -305,6 +393,10 @@ impl Cop0 {
     pub const fn read(&self, n: u8) -> u64 {
         let n = n & 31;
         let raw = self.regs[n as usize];
+        if n == reg::COUNT {
+            // Derived, never stored -- see `count`.
+            return self.count() as u64;
+        }
         if n == reg::CONFIG {
             // Composed, not masked: the hardwired fields are merged on READ
             // rather than seeded at construction, because seeded they could be
@@ -334,6 +426,12 @@ impl Cop0 {
         let n = n & 31;
         let mask = WRITE_MASK[n as usize];
         self.regs[n as usize] = (self.regs[n as usize] & !mask) | (value & mask);
+        // Writing Count re-bases the affine mapping rather than storing a value,
+        // so the register stays derived from the master clock (ADR 0006).
+        if n == reg::COUNT {
+            self.count_epoch_value = value as u32;
+            self.count_epoch_tick = self.now;
+        }
         // "Random is set to 31 whenever the Wired register is written"
         // (UM §5.4.2, p. 147) -- a side effect, not a rule about Random itself,
         // and easy to lose because it belongs to neither register alone.
@@ -728,8 +826,10 @@ mod tests {
     #[test]
     fn read_masks_on_the_way_out_even_if_storage_is_corrupt() {
         let mut c = Cop0::new();
-        c.regs[reg::COUNT as usize] = u64::MAX;
-        assert_eq!(c.read(reg::COUNT), 0xFFFF_FFFF, "32 bits, not 64");
+        // Not `Count`: that one is derived rather than stored, so poking its
+        // backing slot proves nothing.
+        c.regs[reg::COMPARE as usize] = u64::MAX;
+        assert_eq!(c.read(reg::COMPARE), 0xFFFF_FFFF, "32 bits, not 64");
         c.regs[reg::ENTRY_HI as usize] = u64::MAX;
         assert_eq!(
             (c.read(reg::ENTRY_HI) >> 40) & 0x3F_FFFF,
@@ -813,5 +913,50 @@ mod tests {
         );
         assert_eq!(WRITE_MASK[reg::BAD_VADDR as usize], 0);
         assert_ne!(ARCH_MASK[reg::BAD_VADDR as usize], 0);
+    }
+
+    /// `Count` is **derived**, not stored: ADR 0006 permits exactly one
+    /// incremented counter in the core, and it is `master_ticks`.
+    #[test]
+    fn count_is_derived_from_the_timeline_not_incremented() {
+        let mut c = Cop0::new();
+        c.set_now(0);
+        assert_eq!(c.read(reg::COUNT), 0);
+        c.set_now(100);
+        assert_eq!(c.read(reg::COUNT), 100, "follows the timeline with no += 1");
+        // Skipping the timeline forward must not lose anything -- an increment
+        // would, which is the whole reason this is derived.
+        c.set_now(1_000_000);
+        assert_eq!(c.read(reg::COUNT), 1_000_000);
+    }
+
+    /// ...and still guest-writable, which is what makes it *affine* rather than
+    /// simply derived. A write re-bases the epoch; it does not store a value
+    /// that then drifts.
+    #[test]
+    fn writing_count_rebases_the_epoch_rather_than_storing() {
+        let mut c = Cop0::new();
+        c.set_now(500);
+        c.mtc0(reg::COUNT, 42);
+        assert_eq!(c.read(reg::COUNT), 42, "reads back what was written");
+        c.set_now(510);
+        assert_eq!(
+            c.read(reg::COUNT),
+            52,
+            "and then advances with the timeline from there"
+        );
+    }
+
+    /// The timer fires on `Count == Compare` (UM §6.3.4, p. 165).
+    #[test]
+    fn the_timer_matches_when_count_reaches_compare() {
+        let mut c = Cop0::new();
+        c.set_now(0);
+        c.mtc0(reg::COMPARE, 5);
+        assert!(!c.timer_matches());
+        c.set_now(5);
+        assert!(c.timer_matches());
+        c.set_now(6);
+        assert!(!c.timer_matches(), "it is an equality, not a threshold");
     }
 }

@@ -190,6 +190,18 @@ impl Cpu {
         self.pipeline.advance(bus, &mut self.regs, &mut self.pc);
         self.retired = self.pipeline.retired;
     }
+
+    /// Step one `PCycle` with the scheduler's `Count` timeline supplied.
+    ///
+    /// The scheduler owns `master_ticks` and derives `count_ticks` from it
+    /// (ADR 0006); the CPU turns that into the architectural, guest-writable
+    /// `Count`. Passing it in rather than incrementing locally is what keeps
+    /// `master_ticks` the only incremented counter in the core.
+    pub fn tick_at<B: Bus>(&mut self, bus: &mut B, count_now: u64) {
+        self.pipeline
+            .advance_at(bus, &mut self.regs, &mut self.pc, count_now);
+        self.retired = self.pipeline.retired;
+    }
 }
 
 /// Returns the crate version string.

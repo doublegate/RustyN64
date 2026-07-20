@@ -197,6 +197,46 @@ returns to the wrong address. `ERET` **always clears `LLbit`** — the other hal
 the `LL`/`SC` contract, which had nothing clearing it until now — and has **no
 delay slot**, alone among the control transfers.
 
+### Interrupts and the timer (implemented, T-12-003)
+
+Two distinct steps, and conflating them is a real bug:
+
+1. **Assertion** — the `Cause.IP` bits track what hardware is asserting,
+   *regardless of masks*, because software polls `Cause` directly. Folding this
+   into recognition makes a masked line invisible to `MFC0 Cause`.
+2. **Recognition** — `Status.IE` **and** `Status.EXL` clear **and** `Status.ERL`
+   clear **and** `Cause.IP & Status.IM` non-zero (UM §6.1 p. 160, §6.3.5 p. 168,
+   Fig. 14-4 p. 357). Dropping the `EXL`/`ERL` terms works until an interrupt
+   arrives inside a handler, and then re-enters it forever.
+
+Recognition is sampled once per PCycle in `DC`, gated on the previous PCycle
+having been a run cycle (UM §4.7.1). That remains the **only** recognition
+predicate in the tree.
+
+**The interrupt lines**, from libdragon `cop0.h` (public domain; ledger U-4 —
+the CPU manual cannot say, since this is board wiring):
+
+| Bit | Source |
+| --- | --- |
+| `IP0`, `IP1` | software only — no hardware path |
+| **`IP2`** | **the RCP's aggregate line from the MI** |
+| `IP3` | CART |
+| `IP4` | PRENMI |
+| `IP7` | the `Count`/`Compare` timer |
+
+#### `Count` is derived, not incremented
+
+ADR 0006 permits exactly one incremented counter in the core, and it is
+`master_ticks`. `Count` is therefore **affine**: the scheduler supplies the
+timeline (`count_ticks`, at half PClock — every 4th master tick), and COP0 adds
+an epoch that an `MTC0 Count` re-bases. So the register is guest-writable
+*without* ever being incremented, and cannot drift from the master clock.
+
+`Count == Compare` raises `IP7`, modelled as a **level** rather than an edge —
+which is why *"Writing a value to the Compare register, as a side effect, clears
+the timer interrupt"* (UM §6.3.4, p. 165) falls out for free: the write moves the
+comparand away and the match stops holding.
+
 ## Behavior
 
 ### Pipeline and timing

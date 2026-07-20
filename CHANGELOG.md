@@ -9,6 +9,33 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — interrupts, `Count`/`Compare`, and the MI line (T-12-003)
+
+Assertion and recognition are kept **separate**, because they are different things: `Cause.IP`
+tracks what hardware asserts regardless of masks — software polls it — while recognition applies
+`IE`, `EXL`, `ERL` and `IM`. Folding them together makes a masked interrupt invisible to
+`MFC0 Cause`.
+
+Dropping the `EXL`/`ERL` terms is the classic version of this bug: it works until an interrupt
+arrives inside a handler, and then re-enters it forever. All four terms are pinned individually.
+
+**`Count` is derived, never incremented.** ADR 0006 permits exactly one incremented counter and it
+is `master_ticks`; the scheduler supplies the `Count` timeline (half PClock) and COP0 adds an
+epoch that `MTC0 Count` re-bases. So the register is guest-writable *without* being incremented,
+and cannot drift from the master clock. `Cpu::tick_at` is the seam. The scheduler's `count_ticks`
+doc comment predicted this exact split and is now correct rather than aspirational.
+
+`IP7` is modelled as a **level**, not an edge, which makes UM §6.3.4's *"Writing a value to the
+Compare register, as a side effect, clears the timer interrupt"* fall out for free rather than
+needing a special case.
+
+**Ledger U-4 closed:** the MI drives **`IP2`**. Neither the CPU manual (board-level) nor the
+N64brew mirror states it; libdragon does — `C0_INTERRUPT_RCP = C0_INTERRUPT_2` — and is public
+domain, so it is citable rather than merely observed. It also gives `IP3` = CART, `IP4` = PRENMI,
+`IP7` = timer.
+
+All seven mutations of the interrupt path were confirmed to fail the suite.
+
 ### Added — exception dispatch and `ERET` (T-12-002)
 
 Exceptions were previously stamped into pipeline latches and never *dispatched* — nothing wrote
