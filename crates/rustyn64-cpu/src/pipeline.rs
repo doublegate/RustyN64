@@ -43,6 +43,7 @@ use crate::cop1::Cop1Control;
 use crate::decode::{Decoded, decode};
 use crate::exception;
 use crate::exec::{Cop0Access, Cop1Access, MemOp, TlbOp, WriteBack, execute};
+use crate::fpr::Fpr;
 use crate::mem;
 use crate::regs::Regs;
 use crate::tlb::Tlb;
@@ -297,8 +298,10 @@ pub struct Pipeline {
     /// address and `Self::access` reports only which exception. Reconstructing
     /// it at dispatch time is impossible — the `MemOp` has been consumed.
     fault_vaddr: u64,
-    /// COP1 **control** registers (T-12-006). Arithmetic is Sprint 3.
+    /// COP1 **control** registers (T-12-006).
     pub cop1: Cop1Control,
+    /// The floating-point register file (T-13-001).
+    pub fpr: Fpr,
     /// The joint TLB and its instruction micro-TLB (T-12-004).
     pub tlb: Tlb,
     /// The COP0 register file (T-12-001).
@@ -358,6 +361,7 @@ impl Pipeline {
             pending: None,
             fault_vaddr: 0,
             cop1: Cop1Control::new(),
+            fpr: Fpr::new(),
             tlb: Tlb::new(),
             cop0: Cop0::new(),
             ll_bit: false,
@@ -550,6 +554,15 @@ impl Pipeline {
             // CP0 operations and `TLBR`/`TLBP` write COP0 registers, so doing
             // them earlier would let a following `MFC0` read the result a cycle
             // before hardware produces it.
+            if let Some(Cop0Access::Cop1(Cop1Access::WriteFpr { dest, value, wide })) =
+                self.dc_wb.cop0
+            {
+                if wide {
+                    self.fpr.write_raw(dest, value);
+                } else {
+                    self.fpr.write_s(dest, value as u32);
+                }
+            }
             if let Some(Cop0Access::Cop1(Cop1Access::WriteControl { dest, value })) =
                 self.dc_wb.cop0
             {
@@ -655,6 +668,21 @@ impl Pipeline {
         // The COP0 READ happens here, in DC (UM §4.6.9). The write does not --
         // it happens in WB, and keeping them in different stages is what makes
         // the CP0 bypass interlock expressible at all.
+        if out.occupied
+            && out.abort.is_none()
+            && let Some(Cop0Access::Cop1(Cop1Access::ReadFpr { src, dest, wide })) = out.cop0
+        {
+            out.write_back = WriteBack::Gpr {
+                dest,
+                // DMFC1 moves the PHYSICAL register and so ignores FR; MFC1
+                // moves the low word, sign-extended.
+                value: if wide {
+                    self.fpr.read_raw(src)
+                } else {
+                    crate::alu::sext32(self.fpr.read_s(src))
+                },
+            };
+        }
         if out.occupied
             && out.abort.is_none()
             && let Some(Cop0Access::Cop1(Cop1Access::ReadControl { src, dest })) = out.cop0
@@ -848,7 +876,17 @@ impl Pipeline {
             | Op::Tlbwr
             | Op::Tlbp
             | Op::Eret => 0,
-            Op::Cfc1 | Op::Ctc1 | Op::Cop1Unimplemented => 1,
+            Op::Cfc1
+            | Op::Ctc1
+            | Op::Mfc1
+            | Op::Dmfc1
+            | Op::Mtc1
+            | Op::Dmtc1
+            | Op::Lwc1
+            | Op::Ldc1
+            | Op::Swc1
+            | Op::Sdc1
+            | Op::Cop1Unimplemented => 1,
             _ => return None,
         };
         let status = self.cop0.read(crate::cop0::reg::STATUS);
@@ -971,6 +1009,41 @@ impl Pipeline {
                     dest,
                     value: u64::from(stored),
                 })
+            }
+            // FP loads and stores. Same alignment and translation rules as the
+            // integer forms -- only the destination register file differs.
+            MemOp::Fp { op, addr, ft } => {
+                use crate::decode::Op;
+                let double = matches!(op, Op::Ldc1 | Op::Sdc1);
+                let store = matches!(op, Op::Swc1 | Op::Sdc1);
+                let align = if double { 7 } else { 3 };
+                if addr & align != 0 {
+                    self.fault_vaddr = addr;
+                    return Err(Exception::AddressError { store });
+                }
+                let phys = self.translate_data(addr, store)?;
+                // `Status.FR` selects the register-file view; a double under
+                // FR = 0 occupies an FGR pair.
+                let fr = self.cop0.read(crate::cop0::reg::STATUS) & (1 << 26) != 0;
+                match op {
+                    Op::Lwc1 => {
+                        let v = Self::read_width(bus, phys, 4) as u32;
+                        self.fpr.write_s(ft, v);
+                    }
+                    Op::Ldc1 => {
+                        let v = Self::read_width(bus, phys, 8);
+                        self.fpr.write_d(ft, fr, v);
+                    }
+                    Op::Swc1 => {
+                        let v = self.fpr.read_s(ft);
+                        Self::write_width(bus, phys, 4, u64::from(v));
+                    }
+                    _ => {
+                        let v = self.fpr.read_d(ft, fr);
+                        Self::write_width(bus, phys, 8, v);
+                    }
+                }
+                Ok(WriteBack::None)
             }
             // CACHE: translate (so a TLB fault still raises) and do nothing else.
             //
@@ -3528,5 +3601,117 @@ mod tests {
             (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
             crate::exception::exc_code::TLBL
         );
+    }
+
+    // --- FP register file, moves and loads/stores (T-13-001) ---------------
+
+    /// `MTC1` then `MFC1` round-trips through the real FP register file, and
+    /// `MTC1` must **not** write a general register — `rt` is its source.
+    #[test]
+    fn mtc1_then_mfc1_round_trips_and_writes_no_gpr() {
+        use crate::cop0::reg;
+        const fn cop1(rs: u32, rt: u32, fs: u32) -> u32 {
+            (0o21 << 26) | (rs << 21) | (rt << 16) | (fs << 11)
+        }
+        //   ADDIU $1, $0, 0x55
+        //   MTC1  $1, $f4
+        //   MFC1  $2, $f4
+        let prog = alloc::vec![addiu_zero(1, 0x55), cop1(0o04, 1, 4), cop1(0o00, 2, 4)];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 | FR
+        let mut pc = KSEG0_PROG;
+        for _ in 0..40 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.fpr.read_s(4), 0x55, "MTC1 reached the FP register file");
+        assert_eq!(regs.read(2), 0x55, "and MFC1 read it back");
+        assert_eq!(regs.read(1), 0x55, "$1 -- MTC1's source -- must survive");
+    }
+
+    /// `SDC1` then `LDC1` round-trips a double through memory, and with
+    /// `FR = 0` the value lives in an **FGR pair** — so this exercises the view
+    /// that a direct-index register file gets wrong.
+    #[test]
+    fn ldc1_and_sdc1_round_trip_a_double_with_fr_clear() {
+        use crate::cop0::reg;
+        //   LUI  $1, 0x8000
+        //   SDC1 $f2, 0x100($1)
+        //   LDC1 $f4, 0x100($1)
+        let prog = alloc::vec![
+            lui_kseg0(1),
+            ld_st(0o75, 1, 2, 0x100),
+            ld_st(0o65, 1, 4, 0x100),
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // CU1 set, FR CLEAR -- the paired view.
+        p.cop0.set_hardware(reg::STATUS, 1 << 29);
+        p.fpr.write_d(2, false, 0x0123_4567_89AB_CDEF);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..48 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.fpr.read_d(4, false),
+            0x0123_4567_89AB_CDEF,
+            "the double survived memory in the FR = 0 paired view"
+        );
+        assert_eq!(
+            bus.read_u32(0x100),
+            0x0123_4567,
+            "big-endian high word first"
+        );
+    }
+
+    /// FP loads and stores obey the same alignment rules as the integer forms —
+    /// `LDC1` needs 8-byte alignment, and a misaligned one raises `AdEL`.
+    #[test]
+    fn a_misaligned_ldc1_raises_an_address_error() {
+        use crate::cop0::reg;
+        let prog = alloc::vec![lui_kseg0(1), ld_st(0o65, 1, 4, 0x104)];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 1 << 29);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 24, "no address error raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::ADEL,
+            "a misaligned LDC1 is a load address error"
+        );
+    }
+
+    /// The FP moves and loads need `CU1` like every other COP1 instruction.
+    #[test]
+    fn fp_loads_need_cu1() {
+        use crate::cop0::reg;
+        let prog = alloc::vec![lui_kseg0(1), ld_st(0o61, 1, 4, 0x100)];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0); // CU1 CLEAR
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 24, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::CPU
+        );
+        assert_eq!((p.cop0.read(reg::CAUSE) >> 28) & 0b11, 1, "unit 1");
     }
 }

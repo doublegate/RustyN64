@@ -9,6 +9,31 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the floating-point register file, moves and FP loads/stores (T-13-001)
+
+32 physical 64-bit **FGRs**, with the `Status.FR` view applied on access rather than assumed:
+
+| `FR` | View |
+| --- | --- |
+| 1 | 32 independent 64-bit FPRs — FPR *n* **is** FGR *n* |
+| 0 | 16 usable FPRs, even-numbered only; a double is the FGR **pair** `FGR[n+1]:FGR[n]` |
+
+Storing 32 `u64`s and indexing directly is right for `FR = 1` and silently wrong for `FR = 0`,
+where a double written to FPR 2 must land in FGRs 2 **and** 3. Both modes occur on real N64
+software — IPL3 leaves `FR` set, but plenty of games clear it.
+
+**Single precision is identical under both settings**, which is what makes the bug survive casual
+testing: every `.S` operation works and only doubles break. A single-precision write therefore
+**preserves** the upper half of its FGR, since with `FR = 0` that half is the other word of a
+double the program never touched.
+
+Plus `MFC1`/`DMFC1`/`MTC1`/`DMTC1` (`DMFC1` moves the *physical* register and so ignores `FR`) and
+`LWC1`/`LDC1`/`SWC1`/`SDC1`, which obey the same alignment, translation and `CU1` rules as the
+integer forms. The move-to and FP load/store forms write no general register — `rt` names an FPR,
+so giving them a GPR destination would corrupt an integer register.
+
+FP *arithmetic* is still not implemented; this is the file it will operate on.
+
 ### Fixed — `Status.ERL = 1` makes KUSEG unmapped (found by running n64-systemtest)
 
 > *"If the ERL bit of the Status register is 1, the user address area is a 2 GB area that cannot

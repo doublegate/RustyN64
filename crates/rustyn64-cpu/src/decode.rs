@@ -293,6 +293,22 @@ pub enum Op {
     Cfc1,
     /// `CTC1 rt, fs` — write a COP1 **control** register.
     Ctc1,
+    /// `MFC1 rt, fs` — move the low 32 bits of an FPR to a GPR, sign-extended.
+    Mfc1,
+    /// `DMFC1 rt, fs` — move a full 64-bit FGR to a GPR.
+    Dmfc1,
+    /// `MTC1 rt, fs` — move the low 32 bits of a GPR to an FPR.
+    Mtc1,
+    /// `DMTC1 rt, fs` — move a full 64-bit GPR to an FGR.
+    Dmtc1,
+    /// `LWC1 ft, off(base)` — load a word into an FPR.
+    Lwc1,
+    /// `LDC1 ft, off(base)` — load a doubleword into an FPR.
+    Ldc1,
+    /// `SWC1 ft, off(base)` — store an FPR word.
+    Swc1,
+    /// `SDC1 ft, off(base)` — store an FPR doubleword.
+    Sdc1,
     /// A COP1 encoding this crate does not implement.
     ///
     /// Distinct from [`Op::Reserved`]: the encoding is *valid*, so it must raise
@@ -528,6 +544,10 @@ const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
 const OP_COP0: u32 = 0o20;
 const OP_COP1: u32 = 0o21;
+const OP_LWC1: u32 = 0o61;
+const OP_LDC1: u32 = 0o65;
+const OP_SWC1: u32 = 0o71;
+const OP_SDC1: u32 = 0o75;
 const OP_CACHE: u32 = 0o57;
 const OP_LL: u32 = 0o60;
 const OP_LLD: u32 = 0o64;
@@ -782,9 +802,30 @@ pub const fn decode(word: u32) -> Decoded {
         OP_COP1 => {
             let rs = ((word >> 21) & 31) as u8;
             match rs {
+                // The move-FROM forms write a GPR; the move-TO forms write an
+                // FPR, so `dest` (a GPR index) stays 0 for those or they would
+                // clobber the register they read their value from.
+                0o00 => Decoded {
+                    op: Op::Mfc1,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                0o01 => Decoded {
+                    op: Op::Dmfc1,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
                 0o02 => Decoded {
                     op: Op::Cfc1,
                     dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                0o04 => Decoded {
+                    op: Op::Mtc1,
+                    ..base
+                },
+                0o05 => Decoded {
+                    op: Op::Dmtc1,
                     ..base
                 },
                 0o06 => Decoded {
@@ -802,6 +843,24 @@ pub const fn decode(word: u32) -> Decoded {
         // the cache-op encoding, which is a spectacularly confusing bug.
         OP_CACHE => Decoded {
             op: Op::Cache,
+            ..base
+        },
+        // The FP load/store forms. `rt` names an FPR, not a GPR, so `dest`
+        // stays 0 -- giving them a GPR destination corrupts an integer register.
+        OP_LWC1 => Decoded {
+            op: Op::Lwc1,
+            ..base
+        },
+        OP_LDC1 => Decoded {
+            op: Op::Ldc1,
+            ..base
+        },
+        OP_SWC1 => Decoded {
+            op: Op::Swc1,
+            ..base
+        },
+        OP_SDC1 => Decoded {
+            op: Op::Sdc1,
             ..base
         },
         OP_LL => i!(Op::Ll),
