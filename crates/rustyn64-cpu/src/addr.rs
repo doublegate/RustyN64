@@ -81,7 +81,10 @@ pub const fn segment(vaddr: u64, erl: bool) -> Segment {
     // is the state every boot ROM starts in. Without it, the first store to a
     // low address takes a TLB refill before any mapping could possibly exist --
     // which is exactly how n64-systemtest failed, two instructions in.
-    if erl && v < 0x8000_0000 {
+    // Compared on the FULL 64-bit address, not the truncated `v`. The manual
+    // says a **2 GB** area, so `0x0000_0001_0000_1000` is outside it — while its
+    // low 32 bits are not, and truncating would direct-map it.
+    if erl && vaddr < 0x8000_0000 {
         return Segment::Direct {
             addr: v,
             cached: Cached::No,
@@ -232,6 +235,32 @@ mod tests {
                     cached: Cached::No
                 },
                 "{v:#X} is identity-mapped and uncached with ERL set"
+            );
+        }
+    }
+
+    /// The `ERL` area is **2 GB**, so the check is on the full 64-bit address.
+    /// Comparing the truncated low half would direct-map a 64-bit address whose
+    /// low 32 bits happen to fall below `0x8000_0000`.
+    #[test]
+    fn the_erl_user_area_is_two_gigabytes_not_a_truncated_comparison() {
+        // Genuinely inside: a 32-bit KUSEG address is zero-extended.
+        assert_eq!(
+            segment(0x0000_1000, true),
+            Segment::Direct {
+                addr: 0x1000,
+                cached: Cached::No
+            }
+        );
+        // Outside the 2 GB area, but with low 32 bits that look inside.
+        for v in [0x0000_0001_0000_1000u64, 0x0000_00FF_0000_1000] {
+            assert_ne!(
+                segment(v, true),
+                Segment::Direct {
+                    addr: 0x1000,
+                    cached: Cached::No
+                },
+                "{v:#X} is beyond the 2 GB user area and must not be direct-mapped"
             );
         }
     }
