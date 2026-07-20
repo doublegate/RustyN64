@@ -978,12 +978,25 @@ impl Pipeline {
             // both issue CACHE, so a reserved-instruction exception here blocks
             // every real ROM.
             MemOp::Cache { addr, op } => {
-                let _ = op;
-                // An `Index_*` op addresses the cache by index rather than by
-                // address, so it cannot fault; a `Hit_*` op is a real address.
-                // Both are translated here because distinguishing them needs a
-                // cache model to be meaningful -- see the note above.
-                self.translate_data(addr, false)?;
+                // Only the ADDRESS-addressed operations translate. `op4..2`
+                // (UM Ch. 16, p. 404):
+                //
+                //   0..=2  Index_Invalidate / Index_Load_Tag / Index_Store_Tag
+                //          -- address the cache "at the index specified", so
+                //          they never consult the TLB and cannot fault.
+                //   3      Create_Dirty_Exclusive -- "set the cache block tag to
+                //          the specified physical address", so it does.
+                //   4..=6  Hit_* -- "if the cache block contains the specified
+                //          address", so they do.
+                //
+                // Translating unconditionally raises spurious TLB refills on
+                // `Index_*` ops against unmapped addresses, which is exactly
+                // what cache-init code does at boot: walk every index with an
+                // arbitrary base. An earlier revision of this comment described
+                // the distinction while the code ignored it.
+                if (op >> 2) >= 3 {
+                    self.translate_data(addr, false)?;
+                }
                 Ok(WriteBack::None)
             }
             // The unaligned family accesses the ALIGNED container holding `addr`
@@ -3459,14 +3472,41 @@ mod tests {
         assert_eq!(regs.read(21), 0x33, "$21 must survive CACHE op 21");
     }
 
-    /// `CACHE` still **translates**, so it raises a TLB fault on an unmapped
-    /// address. Skipping translation entirely would make it the one memory
-    /// instruction that cannot fault, which is not what the hardware does.
+    /// An **`Index_*`** `CACHE` op addresses the cache by index and **must not
+    /// translate**, so it cannot fault however unmapped the address is.
+    ///
+    /// This matters at boot: cache-initialisation code walks every index with an
+    /// arbitrary base address, and translating would raise a TLB refill on the
+    /// first one — before any mapping exists to satisfy it.
     #[test]
-    fn cache_on_an_unmapped_address_still_faults() {
+    fn an_index_cache_op_never_faults_however_unmapped_the_address() {
         use crate::cop0::reg;
-        // CACHE against a bare KUSEG address, with no mapping installed.
-        let mut bus = Ram::new(alloc::vec![ld_st(0o57, 0, 0, 0x4000)]);
+        for op in [0u16, 4, 8] {
+            // op4..2 = 0, 1, 2 -> Index_Invalidate / Load_Tag / Store_Tag.
+            assert!((op >> 2) < 3, "op {op} must be an Index form");
+            let mut bus = Ram::new(alloc::vec![ld_st(0o57, 0, u32::from(op), 0x4000)]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0);
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(
+                (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+                0,
+                "Index op {op} must not raise -- it never consults the TLB"
+            );
+        }
+    }
+
+    /// A **`Hit_*`** `CACHE` op translates, so it raises a TLB fault on an
+    /// unmapped address — it is defined in terms of *"the specified address"*.
+    #[test]
+    fn a_hit_cache_op_on_an_unmapped_address_faults() {
+        use crate::cop0::reg;
+        // op = 16 -> op4..2 = 4 = Hit_Invalidate.
+        let mut bus = Ram::new(alloc::vec![ld_st(0o57, 0, 16, 0x4000)]);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0);

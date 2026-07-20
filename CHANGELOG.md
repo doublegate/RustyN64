@@ -19,6 +19,13 @@ memory instruction — and performs no data transfer. Its `rt` slot is the **ope
 not a destination; decoding it as a load clobbers whichever GPR the cache-op encoding names, so
 the register destroyed would depend on which operation was requested.
 
+**Only the address-addressed operations translate.** `op4..2` 0–2 are `Index_*`, defined *"at the
+index specified"*, so they never consult the TLB; 3 and 4–6 are defined in terms of *"the specified
+address"* and do. Translating unconditionally raised spurious TLB refills on exactly the code that
+matters — cache-init walks every index with an arbitrary base, before any mapping exists to satisfy
+it. Caught in review, where the first version's *comment* described the distinction while the code
+ignored it and the test asserted the wrong side of it.
+
 **The cache depth question is answered explicitly, and the answer is zero.** Phase 1 listed
 "how exact must the cache model be" as an open question. Cache *contents* are not modelled at all,
 so invalidate and write-back have nothing to act on — which is observationally sound **only**
