@@ -80,6 +80,8 @@ pub enum Exception {
     Syscall,
     /// `BREAK`.
     Breakpoint,
+    /// A conditional trap (`TGE`, `TEQ`, `TNEI`, …) whose condition held.
+    Trap,
     /// A reserved / unimplemented opcode.
     ReservedInstruction,
 }
@@ -241,6 +243,7 @@ impl Pipeline {
                 sa: 0,
                 imm: 0,
                 dest: 0,
+                target: 0,
             },
             rs_val: 0,
             rt_val: 0,
@@ -347,7 +350,7 @@ impl Pipeline {
 
         self.wb_stage(regs);
         self.dc_stage(bus);
-        self.ex_stage(regs);
+        self.ex_stage(regs, next_pc);
         self.rf_stage(regs);
         self.ic_stage(bus, next_pc);
 
@@ -589,7 +592,7 @@ impl Pipeline {
     }
 
     /// `EX` — execute.
-    fn ex_stage(&mut self, regs: &Regs) {
+    fn ex_stage(&mut self, regs: &Regs, next_pc: &mut u64) {
         let mut out = self.rf_ex;
         if out.occupied && out.abort.is_none() {
             // Resolve operands through the bypass network rather than trusting
@@ -597,10 +600,29 @@ impl Pipeline {
             out.rs_val = self.bypass(out.decoded.rs, regs);
             out.rt_val = self.bypass(out.decoded.rt, regs);
             let hilo = self.bypass_hi_lo(regs);
-            match execute(out.decoded, out.rs_val, out.rt_val, hilo) {
+            match execute(out.decoded, out.rs_val, out.rt_val, hilo, out.pc) {
                 Ok(e) => {
                     out.write_back = e.write_back;
                     out.mem = e.mem;
+                    // Control flow. The delay slot has ALREADY been fetched -- it
+                    // is in `ic_rf` right now, because IC ran a cycle ahead. That
+                    // is the architectural delay slot, not a modelling artefact.
+                    //
+                    // Because the cascade runs backwards, `ic_stage` executes
+                    // AFTER this in the same cycle, so writing `next_pc` here
+                    // makes the very next fetch land on the target with exactly
+                    // one delay slot in between. No wrong-path fetch needs
+                    // squashing -- that falls out of the reverse order rather
+                    // than being arranged.
+                    if let Some(r) = e.redirect {
+                        *next_pc = r.target;
+                        if r.nullify_delay_slot {
+                            // A branch-LIKELY that was not taken squashes its
+                            // already-fetched delay slot. An ordinary branch
+                            // never does.
+                            self.ic_rf = Latch::default();
+                        }
+                    }
                     // Multiply and divide stall the ENTIRE pipeline for the
                     // documented count (UM Table 3-12), so the request is raised
                     // here and honoured from the next cycle onward.
@@ -705,14 +727,25 @@ impl Pipeline {
         // TODO(T-11-003): fetch through the I-cache rather than straight off the
         // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
         let word = bus.read_u32(pc as u32);
-        // Decode here rather than at RF: the decoded branch must set
-        // `in_delay_slot` on the instruction fetched NEXT cycle, so the decode
-        // has to precede the following fetch.
+        // Decode here rather than at RF: a branch must be decoded before the
+        // NEXT fetch, so that fetch can be marked as its delay slot.
+        //
+        // A branch decoded last cycle is sitting in `ic_rf` right now, so the
+        // instruction being fetched now is its delay slot. The flag then travels
+        // with the latch and is never global state -- a multi-cycle stall between
+        // a branch and its slot would desynchronise a global flag, which is the
+        // classic bug here.
+        // Check `rf_ex`, not `ic_rf`. `rf_stage` runs immediately before this in
+        // the reverse cascade and has already moved the previous instruction out
+        // of `ic_rf` (clearing `occupied`), so a branch fetched last cycle is in
+        // `rf_ex` by now. Reading `ic_rf` here makes the flag silently always
+        // false -- which is exactly what it did until the fetch trace showed it.
+        let in_delay_slot = self.rf_ex.occupied && self.rf_ex.decoded.op.has_delay_slot();
         self.ic_rf = Latch {
             occupied: true,
             pc,
             word,
-            in_delay_slot: false,
+            in_delay_slot,
             abort: None,
             decoded: decode(word),
             rs_val: 0,
@@ -1312,6 +1345,222 @@ mod tests {
             regs.read(3),
             crate::alu::sext32(0x1122_3344),
             "LWL+LWR must assemble the unaligned word at 0x101"
+        );
+    }
+
+    /// **The branch delay slot executes before the target.** This is the single
+    /// most load-bearing property of MIPS control flow: the instruction *after* a
+    /// branch runs whether or not the branch is taken.
+    #[test]
+    fn the_delay_slot_executes_before_the_branch_target() {
+        //   0x800: ADDIU $1, $0, 1
+        //   0x804: BEQ   $0, $0, +2   ; taken, to 0x810
+        //   0x808: ADDIU $2, $0, 2    ; DELAY SLOT -- must execute
+        //   0x80C: ADDIU $3, $0, 3    ; skipped
+        //   0x810: ADDIU $4, $0, 4    ; target
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 1,
+            (0o04 << 26) | 2,
+            (0o11 << 26) | (2 << 16) | 2,
+            (0o11 << 26) | (3 << 16) | 3,
+            (0o11 << 26) | (4 << 16) | 4,
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..60 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(1), 1, "before the branch");
+        assert_eq!(regs.read(2), 2, "the DELAY SLOT must execute");
+        assert_eq!(regs.read(3), 0, "the instruction after the slot is skipped");
+        assert_eq!(regs.read(4), 4, "the target must execute");
+    }
+
+    /// **Branch-likely nullifies its delay slot when NOT taken**; an ordinary
+    /// branch does not. Confusing the two silently runs or skips one instruction
+    /// per untaken branch, which is invisible until a loop's trip count is wrong.
+    #[test]
+    fn branch_likely_nullifies_its_delay_slot_but_an_ordinary_branch_does_not() {
+        // BNEL $0, $0, +1   ; NOT taken (0 == 0), so the slot is nullified
+        // ADDIU $2, $0, 2   ; DELAY SLOT -- must be squashed
+        // ADDIU $3, $0, 3
+        let likely = alloc::vec![
+            (0o25 << 26) | 1,
+            (0o11 << 26) | (2 << 16) | 2,
+            (0o11 << 26) | (3 << 16) | 3,
+        ];
+        let mut bus = Ram::new(likely);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..50 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(2),
+            0,
+            "BNEL not taken must NULLIFY its delay slot"
+        );
+        assert_eq!(regs.read(3), 3, "execution continues after the slot");
+
+        // The same shape with the ordinary BNE: the slot DOES execute.
+        let ordinary = alloc::vec![
+            (0o05 << 26) | 1,
+            (0o11 << 26) | (2 << 16) | 2,
+            (0o11 << 26) | (3 << 16) | 3,
+        ];
+        let mut bus = Ram::new(ordinary);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..50 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(2),
+            2,
+            "BNE not taken must still RUN its delay slot"
+        );
+    }
+
+    /// `JAL` links the address *after* the delay slot, so a returning `JR $31`
+    /// resumes past it rather than re-executing it.
+    #[test]
+    fn jal_links_past_the_delay_slot_and_jr_returns_there() {
+        //   0x800: JAL 0x204        ; -> 0x810, links $31 = 0x808
+        //   0x804: ADDIU $1, $0, 1  ; DELAY SLOT
+        //   0x808: ADDIU $2, $0, 2  ; where JR $31 must return to
+        //   0x80C: ADDIU $9, $0, 9  ; must NOT run before the return
+        //   0x810: JR $31
+        //   0x814: ADDIU $3, $0, 3  ; the callee's DELAY SLOT
+        let prog = alloc::vec![
+            (0o03 << 26) | 0x204,
+            (0o11 << 26) | (1 << 16) | 1,
+            (0o11 << 26) | (2 << 16) | 2,
+            (0o11 << 26) | (9 << 16) | 9,
+            (31 << 21) | 0o10,
+            (0o11 << 26) | (3 << 16) | 3,
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..80 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(31), 0x808, "JAL links PC+8, past the delay slot");
+        assert_eq!(regs.read(1), 1, "JAL's delay slot ran");
+        assert_eq!(regs.read(3), 3, "JR's delay slot ran");
+        assert_eq!(regs.read(2), 2, "JR $31 returned to the linked address");
+    }
+
+    /// A trap whose condition holds raises an exception and does not commit.
+    #[test]
+    fn a_taken_trap_raises_and_an_untaken_one_does_not() {
+        //   ADDIU $1, $0, 5
+        //   TEQ   $1, $1      ; equal -> traps
+        //   ADDIU $2, $0, 2   ; must not commit
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 5,
+            (1 << 21) | (1 << 16) | 0o64,
+            (0o11 << 26) | (2 << 16) | 2,
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        let mut trapped = false;
+        for _ in 0..50 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            if p.ex_dc.abort == Some(Exception::Trap) || p.dc_wb.abort == Some(Exception::Trap) {
+                trapped = true;
+            }
+        }
+        assert!(trapped, "TEQ with equal operands must trap");
+
+        // TNE with equal operands does NOT trap.
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 5,
+            (1 << 21) | (1 << 16) | 0o66,
+            (0o11 << 26) | (2 << 16) | 2,
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+        for _ in 0..50 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(2),
+            2,
+            "an untaken trap must not disturb execution"
+        );
+    }
+
+    /// `SYSCALL` and `BREAK` raise their own exceptions.
+    #[test]
+    fn syscall_and_break_raise_their_exceptions() {
+        for (funct, want) in [(0o14u32, Exception::Syscall), (0o15, Exception::Breakpoint)] {
+            let mut bus = Ram::new(alloc::vec![funct]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            let mut pc = 0x800u64;
+            let mut seen = false;
+            for _ in 0..40 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+                if p.ex_dc.abort == Some(want) || p.dc_wb.abort == Some(want) {
+                    seen = true;
+                }
+            }
+            assert!(seen, "funct {funct:o} should raise {want:?}");
+        }
+    }
+
+    /// **`in_delay_slot` must actually be set**, and only on the instruction
+    /// after a branch or jump.
+    ///
+    /// This test exists because mutation-testing found the flag was **not yet
+    /// load-bearing**: forcing it to `false` broke nothing, since its only
+    /// consumer is `Cause.BD`/`EPC` at exception time and COP0 arrives in
+    /// Sprint 2. A field that is written and never read is the exact pattern
+    /// this crate has twice deleted (`poll_irq_at_phase`, `Stall.resume`).
+    ///
+    /// Rather than delete it — it is genuinely needed, and it must ride in the
+    /// latch rather than be recomputed later — it is pinned here so it is
+    /// verified from the moment it is written.
+    #[test]
+    fn in_delay_slot_is_set_on_exactly_the_instruction_after_a_branch() {
+        //   0x800: ADDIU $1, $0, 1   ; not a delay slot
+        //   0x804: BEQ   $0, $0, +2  ; a branch, not itself a delay slot
+        //   0x808: ADDIU $2, $0, 2   ; IS the delay slot
+        //   0x810: ADDIU $4, $0, 4   ; target, not a delay slot
+        let prog = alloc::vec![
+            (0o11 << 26) | (1 << 16) | 1,
+            (0o04 << 26) | 2,
+            (0o11 << 26) | (2 << 16) | 2,
+            (0o11 << 26) | (3 << 16) | 3,
+            (0o11 << 26) | (4 << 16) | 4,
+        ];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        let mut pc = 0x800u64;
+
+        let mut flagged = alloc::vec::Vec::new();
+        for _ in 0..8 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            if p.ic_rf.occupied && p.ic_rf.in_delay_slot {
+                flagged.push(p.ic_rf.pc);
+            }
+        }
+        assert_eq!(
+            flagged,
+            alloc::vec![0x808],
+            "exactly one instruction -- the one after the branch -- must be \
+             flagged as a delay slot"
         );
     }
 

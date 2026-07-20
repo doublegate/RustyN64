@@ -71,6 +71,25 @@ pub enum MemOp {
     },
 }
 
+/// A control-flow redirect `EX` resolved.
+///
+/// The delay slot has *already been fetched* by the time `EX` resolves a branch,
+/// which is the whole point of the architectural delay slot. What `EX` decides is
+/// where the fetch *after* the delay slot goes, and whether the delay slot runs
+/// at all.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Redirect {
+    /// Where to fetch next.
+    pub target: u64,
+    /// Nullify the already-fetched delay slot.
+    ///
+    /// True only for a **branch-likely** form that was *not* taken. An ordinary
+    /// branch executes its delay slot whether or not it is taken; a likely branch
+    /// squashes it when not taken. Confusing the two silently runs or skips one
+    /// instruction per untaken branch.
+    pub nullify_delay_slot: bool,
+}
+
 /// The outcome of executing one instruction in `EX`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Executed {
@@ -80,11 +99,87 @@ pub struct Executed {
     pub stall_cycles: u32,
     /// A memory access for `DC` to perform, if any.
     pub mem: Option<MemOp>,
+    /// A control-flow redirect, if this was a taken branch, a jump, or an
+    /// untaken branch-likely.
+    pub redirect: Option<Redirect>,
 }
 
 /// Sign-extend a 16-bit immediate — the arithmetic and `SLT` immediate forms.
 const fn sext_imm(imm: u16) -> u64 {
     imm as i16 as i64 as u64
+}
+
+/// A jump or taken branch: redirect, and link if the form links.
+const fn control(d: Decoded, target: u64, nullify: bool, pc: u64) -> Executed {
+    Executed {
+        // The linking forms save the address *after* the delay slot, so a
+        // returning `JR $31` resumes past it rather than re-executing it.
+        write_back: if d.dest == 0 {
+            WriteBack::None
+        } else {
+            WriteBack::Gpr {
+                dest: d.dest,
+                value: pc.wrapping_add(8),
+            }
+        },
+        stall_cycles: 0,
+        mem: None,
+        redirect: Some(Redirect {
+            target,
+            nullify_delay_slot: nullify,
+        }),
+    }
+}
+
+/// Resolve a conditional branch. Cannot fail — a branch raises no exception.
+const fn branch(d: Decoded, taken: bool, pc: u64) -> Executed {
+    if taken {
+        // Target is relative to the DELAY SLOT's address, not this one.
+        let target = pc
+            .wrapping_add(4)
+            .wrapping_add((sext_imm(d.imm) as i64 as u64) << 2);
+        return control(d, target, false, pc);
+    }
+    // Not taken. A branch-likely nullifies its delay slot; an ordinary branch
+    // lets it run. Either way the linking forms STILL link -- BLTZAL writes $31
+    // even when the branch is not taken, which is easy to miss.
+    Executed {
+        write_back: if d.dest == 0 {
+            WriteBack::None
+        } else {
+            WriteBack::Gpr {
+                dest: d.dest,
+                value: pc.wrapping_add(8),
+            }
+        },
+        stall_cycles: 0,
+        mem: None,
+        redirect: if d.op.is_likely() {
+            Some(Redirect {
+                target: pc.wrapping_add(8),
+                nullify_delay_slot: true,
+            })
+        } else {
+            None
+        },
+    }
+}
+
+/// A conditional trap.
+///
+/// # Errors
+/// [`Exception::Trap`] when the condition holds.
+const fn trap_if(cond: bool) -> Result<Executed, Exception> {
+    if cond {
+        Err(Exception::Trap)
+    } else {
+        Ok(Executed {
+            write_back: WriteBack::None,
+            stall_cycles: 0,
+            mem: None,
+            redirect: None,
+        })
+    }
 }
 
 /// Zero-extend a 16-bit immediate — the *logical* immediate forms only.
@@ -99,7 +194,8 @@ const fn zext_imm(imm: u16) -> u64 {
 /// Execute one decoded instruction.
 ///
 /// `rs_val` / `rt_val` are the register values resolved through the bypass
-/// network at `EX`; `hilo` is the current multiply-divide pair.
+/// network at `EX`; `hilo` is the current multiply-divide pair; `pc` is the
+/// address of *this* instruction, needed by the control-flow forms.
 ///
 /// # Errors
 ///
@@ -118,6 +214,7 @@ pub const fn execute(
     rs_val: u64,
     rt_val: u64,
     hilo: HiLo,
+    pc: u64,
 ) -> Result<Executed, Exception> {
     // Most instructions write one general register with no stall.
     macro_rules! gpr {
@@ -129,6 +226,7 @@ pub const fn execute(
                 },
                 stall_cycles: 0,
                 mem: None,
+                redirect: None,
             })
         };
     }
@@ -144,6 +242,7 @@ pub const fn execute(
                     addr: rs_val.wrapping_add(sext_imm(d.imm)),
                     dest: d.dest,
                 }),
+                redirect: None,
             })
         };
     }
@@ -157,6 +256,7 @@ pub const fn execute(
                     addr: rs_val.wrapping_add(sext_imm(d.imm)),
                     value: rt_val,
                 }),
+                redirect: None,
             })
         };
     }
@@ -168,6 +268,7 @@ pub const fn execute(
                 write_back: WriteBack::HiLo($res),
                 stall_cycles: alu::muldiv_stall_cycles($kind),
                 mem: None,
+                redirect: None,
             })
         };
     }
@@ -255,11 +356,13 @@ pub const fn execute(
             write_back: WriteBack::Hi(rs_val),
             stall_cycles: 0,
             mem: None,
+            redirect: None,
         }),
         Op::Mtlo => Ok(Executed {
             write_back: WriteBack::Lo(rs_val),
             stall_cycles: 0,
             mem: None,
+            redirect: None,
         }),
 
         // --- memory. EX resolves the effective address only; DC performs the
@@ -275,6 +378,47 @@ pub const fn execute(
         Op::Sh => mem_store!(StoreKind::Half),
         Op::Sw => mem_store!(StoreKind::Word),
         Op::Sd => mem_store!(StoreKind::Double),
+        // --- control flow. `pc` is this instruction's address; the delay slot
+        // is at `pc + 4` and the instruction after it at `pc + 8`, which is what
+        // the linking forms save.
+        Op::J | Op::Jal => {
+            // The 26-bit region form keeps the top 4 bits of the DELAY SLOT's
+            // address, not this instruction's -- they differ across a 256 MiB
+            // boundary, which is exactly where a naive implementation breaks.
+            let region = pc.wrapping_add(4) & 0xFFFF_FFFF_F000_0000;
+            let target = region | ((d.target as u64) << 2);
+            Ok(control(d, target, false, pc))
+        }
+        // JR and JALR differ only in whether decode gave them a destination:
+        // `control` links iff `d.dest != 0`, so one arm serves both.
+        Op::Jr | Op::Jalr => Ok(control(d, rs_val, false, pc)),
+
+        Op::Beq | Op::Beql => Ok(branch(d, rs_val == rt_val, pc)),
+        Op::Bne | Op::Bnel => Ok(branch(d, rs_val != rt_val, pc)),
+        Op::Blez | Op::Blezl => Ok(branch(d, (rs_val as i64) <= 0, pc)),
+        Op::Bgtz | Op::Bgtzl => Ok(branch(d, (rs_val as i64) > 0, pc)),
+        Op::Bltz | Op::Bltzl | Op::Bltzal | Op::Bltzall => Ok(branch(d, (rs_val as i64) < 0, pc)),
+        Op::Bgez | Op::Bgezl | Op::Bgezal | Op::Bgezall => Ok(branch(d, (rs_val as i64) >= 0, pc)),
+
+        // --- traps. The comparison is 64-bit; the `*U` forms are unsigned.
+        Op::Tge => trap_if((rs_val as i64) >= (rt_val as i64)),
+        Op::Tgeu => trap_if(rs_val >= rt_val),
+        Op::Tlt => trap_if((rs_val as i64) < (rt_val as i64)),
+        Op::Tltu => trap_if(rs_val < rt_val),
+        Op::Teq => trap_if(rs_val == rt_val),
+        Op::Tne => trap_if(rs_val != rt_val),
+        // The immediate trap forms SIGN-extend, including the unsigned
+        // comparisons -- the `U` refers to the comparison, not the extension.
+        Op::Tgei => trap_if((rs_val as i64) >= (sext_imm(d.imm) as i64)),
+        Op::Tgeiu => trap_if(rs_val >= sext_imm(d.imm)),
+        Op::Tlti => trap_if((rs_val as i64) < (sext_imm(d.imm) as i64)),
+        Op::Tltiu => trap_if(rs_val < sext_imm(d.imm)),
+        Op::Teqi => trap_if(rs_val == sext_imm(d.imm)),
+        Op::Tnei => trap_if(rs_val != sext_imm(d.imm)),
+
+        Op::Syscall => Err(Exception::Syscall),
+        Op::Break => Err(Exception::Breakpoint),
+
         Op::Lwl | Op::Lwr | Op::Ldl | Op::Ldr | Op::Swl | Op::Swr | Op::Sdl | Op::Sdr => {
             Ok(Executed {
                 write_back: WriteBack::None,
@@ -285,6 +429,7 @@ pub const fn execute(
                     rt: rt_val,
                     dest: d.dest,
                 }),
+                redirect: None,
             })
         }
     }
@@ -297,7 +442,7 @@ mod tests {
 
     #[allow(clippy::similar_names)] // mirrors the MIPS operand naming
     fn run(word: u32, rs_val: u64, rt_val: u64) -> Result<Executed, Exception> {
-        execute(decode(word), rs_val, rt_val, HiLo { hi: 0, lo: 0 })
+        execute(decode(word), rs_val, rt_val, HiLo { hi: 0, lo: 0 }, 0)
     }
     const fn r(funct: u32, rs: u32, rt: u32, rd: u32, sa: u32) -> u32 {
         (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct
@@ -385,6 +530,7 @@ mod tests {
                 hi: 0xDEAD,
                 lo: 0xBEEF,
             },
+            0,
         )
         .unwrap();
         assert_eq!(
@@ -403,6 +549,7 @@ mod tests {
                 hi: 0xDEAD,
                 lo: 0xBEEF,
             },
+            0,
         )
         .unwrap();
         assert_eq!(
@@ -418,6 +565,7 @@ mod tests {
             0x1234,
             0,
             HiLo { hi: 0, lo: 0 },
+            0,
         )
         .unwrap();
         assert_eq!(e.write_back, WriteBack::Hi(0x1234));
@@ -428,9 +576,14 @@ mod tests {
     /// with no indication of why.
     #[test]
     fn unimplemented_opcodes_raise_reserved_instruction() {
-        // BEQ (0o04) arrives with T-11-004; SPECIAL funct 0o01 is unused.
+        // These must be encodings the VR4300 genuinely leaves UNASSIGNED, not
+        // merely ones this project has not implemented yet. Primary opcodes
+        // 0o34..0o37 are reserved on MIPS III, and SPECIAL funct 0o01 is unused.
+        // Earlier revisions of this test used LW and then BEQ, and had to be
+        // repointed each time that opcode landed -- which made the test track
+        // implementation progress instead of the architecture.
         assert_eq!(
-            run(i(0o04, 1, 2, 0), 0, 0),
+            run(i(0o35, 1, 2, 0), 0, 0),
             Err(Exception::ReservedInstruction)
         );
         assert_eq!(

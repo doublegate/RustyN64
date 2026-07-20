@@ -9,6 +9,39 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — branches, jumps, and the trap family (T-11-004)
+
+The full control-flow set: `J`/`JAL`/`JR`/`JALR`, every conditional branch including the eight
+**branch-likely** forms, the twelve conditional traps, `SYSCALL` and `BREAK`.
+
+**The delay slot now does real work**, and the reverse cascade turns out to make it fall out
+cleanly. By the time `EX` resolves a branch, `IC` has already fetched the delay slot — that *is*
+the architectural delay slot, not a modelling artefact. Because `EX` runs before `IC` in the same
+cycle, writing the target to `next_pc` in `EX` makes the very next fetch land on it with exactly
+one delay slot in between. No wrong-path fetch needs squashing.
+
+**Branch-likely nullifies its delay slot when not taken**; an ordinary branch does not. Getting
+that backwards silently runs or skips one instruction per untaken branch — invisible until a
+loop's trip count is wrong. Mutation-tested.
+
+Two bugs found by a fetch trace rather than by reasoning:
+
+- The redirect was never applied at all — an earlier edit had failed to write, and everything
+  still compiled and passed, because the test program's branch target coincided with the
+  sequential path. The trace showed `next_pc` marching straight through.
+- `in_delay_slot` read `ic_rf`, which `rf_stage` has already vacated by the time `IC` runs in the
+  reverse cascade. The flag was silently always false. It now reads `rf_ex`.
+
+**`in_delay_slot` is pinned by its own test**, because mutation-testing showed it was *not yet
+load-bearing*: forcing it to `false` broke nothing, since its only consumer is `Cause.BD`/`EPC`
+at exception time and COP0 arrives in Sprint 2. Rather than delete it — it is genuinely needed
+and must ride in the latch — it is now verified from the moment it is written.
+
+The reserved-instruction tests are repointed at encodings the VR4300 leaves **architecturally**
+unassigned (primary opcodes `0o35`/`0o36`, SPECIAL funct `0o01`) rather than at instructions this
+project merely hasn't implemented. They had to be moved three times — `LW`, then `BEQ` — because
+they were tracking implementation progress instead of the architecture.
+
 ### Fixed — a stale test-ROM sentinel, and T-11-006 re-scoped
 
 Investigating whether Sprint 1 could actually close turned up a documentation error that would
