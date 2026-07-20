@@ -125,6 +125,22 @@ pub enum Exception {
     FloatingPoint,
 }
 
+/// What a COP1 operation writes when it does not trap.
+///
+/// Named rather than a `(u64, bool)` pair because the destinations are of
+/// genuinely different kinds — two FPR widths and a single `FCSR` bit — and a
+/// flag pair makes "write the condition to `fd`" representable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FpCommit {
+    /// A 32-bit result into `fd`'s low half: `.S` values and `.W` integers.
+    Single(u32),
+    /// A 64-bit result into `fd` through the `FR` view: `.D` values and `.L`
+    /// integers.
+    Double(u64),
+    /// `FCSR.C`. Only `C.cond.fmt` produces this, and it writes no FPR at all.
+    Condition(bool),
+}
+
 /// The documented interlocks (UM Table 4-3).
 ///
 /// Held as a named enum rather than a bare cycle count so a stall is always
@@ -1453,10 +1469,18 @@ impl Pipeline {
     ///
     /// # `FCSR`
     ///
-    /// `Cause` (bits 16:12) reports what *this* operation raised and is replaced
-    /// each time; `Flags` (6:2) is the sticky accumulation and is OR-ed in.
-    /// `Flags::to_fcsr_bits` produces both, so clearing only `Cause` before
-    /// OR-ing preserves the sticky half.
+    /// `Cause` is bits **17:12** and reports what *this* operation raised; it
+    /// is replaced wholesale each time. `Flags` (6:2) is the sticky
+    /// accumulation and is OR-ed in. `Flags::to_fcsr_bits` produces both, so
+    /// clearing only `Cause` before OR-ing preserves the sticky half.
+    ///
+    /// **The field is 17:12, not 16:12.** Bit 17 is `Cause.E`, Unimplemented
+    /// Operation — part of `Cause` despite having no `Enable` bit and no sticky
+    /// `Flags` twin, which means the mask is the *only* thing that ever clears
+    /// it. This comment said 16:12 while `CAUSE_MASK` covered 16:12 too, and
+    /// the result was a bit that could never be cleared once raised. Only the
+    /// five *maskable* conditions live in 16:12; that narrower range is what
+    /// the enable comparison below uses, and it is a different statement.
     ///
     /// # Enabled traps
     ///
@@ -1486,8 +1510,20 @@ impl Pipeline {
     /// `expected_unimplemented` cases still fail.
     fn fp_arith(&mut self, fmt: u8, funct: u8, ft: u8, fs: u8, fd: u8) -> bool {
         use crate::fpu;
-        /// `FCSR` Cause field, bits 16:12 — replaced per operation.
-        const CAUSE_MASK: u32 = 0x1F << 12;
+        /// `FCSR` Cause field, bits **17:12** — replaced wholesale per
+        /// operation.
+        ///
+        /// The range includes bit 17, `Unimplemented Operation`, which is part
+        /// of `Cause` even though it is not an IEEE exception and has no
+        /// corresponding `Enable` or sticky `Flags` bit. Masking only 16:12 —
+        /// which this did — leaves a *stale* bit 17 set forever, because no
+        /// later operation can clear a bit the mask does not cover. Software
+        /// reading `FCSR` after a successful conversion would then still see
+        /// the previous unimplemented operation.
+        const CAUSE_MASK: u32 = 0x3F << 12;
+        /// `FCSR.C`, the compare condition — bit 23, above the Cause field and
+        /// written only by `C.cond.fmt`.
+        const FCSR_C: u32 = 1 << 23;
 
         let fr = fr_of(&self.cop0);
         // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
@@ -1530,42 +1566,31 @@ impl Pipeline {
             return false;
         }
 
-        // Computed but **not committed**: whether the write happens depends on
-        // the enables, and they cannot be consulted until the flags are known.
-        // Writing inside the arithmetic branch and undoing it afterwards would
-        // be wrong under `FR = 0`, where a `.S` write can disturb a neighbouring
-        // register's half.
         // `FCSR.RM` is read **here**, per operation, rather than being captured
         // anywhere earlier: software changes it between instructions, and
         // n64-systemtest sweeps all four modes over the same operand pair.
         let mode = fpu::Rounding::from_rm(self.cop1.rounding_mode());
-        let (bits, flags, wide) = if fmt == 0o20 {
-            {
-                let a = f32::from_bits(self.fpr.read_s(fs));
-                let b = f32::from_bits(self.fpr.read_s(ft));
-                let out = match funct {
-                    0 => fpu::add_s(a, b, mode),
-                    1 => fpu::sub_s(a, b, mode),
-                    2 => fpu::mul_s(a, b, mode),
-                    _ => fpu::div_s(a, b, mode),
-                };
-                (u64::from(out.value.to_bits()), out.flags, false)
-            }
-        } else {
-            {
-                let a = f64::from_bits(self.fpr.read_d(fs, fr));
-                let b = f64::from_bits(self.fpr.read_d(ft, fr));
-                let out = match funct {
-                    0 => fpu::add_d(a, b, mode),
-                    1 => fpu::sub_d(a, b, mode),
-                    2 => fpu::mul_d(a, b, mode),
-                    _ => fpu::div_d(a, b, mode),
-                };
-                (out.value.to_bits(), out.flags, true)
-            }
+
+        // Computed but **not committed**. Whether the write happens depends on
+        // the enables, and they cannot be consulted until the flags are known.
+        // Writing inside a branch and undoing it afterwards would be wrong
+        // under `FR = 0`, where a `.S` write can disturb a neighbouring
+        // register's half.
+        let (commit, flags, unimplemented) = match funct {
+            0o00..=0o03 => self.fp_binary(fmt, funct, ft, fs, fr, mode),
+            0o10..=0o17 => self.fp_to_integer(fmt, funct, fs, fr),
+            0o40 | 0o41 | 0o44 | 0o45 => self.fp_convert(fmt, funct, fs, fr, mode),
+            // 0o60..=0o77 -- `C.cond.fmt`. The low four bits ARE the condition
+            // (UM Table 7-11), so the sixteen mnemonics need no table.
+            _ => self.fp_compare(fmt, funct & 0xF, ft, fs, fr),
         };
 
-        let raised = flags.to_fcsr_bits();
+        let raised = flags.to_fcsr_bits()
+            | if unimplemented {
+                fpu::CAUSE_UNIMPLEMENTED
+            } else {
+                0
+            };
         let fcsr = self.cop1.fcsr();
 
         // `Cause` bits 16:12 and the `Enable` field bits 11:7 hold the five
@@ -1573,7 +1598,12 @@ impl Pipeline {
         // up with what `Cop1Control::enables` returns. Comparing them in
         // different orders is a silent mis-map that only shows up on whichever
         // condition happens to be tested first.
-        if (raised >> 12) & self.cop1.enables() != 0 {
+        //
+        // **Unimplemented Operation (bit 17) is unmaskable** and sits above
+        // that field, so it is checked separately rather than being folded into
+        // the enable comparison — where it would have been silently ignored,
+        // since no enable bit corresponds to it.
+        if unimplemented || (raised >> 12) & self.cop1.enables() != 0 {
             // Cause only. The sticky `Flags` field is deliberately left
             // untouched — see the doc comment.
             self.cop1
@@ -1582,18 +1612,202 @@ impl Pipeline {
             return true;
         }
 
-        // Preserves the upper half, as `MTC1` does. Writing the full register
-        // (`write_raw`, zeroing the upper half) was tried and REVERTED: it is
-        // what the observed values suggest, but it moved the oracle by nothing
-        // and it bypasses the `FR` view, which is exactly the mistake ledger
-        // U-7 records. See ledger C-10.
-        if wide {
-            self.fpr.write_d(fd, fr, bits);
-        } else {
-            self.fpr.write_s(fd, bits as u32);
+        match commit {
+            // Preserves the upper half, as `MTC1` does. Writing the full
+            // register (`write_raw`, zeroing the upper half) was tried and
+            // REVERTED: it moved the oracle by nothing and it bypasses the `FR`
+            // view, which is exactly the mistake ledger U-7 records (C-10).
+            FpCommit::Single(v) => self.fpr.write_s(fd, v),
+            FpCommit::Double(v) => self.fpr.write_d(fd, fr, v),
+            // `FCSR.C` is bit 23, and it is NOT part of the `Cause`/`Flags`
+            // bookkeeping — a compare writes it and no other operation touches
+            // it. Confirmed against n64-systemtest's own `FCSR` bitfield rather
+            // than inferred.
+            FpCommit::Condition(c) => {
+                let base = (fcsr & !CAUSE_MASK & !FCSR_C) | raised;
+                self.cop1.ctc1(31, base | if c { FCSR_C } else { 0 });
+                return false;
+            }
         }
         self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
         false
+    }
+
+    /// `ADD`/`SUB`/`MUL`/`DIV` in either format.
+    fn fp_binary(
+        &self,
+        fmt: u8,
+        funct: u8,
+        ft: u8,
+        fs: u8,
+        fr: bool,
+        mode: crate::fpu::Rounding,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu;
+        if fmt == 0o20 {
+            let a = f32::from_bits(self.fpr.read_s(fs));
+            let b = f32::from_bits(self.fpr.read_s(ft));
+            let out = match funct {
+                0 => fpu::add_s(a, b, mode),
+                1 => fpu::sub_s(a, b, mode),
+                2 => fpu::mul_s(a, b, mode),
+                _ => fpu::div_s(a, b, mode),
+            };
+            (FpCommit::Single(out.value.to_bits()), out.flags, false)
+        } else {
+            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            let b = f64::from_bits(self.fpr.read_d(ft, fr));
+            let out = match funct {
+                0 => fpu::add_d(a, b, mode),
+                1 => fpu::sub_d(a, b, mode),
+                2 => fpu::mul_d(a, b, mode),
+                _ => fpu::div_d(a, b, mode),
+            };
+            (FpCommit::Double(out.value.to_bits()), out.flags, false)
+        }
+    }
+
+    /// `ROUND`/`TRUNC`/`CEIL`/`FLOOR` to `.W` or `.L` (funct 8..=15).
+    ///
+    /// These carry their rounding mode **in the opcode** and ignore `FCSR.RM`
+    /// entirely — that is the whole reason they exist alongside `CVT.W`/`CVT.L`,
+    /// which do consult it. Passing the live `RM` here would make all four
+    /// behave identically whenever `RM` happened to match, and the difference
+    /// would only show up under a non-default mode.
+    fn fp_to_integer(
+        &self,
+        fmt: u8,
+        funct: u8,
+        fs: u8,
+        fr: bool,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu::{self, Rounding};
+        let mode = match funct & 0o3 {
+            0 => Rounding::Nearest,
+            1 => Rounding::TowardZero,
+            2 => Rounding::TowardPlusInf,
+            _ => Rounding::TowardMinusInf,
+        };
+        // The source is widened to `f64` first, which is EXACT for an `f32`, so
+        // no rounding happens before the one the instruction asks for.
+        let v = self.fp_source_as_f64(fmt, fs, fr);
+        // funct 8..=11 target `.L`, 12..=15 target `.W`.
+        if funct < 0o14 {
+            let out = fpu::to_i64(v, mode);
+            #[allow(clippy::cast_sign_loss)] // a bit pattern, not a magnitude
+            (FpCommit::Double(out.value as u64), out.flags, false)
+        } else {
+            let out = fpu::to_i32(v, mode);
+            #[allow(clippy::cast_sign_loss)] // a bit pattern, not a magnitude
+            (FpCommit::Single(out.value as u32), out.flags, false)
+        }
+    }
+
+    /// `CVT.S`/`CVT.D`/`CVT.W`/`CVT.L`, from any source format.
+    fn fp_convert(
+        &self,
+        fmt: u8,
+        funct: u8,
+        fs: u8,
+        fr: bool,
+        mode: crate::fpu::Rounding,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu;
+        match funct {
+            // To single.
+            0o40 => match fmt {
+                0o21 => {
+                    let out = fpu::cvt_s_d(f64::from_bits(self.fpr.read_d(fs, fr)));
+                    (FpCommit::Single(out.value.to_bits()), out.flags, false)
+                }
+                #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
+                0o24 => {
+                    let out = fpu::cvt_s_w(self.fpr.read_s(fs) as i32);
+                    (FpCommit::Single(out.value.to_bits()), out.flags, false)
+                }
+                // From `.L`, which the VR4300 restricts: bits 63:55 must be all
+                // zeroes or all ones (UM §7.5.2). Outside that it raises
+                // Unimplemented rather than converting, and there is no defined
+                // result -- so the commit value is a placeholder the trap path
+                // discards.
+                #[allow(clippy::cast_possible_wrap)]
+                _ => fpu::cvt_s_l(self.fpr.read_d(fs, fr) as i64).map_or(
+                    // No defined result when the restriction is violated, so
+                    // the value is a placeholder the trap path discards.
+                    (FpCommit::Single(0), fpu::Flags::NONE, true),
+                    |out| (FpCommit::Single(out.value.to_bits()), out.flags, false),
+                ),
+            },
+            // To double.
+            0o41 => match fmt {
+                0o20 => {
+                    let out = fpu::cvt_d_s(f32::from_bits(self.fpr.read_s(fs)));
+                    (FpCommit::Double(out.value.to_bits()), out.flags, false)
+                }
+                #[allow(clippy::cast_possible_wrap)]
+                0o24 => {
+                    let out = fpu::cvt_d_w(self.fpr.read_s(fs) as i32);
+                    (FpCommit::Double(out.value.to_bits()), out.flags, false)
+                }
+                #[allow(clippy::cast_possible_wrap)]
+                _ => fpu::cvt_d_l(self.fpr.read_d(fs, fr) as i64).map_or(
+                    // No defined result when the restriction is violated, so
+                    // the value is a placeholder the trap path discards.
+                    (FpCommit::Double(0), fpu::Flags::NONE, true),
+                    |out| (FpCommit::Double(out.value.to_bits()), out.flags, false),
+                ),
+            },
+            // To word / to long, both honouring `FCSR.RM` -- which is what
+            // separates them from the fixed-mode family above.
+            0o44 => {
+                let out = fpu::to_i32(self.fp_source_as_f64(fmt, fs, fr), mode);
+                #[allow(clippy::cast_sign_loss)]
+                (FpCommit::Single(out.value as u32), out.flags, false)
+            }
+            _ => {
+                let out = fpu::to_i64(self.fp_source_as_f64(fmt, fs, fr), mode);
+                #[allow(clippy::cast_sign_loss)]
+                (FpCommit::Double(out.value as u64), out.flags, false)
+            }
+        }
+    }
+
+    /// `C.cond.fmt` — writes `FCSR.C`, never an FPR.
+    fn fp_compare(
+        &self,
+        fmt: u8,
+        cond: u8,
+        ft: u8,
+        fs: u8,
+        fr: bool,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu;
+        let out = if fmt == 0o20 {
+            fpu::compare_s(
+                f32::from_bits(self.fpr.read_s(fs)),
+                f32::from_bits(self.fpr.read_s(ft)),
+                cond,
+            )
+        } else {
+            fpu::compare_d(
+                f64::from_bits(self.fpr.read_d(fs, fr)),
+                f64::from_bits(self.fpr.read_d(ft, fr)),
+                cond,
+            )
+        };
+        (FpCommit::Condition(out.value), out.flags, false)
+    }
+
+    /// Read `fs` in `fmt` and widen to `f64`.
+    ///
+    /// `f32` to `f64` is exact, so a `.S` source loses nothing on the way in and
+    /// the only rounding is the one the instruction performs.
+    fn fp_source_as_f64(&self, fmt: u8, fs: u8, fr: bool) -> f64 {
+        if fmt == 0o20 {
+            f64::from(f32::from_bits(self.fpr.read_s(fs)))
+        } else {
+            f64::from_bits(self.fpr.read_d(fs, fr))
+        }
     }
 }
 
@@ -4009,6 +4223,155 @@ mod tests {
             p.cop1.fcsr() & CAUSE_INEXACT,
             0,
             "and must not have cleared the ADD.S's Cause"
+        );
+    }
+
+    /// **A later COP1 operation clears a stale `Cause.E` (bit 17).**
+    ///
+    /// `Cause` is bits **17:12** and is replaced wholesale by each operation.
+    /// The mask here originally covered only 16:12, so the unimplemented-
+    /// operation bit — which has no `Enable` and no sticky `Flags` twin, and so
+    /// is only ever cleared by that mask — stayed set forever once raised.
+    /// Software reading `FCSR` after a perfectly good conversion would still
+    /// see the previous failure.
+    ///
+    /// Found by a review bot, not by this suite, which had no case that raised
+    /// bit 17 and then ran another COP1 instruction.
+    #[test]
+    fn a_later_operation_clears_a_stale_unimplemented_cause() {
+        use crate::cop0::reg;
+        /// `ADD.S $f4, $f0, $f2` — an ordinary, entirely successful operation.
+        const ADD_S: u32 = 0x4602_0100;
+        /// `FCSR.Cause.E`, bit 17.
+        const CAUSE_E: u32 = 1 << 17;
+
+        let mut bus = Ram::new(alloc::vec![ADD_S]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        // Pre-set the bit, as a previous unimplemented operation would have.
+        p.cop1.ctc1(31, CAUSE_E);
+        p.fpr.write_s(0, 1.0f32.to_bits());
+        p.fpr.write_s(2, 2.0f32.to_bits());
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.fpr.read_s(4), 3.0f32.to_bits(), "the ADD.S ran");
+        assert_eq!(
+            p.cop1.fcsr() & CAUSE_E,
+            0,
+            "a successful operation must clear the whole Cause field"
+        );
+    }
+
+    /// `C.cond.fmt` writes `FCSR.C` and **no FPR at all**.
+    ///
+    /// Both halves matter. A compare that also wrote `fd` would corrupt a
+    /// register the program never named, and one that computed the right
+    /// condition without storing it leaves every dependent branch wrong.
+    #[test]
+    fn a_compare_writes_the_fcsr_condition_and_leaves_the_registers_alone() {
+        use crate::cop0::reg;
+        /// `FCSR.C`, bit 23.
+        const FCSR_C: u32 = 1 << 23;
+        /// `C.EQ.S $f0, $f2` — fmt 16, funct 0o62 (cond 2 = EQ).
+        const C_EQ_S: u32 = (0o21 << 26) | (0o20 << 21) | (2 << 16) | 0o62;
+
+        for (a, b, want) in [(1.0f32, 1.0f32, true), (1.0, 2.0, false)] {
+            let mut bus = Ram::new(alloc::vec![C_EQ_S]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            // Start with the condition at the OPPOSITE of the expected result,
+            // so "wrote the right value" is distinguishable from "left it".
+            p.cop1.ctc1(31, if want { 0 } else { FCSR_C });
+            p.fpr.write_s(0, a.to_bits());
+            p.fpr.write_s(2, b.to_bits());
+            p.fpr.write_raw(4, 0xDEAD_BEEF_1122_3344);
+
+            let mut pc = KSEG0_PROG;
+            for _ in 0..16 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(p.cop1.fcsr() & FCSR_C != 0, want, "{a} == {b}");
+            assert_eq!(
+                p.fpr.read_raw(4),
+                0xDEAD_BEEF_1122_3344,
+                "a compare must not write an FPR"
+            );
+        }
+    }
+
+    /// **`TRUNC.W.S` takes its rounding mode from the OPCODE, not `FCSR.RM`.**
+    ///
+    /// This is the entire difference between the `ROUND`/`TRUNC`/`CEIL`/`FLOOR`
+    /// family and `CVT.W`/`CVT.L`, and it is invisible whenever `RM` happens to
+    /// agree with the opcode. So `FCSR.RM` is set to round-to-nearest and the
+    /// input chosen where nearest and truncate disagree: `-1.5` truncates to
+    /// `-1` and rounds to `-2`.
+    ///
+    /// `CVT.W.S` on the same input under the same `FCSR` must give `-2`,
+    /// proving the two families really are wired differently rather than both
+    /// happening to truncate.
+    #[test]
+    fn the_fixed_mode_conversions_ignore_fcsr_rm_and_cvt_w_honours_it() {
+        use crate::cop0::reg;
+        /// `TRUNC.W.S $f4, $f0` — fmt 16, `fs` 0 (the zero shift is elided),
+        /// `fd` 4, funct 0o15.
+        const TRUNC_W_S: u32 = (0o21 << 26) | (0o20 << 21) | (4 << 6) | 0o15;
+        /// `CVT.W.S $f4, $f0` — fmt 16, `fs` 0, `fd` 4, funct 0o44.
+        const CVT_W_S: u32 = (0o21 << 26) | (0o20 << 21) | (4 << 6) | 0o44;
+
+        for (word, want) in [(TRUNC_W_S, -1i32), (CVT_W_S, -2)] {
+            let mut bus = Ram::new(alloc::vec![word]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.cop1.ctc1(31, 0); // RM = 0, round to nearest even
+            p.fpr.write_s(0, (-1.5f32).to_bits());
+
+            let mut pc = KSEG0_PROG;
+            for _ in 0..16 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            #[allow(clippy::cast_possible_wrap)] // reading the word back as signed
+            let got = p.fpr.read_s(4) as i32;
+            assert_eq!(got, want, "instruction {word:#010X} on -1.5");
+        }
+    }
+
+    /// `CVT.S.W` reads its source as a **32-bit integer**, which is a different
+    /// format carried in the same `fmt` field.
+    ///
+    /// A decoder that admits only formats 16/17 leaves every integer-to-float
+    /// conversion a silent no-op, and `fd` keeps whatever it had — which looks
+    /// exactly like a plausible float.
+    #[test]
+    fn cvt_s_w_converts_an_integer_source() {
+        use crate::cop0::reg;
+        /// `CVT.S.W $f4, $f0` — fmt 20 (`.W`), `fs` 0, `fd` 4, funct 0o40.
+        const CVT_S_W: u32 = (0o21 << 26) | (0o24 << 21) | (4 << 6) | 0o40;
+
+        let mut bus = Ram::new(alloc::vec![CVT_S_W]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        p.fpr.write_s(0, 12345u32);
+        p.fpr.write_s(4, 0x1122_3344);
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        // Compared as BITS, not as a float: 12345.0 is exactly representable,
+        // so this is the stricter check and it also catches a wrong-signed
+        // zero or a NaN payload that float equality would accept.
+        assert_eq!(
+            p.fpr.read_s(4),
+            12345.0f32.to_bits(),
+            "the integer source must be converted, not reinterpreted"
         );
     }
 

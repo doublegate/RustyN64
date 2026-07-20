@@ -62,8 +62,9 @@ Architecture (the load-bearing facts — read `docs/architecture.md`):
 **Phase 1 in progress; tagged release still v0.1.0.** The **VR4300 executes instructions**: the
 canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR 0007), the MIPS III integer
 set, COP0, the TLB + micro-ITLB, the exception model, interrupts, `CACHE`, COP1 (control,
-register file, `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, and enabled FP traps), and **PI DMA**
-— the last pulled forward from Phase 5 because n64-systemtest loads its own ELF through it.
+register file, `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the compares, the conversions and
+enabled FP traps), and **PI DMA** — the last pulled forward from Phase 5 because n64-systemtest
+loads its own ELF through it.
 
 FP arithmetic runs on a **soft-float core** (`crates/rustyn64-cpu/src/softfloat.rs`), not on
 Rust's `f32`/`f64` operators. That is not gratuitous: the native operators discard the exact
@@ -76,10 +77,11 @@ the VR4300's refusal to produce subnormals as a separate layer.
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**Phase 1's exit criterion is not met**: n64-systemtest reports **2,682 failing assertions**
+**Phase 1's exit criterion is not met**: n64-systemtest reports **1,098 failing assertions**
 (it does now run its whole corpus and report). Do **not** tag v0.2.0 until it is `Failed: 0` —
 the criterion is an oracle number, and that is the point of it. The dominant remaining block is
-the still-undecoded COP1 funct space (`C.cond.fmt` and the conversions), roughly 1,700 of them.
+the unmaskable **unimplemented-operation** cause (bit 17), which the VR4300 raises for subnormal
+operands/results and for a quiet-NaN operand to an arithmetic operation.
 
 ## Where things live
 
@@ -289,6 +291,11 @@ in this repo, which is worth fixing even when the suggested wording is not.
   `docs/accuracy-ledger.md` with its provenance. Adjusting one until a ROM passes makes every
   later timing result unfalsifiable. Currently unmeasured: `M` (memory access time), the
   exception-epilogue cost, CP0I, RDRAM bank-state costs.
+- **NaN classification on the VR4300 is INVERTED from IEEE-754:2008**: significand MSB **set**
+  means *signalling*, so `f32::NAN` (`0x7FC0_0000`) raises Invalid here. This looks like a bug on
+  every reading and is not — it is the legacy MIPS convention, corroborated by the processor's own
+  default NaN result (`0x7FBF_FFFF`, MSB clear) being quiet only under it. Never "correct" it back
+  to IEEE; see ledger **C-12** and the test that asserts `is_snan_f32(f32::NAN)` on purpose.
 - Say "master clock" only with its rate. The sources use **MasterClock = 62.5 MHz**; this
   project's master tick is **187.5 MHz**; ADR 0001 used it for 93.75 MHz. See `docs/glossary.md`.
 - `unsafe` is allowed only in the frontend and FFI. Enforced: every chip crate and `-core` carry

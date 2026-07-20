@@ -102,32 +102,38 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
-registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, and `ABS`/`MOV`/`NEG`
-decode and execute. Two things do **not** work, and neither is visible
+registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the
+compares and the conversions decode and execute. Two things do **not** work, and neither is visible
 from a green `cargo test`:
 
-- **Most of the COP1 funct space is still undecoded**, and this is now the
-  dominant blocker by a wide margin: `C.cond.fmt` (the 16 compares) and the
-  `CVT`/`ROUND`/`TRUNC`/`FLOOR`/`CEIL` conversions are implemented in `fpu.rs`
-  but never reached, because decode admits only `funct 0..=3` and `5..=7`.
-  Together they are roughly **1,700** of the 2,682 remaining failures.
-- **The unmaskable unimplemented-operation cause (bit 17) is not produced.** The
-  VR4300 raises it for subnormal operands and results; this FPU computes them
-  normally instead. Every surviving `ADD.S` failure is one of these, or an
-  `FS = 1` flush-to-zero case.
+- **The unmaskable unimplemented-operation cause (bit 17) is not produced**, and
+  it is now the dominant blocker. The VR4300 raises it for subnormal operands
+  and results, and for an IEEE-signalling / VR4300-quiet NaN operand (MSB
+  clear) to an arithmetic operation;
+  this FPU computes those normally instead. Nearly every surviving COP1 failure
+  is one of these or an `FS = 1` flush-to-zero case.
+- **`SQRT` (funct 4) is still undecoded** — there is no square-root
+  implementation, so it stays `Cop1Unimplemented` rather than becoming a wrong
+  result.
 
 What **is** done: the arithmetic runs on a soft-float core
 (`crates/rustyn64-cpu/src/softfloat.rs`) that produces exact IEEE flags and
 honours all four `FCSR.RM` modes, verified bit-for-bit against Rust's native
-operators over 100,000 cases; and enabled FP traps raise
-`Exception::FloatingPoint`, leave `fd` unwritten, do not accumulate the sticky
-`Flags`, and do not retire.
+operators over 100,000 cases; enabled FP traps raise `Exception::FloatingPoint`,
+leave `fd` unwritten, do not accumulate the sticky `Flags`, and do not retire;
+and the compares and conversions decode and execute — **all sixteen
+`C.cond.fmt` tests pass outright**. NaN classification follows the VR4300's
+inverted convention (ledger C-12), not IEEE-754:2008.
 
-`SQRT` (funct 4), the conversions and the `C.cond.fmt` compares are implemented
-in `fpu.rs` but **not yet decoded**, so they remain unreachable. `ABS`, `MOV`
-and `NEG` were in that list until they were found to be the cause of ~100
-failures — a *decoded-but-no-op* instruction is invisible to `cargo test`, and
-`MOV` in particular is emitted by the compiler for every FP call boundary.
+**`SQRT` (funct 4) is the only COP1 operation that is neither decoded nor
+implemented**, so it is not an instance of the pattern below. The conversions
+and the `C.cond.fmt` compares *were* — implemented in `fpu.rs` and unreachable —
+until this sprint, and `ABS`, `MOV` and `NEG` before them; `MOV` alone cost
+~100 failures, because a
+*decoded-but-no-op* instruction is invisible to `cargo test` and the compiler
+emits one at every FP call boundary. That pattern has now cost two separate
+investigations; when adding a decode arm, enumerate the neighbouring funct
+space rather than only the encoding that prompted the change.
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
@@ -171,7 +177,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,682 failing** — next: the undecoded COP1 funct space (compares + conversions, ~1,700 of them) |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 1,098 failing** — next: the unmaskable unimplemented-operation cause (subnormals and quiet-NaN operands) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

@@ -9,6 +9,33 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the COP1 compares and conversions, and a corrected NaN convention
+
+`C.cond.fmt`, the `CVT` family, and `ROUND`/`TRUNC`/`CEIL`/`FLOOR` to `.W`/`.L` now decode and
+execute. They were implemented in `fpu.rs` all along but unreachable: decode admitted only
+`funct 0..=3` and `5..=7` in the `.S`/`.D` formats, and never admitted the **integer** source
+formats `.W`/`.L` at all — so every integer-to-float conversion was a silent no-op too.
+
+`ROUND`/`TRUNC`/`CEIL`/`FLOOR` take their rounding mode from the **opcode** and ignore `FCSR.RM`;
+`CVT.W`/`CVT.L` consult it. That is the entire difference between the two families, and getting it
+wrong would be invisible whenever `RM` happened to match.
+
+**n64-systemtest: 2,682 → 1,468.**
+
+### Fixed — the VR4300 NaN convention is inverted from IEEE-754:2008
+
+A NaN is **signalling** when its significand's MSB is **set** — the legacy MIPS convention, the
+opposite of IEEE-754:2008. `0x7FC0_0000`, which Rust produces as `f32::NAN` and everything else
+calls quiet, raises Invalid on this processor.
+
+Established from the oracle's own expectations, which name their constants the IEEE way and then
+assert the opposite behaviour; corroborated independently by the fact that the VR4300's default
+NaN *result* is `0x7FBF_FFFF` (MSB clear), which under IEEE would be a signalling NaN that
+re-traps on first use, and under this convention is an ordinary quiet one.
+
+**n64-systemtest: 1,468 → 1,098**, taking the compare block from 42 failures apiece to **zero
+across all sixteen tests**. Accuracy ledger **C-12**.
+
 ### Added — soft-float arithmetic with exact IEEE flags and all four rounding modes
 
 New `crates/rustyn64-cpu/src/softfloat.rs`. Both formats and all four arithmetic operations are

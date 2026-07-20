@@ -642,10 +642,60 @@ plausible-looking one-liners with no citation.
 **What remains, and it is not flags.** Every surviving `ADD.S` failure is a
 subnormal case: either `Err(())` — the suite expecting the unmaskable
 unimplemented-operation cause — or an `FS = 1` flush-to-zero case whose result
-is rounding-mode dependent. The normal range passes. The dominant remaining
-block across the whole suite is the still-undecoded COP1 funct space:
-`C.cond.fmt` (16 tests × 84 assertions) and the `CVT`/`ROUND`/`TRUNC`/`FLOOR`/
-`CEIL` conversions, together roughly 1,700 of the 2,682.
+is rounding-mode dependent. The normal range passes.
+
+**Where things stood at the time of this entry** (kept in past tense, because a
+ledger read top-to-bottom should show what was believed *when* each entry was
+written, not be silently back-edited): the dominant remaining block was the
+still-undecoded COP1 funct space — `C.cond.fmt` and the `CVT`/`ROUND`/`TRUNC`/
+`FLOOR`/`CEIL` conversions, roughly 1,700 of the 2,682. Both are now wired and
+the compares pass outright; see **C-12** below, and `docs/STATUS.md` for the
+current count.
+
+### C-12 — the VR4300's NaN convention is inverted from IEEE-754:2008
+
+**Claim.** A NaN is **signalling** when its significand's most significant bit
+is **set**, and quiet when clear — the *legacy MIPS* convention, the opposite of
+IEEE-754:2008 and of every modern language. `0x7FC0_0000`, which Rust produces
+as `f32::NAN` and which everything else calls quiet, raises Invalid on this
+processor.
+
+**How it was established.** From n64-systemtest's own expectations, which name
+their constants by the IEEE convention and then assert the opposite behaviour.
+For a *non-signalling* compare (`C.EQ`, `C.F`, …) it expects:
+
+| Operand | IEEE name | Expected | Implies |
+| --- | --- | --- | --- |
+| `0x7FC0_0000` (MSB set) | "quiet" | **Invalid raised** | signalling here |
+| `0x7FBF_FFFF` (MSB clear) | "signalling" | no flags | quiet here |
+
+The *signalling* compare forms (`C.SF`, `C.SEQ`, …) raise Invalid for both,
+which is the ordinary IEEE rule for those forms and therefore does **not**
+distinguish the conventions — checking only those would have left the question
+open. It is the non-signalling forms that settle it.
+
+**The corroboration that makes it more than a curve fit.** The processor's own
+default NaN result is `0x7FBF_FFFF` / `0x7FF7_FFFF_FFFF_FFFF`, MSB **clear**.
+Read as IEEE, that is a processor whose invalid-operation result is a
+*signalling* NaN — which would re-trap the instant anything touched it. Read
+under this convention it is exactly what it must be: quiet. Two independent
+facts, from different tests, agreeing on the same inversion.
+
+**Effect:** n64-systemtest 1,468 → **1,098**, and it took the compare block from
+42 failures apiece to **zero across all sixteen**.
+
+**Where it bites.** `fpu::is_snan_{f32,f64}` and `softfloat::unpack`. Both now
+name the bit for its *position* rather than calling it a "quiet bit", because a
+constant named `quiet_bit` that is tested for signalling is a trap for the next
+reader. The tests name their patterns `vr_snan`/`vr_qnan` for the same reason,
+and one asserts `is_snan_f32(f32::NAN)` explicitly — that is the case most
+likely to be "fixed" back to IEEE by someone who has not read this entry.
+
+**Still open, and adjacent:** an **IEEE-signalling / VR4300-quiet** NaN operand
+(MSB clear) to an arithmetic operation is expected to raise **unimplemented
+operation**, not nothing — the VR4300 apparently cannot propagate one in hardware. That is part
+of the unimplemented-operation work below rather than of this entry, and it is
+why the arithmetic tests still fail on NaN inputs.
 
 ## 5. Deliberate deviations from hardware
 
