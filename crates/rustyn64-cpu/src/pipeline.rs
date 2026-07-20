@@ -37,14 +37,14 @@
 //! the parts that cannot be retrofitted later without rewriting every consumer.
 
 use crate::Bus;
-use crate::addr::translate;
 use crate::alu::HiLo;
 use crate::cop0::Cop0;
 use crate::decode::{Decoded, decode};
 use crate::exception;
-use crate::exec::{Cop0Access, MemOp, WriteBack, execute};
+use crate::exec::{Cop0Access, MemOp, TlbOp, WriteBack, execute};
 use crate::mem;
 use crate::regs::Regs;
+use crate::tlb::Tlb;
 
 /// The five pipeline stages, in hardware order (UM §4.1, Figure 4-1).
 ///
@@ -94,6 +94,21 @@ pub enum Exception {
     Trap,
     /// A reserved / unimplemented opcode.
     ReservedInstruction,
+    /// A TLB refill — no entry matched. Takes the **refill** vector.
+    TlbRefill {
+        /// The faulting access was a store (`TLBS` rather than `TLBL`).
+        store: bool,
+    },
+    /// A TLB entry matched but was invalid. Takes the **general** vector, with
+    /// the same `ExcCode` as a refill — the vector is the only difference, which
+    /// is why they are separate variants rather than one with a flag nobody
+    /// reads.
+    TlbInvalid {
+        /// The faulting access was a store.
+        store: bool,
+    },
+    /// A store to a valid but non-writable page.
+    TlbModified,
 }
 
 /// The documented interlocks (UM Table 4-3).
@@ -270,6 +285,14 @@ pub struct Pipeline {
     /// flag — and by the end of the cycle the reverse cascade has moved every
     /// latch, so the faulting instruction is no longer where it was.
     pending: Option<Pending>,
+    /// The virtual address of the access that faulted this cycle.
+    ///
+    /// Recorded where the fault is *detected*, because `BadVAddr` needs the
+    /// address and `Self::access` reports only which exception. Reconstructing
+    /// it at dispatch time is impossible — the `MemOp` has been consumed.
+    fault_vaddr: u64,
+    /// The joint TLB and its instruction micro-TLB (T-12-004).
+    pub tlb: Tlb,
     /// The COP0 register file (T-12-001).
     ///
     /// Public because exception dispatch, the TLB and the interrupt path all
@@ -325,6 +348,8 @@ impl Pipeline {
             flush_pending: false,
             retired: 0,
             pending: None,
+            fault_vaddr: 0,
+            tlb: Tlb::new(),
             cop0: Cop0::new(),
             ll_bit: false,
         }
@@ -512,6 +537,33 @@ impl Pipeline {
         if self.dc_wb.occupied && self.dc_wb.abort.is_none() {
             // The COP0 WRITE lands here (UM §4.6.9). A `Read` in this latch was
             // already performed in DC and left its value in `write_back`.
+            // The TLB instructions land in WB, with the COP0 write: they are
+            // CP0 operations and `TLBR`/`TLBP` write COP0 registers, so doing
+            // them earlier would let a following `MFC0` read the result a cycle
+            // before hardware produces it.
+            if let Some(Cop0Access::Tlb(op)) = self.dc_wb.cop0 {
+                match op {
+                    TlbOp::Read => {
+                        let i = (self.cop0.read(crate::cop0::reg::INDEX) & 0x3F) as usize;
+                        self.tlb.read_entry(i, &mut self.cop0);
+                    }
+                    TlbOp::WriteIndexed => {
+                        let i = (self.cop0.read(crate::cop0::reg::INDEX) & 0x3F) as usize;
+                        // TLBWI CAN overwrite a wired entry; only TLBWR cannot
+                        // (UM §5.4.4, p. 150). Guarding both is a natural-looking
+                        // mistake that makes wired entries unwritable at all.
+                        self.tlb.write_entry(i, &self.cop0);
+                    }
+                    TlbOp::WriteRandom => {
+                        // `Random` never goes below `Wired`, so the wired entries
+                        // are protected by the counter's range rather than by a
+                        // check here -- which is how hardware does it.
+                        let i = (self.cop0.read(crate::cop0::reg::RANDOM) & 0x3F) as usize;
+                        self.tlb.write_entry(i, &self.cop0);
+                    }
+                    TlbOp::Probe => self.tlb.probe(&mut self.cop0),
+                }
+            }
             if let Some(Cop0Access::Write { dest, value, wide }) = self.dc_wb.cop0 {
                 if wide {
                     self.cop0.dmtc0(dest, value);
@@ -581,7 +633,7 @@ impl Pipeline {
                 // Stamp before the latch move so the abort travels with the
                 // instruction that caused it -- see `abort_from`.
                 Err(exc) => {
-                    self.abort_from(Stage::Dc, exc);
+                    self.abort_with(Stage::Dc, exc, self.fault_vaddr);
                     out = self.ex_dc;
                 }
             }
@@ -651,6 +703,101 @@ impl Pipeline {
         }
     }
 
+    /// Map a TLB fault to the exception it raises.
+    ///
+    /// The `store` flag selects `TLBL` vs `TLBS`; the *variant* selects the
+    /// vector. Both matter and they are independent.
+    const fn tlb_exception(f: crate::tlb::TlbFault, store: bool) -> Exception {
+        match f {
+            crate::tlb::TlbFault::Refill => Exception::TlbRefill { store },
+            crate::tlb::TlbFault::Invalid => Exception::TlbInvalid { store },
+            // Modified only ever arises on a store, so it carries no flag.
+            crate::tlb::TlbFault::Modified => Exception::TlbModified,
+        }
+    }
+
+    /// Translate a data address through the TLB.
+    fn translate_data(&mut self, vaddr: u64, store: bool) -> Result<u32, Exception> {
+        let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
+        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store) {
+            Ok(p) => Ok(p.addr),
+            Err(f) => {
+                self.fault_vaddr = vaddr;
+                Err(Self::tlb_exception(f, store))
+            }
+        }
+    }
+
+    /// The unaligned `LWL`/`LWR`/`LDL`/`LDR`/`SWL`/`SWR`/`SDL`/`SDR` family.
+    ///
+    /// Split out of [`Pipeline::access`] purely for size; the merging rules live
+    /// in [`crate::mem`] and the alignment exemption is by construction — being
+    /// usable at any byte offset is the entire reason these instructions exist.
+    ///
+    /// # Errors
+    ///
+    /// A TLB fault on the container address.
+    fn access_unaligned<B: Bus>(
+        &mut self,
+        bus: &mut B,
+        op: crate::decode::Op,
+        addr: u64,
+        rt: u64,
+        dest: u8,
+    ) -> Result<WriteBack, Exception> {
+        use crate::decode::Op;
+        // The unaligned family splits into loads and stores, and the
+        // TLB check differs: a store must find the `D` bit set.
+        let is_store = matches!(op, Op::Swl | Op::Swr | Op::Sdl | Op::Sdr);
+        let word_addr = self.translate_data(addr & !3, is_store)?;
+        let dword_addr = self.translate_data(addr & !7, is_store)?;
+        let byte4 = addr & 3;
+        let byte8 = addr & 7;
+        Ok(match op {
+            Op::Lwl | Op::Lwr => {
+                let w = bus.read_u32(word_addr);
+                let v = if matches!(op, Op::Lwl) {
+                    mem::lwl(rt, w, byte4)
+                } else {
+                    mem::lwr(rt, w, byte4)
+                };
+                WriteBack::Gpr { dest, value: v }
+            }
+            Op::Ldl | Op::Ldr => {
+                let d = Self::read_width(bus, dword_addr, 8);
+                let v = if matches!(op, Op::Ldl) {
+                    mem::ldl(rt, d, byte8)
+                } else {
+                    mem::ldr(rt, d, byte8)
+                };
+                WriteBack::Gpr { dest, value: v }
+            }
+            Op::Swl | Op::Swr => {
+                let w = bus.read_u32(word_addr);
+                let merged = if matches!(op, Op::Swl) {
+                    mem::swl(rt, w, byte4)
+                } else {
+                    mem::swr(rt, w, byte4)
+                };
+                bus.write_u32(word_addr, merged);
+                WriteBack::None
+            }
+            Op::Sdl | Op::Sdr => {
+                let d = Self::read_width(bus, dword_addr, 8);
+                let merged = if matches!(op, Op::Sdl) {
+                    mem::sdl(rt, d, byte8)
+                } else {
+                    mem::sdr(rt, d, byte8)
+                };
+                Self::write_width(bus, dword_addr, 8, merged);
+                WriteBack::None
+            }
+            // `MemOp::Unaligned` is only ever constructed for the eight
+            // forms above.
+            _ => WriteBack::None,
+        })
+    }
+
     /// Perform a memory access.
     ///
     /// # Errors
@@ -664,9 +811,11 @@ impl Pipeline {
         match op {
             MemOp::Load { kind, addr, dest } => {
                 if !kind.is_aligned(addr) {
+                    self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: false });
                 }
-                let raw = Self::read_width(bus, translate(addr).addr, kind.width());
+                let phys = self.translate_data(addr, false)?;
+                let raw = Self::read_width(bus, phys, kind.width());
                 Ok(WriteBack::Gpr {
                     dest,
                     value: kind.shape(raw),
@@ -674,9 +823,11 @@ impl Pipeline {
             }
             MemOp::Store { kind, addr, value } => {
                 if !kind.is_aligned(addr) {
+                    self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: true });
                 }
-                Self::write_width(bus, translate(addr).addr, kind.width(), value);
+                let phys = self.translate_data(addr, true)?;
+                Self::write_width(bus, phys, kind.width(), value);
                 Ok(WriteBack::None)
             }
             // Load linked: an ordinary aligned load that also arms the link.
@@ -686,9 +837,10 @@ impl Pipeline {
                     // not zero, an address error exception takes place" (UM §16
                     // p. 453) -- and the link is NOT armed, because the
                     // instruction did not complete.
+                    self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: false });
                 }
-                let phys = translate(addr).addr;
+                let phys = self.translate_data(addr, false)?;
                 let raw = Self::read_width(bus, phys, kind.width());
                 self.ll_bit = true;
                 // "the value with the high-order four bits of the physical
@@ -714,11 +866,13 @@ impl Pipeline {
                     // the exception takes precedence" (UM §16 p. 487) -- so the
                     // address check runs before the link bit is even consulted,
                     // and `dest` is left alone.
+                    self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: true });
                 }
                 let stored = self.ll_bit;
                 if stored {
-                    Self::write_width(bus, translate(addr).addr, kind.width(), value);
+                    let phys = self.translate_data(addr, true)?;
+                    Self::write_width(bus, phys, kind.width(), value);
                 }
                 // Written whether or not the store happened. Note the link bit
                 // is deliberately NOT cleared here -- see `Pipeline::ll_bit`.
@@ -728,56 +882,10 @@ impl Pipeline {
                 })
             }
             // The unaligned family accesses the ALIGNED container holding `addr`
-            // and merges, so it can never raise an address error.
+            // and merges, so it can never raise an address error -- but it CAN
+            // still raise a TLB fault, which is why it is fallible.
             MemOp::Unaligned { op, addr, rt, dest } => {
-                use crate::decode::Op;
-                let word_addr = translate(addr & !3).addr;
-                let dword_addr = translate(addr & !7).addr;
-                let byte4 = addr & 3;
-                let byte8 = addr & 7;
-                Ok(match op {
-                    Op::Lwl | Op::Lwr => {
-                        let w = bus.read_u32(word_addr);
-                        let v = if matches!(op, Op::Lwl) {
-                            mem::lwl(rt, w, byte4)
-                        } else {
-                            mem::lwr(rt, w, byte4)
-                        };
-                        WriteBack::Gpr { dest, value: v }
-                    }
-                    Op::Ldl | Op::Ldr => {
-                        let d = Self::read_width(bus, dword_addr, 8);
-                        let v = if matches!(op, Op::Ldl) {
-                            mem::ldl(rt, d, byte8)
-                        } else {
-                            mem::ldr(rt, d, byte8)
-                        };
-                        WriteBack::Gpr { dest, value: v }
-                    }
-                    Op::Swl | Op::Swr => {
-                        let w = bus.read_u32(word_addr);
-                        let merged = if matches!(op, Op::Swl) {
-                            mem::swl(rt, w, byte4)
-                        } else {
-                            mem::swr(rt, w, byte4)
-                        };
-                        bus.write_u32(word_addr, merged);
-                        WriteBack::None
-                    }
-                    Op::Sdl | Op::Sdr => {
-                        let d = Self::read_width(bus, dword_addr, 8);
-                        let merged = if matches!(op, Op::Sdl) {
-                            mem::sdl(rt, d, byte8)
-                        } else {
-                            mem::sdr(rt, d, byte8)
-                        };
-                        Self::write_width(bus, dword_addr, 8, merged);
-                        WriteBack::None
-                    }
-                    // `MemOp::Unaligned` is only ever constructed for the eight
-                    // forms above.
-                    _ => WriteBack::None,
-                })
+                self.access_unaligned(bus, op, addr, rt, dest)
             }
         }
     }
@@ -999,7 +1107,38 @@ impl Pipeline {
         // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
         // Every address handed to the Bus is PHYSICAL (`docs/cpu.md`); the
         // segment map is applied here, in the CPU, not by the Bus.
-        let word = bus.read_u32(translate(pc).addr);
+        // Instruction fetch goes through the micro-ITLB in front of the JTLB
+        // (UM §1.5.1). A micro-TLB miss is a STALL of 3 PCycles (UM §4.6.2); a
+        // JTLB miss is an exception. Only the mapped segments involve either --
+        // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
+        let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
+        let phys = match crate::addr::segment(pc) {
+            crate::addr::Segment::Direct { addr, .. } => addr,
+            crate::addr::Segment::Mapped => {
+                if !self.tlb.itlb_probe(pc, asid) {
+                    self.tlb.itlb_fill(pc, asid);
+                    self.stall_for(crate::tlb::ITLB_MISS_PCYCLES, Interlock::Itm);
+                }
+                match self.tlb.lookup(pc, asid, false) {
+                    Ok(t) => t.addr,
+                    Err(f) => {
+                        // An instruction fetch is a load, so TLBL never TLBS.
+                        let exc = Self::tlb_exception(f, false);
+                        self.ic_rf = Latch {
+                            cop0: None,
+                            occupied: true,
+                            pc,
+                            in_delay_slot,
+                            abort: Some(exc),
+                            ..Latch::default()
+                        };
+                        self.abort_with(Stage::Ic, exc, pc);
+                        return;
+                    }
+                }
+            }
+        };
+        let word = bus.read_u32(phys);
         // Decode here rather than at RF: a branch must be decoded before the
         // NEXT fetch, so that fetch can be marked as its delay slot.
         //
@@ -1344,7 +1483,7 @@ mod tests {
         let mut bus = Rom(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0u64;
+        let mut pc = 0x8000_0000u64;
 
         // Generous budget: 6 instructions, 5 stages deep, plus the MULT stall.
         for _ in 0..64 {
@@ -1380,7 +1519,7 @@ mod tests {
         let mut bus = Ones;
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0u64;
+        let mut pc = 0x8000_0000u64;
         for _ in 0..32 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1414,7 +1553,7 @@ mod tests {
         let mut bus = Overflowing;
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0u64;
+        let mut pc = 0x8000_0000u64;
         for _ in 0..48 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1549,24 +1688,24 @@ mod tests {
     /// width, with the sign/zero-extension rules applied.
     #[test]
     fn stores_and_loads_round_trip_through_memory() {
-        //   ADDIU $1, $0, 0x100     ; base
+        //   LUI   $1, 0x8000        ; KSEG0 base
         //   ADDIU $2, $0, -2        ; value = 0xFFFF_FFFF_FFFF_FFFE
-        //   SW    $2, 0($1)
-        //   LW    $3, 0($1)         ; sign-extended  -> 0xFFFF_FFFF_FFFF_FFFE
-        //   LWU   $4, 0($1)         ; zero-extended  -> 0x0000_0000_FFFF_FFFE
-        //   LBU   $5, 0($1)         ; big-endian MSB -> 0xFF
+        //   SW    $2, 0x100($1)
+        //   LW    $3, 0x100($1)     ; sign-extended  -> 0xFFFF_FFFF_FFFF_FFFE
+        //   LWU   $4, 0x100($1)     ; zero-extended  -> 0x0000_0000_FFFF_FFFE
+        //   LBU   $5, 0x100($1)     ; big-endian MSB -> 0xFF
         let prog = alloc::vec![
-            (0o11 << 26) | (1 << 16) | 0x100,
+            lui_kseg0(1),
             (0o11 << 26) | (2 << 16) | 0xFFFE,
-            ld_st(0o53, 1, 2, 0),
-            ld_st(0o43, 1, 3, 0),
-            ld_st(0o47, 1, 4, 0),
-            ld_st(0o44, 1, 5, 0),
+            ld_st(0o53, 1, 2, 0x100),
+            ld_st(0o43, 1, 3, 0x100),
+            ld_st(0o47, 1, 4, 0x100),
+            ld_st(0o44, 1, 5, 0x100),
         ];
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..80 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1585,7 +1724,7 @@ mod tests {
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..40 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1598,22 +1737,22 @@ mod tests {
     /// the loaded value.
     #[test]
     fn a_load_followed_by_its_use_interlocks_and_still_reads_the_value() {
-        //   ADDIU $1, $0, 0x100
+        //   LUI   $1, 0x8000     ; KSEG0 base -- unmapped, so no TLB entry needed
         //   ADDIU $2, $0, 0x55
-        //   SW    $2, 0($1)
-        //   LW    $3, 0($1)      ; load
+        //   SW    $2, 0x100($1)
+        //   LW    $3, 0x100($1)  ; load
         //   ADDIU $4, $3, 1      ; uses $3 immediately -> LDI stall
         let prog = alloc::vec![
-            (0o11 << 26) | (1 << 16) | 0x100,
+            lui_kseg0(1),
             (0o11 << 26) | (2 << 16) | 0x55,
-            ld_st(0o53, 1, 2, 0),
-            ld_st(0o43, 1, 3, 0),
+            ld_st(0o53, 1, 2, 0x100),
+            ld_st(0o43, 1, 3, 0x100),
             (0o11 << 26) | (3 << 21) | (4 << 16) | 1,
         ];
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut saw_ldi = false;
         for _ in 0..80 {
             p.advance(&mut bus, &mut regs, &mut pc);
@@ -1634,9 +1773,9 @@ mod tests {
         //   LWL   $3, 1($1)
         //   LWR   $3, 4($1)
         let prog = alloc::vec![
-            (0o11 << 26) | (1 << 16) | 0x100,
-            ld_st(0o42, 1, 3, 1),
-            ld_st(0o46, 1, 3, 4),
+            lui_kseg0(1),
+            ld_st(0o42, 1, 3, 0x101),
+            ld_st(0o46, 1, 3, 0x104),
         ];
         let mut bus = Ram::new(prog);
         // Memory at 0x100: 00 11 22 33 44 55 66 77
@@ -1648,7 +1787,7 @@ mod tests {
         }
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..60 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1679,7 +1818,7 @@ mod tests {
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..60 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1705,7 +1844,7 @@ mod tests {
         let mut bus = Ram::new(likely);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..50 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1725,7 +1864,7 @@ mod tests {
         let mut bus = Ram::new(ordinary);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..50 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1757,11 +1896,15 @@ mod tests {
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..80 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(regs.read(31), 0x808, "JAL links PC+8, past the delay slot");
+        assert_eq!(
+            regs.read(31),
+            KSEG0_PROG + 8,
+            "JAL links PC+8, past the delay slot"
+        );
         assert_eq!(regs.read(1), 1, "JAL's delay slot ran");
         assert_eq!(regs.read(3), 3, "JR's delay slot ran");
         assert_eq!(regs.read(2), 2, "JR $31 returned to the linked address");
@@ -1781,7 +1924,7 @@ mod tests {
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut trapped = false;
         for _ in 0..50 {
             p.advance(&mut bus, &mut regs, &mut pc);
@@ -1800,7 +1943,7 @@ mod tests {
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..50 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -1818,7 +1961,7 @@ mod tests {
             let mut bus = Ram::new(alloc::vec![funct]);
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
-            let mut pc = 0x800u64;
+            let mut pc = KSEG0_PROG;
             let mut seen = false;
             for _ in 0..40 {
                 p.advance(&mut bus, &mut regs, &mut pc);
@@ -1858,7 +2001,7 @@ mod tests {
         let mut bus = Ram::new(prog);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
 
         let mut flagged = alloc::vec::Vec::new();
         for _ in 0..8 {
@@ -1869,7 +2012,7 @@ mod tests {
         }
         assert_eq!(
             flagged,
-            alloc::vec![0x808],
+            alloc::vec![KSEG0_PROG + 8],
             "exactly one instruction -- the one after the branch -- must be \
              flagged as a delay slot"
         );
@@ -1901,6 +2044,14 @@ mod tests {
     // --- LL / SC (UM §16 pp. 453, 487; §3.1; §5.4.7) ------------------------
 
     use crate::mem::{LoadKind, StoreKind};
+
+    /// Where [`Ram`] keeps test programs, addressed through **KSEG0**.
+    ///
+    /// KSEG0 is unmapped, so it reaches physical `0x800` without a TLB entry —
+    /// which is how real code runs and, since T-12-004, the only way a test can
+    /// fetch at all without installing a mapping. Fetching from a bare `0x800`
+    /// is a KUSEG address and now correctly raises a TLB refill.
+    const KSEG0_PROG: u64 = 0x8000_0800;
 
     /// A bus that fetches `NOP`s and holds its interrupt line asserted.
     ///
@@ -1938,7 +2089,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x40,
+                    addr: 0x8000_0000 | 0x40,
                     value: 0xDEAD_BEEF,
                     dest: 9,
                 },
@@ -2014,7 +2165,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x40,
+                addr: 0x8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -2026,7 +2177,7 @@ mod tests {
                     &mut bus,
                     MemOp::ConditionalStore {
                         kind: StoreKind::Word,
-                        addr: 0x40,
+                        addr: 0x8000_0000 | 0x40,
                         value: 1,
                         dest: 9,
                     },
@@ -2053,7 +2204,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x42,
+                    addr: 0x8000_0000 | 0x42,
                     value: 1,
                     dest: 9,
                 },
@@ -2077,7 +2228,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::SignedWord,
-                    addr: 0x42,
+                    addr: 0x8000_0000 | 0x42,
                     dest: 8,
                 },
             )
@@ -2102,7 +2253,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::Double,
-                    addr: 0x40,
+                    addr: 0x8000_0000 | 0x40,
                     dest: 8,
                 },
             )
@@ -2119,7 +2270,7 @@ mod tests {
             &mut bus,
             MemOp::ConditionalStore {
                 kind: StoreKind::Double,
-                addr: 0x40,
+                addr: 0x8000_0000 | 0x40,
                 value: u64::MAX,
                 dest: 9,
             },
@@ -2135,6 +2286,15 @@ mod tests {
     /// `rd` = COP0 register.
     const fn cop0_word(rs: u32, rt: u32, rd: u32) -> u32 {
         (0o20 << 26) | (rs << 21) | (rt << 16) | (rd << 11)
+    }
+
+    /// `LUI rt, 0x8000` — put a **KSEG0** base in `rt`.
+    ///
+    /// Data addresses need this for the same reason instruction fetches need
+    /// [`KSEG0_PROG`]: a bare low address is KUSEG, which is TLB-mapped and now
+    /// correctly raises a refill rather than being silently masked.
+    const fn lui_kseg0(rt: u32) -> u32 {
+        (0o17 << 26) | (rt << 16) | 0x8000
     }
 
     /// `ADDIU rt, $0, imm` — the constant-loading prologue these tests share.
@@ -2159,7 +2319,7 @@ mod tests {
         let mut bus = Ram::new(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
 
         for _ in 0..32 {
             p.advance(&mut bus, &mut regs, &mut pc);
@@ -2185,7 +2345,7 @@ mod tests {
         let mut bus = Ram::new(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..24 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2210,7 +2370,7 @@ mod tests {
         // at power-on and latch IP7 -- see accuracy-ledger D-3. Harmless, but it
         // would show up in `Cause` here and obscure what this test is about.
         p.cop0.mtc0(crate::cop0::reg::COMPARE, 0xFFFF);
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..24 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2233,7 +2393,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x40,
+                addr: 0x8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -2266,7 +2426,7 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
 
         // Let the pipeline fill with real instructions.
         for _ in 0..3 {
@@ -2304,7 +2464,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x40,
+                addr: 0x8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -2321,7 +2481,7 @@ mod tests {
 
         let mut regs = Regs::new();
         let mut prog = Ram::new(alloc::vec![word]);
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         for _ in 0..16 {
             p.advance(&mut prog, &mut regs, &mut pc);
         }
@@ -2332,7 +2492,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x40,
+                    addr: 0x8000_0000 | 0x40,
                     value: 0xFFFF,
                     dest: 9,
                 },
@@ -2359,7 +2519,7 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 1 << 1);
         p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
 
         for _ in 0..12 {
             p.advance(&mut bus, &mut regs, &mut pc);
@@ -2389,7 +2549,7 @@ mod tests {
         // BEV=0 so the vector is the RDRAM one, which is what a running game
         // uses; cold reset would otherwise send us to the boot ROM.
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
 
         // Stop AT the dispatch cycle. Running on would be fine architecturally
         // -- the handler starts fetching -- but then `pc` has moved past the
@@ -2405,7 +2565,7 @@ mod tests {
             (p.cop0.read(crate::cop0::reg::CAUSE) >> 2) & 0x1F,
             crate::exception::exc_code::SYS
         );
-        assert_eq!(p.cop0.read(crate::cop0::reg::EPC), 0x800);
+        assert_eq!(p.cop0.read(crate::cop0::reg::EPC), KSEG0_PROG);
         assert_eq!(pc, 0xFFFF_FFFF_8000_0180);
         assert_ne!(
             p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1),
@@ -2424,18 +2584,18 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
 
         for _ in 0..8 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
         let first_epc = p.cop0.read(crate::cop0::reg::EPC);
-        assert_eq!(first_epc, 0x800);
+        assert_eq!(first_epc, KSEG0_PROG);
         assert_ne!(p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1), 0);
 
         // Now run a second SYSCALL while EXL is still set. Point the fetch back
         // at the program so it hits the second word.
-        pc = 0x804;
+        pc = KSEG0_PROG + 4;
         for _ in 0..8 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2485,7 +2645,7 @@ mod tests {
         use crate::cop0::reg;
         let mut p = Pipeline::new();
         let mut regs = Regs::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut bus = AlwaysIrq;
         // IE set but IM2 MASKED, so nothing is recognised.
         p.cop0.set_hardware(reg::STATUS, 1);
@@ -2506,7 +2666,7 @@ mod tests {
         use crate::cop0::reg;
         let mut p = Pipeline::new();
         let mut regs = Regs::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1)]);
         p.cop0.set_hardware(reg::STATUS, 0);
         p.cop0.mtc0(reg::COMPARE, 3);
@@ -2555,7 +2715,7 @@ mod tests {
     fn the_convenience_advance_holds_the_count_timeline() {
         let mut p = Pipeline::new();
         let mut regs = Regs::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut bus = Ram::new(alloc::vec![]);
 
         p.advance_at(&mut bus, &mut regs, &mut pc, 7);
@@ -2583,7 +2743,7 @@ mod tests {
         use crate::cop0::reg;
         let mut p = Pipeline::new();
         let mut regs = Regs::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut bus = Ram::new(alloc::vec![]);
         // IE and IM7 set, but EXL set too: a handler is running.
         p.cop0.set_hardware(reg::STATUS, 1 | (1 << 15) | (1 << 1));
@@ -2618,7 +2778,7 @@ mod tests {
         use crate::cop0::reg;
         let mut p = Pipeline::new();
         let mut regs = Regs::new();
-        let mut pc = 0x800u64;
+        let mut pc = KSEG0_PROG;
         let mut bus = AlwaysIrq;
         p.cop0.set_hardware(reg::STATUS, 1 | (1 << 10));
 
@@ -2639,5 +2799,232 @@ mod tests {
             !p.cop0.interrupt_pending(),
             "EXL blocks re-entry while the handler runs"
         );
+    }
+
+    // --- the TLB through the pipeline (T-12-004) ---------------------------
+
+    /// Install a 4 KiB global mapping `vaddr` -> `pfn`, valid and writable.
+    fn map(p: &mut Pipeline, index: u64, vaddr: u64, pfn: u64) {
+        use crate::cop0::reg;
+        p.cop0.set_hardware(reg::PAGE_MASK, 0);
+        p.cop0.set_hardware(reg::ENTRY_HI, vaddr & 0xFFFF_E000);
+        // V | D | C=3 | G, in both halves so the entry is global.
+        p.cop0
+            .set_hardware(reg::ENTRY_LO0, (pfn << 6) | (3 << 3) | 0b111);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO1, ((pfn + 1) << 6) | (3 << 3) | 0b111);
+        p.cop0.set_hardware(reg::INDEX, index);
+        p.tlb.write_entry(index as usize, &p.cop0);
+    }
+
+    /// A KUSEG access with no mapping raises a **refill**, which takes the
+    /// refill vector — not the general one.
+    #[test]
+    fn an_unmapped_kuseg_access_takes_the_refill_vector() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![lui_kseg0(1), ld_st(0o43, 0, 3, 0x100)]);
+        // BEV=0, EXL=0 so the refill vector is the RDRAM one.
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::TLBL,
+            "a load miss is TLBL"
+        );
+        assert_eq!(
+            pc, 0xFFFF_FFFF_8000_0000,
+            "the REFILL vector (0x000), not the general one (0x180)"
+        );
+        assert_eq!(p.cop0.read(reg::BAD_VADDR), 0x100);
+    }
+
+    /// A mapped, valid page translates end to end through a real load.
+    #[test]
+    fn a_mapped_page_translates_a_real_load() {
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        // Map KUSEG page-pair 0 with pfn 0 (even) / 1 (odd), so the even page is
+        // an identity mapping onto the small test RAM. Note 0x1000 and 0x0000
+        // are the SAME pair -- VPN2 tags at 8 KiB granularity, not 4 KiB.
+        let mut bus = Ram::new(alloc::vec![ld_st(0o43, 0, 3, 0x100)]);
+        bus.write_u8(0x100, 0xAB);
+        bus.write_u8(0x101, 0xCD);
+        bus.write_u8(0x102, 0xEF);
+        bus.write_u8(0x103, 0x01);
+        map(&mut p, 0, 0x1000, 0);
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        for _ in 0..40 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(3),
+            crate::alu::sext32(0xABCD_EF01),
+            "the even page of pair 0 maps to physical 0x100 via the TLB"
+        );
+    }
+
+    /// A store to a page whose `D` bit is clear raises **Modified**, which takes
+    /// the general vector — an entry was found, so there is nothing to refill.
+    #[test]
+    fn a_store_to_a_clean_page_raises_modified_at_the_general_vector() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![ld_st(0o53, 0, 0, 0x1100)]);
+        // V | C=3 | G but NOT D -- readable, not writable.
+        p.cop0.set_hardware(reg::PAGE_MASK, 0);
+        p.cop0.set_hardware(reg::ENTRY_HI, 0x1000);
+        p.cop0.set_hardware(reg::ENTRY_LO0, (3 << 3) | 0b011);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO1, (1 << 6) | (3 << 3) | 0b011);
+        p.tlb.write_entry(0, &p.cop0);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::MOD
+        );
+        assert_eq!(
+            pc, 0xFFFF_FFFF_8000_0180,
+            "Modified takes the GENERAL vector"
+        );
+    }
+
+    /// A TLB exception fills `EntryHi`, `Context` and `XContext` — the refill
+    /// handler reads `Context` as a ready-made page-table pointer, which is why
+    /// hardware assembles it rather than leaving it to software.
+    #[test]
+    fn a_tlb_exception_assembles_entryhi_and_context() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![ld_st(0o43, 0, 3, 0x4000)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        // A page-table base the handler would have set up.
+        p.cop0.set_hardware(reg::CONTEXT, 0xFFFF_FFFF_8080_0000);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            p.cop0.read(reg::ENTRY_HI) & 0xFFFF_E000,
+            0x4000,
+            "EntryHi holds the faulting VPN2"
+        );
+        assert_eq!(
+            p.cop0.read(reg::CONTEXT) & 0xFFFF_FFFF_FF80_0000,
+            0xFFFF_FFFF_8080_0000,
+            "PTEBase is preserved"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::CONTEXT) >> 4) & 0x7_FFFF,
+            0x4000 >> 13,
+            "BadVPN2 is filled in"
+        );
+    }
+
+    /// `TLBWI` writes the entry `Index` names; `TLBWR` writes the one `Random`
+    /// names. Using the wrong register is a silent, hard-to-see swap.
+    #[test]
+    fn tlbwi_uses_index_and_tlbwr_uses_random() {
+        use crate::cop0::reg;
+        const TLBWI: u32 = (0o20 << 26) | (0o20 << 21) | 0o02;
+        const TLBWR: u32 = (0o20 << 26) | (0o20 << 21) | 0o06;
+
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![TLBWI]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        p.cop0.set_hardware(reg::ENTRY_HI, 0x2000);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO0, (7 << 6) | (3 << 3) | 0b111);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO1, (8 << 6) | (3 << 3) | 0b111);
+        p.cop0.set_hardware(reg::INDEX, 5);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.tlb.entry(5).lo0.pfn, 7, "TLBWI wrote entry Index = 5");
+
+        // TLBWR with Random forced to a different index.
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![TLBWR]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        p.cop0.set_hardware(reg::ENTRY_HI, 0x2000);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO0, (9 << 6) | (3 << 3) | 0b111);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO1, (10 << 6) | (3 << 3) | 0b111);
+        p.cop0.set_hardware(reg::INDEX, 5);
+        p.cop0.set_hardware(reg::RANDOM, 20);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.tlb.entry(20).lo0.pfn, 9, "TLBWR wrote entry Random = 20");
+        assert_ne!(p.tlb.entry(5).lo0.pfn, 9, "and NOT entry Index");
+    }
+
+    /// `TLBWR` cannot reach a wired entry, because `Random` never goes below
+    /// `Wired` — but **`TLBWI` can** (UM §5.4.4, p. 150). Guarding both is a
+    /// natural-looking mistake that makes wired entries unwritable at all.
+    #[test]
+    fn tlbwi_can_overwrite_a_wired_entry_even_though_tlbwr_cannot() {
+        use crate::cop0::reg;
+        const TLBWI: u32 = (0o20 << 26) | (0o20 << 21) | 0o02;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![TLBWI]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        p.cop0.mtc0(reg::WIRED, 8);
+        p.cop0.set_hardware(reg::ENTRY_HI, 0x2000);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO0, (11 << 6) | (3 << 3) | 0b111);
+        p.cop0
+            .set_hardware(reg::ENTRY_LO1, (12 << 6) | (3 << 3) | 0b111);
+        p.cop0.set_hardware(reg::INDEX, 3); // inside the wired range
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.tlb.entry(3).lo0.pfn,
+            11,
+            "TLBWI must be able to write a wired entry"
+        );
+
+        // And Random's range protects those entries from TLBWR structurally,
+        // rather than by a check.
+        for _ in 0..200 {
+            p.cop0.tick_random();
+            assert!(
+                p.cop0.read(reg::RANDOM) >= 8,
+                "Random must never select a wired entry"
+            );
+        }
     }
 }

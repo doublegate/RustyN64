@@ -249,6 +249,78 @@ Note the manual's first option, writing `Cause.IP7`, is not available on this
 part: `Cause` is read-only to software except `IP1:IP0`. Writing `Compare` is the
 usable path, and the one libdragon takes.
 
+### The TLB (implemented, T-12-004)
+
+32 fully-associative joint-TLB entries, each mapping an **even/odd page pair**,
+with a **two-entry instruction micro-TLB** in front (`crates/rustyn64-cpu/src/tlb.rs`).
+
+**A micro-TLB miss is a stall** (3 PCycles, UM §4.6.2 p. 107); **a JTLB miss is
+an exception**. An implementation with only the JTLB does not approximate the
+micro-TLB's cost — it deletes the structure the cost occurs in.
+
+#### Matching, and the trap in it
+
+An entry matches on `VPN2` **and** (`G` **or** `ASID`). **`V` does not
+participate** (UM §5.4.9, p. 155): *"While the V bit of the entry must be set for
+a valid translation to take place, it is not involved in the determination of a
+matching TLB entry."*
+
+Checking `V` while matching looks like an optimisation and breaks two things:
+
+- An invalid entry would fall through to a **refill** instead of **TLB Invalid**.
+  Both carry the same `ExcCode`, so `Cause` cannot tell them apart — the *vector*
+  is the only difference, and the refill handler would try to refill a mapping
+  that already exists.
+- TLB shutdown would stop firing on duplicates involving an invalid entry, which
+  UM Fig. 6-6 (p. 167) explicitly says it must.
+
+`G` is the **AND** of both halves (UM Fig. 5-10, p. 145). An OR makes far too
+many entries global, and a global entry matches every `ASID` — so the bug
+presents as address-space leakage, not as a missing translation.
+
+`D` means **writable**, not "has been written": a store to a page with `D` clear
+raises TLB Modified.
+
+#### Vectors
+
+| Fault | `ExcCode` | Vector |
+| --- | --- | --- |
+| Refill (no match) | `TLBL`/`TLBS` | **refill** (`0x000`/`0x080`), and only with `EXL=0` |
+| Invalid (matched, `V` clear) | `TLBL`/`TLBS` | **general** (`0x180`) |
+| Modified (store, `D` clear) | `MOD` | **general** (`0x180`) |
+
+A TLB exception fills `EntryHi`, `Context` and `XContext`; the refill handler
+reads `Context` as a ready-made page-table pointer, which is why hardware
+assembles it. Address errors leave them **undefined** (UM §6.4.7, p. 186) and
+bus errors do not touch them at all.
+
+#### Sizes, PFN, and cacheability
+
+`PageMask` bits 24:13 select 4K…16M (UM Table 5-7, p. 149). **`PFN` is always in
+4 KiB units** whatever the page size, so a large page's frame number has low bits
+masked off rather than scaled — multiplying by the page size puts a 16 KiB page
+four times too high in physical memory.
+
+**Only `C == 2` is uncached** (UM Table 5-6, p. 145). 0, 1, 3, 4, 5, 6 and 7 are
+all cached: the VR4300 has no coherency protocol, so the VR4400's finer
+encodings collapse.
+
+#### `TLBWI` vs `TLBWR`
+
+`TLBWI` uses `Index`, `TLBWR` uses `Random`. **`TLBWI` can overwrite a wired
+entry; `TLBWR` cannot** (UM §5.4.4, p. 150) — and the protection is structural,
+not a check: `Random` never goes below `Wired`. Guarding both is a
+natural-looking mistake that makes wired entries unwritable at all.
+
+`TLBP` sets `Index.P` (bit 31) on a miss. **What the low bits hold is
+undocumented** (ledger U-2); we leave them zero, which is a guess.
+
+#### Reset state
+
+Entries reset to **distinct** `VPN2` tags, not zero — see ledger **D-4**. All-zero
+is not a usable choice: 32 entries at `VPN2 = 0` with `V` out of the matching rule
+means the first access to page-pair 0 matches all 32 and shuts the TLB down.
+
 ## Behavior
 
 ### Pipeline and timing

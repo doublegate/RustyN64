@@ -40,8 +40,9 @@ pub mod mem;
 pub mod pipeline;
 pub mod regs;
 pub mod sysad;
+pub mod tlb;
 
-pub use addr::{Cached, Physical, translate};
+pub use addr::{Cached, Physical, Segment, segment, translate_via};
 pub use alu::{HiLo, MulDiv};
 pub use decode::{Decoded, Op, decode};
 pub use exec::{Executed, WriteBack, execute};

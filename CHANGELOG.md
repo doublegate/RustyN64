@@ -9,6 +9,44 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the TLB and the instruction micro-TLB (T-12-004)
+
+32 fully-associative joint-TLB entries mapping even/odd page pairs, plus the **two-entry
+instruction micro-TLB** in front of it. A micro-TLB miss is a **stall** (3 PCycles); a JTLB miss
+is an **exception**. Modelling only the JTLB would not approximate that cost — it deletes the
+structure the cost occurs in.
+
+`KUSEG`, `KSSEG` and `KSEG3` are now genuinely TLB-mapped. Previously they were masked to their
+low 29 bits, which silently aliased every access onto real memory instead of faulting.
+
+**The rules that pass ordinary tests while being wrong**, each pinned:
+
+- **`V` does not participate in matching** (UM §5.4.9). An invalid entry still *matches*, so it
+  raises TLB Invalid — which shares an `ExcCode` with a refill and differs **only in vector**.
+  Checking `V` while matching sends a protection fault to the refill handler, and also stops TLB
+  shutdown firing on duplicates involving an invalid entry, which UM Fig. 6-6 requires.
+- **`G` is the AND of both halves**, not the OR. An OR makes far too many entries global, and a
+  global entry matches every `ASID` — so it presents as address-space leakage rather than a
+  missing translation.
+- **`PFN` is always in 4 KiB units** whatever the page size, so a large page's frame number has
+  low bits masked off rather than scaled.
+- **Only `C == 2` is uncached**; the VR4400's other coherency encodings collapse on a part with
+  no coherency protocol.
+- **`TLBWI` can overwrite a wired entry; `TLBWR` cannot** — and the protection is structural
+  (`Random` never goes below `Wired`), not a check. Guarding both makes wired entries unwritable.
+
+**Ledger D-4 added: TLB entries reset to distinct tags, not zero.** All-zero is not a usable state
+— 32 entries at `VPN2 = 0`, with `V` out of the matching rule, means the first access to virtual
+page-pair 0 matches all 32 and triggers TLB shutdown. Found by a test, not by reasoning.
+
+`addr::translate` was **deleted** rather than kept "for unmapped-only paths" once nothing called
+it: an unused function that quietly gets translation wrong is the inert-API hazard
+`docs/engineering-lessons.md` §3.2 describes.
+
+All ten mutations of the TLB were confirmed to fail the suite. One initially survived — nothing
+checked that TLB Invalid takes the *general* vector — and there is now a test for the one
+distinction `Cause` cannot express.
+
 ### Added — interrupts, `Count`/`Compare`, and the MI line (T-12-003)
 
 Assertion and recognition are kept **separate**, because they are different things: `Cause.IP`

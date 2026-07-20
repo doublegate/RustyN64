@@ -136,6 +136,8 @@ pub enum Cop0Access {
         /// 64-bit (`DMFC0`) rather than 32-bit sign-extended (`MFC0`).
         wide: bool,
     },
+    /// A TLB instruction. Performed where the TLB lives, not in `EX`.
+    Tlb(TlbOp),
     /// `ERET` — restore `PC` from `EPC`/`ErrorEPC`, clear `EXL`/`ERL`, clear
     /// the link bit.
     ///
@@ -151,6 +153,19 @@ pub enum Cop0Access {
         /// 64-bit (`DMTC0`) rather than 32-bit (`MTC0`).
         wide: bool,
     },
+}
+
+/// The four TLB instructions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlbOp {
+    /// `TLBR` — entry → COP0 registers.
+    Read,
+    /// `TLBWI` — COP0 registers → entry `Index`.
+    WriteIndexed,
+    /// `TLBWR` — COP0 registers → entry `Random`.
+    WriteRandom,
+    /// `TLBP` — probe, reporting through `Index`.
+    Probe,
 }
 
 /// The outcome of executing one instruction in `EX`.
@@ -559,6 +574,22 @@ pub const fn execute(
                 dest: d.dest,
                 wide: matches!(d.op, Op::Dmfc0),
             }),
+            ..NOTHING
+        }),
+        Op::Tlbr => Ok(Executed {
+            cop0: Some(Cop0Access::Tlb(TlbOp::Read)),
+            ..NOTHING
+        }),
+        Op::Tlbwi => Ok(Executed {
+            cop0: Some(Cop0Access::Tlb(TlbOp::WriteIndexed)),
+            ..NOTHING
+        }),
+        Op::Tlbwr => Ok(Executed {
+            cop0: Some(Cop0Access::Tlb(TlbOp::WriteRandom)),
+            ..NOTHING
+        }),
+        Op::Tlbp => Ok(Executed {
+            cop0: Some(Cop0Access::Tlb(TlbOp::Probe)),
             ..NOTHING
         }),
         Op::Eret => Ok(Executed {

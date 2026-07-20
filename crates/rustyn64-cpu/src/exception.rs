@@ -154,6 +154,15 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
         Exception::Breakpoint => exc_code::BP,
         Exception::Trap => exc_code::TR,
         Exception::ReservedInstruction => exc_code::RI,
+        // Refill and Invalid share an ExcCode -- the handler tells them apart by
+        // which vector it was entered through, not by Cause.
+        Exception::TlbRefill { store: false } | Exception::TlbInvalid { store: false } => {
+            exc_code::TLBL
+        }
+        Exception::TlbRefill { store: true } | Exception::TlbInvalid { store: true } => {
+            exc_code::TLBS
+        }
+        Exception::TlbModified => exc_code::MOD,
     }
 }
 
@@ -171,7 +180,13 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
         | Exception::Syscall
         | Exception::Breakpoint
         | Exception::Trap
-        | Exception::ReservedInstruction => VectorKind::General,
+        | Exception::ReservedInstruction
+        // Invalid and Modified take the GENERAL vector: an entry was found, so
+        // there is nothing for a refill handler to refill.
+        | Exception::TlbInvalid { .. }
+        | Exception::TlbModified => VectorKind::General,
+        // Only a genuine miss takes the refill vector, and only with EXL clear.
+        Exception::TlbRefill { .. } => VectorKind::TlbRefill,
     }
 }
 
@@ -182,7 +197,26 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
 /// not an address error — the address was fine, the transaction failed.
 #[must_use]
 pub const fn writes_bad_vaddr(exc: Exception) -> bool {
-    matches!(exc, Exception::AddressError { .. })
+    matches!(
+        exc,
+        Exception::AddressError { .. }
+            | Exception::TlbRefill { .. }
+            | Exception::TlbInvalid { .. }
+            | Exception::TlbModified
+    )
+}
+
+/// Does this exception write `EntryHi` / `Context` / `XContext`?
+///
+/// **TLB exceptions only** (UM Fig. 6-14, p. 201, step 2) — the flowchart is
+/// explicit that it *"is not set by bus error exceptions"*, and an address error
+/// leaves them **undefined** (UM §6.4.7, p. 186) rather than merely unchanged.
+#[must_use]
+pub const fn writes_tlb_context(exc: Exception) -> bool {
+    matches!(
+        exc,
+        Exception::TlbRefill { .. } | Exception::TlbInvalid { .. } | Exception::TlbModified
+    )
 }
 
 /// The result of dispatching an exception.
@@ -258,6 +292,32 @@ pub fn dispatch(
     // 2. BadVAddr, for the exceptions that define it.
     if writes_bad_vaddr(exc) {
         cop0.set_hardware(reg::BAD_VADDR, bad_vaddr);
+    }
+
+    // 3. EntryHi / Context / XContext -- TLB exceptions only. The refill handler
+    //    reads `Context` as a ready-made page-table pointer, which is the whole
+    //    reason the hardware assembles it here rather than leaving it to
+    //    software.
+    if writes_tlb_context(exc) {
+        let vpn2 = bad_vaddr & 0x0000_00FF_FFFF_E000;
+        let hi = cop0.read(reg::ENTRY_HI);
+        // ASID is preserved; only the VPN2 field is replaced.
+        cop0.set_hardware(reg::ENTRY_HI, (hi & 0xFF) | vpn2);
+        // Context: PTEBase (63:23) kept, BadVPN2 (22:4) = VA(31:13).
+        let ctx = cop0.read(reg::CONTEXT);
+        cop0.set_hardware(
+            reg::CONTEXT,
+            (ctx & 0xFFFF_FFFF_FF80_0000) | ((bad_vaddr >> 13) & 0x7_FFFF) << 4,
+        );
+        // XContext: PTEBase (63:33) kept, R (32:31) = VA(63:62),
+        // BadVPN2 (30:4) = VA(39:13).
+        let xctx = cop0.read(reg::XCONTEXT);
+        cop0.set_hardware(
+            reg::XCONTEXT,
+            (xctx & 0xFFFF_FFFE_0000_0000)
+                | (((bad_vaddr >> 62) & 0b11) << 31)
+                | (((bad_vaddr >> 13) & 0x7FF_FFFF) << 4),
+        );
     }
 
     // 5. EXL. Setting it puts the CPU in Kernel mode with interrupts disabled,
@@ -414,6 +474,49 @@ mod tests {
         // current exception, not the return path.
         assert_eq!((c.read(reg::CAUSE) >> 2) & 0x1F, exc_code::ADES);
         assert_eq!(c.read(reg::BAD_VADDR), 0xDEAD);
+    }
+
+    /// **Refill and Invalid share an `ExcCode` and differ only in vector.** The
+    /// handler tells them apart by which entry point it was reached through, so
+    /// getting the vector wrong sends a page-protection fault to the refill
+    /// handler — which would refill a mapping that already exists.
+    ///
+    /// This is the one distinction `Cause` cannot express, so nothing but the
+    /// vector check can catch it.
+    #[test]
+    fn refill_and_invalid_share_an_exccode_but_not_a_vector() {
+        for store in [false, true] {
+            let refill = Exception::TlbRefill { store };
+            let invalid = Exception::TlbInvalid { store };
+            assert_eq!(
+                exc_code_of(refill),
+                exc_code_of(invalid),
+                "the ExcCode cannot distinguish them"
+            );
+
+            assert_eq!(vector_kind_of(refill), VectorKind::TlbRefill);
+            assert_eq!(
+                vector_kind_of(invalid),
+                VectorKind::General,
+                "an entry WAS found, so there is nothing to refill"
+            );
+            assert_eq!(vector(0, refill_kind(store)), 0xFFFF_FFFF_8000_0000);
+            assert_eq!(
+                vector(0, vector_kind_of(invalid)),
+                0xFFFF_FFFF_8000_0180,
+                "Invalid must NOT reach the refill vector"
+            );
+        }
+        assert_eq!(
+            vector_kind_of(Exception::TlbModified),
+            VectorKind::General,
+            "Modified likewise -- the mapping exists, it is just not writable"
+        );
+    }
+
+    /// Helper for the test above: the refill kind, independent of direction.
+    const fn refill_kind(store: bool) -> VectorKind {
+        vector_kind_of(Exception::TlbRefill { store })
     }
 
     /// `AdEL` and `AdES` are different codes; conflating them loses information

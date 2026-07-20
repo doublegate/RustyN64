@@ -281,6 +281,14 @@ pub enum Op {
     // --- COP0 access (T-12-001). The TLB and `ERET` encodings of this opcode
     // are NOT here: they are separate instructions landing in T-12-002/T-12-004,
     // and lumping them in would make `Op` claim support this crate lacks.
+    /// `TLBR` — read the TLB entry `Index` names into the COP0 registers.
+    Tlbr,
+    /// `TLBWI` — write the COP0 registers into the entry **`Index`** names.
+    Tlbwi,
+    /// `TLBWR` — write them into the entry **`Random`** names.
+    Tlbwr,
+    /// `TLBP` — probe for an entry matching `EntryHi`.
+    Tlbp,
     /// `ERET` — return from exception (UM Ch. 16, p. 434).
     ///
     /// Has **no delay slot** and must not be placed in one, unlike every other
@@ -722,6 +730,22 @@ pub const fn decode(word: u32) -> Decoded {
                 // implemented; the TLB forms arrive with T-12-004 and stay
                 // `Reserved` until then rather than decoding to a no-op.
                 rs if rs & 0o20 != 0 => match word & 0o77 {
+                    0o01 => Decoded {
+                        op: Op::Tlbr,
+                        ..base
+                    },
+                    0o02 => Decoded {
+                        op: Op::Tlbwi,
+                        ..base
+                    },
+                    0o06 => Decoded {
+                        op: Op::Tlbwr,
+                        ..base
+                    },
+                    0o10 => Decoded {
+                        op: Op::Tlbp,
+                        ..base
+                    },
                     0o30 => Decoded {
                         op: Op::Eret,
                         ..base
