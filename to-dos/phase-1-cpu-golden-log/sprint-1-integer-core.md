@@ -139,21 +139,76 @@ multiplication bug, the 32-bit shift-right-arithmetic bug, and the sign-extensio
 
 ---
 
-### T-11-006 — First test-ROM run through the harness
+### T-11-006 — First real pass/fail out of the harness (`basic.z64`)
 
-**Description:** replace the harness's stubbed completion sentinel so `run_until_complete`
-detects the n64-systemtest result protocol, and get the first real pass/fail out of a ROM.
+**Description:** replace the harness's stubbed completion sentinel and get the first genuine
+pass/fail out of a ROM, targeting **`basic.z64`** from Dillon's suite.
+
+**Re-scoped 2026-07-20.** This ticket originally targeted n64-systemtest. Investigation
+showed that is **not reachable in Sprint 1**: n64-systemtest dies at `src/main.rs:68` on
+`CTC1 $31` — the third statement after entry — and before reporting anything it needs COP1
+control, COP0 (`Status`/`Count`/`CACHE`), MI, PI status, VI init, a working heap, and exception
+vectors, because a large fraction of its tests fault deliberately and would otherwise hang
+rather than fail. There is no flag around it: category selection is compile-time `cfg!()` and
+COP0 sits on the pre-test path regardless. That work is Sprint 2 (COP0, the TLB and the
+exception model); the remaining harness-side piece is captured as T-11-009 below. No Sprint 2
+ticket ID is cited because that sprint's tickets are not minted yet — inventing one would give
+a dangling reference that looks tracked and is not.
+
+`basic.z64` is the right first target and needs almost nothing beyond this sprint:
+
+- Entry `0x8000_1000`, size exactly `0x10_1000`.
+- **The only Dillon ROM that does not PI-DMA itself at startup**, so it needs no Phase 5 work.
+  (`sll.z64`/`addiu.z64` and the rest do, and are the natural *second* step once PI lands.)
+- Result protocol is one GPR: **`r30`** is 0 while running, `u64::MAX` (`-1`) on pass, and
+  `1..=5` for the index of the failing test.
+- Instruction set: the integer core plus `J`/`JAL`/`JR`/`JALR`/`BEQ`/`BNE`/`BEQL`/`BNEL`,
+  `LWU` and `DADDI` — i.e. exactly T-11-004 and what is already done.
+- The only MMIO before the sentinel is one `SW` to PIF RAM `0xBFC0_07FC`; a write-accepting
+  stub suffices. VI writes happen *after* `r30` is set.
 
 **Acceptance criteria:**
 
-- [ ] `run_until_complete` decodes the real sentinel instead of always returning `Timeout`.
-- [ ] The committed `n64-systemtest.z64` runs and reports a genuine pass/fail count.
-- [ ] Failures name the failing test, not just a count.
+- [ ] KSEG0/KSEG1 segment stripping in the CPU, so a virtual address becomes physical before
+      it reaches the Bus. Nothing does this today, and no ROM can execute without it.
+- [ ] A direct-load path that does what IPL3 would: copy **`0x10_0000` bytes** from ROM
+      offset `0x1000` to RDRAM `0x1000`, clamped to the ROM's actual length, and set
+      `PC = 0x8000_1000`. No CIC handshake, no PI DMA. The byte count is the documented boot
+      behaviour (`ref-proj/n64-tests/README.md`: *"copy 0x100000 bytes from 0x10001000 to
+      0x00001000"*), not `basic.z64`'s size — the two coincide here, and hard-coding either an
+      end offset or "the whole ROM" breaks on the next target. Clamping matters because RDRAM
+      is 8 MiB and a commercial ROM is up to 64 MiB.
+- [ ] `run_until_complete` polls `r30` and returns `Passed` / `Failed(index)` / `Timeout`
+      instead of always timing out.
+- [ ] `basic.z64` reports a genuine result, and a failure names *which* of the five tests failed.
+- [ ] The test **skips, not fails**, when the ROM is absent — Dillon's suite has **no licence**
+      and is external-tier, so it cannot be committed and CI must stay green without it.
 - [ ] `docs/STATUS.md`'s accuracy table gains its first real number.
 
-**Dependencies:** T-11-004
-**Reference:** `crates/rustyn64-test-harness/src/runner.rs`; `tests/roms/README.md`
+**Dependencies:** T-11-004 (the branch/jump family, incl. branch-likely)
+**Reference:** `ref-proj/n64-tests/README.md` §"If your emulator is very young";
+`crates/rustyn64-test-harness/src/runner.rs`; `tests/roms/README.md`
 **Estimated complexity:** M
+
+---
+
+### T-11-009 — Deferred: n64-systemtest reports a genuine count
+
+**Status: deferred to Sprint 2**, recorded here so the dependency is visible rather than
+rediscovered.
+
+n64-systemtest cannot report anything until COP0, COP1 control and exception dispatch exist
+(see T-11-006's re-scope note). When they do, the remaining work is small:
+
+- Decode the **emux** COP0 hooks — `xdetect` (funct `0x20`), `xlog` (`0x25`), `xioctl`
+  (`0x2C`). `xioctl exit` is an exact completion edge needing no polling, and `xlog` gives the
+  full text stream. Roughly 60 lines in the decoder plus a host-side log buffer.
+  *Alternatively* map `0x13FF_0000..0x13FF_0220` as ISViewer scratch RAM in the PI decode,
+  which needs no CPU changes at all.
+- Match `Failed (\d+) of (\d+) tests` — **not** the `Done! Tests: N. Failed: M` string that
+  earlier revisions of our docs quoted, which does not exist in the committed v2.1.0 ROM.
+
+**Dependencies:** Sprint 2 (COP0, the exception model)
 
 ---
 
@@ -179,6 +234,13 @@ time and charge a flat constant, and they disagree on what that constant is.
       wiki cheat sheet **contradict each other**. Record which won and how it was determined.
 - [ ] `M` is fitted from test ROMs and recorded in the accuracy ledger as a measured constant
       with its measurement cited. It is never adjusted to make a specific ROM pass.
+
+**Note on the `M` measurement.** Fitting `M` needs a ROM that runs long enough to measure, and
+`basic.z64` (T-11-006) is too short and too simple to constrain it. The realistic source is
+n64-systemtest's `timing` feature set, which is **default-off upstream** and depends on
+Sprint 2. So the *transaction model* is Sprint 1 work and the *measurement* is not; if the
+measurement slips, land the model with `M` as a single documented placeholder in the accuracy
+ledger and do not let a fitted-looking number ship without provenance.
 
 **Dependencies:** T-11-003
 **Reference:** `n64brew_wiki/markdown/SysAD Interface.md`; UM §12, Tables 11-1/11-2, 12-2

@@ -25,6 +25,10 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
       shift-right-arithmetic bug, and the sign-extension bugs (`n64brew_wiki/markdown/VR4300.md`).
 - [ ] The load-delay interlock is modelled, since it is observable through the pipeline.
 - [ ] `n64-systemtest` reports `Failed: 0` for the CPU, COP0, and TLB categories.
+      **Not reachable until Sprint 2**: the suite needs COP1 control, COP0 and exception
+      dispatch before it can report anything at all (it dies on `CTC1 $31`, three statements
+      after entry). Sprint 1's first real pass/fail comes from `basic.z64` instead — see
+      T-11-006's re-scope note.
 - [ ] The golden-log differ finds no divergence across the captured trace, reporting the first
       mismatched instruction rather than a bare failure.
 - [ ] A determinism regression test exists: two runs from the same seed produce byte-identical

@@ -46,9 +46,35 @@ Absence of a licence is **not** public domain — it means no grant, so
 `dillon-n64-tests` is run-only and never redistributed. `krom` is public domain
 and *could* be committed; it stays external purely on footprint.
 
-n64-systemtest is **self-judging** — it decides pass/fail itself and finishes with
-a line like "Done! Tests: 262. Failed: 0", so no image comparison is needed for
-the CPU/COP0/TLB/RSP gate (`ref-docs/research-report.md` §7).
+n64-systemtest is **self-judging** — it decides pass/fail itself, so no image
+comparison is needed for the CPU/COP0/TLB/RSP gate.
+
+**The completion string is not what earlier revisions of this document claimed.**
+They quoted `Done! Tests: 262. Failed: 0`, which is from upstream's 2021 README.
+That string does **not** appear in the committed v2.1.0 ROM — verified with
+`strings`. The final line has the form (elapsed time and counts vary per run):
+
+```text
+Finished in <T>s. Base: Failed <F> of <N> tests (<P>% success rate)
+```
+
+The stable part is the format string, so the sentinel must match
+`Failed (\d+) of (\d+) tests` rather than any literal line. Anything written
+against the old string matches nothing, silently.
+
+It emits text through one of three auto-detected sinks, not to a fixed RDRAM
+address (`ref-proj/n64-systemtest/src/text_out.rs`):
+
+1. **emux** — unused COP0 opcodes the wiki reserves for emulator hooks
+   (`n64brew_wiki/markdown/Emux.md`): `xdetect` advertises support, `xlog` emits a
+   byte range, and **`xioctl exit` is an exact completion edge** requiring no
+   polling. Cheapest to implement and the one to prefer.
+2. **ISViewer** — a 512-byte scratch RAM at `0x13FF0020` with the length written
+   to `0x13FF0014`. Needs no CPU decoder changes, only a PI address-decode window.
+3. **SC64** flashcart emulation — ignore; it fails detection harmlessly.
+
+If none is implemented, `text_out` is a **silent no-op** and the only record is a
+framebuffer console in heap-allocated RDRAM. Do not rely on that.
 
 ## The five layers
 
