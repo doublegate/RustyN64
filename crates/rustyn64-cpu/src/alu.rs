@@ -203,19 +203,29 @@ pub const fn sra(v: u64, sa: u32) -> u64 {
     sext32(((v as i64) >> (sa & 31)) as u32)
 }
 
-/// `DSLL` — 64-bit shift left logical (`sa` in `0..32`).
+/// `DSLL` — 64-bit shift left logical.
+///
+/// `sa` is the **effective** shift amount, `0..64`, masked to 6 bits. The
+/// encoding splits that range across two opcodes — `DSLL` carries a 5-bit field
+/// for `0..32` and `DSLL32` adds 32 to it for `32..64` — but that split belongs
+/// to decode, not here. Pass the effective amount; do not pre-mask to 5 bits, or
+/// every `*32` variant silently becomes its non-`32` counterpart.
 #[must_use]
 pub const fn dsll(v: u64, sa: u32) -> u64 {
     v << (sa & 63)
 }
 
-/// `DSRL` — 64-bit shift right logical.
+/// `DSRL` — 64-bit shift right logical. `sa` is the effective `0..64` amount;
+/// see [`dsll`] on the `DSRL`/`DSRL32` encoding split.
 #[must_use]
 pub const fn dsrl(v: u64, sa: u32) -> u64 {
     v >> (sa & 63)
 }
 
-/// `DSRA` — 64-bit shift right arithmetic. Not affected by the `SRA` erratum:
+/// `DSRA` — 64-bit shift right arithmetic. `sa` is the effective `0..64` amount;
+/// see [`dsll`] on the `DSRA`/`DSRA32` encoding split.
+///
+/// Not affected by the `SRA` erratum:
 /// it is already a 64-bit shift, so there is no truncation for the bug to
 /// manifest through.
 #[must_use]
@@ -565,6 +575,23 @@ mod tests {
         assert_eq!(sll(1, 32), sll(1, 0));
         assert_eq!(dsll(1, 64), dsll(1, 0));
         assert_eq!(srl(0x8000_0000, 33), srl(0x8000_0000, 1));
+    }
+
+    /// The `*32` opcode variants are decode's business: they add 32 to the
+    /// encoded 5-bit field and call the same helper. This pins that mapping, so
+    /// the doc claim is enforced rather than merely asserted — pre-masking to 5
+    /// bits here would silently turn every `*32` form into its counterpart.
+    #[test]
+    fn the_32_variants_are_the_same_helper_with_32_added() {
+        let v = 0x0123_4567_89AB_CDEF;
+        for encoded in 0..32u32 {
+            // DSLL32 sa=n  ==  a 64-bit shift of (n + 32)
+            assert_eq!(dsll(v, encoded + 32), v << (encoded + 32));
+            assert_eq!(dsrl(v, encoded + 32), v >> (encoded + 32));
+            assert_eq!(dsra(v, encoded + 32), ((v as i64) >> (encoded + 32)) as u64);
+        }
+        // And the two halves are genuinely different operations.
+        assert_ne!(dsll(v, 1), dsll(v, 33));
     }
 
     #[test]
