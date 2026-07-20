@@ -894,7 +894,37 @@ pub const fn decode(word: u32) -> Decoded {
                 // result never left the callee. That accounted for the whole
                 // `Result after <op>` failure block, which had been read as an
                 // FPU arithmetic fault for nine rounds (ledger C-10).
-                0o20 | 0o21 if matches!(word & 0o77, 0..=3 | 5..=7) => Decoded {
+                // `funct` 4 is `SQRT`, which has no implementation yet and so
+                // stays `Cop1Unimplemented` rather than becoming a wrong
+                // result. Everything else in the S/D formats is wired:
+                //
+                // | `funct` | Operation |
+                // | --- | --- |
+                // | `0..=3` | `ADD` / `SUB` / `MUL` / `DIV` |
+                // | `5..=7` | `ABS` / `MOV` / `NEG` |
+                // | `0o10..=0o17` | `ROUND`/`TRUNC`/`CEIL`/`FLOOR` to `.L` then `.W` |
+                // | `0o40`/`0o41`/`0o44`/`0o45` | `CVT.S` / `CVT.D` / `CVT.W` / `CVT.L` |
+                // | `0o60..=0o77` | `C.cond.fmt`, the low 4 bits being the condition |
+                0o20 | 0o21
+                    if matches!(
+                        word & 0o77,
+                        0..=3 | 5..=7 | 0o10..=0o17 | 0o40 | 0o41 | 0o44 | 0o45 | 0o60..=0o77
+                    ) =>
+                {
+                    Decoded {
+                        op: Op::FpArith,
+                        ..base
+                    }
+                }
+                // The **integer** source formats, `.W` (20) and `.L` (21).
+                //
+                // Easy to miss: `CVT.S.W` carries its source format in the same
+                // `fmt` field, so a decoder that only admits 16/17 leaves every
+                // integer-to-float conversion a silent no-op — the same shape of
+                // gap that made `MOV.fmt` cost nine rounds. Only `CVT.S` and
+                // `CVT.D` are defined from these formats; converting an integer
+                // to an integer is not an instruction.
+                0o24 | 0o25 if matches!(word & 0o77, 0o40 | 0o41) => Decoded {
                     op: Op::FpArith,
                     ..base
                 },
@@ -1249,6 +1279,65 @@ mod tests {
         // funct 4 (SQRT) is not wired yet and must stay unimplemented, NOT
         // become a wrong ADD.
         assert_eq!(decode(enc(0o20, 4)).op, Op::Cop1Unimplemented);
+    }
+
+    /// **The compares and conversions must decode.** They are implemented in
+    /// `fpu.rs` and were unreachable for the same reason `MOV` was: the decode
+    /// arm admitted only `funct 0..=3` and `5..=7`.
+    ///
+    /// Enumerated rather than spot-checked. The failure mode here is a *gap* in
+    /// a range, and a gap is exactly what a single representative encoding does
+    /// not find.
+    #[test]
+    fn the_compares_and_conversions_decode_rather_than_no_op() {
+        let enc = |fmt: u32, funct: u32| {
+            (0o21 << 26) | (fmt << 21) | (2 << 16) | (3 << 11) | (4 << 6) | funct
+        };
+        for fmt in [0o20u32, 0o21] {
+            // ROUND/TRUNC/CEIL/FLOOR to .L (8..=11) then to .W (12..=15).
+            for funct in 0o10..=0o17u32 {
+                assert_eq!(
+                    decode(enc(fmt, funct)).op,
+                    Op::FpArith,
+                    "fmt {fmt:#o} funct {funct:#o}"
+                );
+            }
+            // CVT.S / CVT.D / CVT.W / CVT.L.
+            for funct in [0o40u32, 0o41, 0o44, 0o45] {
+                assert_eq!(
+                    decode(enc(fmt, funct)).op,
+                    Op::FpArith,
+                    "CVT funct {funct:#o}"
+                );
+            }
+            // All sixteen C.cond.fmt forms.
+            for funct in 0o60..=0o77u32 {
+                assert_eq!(
+                    decode(enc(fmt, funct)).op,
+                    Op::FpArith,
+                    "C.cond funct {funct:#o}"
+                );
+            }
+        }
+        // The INTEGER source formats. Easy to miss, because `CVT.S.W` carries
+        // its source format in the same field as `.S`/`.D` — a decoder that
+        // admits only 16/17 leaves every integer-to-float conversion a no-op.
+        for fmt in [0o24u32, 0o25] {
+            for funct in [0o40u32, 0o41] {
+                assert_eq!(
+                    decode(enc(fmt, funct)).op,
+                    Op::FpArith,
+                    "fmt {fmt:#o} funct {funct:#o}"
+                );
+            }
+        }
+        // `SQRT` has no implementation, so it must stay unimplemented rather
+        // than being swept in by a too-wide range.
+        assert_eq!(
+            decode(enc(0o20, 4)).op,
+            Op::Cop1Unimplemented,
+            "SQRT is still unwired"
+        );
     }
 
     /// **`MOV.fmt` (funct 6) must decode.** With the arm admitting only

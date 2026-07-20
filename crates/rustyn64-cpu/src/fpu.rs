@@ -238,26 +238,49 @@ impl<T> Outcome<T> {
     }
 }
 
-/// Is this `f32` a **signalling** NaN?
+/// Is this `f32` a **signalling** NaN *as the VR4300 classifies one*?
 ///
-/// The distinction matters: a signalling NaN raises Invalid, a quiet one does
-/// not. IEEE-754 puts the quiet bit at the top of the mantissa, so an
-/// `is_nan()` check alone cannot tell them apart — and treating every NaN as
-/// signalling raises Invalid on ordinary quiet-NaN propagation.
+/// # The convention is inverted from IEEE-754:2008
+///
+/// IEEE-754:2008 says the significand's MSB **set** means *quiet*. The VR4300
+/// predates that edition and uses the **legacy MIPS convention**, where the
+/// significand MSB **set** means *signalling*. So `0x7FC0_0000` — the pattern
+/// every modern language calls a quiet NaN, and what Rust's `f32::NAN` is — is
+/// a **signalling** NaN to this processor, and raises Invalid.
+///
+/// # How this was established
+///
+/// Not from a manual: from n64-systemtest's own expectations, which name their
+/// constants by the IEEE convention and then assert the opposite behaviour.
+/// For a non-signalling compare (`C.EQ`, `C.F`, …) it expects
+/// `QUIET_NAN_START_32` (`0x7FC0_0000`, MSB set) to raise Invalid and
+/// `SIGNALLING_NAN_END_32` (`0x7FBF_FFFF`, MSB clear) to raise nothing. The
+/// signalling compare forms (`C.SF`, `C.SEQ`, …) raise Invalid for both, which
+/// is the ordinary IEEE rule for those forms and so does not distinguish them.
+///
+/// The corroboration that makes this more than a curve fit: the VR4300's own
+/// default NaN result is `0x7FBF_FFFF`, MSB **clear**. Under IEEE that would be
+/// a processor whose invalid-operation result is a *signalling* NaN — absurd,
+/// since it would re-trap on first use. Under this convention it is exactly
+/// what it should be, a quiet one.
+///
+/// Accuracy ledger **C-12**.
 #[must_use]
 pub const fn is_snan_f32(v: f32) -> bool {
     let b = v.to_bits();
-    // NaN with the quiet bit (mantissa MSB) CLEAR, and a non-zero payload.
-    b & 0x7F80_0000 == 0x7F80_0000 && b & 0x0040_0000 == 0 && b & 0x003F_FFFF != 0
+    // Exponent all ones, significand MSB SET. No payload check is needed: the
+    // MSB being set already makes the significand non-zero, so this cannot
+    // catch an infinity.
+    b & 0x7F80_0000 == 0x7F80_0000 && b & 0x0040_0000 != 0
 }
 
-/// Is this `f64` a **signalling** NaN?
+/// Is this `f64` a **signalling** NaN as the VR4300 classifies one?
+///
+/// See [`is_snan_f32`] — the convention is inverted from IEEE-754:2008.
 #[must_use]
 pub const fn is_snan_f64(v: f64) -> bool {
     let b = v.to_bits();
-    b & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000
-        && b & 0x0008_0000_0000_0000 == 0
-        && b & 0x0007_FFFF_FFFF_FFFF != 0
+    b & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 && b & 0x0008_0000_0000_0000 != 0
 }
 
 ///
@@ -750,34 +773,61 @@ pub fn to_i64(v: f64, mode: Rounding) -> Outcome<i64> {
 mod tests {
     use super::*;
 
-    /// A **signalling** NaN raises Invalid; a **quiet** one does not. Treating
-    /// every NaN as signalling raises Invalid on ordinary NaN propagation, which
-    /// is wrong and noisy.
+    /// **The VR4300 NaN convention is inverted from IEEE-754:2008**: the
+    /// significand MSB **set** means *signalling*, not quiet.
+    ///
+    /// So `0x7FC0_0001` — what every modern language calls a quiet NaN, and
+    /// what Rust produces — raises Invalid here, and `0x7F80_0001` does not.
+    /// The bit patterns are named for what they are *on this processor*, since
+    /// naming them the IEEE way is what made the original implementation
+    /// backwards. Accuracy ledger C-12.
     #[test]
-    fn only_a_signalling_nan_raises_invalid() {
-        let snan = f32::from_bits(0x7F80_0001);
-        let qnan = f32::from_bits(0x7FC0_0001);
-        assert!(is_snan_f32(snan), "quiet bit clear, payload non-zero");
-        assert!(!is_snan_f32(qnan), "quiet bit set");
+    fn the_signalling_nan_is_the_one_with_the_significand_msb_set() {
+        let signals_here = f32::from_bits(0x7FC0_0001); // IEEE would call this quiet
+        let quiet_here = f32::from_bits(0x7F80_0001); // IEEE would call this signalling
+        assert!(
+            is_snan_f32(signals_here),
+            "MSB set is SIGNALLING on the VR4300"
+        );
+        assert!(!is_snan_f32(quiet_here), "MSB clear is quiet");
         assert!(!is_snan_f32(f32::INFINITY), "infinity is not a NaN");
 
-        assert!(add_s(snan, 1.0, Rounding::Nearest).flags.invalid);
+        assert!(add_s(signals_here, 1.0, Rounding::Nearest).flags.invalid);
         assert!(
-            !add_s(qnan, 1.0, Rounding::Nearest).flags.invalid,
+            !add_s(quiet_here, 1.0, Rounding::Nearest).flags.invalid,
             "a quiet NaN propagates quietly"
         );
+
+        // Rust's own NaN is signalling to this processor. Stated explicitly
+        // because it is the case most likely to be reintroduced by someone
+        // "fixing" the convention back to IEEE.
+        assert!(is_snan_f32(f32::NAN), "even f32::NAN signals here");
     }
 
-    /// The same, for doubles — the quiet bit sits at a different position, so
-    /// this is not a free consequence of the `f32` case.
+    /// The same, for doubles — the bit sits at a different position, so this is
+    /// not a free consequence of the `f32` case.
     #[test]
-    fn the_double_precision_quiet_bit_is_at_bit_51() {
-        let snan = f64::from_bits(0x7FF0_0000_0000_0001);
-        let qnan = f64::from_bits(0x7FF8_0000_0000_0001);
-        assert!(is_snan_f64(snan));
-        assert!(!is_snan_f64(qnan));
-        assert!(add_d(snan, 1.0, Rounding::Nearest).flags.invalid);
-        assert!(!add_d(qnan, 1.0, Rounding::Nearest).flags.invalid);
+    fn the_double_precision_signalling_bit_is_at_bit_51() {
+        let signals_here = f64::from_bits(0x7FF8_0000_0000_0001);
+        let quiet_here = f64::from_bits(0x7FF0_0000_0000_0001);
+        assert!(is_snan_f64(signals_here));
+        assert!(!is_snan_f64(quiet_here));
+        assert!(add_d(signals_here, 1.0, Rounding::Nearest).flags.invalid);
+        assert!(!add_d(quiet_here, 1.0, Rounding::Nearest).flags.invalid);
+    }
+
+    /// The processor's own default NaN result must be **quiet by its own
+    /// convention**, or every invalid operation would produce a value that
+    /// re-traps the moment anything touches it.
+    ///
+    /// This is the corroboration that the inverted convention is real rather
+    /// than a curve fit to the compare tests: `0x7FBF_FFFF` is the value
+    /// hardware delivers, and it is only sane under the VR4300 reading.
+    #[test]
+    fn the_default_nan_result_is_quiet_by_the_vr4300_convention() {
+        use crate::softfloat::{F32, F64};
+        assert!(!is_snan_f32(f32::from_bits(F32.default_nan() as u32)));
+        assert!(!is_snan_f64(f64::from_bits(F64.default_nan())));
     }
 
     /// **`x/0` is `DivByZero`; `0/0` is Invalid.** They are different flags, and a
@@ -985,7 +1035,8 @@ mod tests {
     /// on its own here.
     #[test]
     fn the_signalling_compare_forms_raise_on_a_quiet_nan() {
-        let qnan = f32::from_bits(0x7FC0_0001);
+        // Quiet **by the VR4300 convention**: significand MSB clear (C-12).
+        let qnan = f32::from_bits(0x7F80_0001);
         assert!(!is_snan_f32(qnan), "it really is quiet");
 
         let out = compare_s(qnan, 1.0, 2); // C.EQ
@@ -1001,7 +1052,8 @@ mod tests {
     /// non-signalling forms.
     #[test]
     fn a_signalling_nan_operand_raises_for_every_condition() {
-        let snan = f32::from_bits(0x7F80_0001);
+        // Signalling **by the VR4300 convention**: significand MSB set (C-12).
+        let snan = f32::from_bits(0x7FC0_0001);
         for cond in 0..16u8 {
             assert!(
                 compare_s(snan, 1.0, cond).flags.invalid,

@@ -1,0 +1,79 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/guides/configure-coderabbit
+#
+# Added as a second review bot alongside GitHub Copilot. Installing the app
+# itself is a repository-owner action on github.com; this file only tunes the
+# review once it is installed.
+#
+# The instructions below are deliberately about THIS project's decided rules
+# rather than generic Rust style. Generic advice is already covered by
+# `cargo clippy -D warnings` (pedantic + nursery) in CI, so a bot repeating it
+# adds noise; what a reviewer here cannot get from a linter is whether a change
+# contradicts an ADR or invents a fact.
+
+language: en-GB
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+
+  path_filters:
+    # Immutable research and vendored reference material. `ref-proj/` is
+    # gitignored, but list it so a stray commit is never reviewed as if it were
+    # ours -- several of those clones are study-only for licence reasons.
+    - "!ref-docs/**"
+    - "!ref-proj/**"
+    - "!n64brew_wiki/**"
+    - "!tests/roms/**"
+    - "!target/**"
+
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        Read `AGENTS.md` first; it records decisions that look like bugs.
+
+        Flag with high priority:
+        - Any new `cycles`/`ticks` counter that is INCREMENTED. Only
+          `master_ticks` may be incremented; every other cycle position is a
+          derived accessor (ADR 0006).
+        - Any invented constant or side effect with no cited source. Undocumented
+          hardware facts must be measured and recorded in
+          `docs/accuracy-ledger.md`, never fitted until a test passes.
+        - A comment that asserts what the code does but disagrees with it. This
+          project has been bitten by that four times; treat comment and code as
+          independent claims.
+        - An instruction or handler that decodes to a silent no-op. Assert the
+          effect, not the absence of an exception.
+        - `unsafe` anywhere outside `rustyn64-frontend`. Every chip crate carries
+          `#![forbid(unsafe_code)]` and the tree currently has zero `unsafe`.
+
+        Do NOT flag as bugs (these are deliberate and documented):
+        - The pipeline cascade running in REVERSE stage order (WB->DC->EX->RF->IC)
+          — ADR 0007.
+        - Reproduced VR4300 errata, e.g. `sra`/`srav`. They are behaviour software
+          depends on, not defects to fix.
+        - NaN classification treating significand-MSB-SET as *signalling*. That is
+          inverted from IEEE-754:2008 and is correct for this processor — the
+          legacy MIPS convention, accuracy ledger C-12.
+        - Soft-float arithmetic instead of native `f32`/`f64` operators. The native
+          ones discard the exact pre-rounding result, so IEEE flags and `FCSR.RM`
+          cannot be implemented on them (ledger C-11).
+
+    - path: "docs/**/*.md"
+      instructions: |
+        `docs/STATUS.md` is the single source of truth for counts and state; flag
+        any number here that contradicts it. Docs are treated as the spec, so a
+        behaviour change with an untouched spec is a finding. Claims of the form
+        "X is undocumented" decay — flag them unless a page reference is cited.
+
+    - path: "docs/adr/**"
+      instructions: |
+        ADRs are immutable once accepted. A superseded ADR must be replaced by a
+        NEW numbered ADR that cross-links it, never rewritten in place.
+
+chat:
+  auto_reply: true

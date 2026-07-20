@@ -140,11 +140,15 @@ impl Format {
 
     /// The NaN the VR4300 delivers as the result of an invalid operation.
     ///
-    /// `0x7FBF_FFFF` / `0x7FF7_FFFF_FFFF_FFFF` — note the **quiet bit is
-    /// clear**, so by IEEE's own classification this default NaN is a
-    /// *signalling* one. That is not a mistake here: n64-systemtest names the
-    /// expected value `SIGNALLING_NAN_END`, and a "sensible" quiet NaN would
-    /// disagree with hardware on every invalid operation.
+    /// `0x7FBF_FFFF` / `0x7FF7_FFFF_FFFF_FFFF` — the significand's MSB is
+    /// **clear**, which by IEEE-754:2008 would make the result of every invalid
+    /// operation a *signalling* NaN, absurdly re-trapping on first use.
+    ///
+    /// It is not absurd, because the VR4300 uses the **legacy MIPS
+    /// convention**, where MSB set means signalling. Under its own rules this
+    /// is an ordinary quiet NaN. See `fpu::is_snan_f32` and accuracy ledger
+    /// C-12; this value is the corroboration that the convention really is
+    /// inverted rather than the tests being odd.
     #[must_use]
     pub const fn default_nan(self) -> u64 {
         let man = (1u64 << self.man_bits()) - 1;
@@ -200,13 +204,18 @@ fn unpack(bits: u64, f: Format) -> Unpacked {
         };
     }
     if biased == f.max_biased() {
-        let quiet_bit = 1u128 << (man_bits - 1);
+        let signal_bit = 1u128 << (man_bits - 1);
         return Unpacked {
             sign,
             class: if man == 0 { Class::Inf } else { Class::Nan },
             sig: man,
             exp: 0,
-            snan: man != 0 && man & quiet_bit == 0,
+            // The VR4300 uses the LEGACY MIPS convention: significand MSB
+            // **set** means signalling, the opposite of IEEE-754:2008. See
+            // `fpu::is_snan_f32` and accuracy ledger C-12. Naming the constant
+            // `quiet_bit` and then testing it for *signalling* would be a trap
+            // for the next reader, so it is named for the position it occupies.
+            snan: man & signal_bit != 0,
         };
     }
     Unpacked {
@@ -926,8 +935,10 @@ mod tests {
     /// NaN propagation, which is a common and invisible error.
     #[test]
     fn only_a_signalling_nan_operand_raises_invalid() {
-        let snan = 0x7FA0_0000u64; // exponent all ones, quiet bit clear, payload set
-        let qnan = 0x7FC0_0000u64;
+        // **Inverted from IEEE**: on the VR4300 the significand MSB set means
+        // *signalling*. See `fpu::is_snan_f32` and ledger C-12.
+        let snan = 0x7FC0_0000u64; // MSB set   -> signalling here
+        let qnan = 0x7FA0_0000u64; // MSB clear -> quiet here
         assert!(add(snan, b32(1.0), F32, Rounding::Nearest).flags.invalid);
         assert!(!add(qnan, b32(1.0), F32, Rounding::Nearest).flags.invalid);
         assert!(mul(b32(1.0), snan, F32, Rounding::Nearest).flags.invalid);
