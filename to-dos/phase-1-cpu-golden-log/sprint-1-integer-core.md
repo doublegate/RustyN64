@@ -128,10 +128,17 @@ multiplication bug, the 32-bit shift-right-arithmetic bug, and the sign-extensio
 
 **Acceptance criteria:**
 
-- [ ] Each documented erratum reproduced, with a named test that fails if it is "fixed".
-- [ ] Each test cites `n64brew_wiki/markdown/VR4300.md` so the intent is obvious to the next
+- [x] Each documented erratum reproduced, with a named test that fails if it is "fixed" —
+      `sra_reproduces_the_vr4300_erratum`, `srav_shares_the_sra_erratum`,
+      `mult_reproduces_the_35_bit_sign_extension_erratum`,
+      `div_reproduces_the_35_bit_divisor_sign_extension_erratum`.
+- [x] Each test cites `n64brew_wiki/markdown/VR4300.md` so the intent is obvious to the next
       reader.
-- [ ] `docs/cpu.md` records each erratum as intended behaviour.
+- [x] `docs/cpu.md` records each erratum as intended behaviour.
+- [ ] **The FP multiplication bug is deferred to Sprint 3**, where COP1 lands. It is also the
+      only erratum that is *not* universal — NUS-01/02/03 only — so it needs the console
+      revision as a machine parameter, and its exact corrupted output is undocumented and will
+      have to be characterised. Recorded here rather than silently dropped.
 
 **Dependencies:** T-11-002
 **Reference:** `n64brew_wiki/markdown/VR4300.md` §Known Bugs

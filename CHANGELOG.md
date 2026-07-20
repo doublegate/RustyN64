@@ -9,6 +9,26 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the documented errata are recorded and pinned (T-11-005)
+
+`docs/cpu.md` gains a **"reproduced, not corrected"** section stating each VR4300 erratum as
+intended behaviour, with the manual-vs-hardware divergence spelled out and the pinning test
+named. The manual documents none of these; the wiki is the only source.
+
+- `SRA`/`SRAV` leak the upper 32 bits — **all consoles**, never known to be fixed.
+- `MULT` is 64-bit × **35-bit**; `DIV` is 32-bit ÷ **35-bit** (divisor sign-extended on bit 34).
+- Two new tests: `div_reproduces_the_35_bit_divisor_sign_extension_erratum` and
+  `srav_shares_the_sra_erratum` — the variable shift form shares the erratum, and implementing
+  one correctly and the other "properly" is an easy inconsistency.
+
+All four errata guards are **mutation-tested**: "correcting" `sra` per the manual fires both the
+`SRA` and `SRAV` guards, and reducing `div` to a plain 32-bit division fires its own.
+
+**The FP multiplication bug is deferred to Sprint 3** and recorded rather than silently dropped.
+It needs COP1, and it is the only erratum that is *not* universal — NUS-01/02/03 only — so it
+also needs the console revision as a machine parameter. Its exact corrupted output is
+undocumented and will have to be characterised against hardware.
+
 ### Added — the first ROM actually runs (T-11-006)
 
 **`basic.z64` executes end to end and passes all five of its hardware-verified cases** — delay-slot
