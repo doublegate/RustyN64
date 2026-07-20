@@ -9,6 +9,36 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the first ROM actually runs (T-11-006)
+
+**`basic.z64` executes end to end and passes all five of its hardware-verified cases** — delay-slot
+semantics, `J` in a delay slot, `BEQL` nullification, `BNEL` nullification, and `LWU`+`DADDI`.
+59 instructions retired, 129 master ticks. `docs/STATUS.md` gains its first real accuracy number.
+
+This is the first time the emulator has executed a ROM at all, and it validates the delay-slot
+and branch-likely work against something other than our own expectations.
+
+- `addr.rs` — virtual→physical translation, the prerequisite the plan had never written down.
+  KSEG0/KSEG1 are unmapped and become a subtraction; the mapped segments are masked with a
+  `TODO` until the TLB lands. `Cached` is returned now because the *segment* determines it and
+  that information is unrecoverable once KSEG0 and KSEG1 have become the same number.
+- `rom.rs` — direct loading, doing what IPL3 does: copy `0x10_0000` bytes from ROM offset
+  `0x1000`, clamped to both the ROM's length and RDRAM's capacity. A commercial ROM is up to
+  64 MiB against 8 MiB of RDRAM, so an unclamped copy panics on exactly the corpus it is for.
+- `run_until_complete` implements Dillon's `r30` protocol for real. The pass sentinel is `-1` as
+  a **64-bit** value; matching only the low 32 bits would also match `0xFFFF_FFFF`, which is a
+  *failure* index.
+
+**The test witnesses execution rather than trusting the sentinel.** `basic.z64` ends with
+`BNE $30, $0, TestsFailed` / `ADDI $30, $0, -1`, so if `r30` is still 0 the branch falls through
+and the pass sentinel is written **anyway** — "ran and passed" and "never ran" are identical at
+the sentinel. The test therefore also asserts the PC entered the test subroutines and that a
+plausible number of instructions retired. Mutation-tested: pointing the subroutine address
+somewhere unreachable fails it with "this is a vacuous pass".
+
+The test **skips rather than fails** when the ROM is absent — Dillon's suite has no licence, so
+it is external-tier and CI has no copy. A gate that is red by default stops being read.
+
 ### Added — branches, jumps, and the trap family (T-11-004)
 
 The full control-flow set: `J`/`JAL`/`JR`/`JALR`, every conditional branch including the eight

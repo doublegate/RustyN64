@@ -37,6 +37,7 @@
 //! the parts that cannot be retrofitted later without rewriting every consumer.
 
 use crate::Bus;
+use crate::addr::translate;
 use crate::alu::HiLo;
 use crate::decode::{Decoded, decode};
 use crate::exec::{MemOp, WriteBack, execute};
@@ -475,7 +476,7 @@ impl Pipeline {
                 if !kind.is_aligned(addr) {
                     return Err(Exception::AddressError);
                 }
-                let raw = Self::read_width(bus, addr, kind.width());
+                let raw = Self::read_width(bus, translate(addr).addr, kind.width());
                 Ok(WriteBack::Gpr {
                     dest,
                     value: kind.shape(raw),
@@ -485,20 +486,20 @@ impl Pipeline {
                 if !kind.is_aligned(addr) {
                     return Err(Exception::AddressError);
                 }
-                Self::write_width(bus, addr, kind.width(), value);
+                Self::write_width(bus, translate(addr).addr, kind.width(), value);
                 Ok(WriteBack::None)
             }
             // The unaligned family accesses the ALIGNED container holding `addr`
             // and merges, so it can never raise an address error.
             MemOp::Unaligned { op, addr, rt, dest } => {
                 use crate::decode::Op;
-                let word_addr = addr & !3;
-                let dword_addr = addr & !7;
+                let word_addr = translate(addr & !3).addr;
+                let dword_addr = translate(addr & !7).addr;
                 let byte4 = addr & 3;
                 let byte8 = addr & 7;
                 Ok(match op {
                     Op::Lwl | Op::Lwr => {
-                        let w = bus.read_u32(word_addr as u32);
+                        let w = bus.read_u32(word_addr);
                         let v = if matches!(op, Op::Lwl) {
                             mem::lwl(rt, w, byte4)
                         } else {
@@ -516,13 +517,13 @@ impl Pipeline {
                         WriteBack::Gpr { dest, value: v }
                     }
                     Op::Swl | Op::Swr => {
-                        let w = bus.read_u32(word_addr as u32);
+                        let w = bus.read_u32(word_addr);
                         let merged = if matches!(op, Op::Swl) {
                             mem::swl(rt, w, byte4)
                         } else {
                             mem::swr(rt, w, byte4)
                         };
-                        bus.write_u32(word_addr as u32, merged);
+                        bus.write_u32(word_addr, merged);
                         WriteBack::None
                     }
                     Op::Sdl | Op::Sdr => {
@@ -555,18 +556,15 @@ impl Pipeline {
     /// against the specific [`crate::mem::LoadKind`]/[`crate::mem::StoreKind`],
     /// and the unaligned family passes an address it has aligned down itself.
     /// Duplicating the check would put the rule in two places, where it can drift.
-    fn read_width<B: Bus>(bus: &mut B, addr: u64, width: u64) -> u64 {
+    fn read_width<B: Bus>(bus: &mut B, addr: u32, width: u64) -> u64 {
         match width {
-            1 => u64::from(bus.read_u8(addr as u32)),
-            2 => {
-                (u64::from(bus.read_u8(addr as u32)) << 8)
-                    | u64::from(bus.read_u8((addr + 1) as u32))
-            }
-            4 => u64::from(bus.read_u32(addr as u32)),
+            1 => u64::from(bus.read_u8(addr)),
+            2 => (u64::from(bus.read_u8(addr)) << 8) | u64::from(bus.read_u8(addr.wrapping_add(1))),
+            4 => u64::from(bus.read_u32(addr)),
             // Big-endian: the high word is at the lower address.
             8 => {
-                (u64::from(bus.read_u32(addr as u32)) << 32)
-                    | u64::from(bus.read_u32((addr + 4) as u32))
+                (u64::from(bus.read_u32(addr)) << 32)
+                    | u64::from(bus.read_u32(addr.wrapping_add(4)))
             }
             _ => 0,
         }
@@ -575,17 +573,17 @@ impl Pipeline {
     /// Write the low `width` big-endian bytes of `value`.
     ///
     /// Width-dispatched for the same reason as [`Pipeline::read_width`].
-    fn write_width<B: Bus>(bus: &mut B, addr: u64, width: u64, value: u64) {
+    fn write_width<B: Bus>(bus: &mut B, addr: u32, width: u64, value: u64) {
         match width {
-            1 => bus.write_u8(addr as u32, value as u8),
+            1 => bus.write_u8(addr, value as u8),
             2 => {
-                bus.write_u8(addr as u32, (value >> 8) as u8);
-                bus.write_u8((addr + 1) as u32, value as u8);
+                bus.write_u8(addr, (value >> 8) as u8);
+                bus.write_u8(addr.wrapping_add(1), value as u8);
             }
-            4 => bus.write_u32(addr as u32, value as u32),
+            4 => bus.write_u32(addr, value as u32),
             8 => {
-                bus.write_u32(addr as u32, (value >> 32) as u32);
-                bus.write_u32((addr + 4) as u32, value as u32);
+                bus.write_u32(addr, (value >> 32) as u32);
+                bus.write_u32(addr.wrapping_add(4), value as u32);
             }
             _ => {}
         }
@@ -726,7 +724,9 @@ impl Pipeline {
 
         // TODO(T-11-003): fetch through the I-cache rather than straight off the
         // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
-        let word = bus.read_u32(pc as u32);
+        // Every address handed to the Bus is PHYSICAL (`docs/cpu.md`); the
+        // segment map is applied here, in the CPU, not by the Bus.
+        let word = bus.read_u32(translate(pc).addr);
         // Decode here rather than at RF: a branch must be decoded before the
         // NEXT fetch, so that fetch can be marked as its delay slot.
         //

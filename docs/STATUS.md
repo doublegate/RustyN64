@@ -106,13 +106,20 @@ harness `run_until_complete` sentinel decode is stubbed and always returns
 
 ## Accuracy
 
-Every gate is **not started**. The ROMs now exist locally for most of them, but
-nothing loads or scores a ROM yet, so no gate can report a number.
+**The first gate now reports a real number.** `basic.z64` from Dillon's n64-tests
+runs end to end and passes all five of its hardware-verified cases — delay-slot
+semantics, `J` in a delay slot, `BEQL` nullification, `BNEL` nullification, and
+`LWU`+`DADDI`. 59 instructions retired, 129 master ticks (T-11-006).
+
+That is a small number of tests, but it is the first time this emulator has
+executed a ROM at all, and it independently validates the delay-slot and
+branch-likely work against something other than our own expectations.
 
 | Gate | Oracle available? | Status |
 | --- | --- | --- |
+| **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest "Failed: 0" (CPU/COP0/TLB/RSP) | **yes** — ROM committed | not started (no CPU to run it) |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | blocked on COP0/COP1/exceptions (T-11-009, Sprint 2) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

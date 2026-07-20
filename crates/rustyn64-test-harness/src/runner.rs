@@ -1,37 +1,58 @@
 //! The `run_until_complete` test-ROM runner.
 //!
-//! Steps a [`System`] until the suite signals completion (the n64-systemtest
-//! result protocol writes a status word to a known RDRAM/IO location). The
-//! completion decode is **STUBBED** — wire it to the real sentinel when the
-//! first suite ROM is committed under `tests/roms/`.
+//! Steps a [`System`] until the suite signals completion.
 //!
-//! See `docs/testing-strategy.md` §test-ROM corpus.
+//! # The completion protocol
+//!
+//! Different suites signal differently, and the harness must not assume one.
+//! What is implemented is **Dillon's `n64-tests` protocol**, which is the simplest
+//! available and the reason `basic.z64` is the first target (T-11-006):
+//!
+//! > *"If at any point the value of r30 changes to a non-zero value, that means
+//! > the tests have completed their run. If the value is -1, the tests passed!
+//! > If the value is positive, that will tell you the test that failed."*
+//! > — `ref-proj/n64-tests/README.md`
+//!
+//! **n64-systemtest is a different protocol entirely** and is not reachable yet:
+//! it writes to no fixed address, emitting instead through emux COP0 hooks,
+//! `ISViewer`, or SC64, and it cannot even reach its first test without COP0,
+//! COP1 control and exception dispatch. That is T-11-009, deferred to Sprint 2.
 
 use rustyn64_core::System;
+
+/// The GPR Dillon's suite signals through.
+const RESULT_REG: u8 = 30;
 
 /// Outcome of a `run_until_complete` run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionStatus {
     /// The suite signalled success.
     Passed,
-    /// The suite signalled failure (carries the suite's result code).
-    Failed(u32),
-    /// The step budget was exhausted before any completion sentinel.
+    /// The suite signalled failure, carrying the index of the failing test.
+    Failed(u64),
+    /// The step budget was exhausted before any completion signal.
     Timeout,
 }
 
-/// Step `system` until the completion sentinel fires or `max_ticks` is reached.
+/// Step `system` until the completion signal fires or `max_ticks` elapse.
 ///
-/// STUB: the sentinel decode always reports [`CompletionStatus::Timeout`] right
-/// now — there is no committed suite ROM to read a result word from yet. The
-/// loop + budget are real so this is a drop-in gate once the decode lands.
+/// Polls once per scheduler edge — which is *any* domain's edge, CPU or RCP, not
+/// only the CPU's. That is still far cheaper than polling every master tick, and
+/// the extra RCP-only polls are harmless because the register simply has not
+/// changed. Narrowing it to CPU edges specifically would need the scheduler to
+/// report which domain it stepped, which it deliberately does not expose.
 #[must_use]
 pub fn run_until_complete(system: &mut System, max_ticks: u64) -> CompletionStatus {
     let deadline = system.master_ticks().saturating_add(max_ticks);
     while system.master_ticks() < deadline {
         system.step_to_next_edge();
-        // TODO(T-HARNESS-02): poll the n64-systemtest result word (a known
-        // RDRAM/IO address) and return Passed / Failed(code) when it is set.
+        match system.cpu.regs.read(RESULT_REG) {
+            0 => {}
+            // -1 as a 64-bit value. The suite writes it with ADDI, so it arrives
+            // sign-extended; comparing against 0xFFFF_FFFF would miss it.
+            u64::MAX => return CompletionStatus::Passed,
+            n => return CompletionStatus::Failed(n),
+        }
     }
     CompletionStatus::Timeout
 }
@@ -41,8 +62,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn times_out_on_stub() {
+    fn an_idle_machine_times_out() {
         let mut sys = System::new(0);
-        assert_eq!(run_until_complete(&mut sys, 16), CompletionStatus::Timeout);
+        assert_eq!(run_until_complete(&mut sys, 64), CompletionStatus::Timeout);
+    }
+
+    /// The pass sentinel is `-1` as a full 64-bit value. Checking only the low 32
+    /// bits would also match `0x0000_0000_FFFF_FFFF`, which is a *failure* index.
+    #[test]
+    fn the_pass_sentinel_is_sign_extended_minus_one() {
+        let mut sys = System::new(0);
+        sys.cpu.regs.write(RESULT_REG, u64::MAX);
+        assert_eq!(run_until_complete(&mut sys, 64), CompletionStatus::Passed);
+
+        let mut sys = System::new(0);
+        sys.cpu.regs.write(RESULT_REG, 0xFFFF_FFFF);
+        assert_eq!(
+            run_until_complete(&mut sys, 64),
+            CompletionStatus::Failed(0xFFFF_FFFF),
+            "a 32-bit all-ones is a failure index, not the pass sentinel"
+        );
+    }
+
+    #[test]
+    fn a_positive_value_names_the_failing_test() {
+        let mut sys = System::new(0);
+        sys.cpu.regs.write(RESULT_REG, 3);
+        assert_eq!(
+            run_until_complete(&mut sys, 64),
+            CompletionStatus::Failed(3)
+        );
     }
 }
