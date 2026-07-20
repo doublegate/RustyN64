@@ -139,7 +139,63 @@ is data rather than logic:
 bypass interlock as firing when a write reaches `WB` while the next instruction
 reads in `DC`. Performing both in `EX` would make that interlock unexpressible —
 the same mistake ADR 0007 exists to prevent one level up. The interlock itself
-lands with T-12-002.
+lands with T-12-005 alongside the cache model.
+
+### Exception dispatch (implemented, T-12-002)
+
+`crates/rustyn64-cpu/src/exception.rs`. The epilogue is UM Fig. 6-14 (p. 201):
+
+1. `Cause.ExcCode` / `Cause.CE`.
+2. `BadVAddr` — **address errors and TLB exceptions only**. UM §6.3.2 (p. 164)
+   carries an explicit Caution that a Bus Error does *not* write it: the address
+   was fine, the transaction failed.
+3. `EntryHi` / `Context` / `XContext` — TLB exceptions only (T-12-004).
+4. **If `EXL` was 0**: `Cause.BD` and `EPC`. Otherwise both are left untouched.
+5. `EXL ← 1`.
+6. `PC ← vector`, and the pipeline stalls **2 PCycles** (UM §4.7, p. 114).
+
+**The `EXL` gate in step 4 is the whole point of `EXL`** and the one thing here
+that a passing test suite can still get wrong. UM §6.3.7 (p. 174): *"The EXL bit
+... is set to 1 to keep the processor from overwriting the address of the
+exception-causing instruction contained in the EPC register in the event of
+another exception."* An implementation that always writes `EPC` passes every
+single-exception test and corrupts every nested one — and nesting is the *normal*
+path for TLB refill handlers (UM §6.4.8, p. 188). Note the gate covers `BD` too:
+a stale `ExcCode` beside a fresh `BD` misreports which exception was in a delay
+slot.
+
+In a delay slot, `EPC` gets **`pc - 4`** — the branch, not the delay-slot
+instruction — so the handler resumes where the branch is re-evaluated.
+
+#### The vector table
+
+| Kind | `BEV=0` | `BEV=1` |
+| --- | --- | --- |
+| Reset / soft reset / NMI | `0xBFC0_0000` | `0xBFC0_0000` |
+| TLB refill, **`EXL=0`** | `0x8000_0000` | `0xBFC0_0200` |
+| XTLB refill, **`EXL=0`** | `0x8000_0080` | `0xBFC0_0280` |
+| Everything else, **and any refill with `EXL=1`** | `0x8000_0180` | `0xBFC0_0380` |
+
+Two manual defects to know about, both pinned by tests so they cannot be
+"fixed" back:
+
+- **UM Fig. 6-15 (p. 203) says a refill with `EXL=1` uses `0x080`. It is wrong**
+  — contradicted by Tables 6-3/6-4, by §6.4.8 twice, and by Fig. 6-14. Ledger
+  **S-3**; CEN64 routes to `0x180` and is right.
+- **UM p. 181's prose gives the `BEV=1` general vector as `0x8000_0180`**, a
+  typo: Table 6-4's `BEV=1` base is `0xBFC0_0200`, so it is `0xBFC0_0380`. The
+  64-bit value in the same sentence is correct and proves it.
+
+Cold reset leaves `BEV` **set** (UM §6.4.4), so a freshly reset CPU vectors into
+the boot ROM rather than into RDRAM.
+
+#### `ERET`
+
+`ERL` set → resume at `ErrorEPC`, clear **`ERL`**; otherwise resume at `EPC`,
+clear **`EXL`**. Clearing the wrong one either strands the CPU in kernel mode or
+returns to the wrong address. `ERET` **always clears `LLbit`** — the other half of
+the `LL`/`SC` contract, which had nothing clearing it until now — and has **no
+delay slot**, alone among the control transfers.
 
 ## Behavior
 

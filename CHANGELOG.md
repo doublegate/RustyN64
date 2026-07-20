@@ -9,6 +9,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — exception dispatch and `ERET` (T-12-002)
+
+Exceptions were previously stamped into pipeline latches and never *dispatched* — nothing wrote
+`EPC`/`Cause` or redirected the PC. Now the full epilogue runs (UM Fig. 6-14, p. 201) and the
+pipeline stalls the documented 2 PCycles.
+
+**The `EXL` gate is the part worth calling out.** `EPC` and `Cause.BD` are written **only when
+`EXL` was already 0**; with it set, both are left untouched. That is the entire purpose of `EXL`
+(UM §6.3.7, p. 174), and an implementation that always writes `EPC` passes every single-exception
+test while corrupting every nested one — where nesting is the *normal* path for TLB refill
+handlers, not an edge case. Pinned both directly and through the pipeline.
+
+`AddressError` now carries its direction, because `AdEL` (4) and `AdES` (5) are different
+`ExcCode` values and a handler distinguishes them. An instruction fetch is a load.
+
+The vector table implements ledger **S-3**: a refill arriving with `EXL` set takes the **general**
+vector, not `0x080`. UM Fig. 6-15 says `0x080` and is contradicted by two tables, by §6.4.8 twice,
+and by Fig. 6-14. A second manual typo is pinned too — p. 181's prose gives the `BEV=1` general
+vector as `0x8000_0180` where Table 6-4 makes it `0xBFC0_0380`.
+
+`ERET` **completes the Sprint 1 `LL`/`SC` contract**: it is the only thing besides cache
+invalidation that clears `LLbit` (UM §3.1), so until now `LL`; `ERET`; `SC` wrongly succeeded. It
+also has no delay slot, alone among the control transfers, so the already-fetched next instruction
+is squashed.
+
+All ten mutations of the epilogue were confirmed to fail the suite, including removing the `EXL`
+gate, restoring the `0x080` vector, `ERET` clearing `EXL` instead of `ERL`, and `ERET` gaining a
+delay slot.
+
 ### Added — the COP0 register file (T-12-001)
 
 Table-driven, because nearly every accuracy rule in COP0 is data rather than logic — "register N

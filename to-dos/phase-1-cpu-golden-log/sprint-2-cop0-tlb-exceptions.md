@@ -83,24 +83,24 @@ cycle-accurate core differs from an interpreter.
 
 **Acceptance criteria:**
 
-- [ ] The epilogue, in order (UM Fig. 6-14 p. 201): `Cause.ExcCode`/`CE` set; `BadVAddr` set;
+- [x] The epilogue, in order (UM Fig. 6-14 p. 201): `Cause.ExcCode`/`CE` set; `BadVAddr` set;
       `EntryHi`/`Context`/`XContext` set **only for TLB Invalid / Modified / Miss**; then
       `EXL ← 1`; then `PC ← vector`.
-- [ ] **`EPC` and `Cause.BD` are written only when `EXL` was 0.** The `EXL=1?` test precedes the
+- [x] **`EPC` and `Cause.BD` are written only when `EXL` was 0.** The `EXL=1?` test precedes the
       EPC write in the flowchart, and this is the entire purpose of `EXL` (UM §6.3.7 p. 174:
       *"to keep the processor from overwriting the address of the exception-causing instruction"*).
       Pinned by a nested-exception test — an implementation that always writes EPC passes every
       single-exception test and corrupts every nested one.
-- [ ] Delay-slot rule: in a delay slot → `Cause.BD = 1` and **`EPC = PC − 4`** (the branch, not
+- [x] Delay-slot rule: in a delay slot → `Cause.BD = 1` and **`EPC = PC − 4`** (the branch, not
       the delay-slot instruction). Sprint 1 already carries `in_delay_slot` in the latch, so this
       is a consumer of that work, and the multi-cycle-stall test from T-11-001 must still pass.
-- [ ] The vector table, all four rows, both `BEV` values — including that a TLB/XTLB refill with
+- [x] The vector table, all four rows, both `BEV` values — including that a TLB/XTLB refill with
       **`EXL=1` uses `0x180`**, resolving ledger S-3. A test asserts `0x180`, citing that UM
       Fig. 6-15 (p. 203) says `0x080` and is wrong.
-- [ ] `BadVAddr` is **not** written on a Bus Error (UM §6.3.2 p. 164 Caution) — it is not an
+- [x] `BadVAddr` is **not** written on a Bus Error (UM §6.3.2 p. 164 Caution) — it is not an
       address error.
-- [ ] The exception epilogue costs **2 PCycles** (UM §4.7 p. 114). Not a fitted constant.
-- [ ] `ERET`: `ERL=1` → `PC ← ErrorEPC`, clear `ERL`; else `PC ← EPC`, clear `EXL`. **Always
+- [x] The exception epilogue costs **2 PCycles** (UM §4.7 p. 114). Not a fitted constant.
+- [x] `ERET`: `ERL=1` → `PC ← ErrorEPC`, clear `ERL`; else `PC ← EPC`, clear `EXL`. **Always
       clears `LLbit`** — this completes the Sprint 1 `LL`/`SC` work, which currently has nothing
       that clears the link. Pinned by a test that `LL`; `ERET`; `SC` fails.
 - [ ] **Stage-based priority**, not just the Table 6-5 list: WB > DC > EX > RF, with the
@@ -108,7 +108,7 @@ cycle-accurate core differs from an interpreter.
       any stage beats a stall from the same or an earlier stage. ADR 0007's reverse cascade maps
       onto this directly — that is a reason to encode the stage order explicitly rather than
       re-deriving it per exception.
-- [ ] The `ExcCode` values of UM Table 6-2 p. 172, including `23 = WATCH`.
+- [x] The `ExcCode` values of UM Table 6-2 p. 172, including `23 = WATCH`.
 
 **Dependencies:** T-12-001
 **Reference:** UM §6.4 (pp. 180–205), Figs. 6-14/6-15/6-16, §4.7 (pp. 114–118)

@@ -281,6 +281,11 @@ pub enum Op {
     // --- COP0 access (T-12-001). The TLB and `ERET` encodings of this opcode
     // are NOT here: they are separate instructions landing in T-12-002/T-12-004,
     // and lumping them in would make `Op` claim support this crate lacks.
+    /// `ERET` — return from exception (UM Ch. 16, p. 434).
+    ///
+    /// Has **no delay slot** and must not be placed in one, unlike every other
+    /// control transfer in the instruction set.
+    Eret,
     /// `MFC0 rt, rd` — 32-bit read of a COP0 register, sign-extended.
     Mfc0,
     /// `DMFC0 rt, rd` — 64-bit read of a COP0 register.
@@ -711,6 +716,17 @@ pub const fn decode(word: u32) -> Decoded {
                 0o05 => Decoded {
                     op: Op::Dmtc0,
                     ..base
+                },
+                // rs bit 4 set: the CP0 "CO" forms -- TLBR/TLBWI/TLBWR/TLBP
+                // and ERET, distinguished by the `funct` field. Only ERET is
+                // implemented; the TLB forms arrive with T-12-004 and stay
+                // `Reserved` until then rather than decoding to a no-op.
+                rs if rs & 0o20 != 0 => match word & 0o77 {
+                    0o30 => Decoded {
+                        op: Op::Eret,
+                        ..base
+                    },
+                    _ => base,
                 },
                 _ => base,
             }
