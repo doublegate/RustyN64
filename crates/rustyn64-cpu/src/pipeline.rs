@@ -224,6 +224,25 @@ pub struct Pipeline {
     flush_pending: bool,
     /// Instructions retired at `WB` — a work tally, not a time position.
     pub retired: u64,
+    /// The link bit, `LLbit`.
+    ///
+    /// *"set by the LL instruction, cleared by an ERET, and tested by the SC
+    /// instruction"* (UM §3.1). Note what is **absent** from that list: `SC`
+    /// itself does not clear it, and neither does an intervening load or store.
+    /// Clearing it in `SC` is the natural-looking mistake, and it makes a
+    /// retried `LL`/`SC` loop fail forever on the second iteration.
+    ///
+    /// `ERET` is the other half and lands with the exception model (Sprint 2);
+    /// until then nothing clears this, which is correct-so-far rather than
+    /// finished — recorded as such in `docs/cpu.md`.
+    ll_bit: bool,
+    /// `LLAddr` (COP0 register 17): `PA(31:4)` of the most recent `LL`.
+    ///
+    /// *"This register is for diagnostic purposes only"* (UM §5.4.7) — nothing
+    /// in the CPU reads it back, so it exists to be observable through `MFC0`
+    /// once COP0 lands. Held here rather than in a COP0 file that does not
+    /// exist yet.
+    ll_addr: u64,
 }
 
 impl Pipeline {
@@ -260,6 +279,11 @@ impl Pipeline {
             prev_was_run: false,
             flush_pending: false,
             retired: 0,
+            ll_bit: false,
+            // "The contents of the LLAddr register are undefined on reset"
+            // (UM §5.4.7). Undefined is not licence to be non-deterministic:
+            // ADR 0004 requires a reproducible machine, so it is a fixed zero.
+            ll_addr: 0,
         }
     }
 
@@ -276,6 +300,20 @@ impl Pipeline {
     #[must_use]
     pub const fn prev_cycle_was_run(&self) -> bool {
         self.prev_was_run
+    }
+
+    /// The link bit, as `SC` would test it.
+    ///
+    /// Exposed for the COP0 / `ERET` work in Sprint 2, which must clear it.
+    #[must_use]
+    pub const fn ll_bit(&self) -> bool {
+        self.ll_bit
+    }
+
+    /// `LLAddr` (COP0 register 17): `PA(31:4)` of the most recent `LL`.
+    #[must_use]
+    pub const fn ll_addr(&self) -> u64 {
+        self.ll_addr
     }
 
     /// Request a stall of `cycles` `PCycle`s.
@@ -400,7 +438,7 @@ impl Pipeline {
             && out.abort.is_none()
             && let Some(op) = out.mem
         {
-            match Self::access(bus, op) {
+            match self.access(bus, op) {
                 Ok(wb) => out.write_back = wb,
                 // Stamp before the latch move so the abort travels with the
                 // instruction that caused it -- see `abort_from`.
@@ -468,7 +506,7 @@ impl Pipeline {
     /// [`Exception::AddressError`] when an *aligned* access is misaligned. The
     /// `LWL`/`LWR` family is exempt by construction — being usable at any byte
     /// offset is the entire reason it exists.
-    fn access<B: Bus>(bus: &mut B, op: MemOp) -> Result<WriteBack, Exception> {
+    fn access<B: Bus>(&mut self, bus: &mut B, op: MemOp) -> Result<WriteBack, Exception> {
         // TODO(T-11-003): charge the cache-miss cost (8..=9 + M PCycles for a
         // D-cache fill, UM Table 11-1) once `M` is measured -- accuracy-ledger C-1.
         match op {
@@ -488,6 +526,51 @@ impl Pipeline {
                 }
                 Self::write_width(bus, translate(addr).addr, kind.width(), value);
                 Ok(WriteBack::None)
+            }
+            // Load linked: an ordinary aligned load that also arms the link.
+            MemOp::LinkedLoad { kind, addr, dest } => {
+                if !kind.is_aligned(addr) {
+                    // "If either of the low-order two bits of the address are
+                    // not zero, an address error exception takes place" (UM §16
+                    // p. 453) -- and the link is NOT armed, because the
+                    // instruction did not complete.
+                    return Err(Exception::AddressError);
+                }
+                let phys = translate(addr).addr;
+                let raw = Self::read_width(bus, phys, kind.width());
+                self.ll_bit = true;
+                // "the value with the high-order four bits of the physical
+                // address PA(31:4) ... zero-extended" (UM Figure 5-17).
+                self.ll_addr = u64::from(phys >> 4);
+                Ok(WriteBack::Gpr {
+                    dest,
+                    value: kind.shape(raw),
+                })
+            }
+            // Store conditional: the store is conditional, the flag write is not.
+            MemOp::ConditionalStore {
+                kind,
+                addr,
+                value,
+                dest,
+            } => {
+                if !kind.is_aligned(addr) {
+                    // "If this instruction both fails and causes an exception,
+                    // the exception takes precedence" (UM §16 p. 487) -- so the
+                    // address check runs before the link bit is even consulted,
+                    // and `dest` is left alone.
+                    return Err(Exception::AddressError);
+                }
+                let stored = self.ll_bit;
+                if stored {
+                    Self::write_width(bus, translate(addr).addr, kind.width(), value);
+                }
+                // Written whether or not the store happened. Note the link bit
+                // is deliberately NOT cleared here -- see `Pipeline::ll_bit`.
+                Ok(WriteBack::Gpr {
+                    dest,
+                    value: u64::from(stored),
+                })
             }
             // The unaligned family accesses the ALIGNED container holding `addr`
             // and merges, so it can never raise an address error.
@@ -1585,5 +1668,209 @@ mod tests {
         assert!(!load_interlocks(8, 8, 8, false));
         // No overlap at all.
         assert!(!load_interlocks(8, 9, 10, true));
+    }
+
+    // --- LL / SC (UM §16 pp. 453, 487; §3.1; §5.4.7) ------------------------
+
+    use crate::mem::{LoadKind, StoreKind};
+
+    /// The synchronisation tests need only the data half of [`Ram`].
+    fn ram() -> Ram {
+        Ram::new(alloc::vec![])
+    }
+
+    /// Without a preceding `LL` the store must not happen, and `rt` must still
+    /// be written — with 0. A `Store`-shaped implementation writes memory
+    /// unconditionally; a `Load`-shaped one never writes `rt` on failure.
+    #[test]
+    fn sc_without_ll_stores_nothing_and_reports_failure() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        let wb = p
+            .access(
+                &mut bus,
+                MemOp::ConditionalStore {
+                    kind: StoreKind::Word,
+                    addr: 0x40,
+                    value: 0xDEAD_BEEF,
+                    dest: 9,
+                },
+            )
+            .expect("aligned");
+        assert_eq!(
+            wb,
+            WriteBack::Gpr { dest: 9, value: 0 },
+            "failure is reported in rt as 0"
+        );
+        assert_eq!(bus.read_u32(0x40), 0, "memory untouched");
+    }
+
+    /// The ordinary success path, and the `LLAddr` side effect.
+    #[test]
+    fn ll_arms_the_link_and_records_the_physical_address() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        bus.data[0x40..0x44].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+
+        // KSEG0, so `translate` has to strip the segment for LLAddr to be right.
+        let wb = p
+            .access(
+                &mut bus,
+                MemOp::LinkedLoad {
+                    kind: LoadKind::SignedWord,
+                    addr: 0x8000_0040,
+                    dest: 8,
+                },
+            )
+            .expect("aligned");
+        assert_eq!(
+            wb,
+            WriteBack::Gpr {
+                dest: 8,
+                value: 0x1234_5678
+            }
+        );
+        assert!(p.ll_bit(), "LL arms the link bit");
+        assert_eq!(
+            p.ll_addr(),
+            0x40 >> 4,
+            "LLAddr holds PA(31:4) of the PHYSICAL address, not the virtual one"
+        );
+
+        let wb = p
+            .access(
+                &mut bus,
+                MemOp::ConditionalStore {
+                    kind: StoreKind::Word,
+                    addr: 0x8000_0040,
+                    value: 0xA5A5_A5A5,
+                    dest: 9,
+                },
+            )
+            .expect("aligned");
+        assert_eq!(wb, WriteBack::Gpr { dest: 9, value: 1 });
+        assert_eq!(bus.read_u32(0x40), 0xA5A5_A5A5, "the store happened");
+    }
+
+    /// The manual lists exactly what clears `LLbit`: *"set by the LL
+    /// instruction, cleared by an ERET, and tested by the SC instruction"*
+    /// (UM §3.1). `SC` is a *tester*, not a clearer.
+    ///
+    /// This is the assertion that fails if someone "tidies up" by clearing the
+    /// link in `SC` — which looks right, matches several other architectures,
+    /// and would make a second `SC` spuriously fail.
+    #[test]
+    fn sc_does_not_clear_the_link_bit() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        p.access(
+            &mut bus,
+            MemOp::LinkedLoad {
+                kind: LoadKind::SignedWord,
+                addr: 0x40,
+                dest: 8,
+            },
+        )
+        .expect("aligned");
+
+        for round in 0..3 {
+            let wb = p
+                .access(
+                    &mut bus,
+                    MemOp::ConditionalStore {
+                        kind: StoreKind::Word,
+                        addr: 0x40,
+                        value: 1,
+                        dest: 9,
+                    },
+                )
+                .expect("aligned");
+            assert_eq!(
+                wb,
+                WriteBack::Gpr { dest: 9, value: 1 },
+                "SC #{round} must still succeed -- nothing has cleared LLbit"
+            );
+            assert!(p.ll_bit(), "and the bit is still armed after SC #{round}");
+        }
+    }
+
+    /// *"If this instruction both fails and causes an exception, the exception
+    /// takes precedence"* (UM §16 p. 487) — so a misaligned `SC` must raise,
+    /// not quietly report failure in `rt`.
+    #[test]
+    fn misaligned_sc_raises_rather_than_reporting_failure() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        let err = p
+            .access(
+                &mut bus,
+                MemOp::ConditionalStore {
+                    kind: StoreKind::Word,
+                    addr: 0x42,
+                    value: 1,
+                    dest: 9,
+                },
+            )
+            .expect_err("misaligned");
+        assert_eq!(err, Exception::AddressError);
+    }
+
+    /// A misaligned `LL` must not arm the link — the instruction did not
+    /// complete, so a following `SC` has nothing to succeed against.
+    #[test]
+    fn misaligned_ll_does_not_arm_the_link() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        let err = p
+            .access(
+                &mut bus,
+                MemOp::LinkedLoad {
+                    kind: LoadKind::SignedWord,
+                    addr: 0x42,
+                    dest: 8,
+                },
+            )
+            .expect_err("misaligned");
+        assert_eq!(err, Exception::AddressError);
+        assert!(!p.ll_bit(), "a faulted LL leaves the link disarmed");
+    }
+
+    /// The doubleword forms share the path, but the width must actually differ.
+    #[test]
+    fn lld_and_scd_operate_on_eight_bytes() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        bus.data[0x40..0x48].copy_from_slice(&0x0123_4567_89AB_CDEFu64.to_be_bytes());
+
+        let wb = p
+            .access(
+                &mut bus,
+                MemOp::LinkedLoad {
+                    kind: LoadKind::Double,
+                    addr: 0x40,
+                    dest: 8,
+                },
+            )
+            .expect("aligned");
+        assert_eq!(
+            wb,
+            WriteBack::Gpr {
+                dest: 8,
+                value: 0x0123_4567_89AB_CDEF
+            }
+        );
+
+        p.access(
+            &mut bus,
+            MemOp::ConditionalStore {
+                kind: StoreKind::Double,
+                addr: 0x40,
+                value: u64::MAX,
+                dest: 9,
+            },
+        )
+        .expect("aligned");
+        assert_eq!(bus.read_u32(0x40), u32::MAX);
+        assert_eq!(bus.read_u32(0x44), u32::MAX, "all eight bytes, not four");
     }
 }

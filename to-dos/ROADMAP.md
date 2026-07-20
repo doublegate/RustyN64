@@ -13,16 +13,18 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 1 (CPU golden log) — not started. Phase 0 is complete: the workspace
-  compiles, all eight CI jobs are green across Linux/macOS/Windows, the docs site publishes, and
-  the test-ROM corpora are staged. No chip executes instructions yet.
+- **Current phase:** Phase 1 (CPU golden log) — **Sprint 1 complete**, Sprint 2 next. The
+  VR4300 executes the MIPS III integer set as a five-stage pipeline off a canonical 187.5 MHz
+  master clock, and `basic.z64` passes 5/5. Phase 0 is complete: the workspace compiles, CI is
+  green across Linux/macOS/Windows, the docs site publishes, and the test-ROM corpora are
+  staged. No chip *other than the CPU* executes instructions yet.
 - **Release:** v0.1.0, tagged. The architecture is in place — the Bus owns all mutable state,
   the scheduler runs, the crate graph is one-directional — but every chip `tick` is an
   LLE-shaped stub. See `docs/STATUS.md` for the honest per-subsystem state.
-- **The v0.1.0 scheduler is the superseded ADR 0001 timebase** (93.75 MHz tick, 3:2 fractional
-  accumulator). ADR 0006 replaces it with a canonical 187.5 MHz clock and integer divisors, and
-  ADR 0007 makes the CPU a cycle-accurate five-stage pipeline. Both are decided and documented;
-  implementing them is Phase 1 ticket **T-11-001**, which blocks every other Phase 1 ticket.
+- **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
+  and ADR 0007's cycle-accurate five-stage pipeline are both **implemented** (T-11-001); the
+  93.75 MHz tick and its 3:2 fractional accumulator no longer exist in the tree. The residue
+  invariant test in the default test path is what keeps them gone.
 
 ## The phase spine
 
@@ -34,7 +36,7 @@ oracle and hardware references acquired and organised.
 corpora staged with licence tiers enforced.
 → [overview](phase-0-foundation/overview.md)
 
-### Phase 1 — CPU golden log: NOT STARTED
+### Phase 1 — CPU golden log: IN PROGRESS (Sprint 1 of 3 complete)
 
 **Goal:** the VR4300 (MIPS III / R4300i) interpreter executes the full instruction set —
 including the TLB, COP0, and the FPU — and 0-diffs against a golden instruction trace.

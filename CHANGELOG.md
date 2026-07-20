@@ -9,6 +9,30 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — `LL` / `SC` / `LLD` / `SCD`, closing a Sprint 1 gap (T-11-003)
+
+The synchronisation pair was listed in T-11-003's acceptance criteria and in the Phase 1 exit
+criteria, and had **not** been implemented — the four opcodes decoded to `Reserved`. Found while
+verifying Sprint 1's criteria against the code rather than against the ticket's own checkboxes.
+
+- `LL`/`LLD` arm the link bit and record `PA(31:4)` in `LLAddr` (COP0 reg 17, diagnostic-only per
+  UM §5.4.7). `SC`/`SCD` test it, store only if set, and write 1/0 to `rt` **either way**.
+- A misaligned `SC` **raises** rather than reporting failure — *"If this instruction both fails
+  and causes an exception, the exception takes precedence"* (UM §16 p. 487). A misaligned `LL`
+  leaves the link disarmed.
+
+### Fixed — `docs/cpu.md` had the link-bit clearing rule wrong
+
+The spec said *"Any intervening store (or ERET) clears the link"*. The manual's list is
+exhaustive and does not include stores: *"set by the LL instruction, cleared by an ERET, and
+tested by the SC instruction"* (UM §3.1). `SC` is a **tester, not a clearer** — clearing it there
+looks right, matches other architectures, and makes the second iteration of an `LL`/`SC` retry
+loop fail forever. Now pinned by `sc_does_not_clear_the_link_bit`, and all five mutations of the
+new behaviour were checked to fail the suite before the tests were kept.
+
+`ERET` is the one thing that does clear it, and it arrives with the exception model in Sprint 2;
+until then nothing clears the bit, which `docs/cpu.md` now states rather than leaving implied.
+
 ### Added — the `SysAD` transaction model (T-11-008, partial)
 
 `sysad.rs` models the CPU↔RCP bus as a **packet protocol** — an address cycle carrying a

@@ -56,6 +56,32 @@ pub enum MemOp {
         /// Value from `rt`.
         value: u64,
     },
+    /// A **load linked**: an aligned load that also arms the link bit and
+    /// records the physical address in `LLAddr` (UM §16 p. 453).
+    LinkedLoad {
+        /// Width and signedness.
+        kind: LoadKind,
+        /// Effective address.
+        addr: u64,
+        /// Destination register.
+        dest: u8,
+    },
+    /// A **store conditional**: stores `value` only if the link bit is set, and
+    /// writes the outcome (1 = stored, 0 = not) to `dest` either way.
+    ///
+    /// Carrying `dest` is what makes this distinct from [`MemOp::Store`] — the
+    /// flag is architecturally visible even when nothing is written to memory
+    /// (UM §16 p. 487).
+    ConditionalStore {
+        /// Width.
+        kind: StoreKind,
+        /// Effective address.
+        addr: u64,
+        /// Value from `rt`.
+        value: u64,
+        /// Destination register for the success flag.
+        dest: u8,
+    },
     /// One half of an unaligned access. `rt` is needed for both directions: a
     /// partial load merges into it, and a partial store merges out of it.
     Unaligned {
@@ -378,6 +404,51 @@ pub const fn execute(
         Op::Sh => mem_store!(StoreKind::Half),
         Op::Sw => mem_store!(StoreKind::Word),
         Op::Sd => mem_store!(StoreKind::Double),
+        // The synchronisation pair. `EX` treats them exactly like their ordinary
+        // counterparts; all the link-bit behaviour is in `DC`, because that is
+        // where the bus access it is conditional on happens.
+        Op::Ll => Ok(Executed {
+            write_back: WriteBack::None,
+            stall_cycles: 0,
+            mem: Some(MemOp::LinkedLoad {
+                kind: LoadKind::SignedWord,
+                addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                dest: d.dest,
+            }),
+            redirect: None,
+        }),
+        Op::Lld => Ok(Executed {
+            write_back: WriteBack::None,
+            stall_cycles: 0,
+            mem: Some(MemOp::LinkedLoad {
+                kind: LoadKind::Double,
+                addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                dest: d.dest,
+            }),
+            redirect: None,
+        }),
+        Op::Sc => Ok(Executed {
+            write_back: WriteBack::None,
+            stall_cycles: 0,
+            mem: Some(MemOp::ConditionalStore {
+                kind: StoreKind::Word,
+                addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                value: rt_val,
+                dest: d.dest,
+            }),
+            redirect: None,
+        }),
+        Op::Scd => Ok(Executed {
+            write_back: WriteBack::None,
+            stall_cycles: 0,
+            mem: Some(MemOp::ConditionalStore {
+                kind: StoreKind::Double,
+                addr: rs_val.wrapping_add(sext_imm(d.imm)),
+                value: rt_val,
+                dest: d.dest,
+            }),
+            redirect: None,
+        }),
         // --- control flow. `pc` is this instruction's address; the delay slot
         // is at `pc + 4` and the instruction after it at `pc + 8`, which is what
         // the linking forms save.

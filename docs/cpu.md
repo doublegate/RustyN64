@@ -94,8 +94,11 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
   cache (16-byte lines), 24 KB L1 total, both direct-mapped, virtually-indexed
   and physically-tagged (UM §11.2). Model coherency against DMA: cart/RSP DMA writes land in
   RDRAM behind the cache, and games explicitly `CACHE`-flush/invalidate.
-- **LL/SC link bit** — set by `LL`/`LLD`, cleared by intervening stores; `SC`/
-  `SCD` succeed only if still set.
+- **LL/SC link bit** (`LLbit`) — set by `LL`/`LLD`, cleared by `ERET`; `SC`/`SCD`
+  *test* it and succeed only if it is set. **Not** cleared by an intervening
+  store, and **not** cleared by `SC` itself — see the gotcha below.
+  `LLAddr` (COP0 reg 17) holds `PA(31:4)` of the last `LL` and is diagnostic
+  only: nothing in the CPU reads it back (UM §5.4.7).
 
 ## Behavior
 
@@ -240,8 +243,29 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   Games flush/invalidate explicitly — model `CACHE` ops and the dirty-line
   write-back, or framebuffer/DMA data goes stale (`ref-docs/research-report.md`
   §1, §Open questions 4).
-- **`LL`/`SC` link-bit clearing.** Any intervening store (or ERET) clears the
-  link; `SC` must then fail and write 0 to its target register.
+- **`LL`/`SC` link-bit clearing — this doc previously had it wrong.** The
+  manual's list is exhaustive and short: *"The load link bit (`LLbit`) is set by
+  the LL instruction, cleared by an ERET, and tested by the SC instruction. The
+  only operation to the `LLbit` that can be implemented is a reset due to cache
+  invalidation"* (UM §3.1). So an intervening ordinary store does **not** clear
+  it, and neither does `SC`. Clearing it in `SC` is the natural-looking mistake —
+  several architectures do work that way — and it makes the second iteration of
+  a retry loop fail forever. Pinned by `sc_does_not_clear_the_link_bit`.
+
+  What the manual *does* say about intervening accesses is weaker and different:
+  a cache miss between `LL` and `SC` "hinders execution of the SC instruction",
+  so software is told not to put loads or stores there at all (UM §16 p. 453).
+  That is a caution to programmers, not an architectural clear.
+
+  `ERET` is the one clearer, and it lands with the exception model in Sprint 2.
+  Until then nothing clears the bit — correct as far as it goes, and incomplete.
+- **`SC` is a store with a register destination.** It writes 1/0 to `rt` whether
+  or not the store happened, which is a shape no other integer instruction has.
+  Decoding it with the store form (no destination) silently loses the flag, and
+  folding it into `is_load` stalls a cycle the hardware does not.
+- **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
+  detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
+  entry rather than a special case.
 - **SysAD is the only window out.** Every non-cached access becomes a SysAD
   transaction the RCP arbitrates against RSP/RDP/DMA traffic
   (`ref-docs/research-report.md` §1) — relevant to the bus-contention model
