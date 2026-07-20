@@ -255,12 +255,6 @@ impl Bus {
         addr >= rustyn64_cart::pi::PI_BASE && addr < rustyn64_cart::pi::PI_BASE + 0x34
     }
 
-    /// Write a PI register and perform any transfer it starts.
-    ///
-    /// The copy happens **here**, not in the PI engine, because the PI does not
-    /// own RDRAM — the Bus does. Having the engine reach back into its owner is
-    /// the cycle this architecture exists to avoid, so the engine returns a
-    /// description of the transfer and the owner carries it out.
     /// Perform an SP DMA between RDRAM and SPMEM.
     ///
     /// # The length encoding
@@ -320,6 +314,12 @@ impl Bus {
         self.sp_dram_addr = dram;
     }
 
+    /// Write a PI register and perform any transfer it starts.
+    ///
+    /// The copy happens **here**, not in the PI engine, because the PI does not
+    /// own RDRAM — the Bus does. Having the engine reach back into its owner is
+    /// the cycle this architecture exists to avoid, so the engine returns a
+    /// description of the transfer and the owner carries it out.
     pub fn pi_write_word(&mut self, addr: u32, val: u32) {
         let started = self.pi.write(addr, val);
         // Mirror the PI's interrupt state into the MI on EVERY write, not only
