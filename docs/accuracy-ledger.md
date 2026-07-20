@@ -278,6 +278,32 @@ absent. That is the correct outcome here but is not evidence about hardware.
 
 **Confirm with:** a hardware run of an `XDETECT` word with a known GPR value.
 
+### C-9 — PI direct-I/O write latch duration is fitted, not measured
+
+**Claim.** A PI direct-I/O write latches its value and shadows every PI-bus read
+for `Bus::PI_WRITE_CYCLES` (100) RCP cycles.
+
+**Documented part.** The *behaviour* is from N64brew *Memory map* (PI external
+bus): writes are asynchronous, the PI latches the value and releases the CPU
+immediately, `PI_STATUS.IOBUSY` reports the in-flight write, further writes are
+ignored, and reads from **any** address return the value being written. The PI
+does not know a device is read-only, so ROM writes follow the same path and are
+dropped by the ROM.
+
+**Undocumented part — the duration.** Hardware finalisation depends on the PI
+domain timing registers (`LAT`/`PWD`/`PGS`/`RLS`), which we do not model.
+n64-systemtest bounds the latch only relatively: visible after 0 decay-loop
+iterations, gone after 110. The constant was chosen by trying values against the
+suite and keeping the best.
+
+**Known-wrong, deliberately.** `cart-writing: Write32, Read32 (same location)`
+still fails on its **second** read, where hardware has finalised and we have not.
+No single constant closes that, because the real duration is not constant. This
+is recorded as a fitted approximation rather than presented as accurate.
+
+**Confirm with:** modelling the PI domain timing registers and deriving the
+finalisation time, then deleting the constant.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

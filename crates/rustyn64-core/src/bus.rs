@@ -88,6 +88,11 @@ pub struct Bus {
     isviewer: alloc::boxed::Box<[u8]>,
     /// Text the guest has flushed through the `ISViewer` channel.
     isviewer_out: alloc::vec::Vec<u8>,
+    /// The value a PI direct-I/O write latched, visible to every PI-bus read
+    /// until the write finalises. See [`Bus::pi_tick`].
+    pi_write_latch: u32,
+    /// RCP cycles remaining before the latched PI write finalises. Zero is idle.
+    pi_write_countdown: u32,
     /// SP DMA: the SPMEM-side address (bit 12 selects IMEM over DMEM).
     sp_mem_addr: u32,
     /// SP DMA: the RDRAM-side address.
@@ -130,6 +135,8 @@ impl Default for Bus {
             spmem: alloc::vec![0u8; Self::SPMEM_LEN].into_boxed_slice(),
             isviewer: alloc::vec![0u8; 0x20 + Self::ISVIEWER_LEN].into_boxed_slice(),
             isviewer_out: alloc::vec::Vec::new(),
+            pi_write_latch: 0,
+            pi_write_countdown: 0,
             sp_mem_addr: 0,
             sp_dram_addr: 0,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
@@ -149,6 +156,41 @@ impl Bus {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Advance the PI's asynchronous write by one RCP cycle.
+    ///
+    /// # Why a PI write is not immediate
+    ///
+    /// From N64brew *Memory map* (PI external bus):
+    ///
+    /// > All writes are performed **asynchronously** by the PI. Making a write
+    /// > in this area will in fact just cause the PI to latch the value
+    /// > internally, and release the VR4300 immediately. The write will then
+    /// > happen in background. [...] While a write is ongoing, further writes
+    /// > are ignored, and reads (from any address) return the 32-bit value that
+    /// > is being written.
+    ///
+    /// The PI does not know a device is read-only, so a write into ROM follows
+    /// the same path and is simply dropped by the ROM — which is why a value
+    /// written to cart ROM is briefly readable and then gone.
+    ///
+    /// # The duration is bounded by the oracle, not derived from hardware
+    ///
+    /// How long finalisation takes depends on the PI domain timing registers
+    /// (`LAT`/`PWD`/`PGS`/`RLS`), which are not modelled. n64-systemtest bounds
+    /// it only *relatively*: the latched value must still be visible after 0
+    /// loop iterations and gone after 110. [`Bus::PI_WRITE_CYCLES`] sits inside
+    /// those bounds; it is **not** a hardware measurement. Accuracy ledger C-9.
+    pub const fn pi_tick(&mut self) {
+        if self.pi_write_countdown > 0 {
+            self.pi_write_countdown -= 1;
+        }
+    }
+
+    /// Is a PI direct-I/O write still in flight?
+    const fn pi_io_busy(&self) -> bool {
+        self.pi_write_countdown > 0
     }
 
     /// Step the RSP against this bus's narrow [`RspBus`] view.
@@ -189,6 +231,21 @@ impl Bus {
     /// targets a memory-mapped register region instead.
     /// Base of RSP DMEM. IMEM follows at `+0x1000`.
     pub const SPMEM_BASE: u32 = 0x0400_0000;
+
+    /// RCP cycles a PI direct-I/O write stays latched before finalising.
+    ///
+    /// **This number is fitted, not measured.** Hardware finalisation depends on
+    /// the PI domain timing registers (`LAT`/`PWD`/`PGS`/`RLS`), which are not
+    /// modelled; n64-systemtest bounds the latch only relatively (visible after
+    /// 0 decay-loop iterations, gone after 110). 100 was the best of the values
+    /// tried against the suite.
+    ///
+    /// Treat that provenance as a warning, not a credential. The suite still
+    /// fails `Write32, Read32 (same location)` on its **second** read, where
+    /// hardware has finalised and we have not — a gap no single constant closes,
+    /// because the real duration is not constant. Modelling the domain registers
+    /// is the actual fix. Accuracy ledger C-9.
+    pub const PI_WRITE_CYCLES: u32 = 100;
 
     /// `SP_MEM_ADDR` (`0x0404_0000`) — the SPMEM side of an SP DMA.
     pub const SP_MEM_ADDR: u32 = 0x0404_0000;
@@ -402,7 +459,12 @@ impl CpuBus for Bus {
         }
         if Self::is_pi_register(addr) {
             // PI registers are 32-bit; a byte read selects within the word.
-            let w = self.pi.read(addr);
+            let mut w = self.pi.read(addr);
+            // `IOBUSY` covers the asynchronous direct-I/O write as well as DMA;
+            // software polls it to know when a cart write has landed.
+            if addr & !3 == rustyn64_cart::pi::PI_STATUS && self.pi_io_busy() {
+                w |= rustyn64_cart::pi::STATUS_IO_BUSY;
+            }
             return (w >> (8 * (3 - (addr & 3)))) as u8;
         }
         if Self::is_spmem(addr) {
@@ -431,6 +493,11 @@ impl CpuBus for Bus {
                 .unwrap_or(0);
         }
         if Self::is_pi_bus(addr) {
+            // A write in flight shadows the whole bus: reads from ANY address
+            // return the value being written, not the device's data.
+            if self.pi_io_busy() {
+                return self.pi_write_latch.to_be_bytes()[(addr & 3) as usize];
+            }
             return self.cart.pi_read(Self::pi_bus_byte(addr));
         }
         // TODO(T-CORE-01): decode the remaining RCP register windows
@@ -451,6 +518,9 @@ impl CpuBus for Bus {
         // debug channel's read-back to ROM and breaks the detection handshake
         // the suite uses to select it.
         if Self::is_pi_bus(addr) && !Self::is_isviewer(addr) {
+            if self.pi_io_busy() {
+                return self.pi_write_latch;
+            }
             return u32::from_be_bytes([
                 self.cart.pi_read(addr),
                 self.cart.pi_read(addr.wrapping_add(1)),
@@ -513,6 +583,16 @@ impl CpuBus for Bus {
         // SP DMA registers. Handled here, at word granularity, for the same
         // reason as the PI: the default byte-wise path would fire four DMAs for
         // one `sw` to a length register.
+        // A PI direct-I/O write latches and returns immediately; the transfer
+        // finalises in the background. Further writes while one is in flight are
+        // ignored -- not queued.
+        if Self::is_pi_bus(addr) && !Self::is_isviewer(addr) {
+            if !self.pi_io_busy() {
+                self.pi_write_latch = val;
+                self.pi_write_countdown = Self::PI_WRITE_CYCLES;
+            }
+            return;
+        }
         match addr {
             Self::SP_MEM_ADDR => {
                 self.sp_mem_addr = val & 0x1FF8;
@@ -1025,5 +1105,75 @@ mod pi_tests {
         }
         assert_eq!(bus.read_u8(0x0000_0002), 2, "RDRAM is NOT shifted");
         assert_eq!(bus.read_u32(0x0000_0000), 0x0001_0203);
+    }
+
+    /// **A PI direct-I/O write latches and shadows the whole bus.** While it is
+    /// in flight, reads from *any* PI address return the value being written --
+    /// including from ROM, which the PI has no way of knowing is read-only.
+    #[test]
+    fn a_pi_write_is_latched_and_shadows_reads_until_it_finalises() {
+        let mut bus = Bus::new();
+        let mut rom = alloc::vec![0u8; 0x1000];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        for (i, b) in rom.iter_mut().enumerate().skip(0x40) {
+            *b = (i & 0xFF) as u8;
+        }
+        bus.cart = rustyn64_cart::Cart::load(&rom).expect("valid z64");
+        let base = 0x1000_0040u32;
+        assert_eq!(bus.read_u32(base), 0x4041_4243, "ROM before the write");
+
+        bus.write_u32(base, 0xBADC_0FFE);
+        assert_eq!(
+            bus.read_u32(base),
+            0xBADC_0FFE,
+            "the latched value is read back"
+        );
+        assert_eq!(
+            bus.read_u32(base + 0x100),
+            0xBADC_0FFE,
+            "and shadows a DIFFERENT address too -- it is the bus, not the cell"
+        );
+
+        // ...and it decays: the ROM value returns once the write finalises.
+        for _ in 0..Bus::PI_WRITE_CYCLES {
+            bus.pi_tick();
+        }
+        assert_eq!(
+            bus.read_u32(base),
+            0x4041_4243,
+            "ROM is back; ROM ignored the write"
+        );
+    }
+
+    /// `PI_STATUS.IOBUSY` reports the asynchronous write, which is how software
+    /// knows when a cart write has landed.
+    #[test]
+    fn a_pi_write_sets_io_busy_until_it_finalises() {
+        let mut bus = Bus::new();
+        let st = rustyn64_cart::pi::PI_STATUS;
+        assert_eq!(bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY, 0);
+        bus.write_u32(0x1000_0000, 0xDEAD_BEEF);
+        assert_ne!(
+            bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY,
+            0,
+            "IOBUSY is set while the write is in flight"
+        );
+        for _ in 0..Bus::PI_WRITE_CYCLES {
+            bus.pi_tick();
+        }
+        assert_eq!(bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY, 0);
+    }
+
+    /// A second write while one is in flight is **ignored**, not queued.
+    #[test]
+    fn a_pi_write_during_another_is_ignored() {
+        let mut bus = Bus::new();
+        bus.write_u32(0x1000_0000, 0xAAAA_AAAA);
+        bus.write_u32(0x1000_0000, 0xBBBB_BBBB);
+        assert_eq!(
+            bus.read_u32(0x1000_0000),
+            0xAAAA_AAAA,
+            "the FIRST write still owns the bus"
+        );
     }
 }
