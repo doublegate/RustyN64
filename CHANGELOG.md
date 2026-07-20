@@ -9,6 +9,37 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — interrupts, `Count`/`Compare`, and the MI line (T-12-003)
+
+Assertion and recognition are kept **separate**, because they are different things: `Cause.IP`
+tracks what hardware asserts regardless of masks — software polls it — while recognition applies
+`IE`, `EXL`, `ERL` and `IM`. Folding them together makes a masked interrupt invisible to
+`MFC0 Cause`.
+
+Dropping the `EXL`/`ERL` terms is the classic version of this bug: it works until an interrupt
+arrives inside a handler, and then re-enters it forever. All four terms are pinned individually.
+
+**`Count` is derived, never incremented.** ADR 0006 permits exactly one incremented counter and it
+is `master_ticks`; the scheduler supplies the `Count` timeline (half PClock) and COP0 adds an
+epoch that `MTC0 Count` re-bases. So the register is guest-writable *without* being incremented,
+and cannot drift from the master clock. `Cpu::tick_at` is the seam. The scheduler's `count_ticks`
+doc comment predicted this exact split and is now correct rather than aspirational.
+
+**`IP7` is latched**, not a level: `Count == Compare` sets it and only a `Compare` write clears it
+(UM §6.4.18, p. 200). The first version of this modelled it as a level tied to the equality, which
+looked tidier and was wrong — the existence of a *documented* clearing mechanism is itself the
+evidence that it latches, since a level would self-clear and need none. Worse, a level silently
+**drops** any timer interrupt raised while `EXL` is set, because the equality holds for one tick
+and the handler never sees it. Caught in review; now pinned by a test that fails against the level
+implementation.
+
+**Ledger U-4 closed:** the MI drives **`IP2`**. Neither the CPU manual (board-level) nor the
+N64brew mirror states it; libdragon does — `C0_INTERRUPT_RCP = C0_INTERRUPT_2` — and is public
+domain, so it is citable rather than merely observed. It also gives `IP3` = CART, `IP4` = PRENMI,
+`IP7` = timer.
+
+All seven mutations of the interrupt path were confirmed to fail the suite.
+
 ### Added — exception dispatch and `ERET` (T-12-002)
 
 Exceptions were previously stamped into pipeline latches and never *dispatched* — nothing wrote

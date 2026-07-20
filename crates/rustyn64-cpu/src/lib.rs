@@ -186,8 +186,26 @@ impl Cpu {
     ///
     /// Hot path: keep allocation-free (no `Vec`/`Box` in `tick`). The `bus`
     /// argument is the `&mut Bus` the scheduler hands down each step.
+    /// **Prefer [`Cpu::tick_at`] when a scheduler is present.** This path holds
+    /// the COP0 `Count` timeline still, because `Count` is derived from the
+    /// master clock (ADR 0006) and this function has no access to it — so
+    /// `Count`/`Compare` and the timer interrupt do not advance. That is
+    /// deliberate: guessing a rate here would be wrong, and `Count` runs at half
+    /// `PClock`, not one step per call.
     pub fn tick<B: Bus>(&mut self, bus: &mut B) {
         self.pipeline.advance(bus, &mut self.regs, &mut self.pc);
+        self.retired = self.pipeline.retired;
+    }
+
+    /// Step one `PCycle` with the scheduler's `Count` timeline supplied.
+    ///
+    /// The scheduler owns `master_ticks` and derives `count_ticks` from it
+    /// (ADR 0006); the CPU turns that into the architectural, guest-writable
+    /// `Count`. Passing it in rather than incrementing locally is what keeps
+    /// `master_ticks` the only incremented counter in the core.
+    pub fn tick_at<B: Bus>(&mut self, bus: &mut B, count_now: u64) {
+        self.pipeline
+            .advance_at(bus, &mut self.regs, &mut self.pc, count_now);
         self.retired = self.pipeline.retired;
     }
 }

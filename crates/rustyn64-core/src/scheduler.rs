@@ -210,8 +210,9 @@ impl System {
     ///
     /// Not the architectural register: `Count` is guest-writable via `MTC0`, so
     /// the real value is affine — `epoch_value + (master_ticks - epoch_tick) /
-    /// COUNT_DIVIDER`, re-based on every write. That lives in the CPU once `COP0`
-    /// lands (Phase 1 Sprint 2); this is the timeline half of it.
+    /// COUNT_DIVIDER`, re-based on every write. The affine half lives in the CPU
+    /// (`rustyn64_cpu::cop0`, T-12-003) and is fed from here via `tick_at`; this
+    /// is the timeline half.
     #[must_use]
     pub const fn count_ticks(&self) -> u64 {
         (self.master_ticks + self.phases.cpu) / COUNT_DIVIDER
@@ -251,7 +252,10 @@ impl System {
     /// and is a determinism-visible change.
     fn step_due_here(&mut self) {
         if Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER) {
-            self.cpu.tick(&mut self.bus);
+            // `count_ticks` is derived from `master_ticks`, never incremented,
+            // and the CPU turns it into the guest-writable `Count` (ADR 0006).
+            let count_now = self.count_ticks();
+            self.cpu.tick_at(&mut self.bus, count_now);
         }
         if Self::is_edge(self.master_ticks, self.phases.rcp, RCP_DIVIDER) {
             self.step_rcp();

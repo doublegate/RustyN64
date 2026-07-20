@@ -197,6 +197,58 @@ returns to the wrong address. `ERET` **always clears `LLbit`** — the other hal
 the `LL`/`SC` contract, which had nothing clearing it until now — and has **no
 delay slot**, alone among the control transfers.
 
+### Interrupts and the timer (implemented, T-12-003)
+
+Two distinct steps, and conflating them is a real bug:
+
+1. **Assertion** — the `Cause.IP` bits track what hardware is asserting,
+   *regardless of masks*, because software polls `Cause` directly. Folding this
+   into recognition makes a masked line invisible to `MFC0 Cause`.
+2. **Recognition** — `Status.IE` **and** `Status.EXL` clear **and** `Status.ERL`
+   clear **and** `Cause.IP & Status.IM` non-zero (UM §6.1 p. 160, §6.3.5 p. 168,
+   Fig. 14-4 p. 357). Dropping the `EXL`/`ERL` terms works until an interrupt
+   arrives inside a handler, and then re-enters it forever.
+
+Recognition is sampled once per PCycle in `DC`, gated on the previous PCycle
+having been a run cycle (UM §4.7.1). That remains the **only** recognition
+predicate in the tree.
+
+**The interrupt lines**, from libdragon `cop0.h` (public domain; ledger U-4 —
+the CPU manual cannot say, since this is board wiring):
+
+| Bit | Source |
+| --- | --- |
+| `IP0`, `IP1` | software only — no hardware path |
+| **`IP2`** | **the RCP's aggregate line from the MI** |
+| `IP3` | CART |
+| `IP4` | PRENMI |
+| `IP7` | the `Count`/`Compare` timer |
+
+#### `Count` is derived, not incremented
+
+ADR 0006 permits exactly one incremented counter in the core, and it is
+`master_ticks`. `Count` is therefore **affine**: the scheduler supplies the
+timeline (`count_ticks`, at half PClock — every 4th master tick), and COP0 adds
+an epoch that an `MTC0 Count` re-bases. So the register is guest-writable
+*without* ever being incremented, and cannot drift from the master clock.
+
+`Count == Compare` **latches** `IP7`, which then stays set until `Compare` is
+written (UM §6.4.18, p. 200):
+
+> *"If the timer interrupt request is generated, either clear the IP7 bit of the
+> Cause register or change the contents of the Compare register, to clear this
+> interrupt."*
+
+The existence of that documented clear **is** the evidence it is latched: a level
+tied to `Count == Compare` would self-clear on the next tick and need no clearing
+mechanism at all. It would also **lose** any timer interrupt raised while `EXL`
+was set — the equality holds for one tick, and a handler would never see it.
+Pinned by `a_timer_interrupt_raised_while_exl_is_set_survives_until_eret`.
+
+Note the manual's first option, writing `Cause.IP7`, is not available on this
+part: `Cause` is read-only to software except `IP1:IP0`. Writing `Compare` is the
+usable path, and the one libdragon takes.
+
 ## Behavior
 
 ### Pipeline and timing

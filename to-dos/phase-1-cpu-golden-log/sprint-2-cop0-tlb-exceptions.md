@@ -123,17 +123,17 @@ cycle-accurate core differs from an interpreter.
 
 **Acceptance criteria:**
 
-- [ ] An interrupt is taken iff `IE=1` **and** `EXL=0` **and** `ERL=0` **and** the matching `IM`
+- [x] An interrupt is taken iff `IE=1` **and** `EXL=0` **and** `ERL=0` **and** the matching `IM`
       bit is set. Exactly one recognition predicate, reusing Sprint 1's DC-stage sampling — the
       T-11-001 criterion that there be only one such predicate in the tree still holds.
-- [ ] `Count` increments at **half PClock** (every 4th master tick), which ADR 0006's
+- [x] `Count` increments at **half PClock** (every 4th master tick), which ADR 0006's
       `COUNT_DIVIDER = 4` already provides — this ticket asserts it end to end rather than
       re-implementing it.
-- [ ] `Count == Compare` sets `Cause.IP7`; it is cleared by clearing `IP7` **or by writing
+- [x] `Count == Compare` sets `Cause.IP7`; it is cleared by clearing `IP7` **or by writing
       `Compare`** (UM §6.3.4 p. 165). The write-side effect is the one that gets missed.
-- [ ] `IP1:0` are software-only — settable and clearable by software, with no hardware path.
+- [x] `IP1:0` are software-only — settable and clearable by software, with no hardware path.
 - [ ] NMI bypasses `IE`/`EXL`/`ERL` entirely and vectors to `0xBFC0_0000`.
-- [ ] Which `Int[4:0]` line the MI drives is **board-level and not in the CPU manual**
+- [x] Which `Int[4:0]` line the MI drives is **board-level and not in the CPU manual**
       (ledger U-4). Resolve it from the N64brew wiki before wiring, and record the source.
 - [ ] A `Count`/`Compare` interrupt fires at the right cycle under a multi-cycle stall, not
       merely at the right instruction.

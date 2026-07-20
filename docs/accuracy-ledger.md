@@ -161,7 +161,7 @@ implementation choice here is treated as correct.
 | U-1 | `MFC0`/`MTC0` on COP0 registers 7, 21–25, 31 | *"Reserved for future use"* (UM Table 1-2 p. 46) and nothing further — no read value, no write effect | Sprint 2 |
 | U-2 | `TLBP` low `Index` bits on a miss | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
 | U-3 | The N64's full `PRId` value | `Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151) | Sprint 2 |
-| U-4 | Which `Int[4:0]` line the MI drives | Board-level, outside the CPU manual entirely | Sprint 2 |
+| U-4 | ~~Which `Int[4:0]` line the MI drives~~ | **RESOLVED** — `IP2`. Not in the CPU manual (board-level) nor in the N64brew mirror, but stated by libdragon: `#define C0_INTERRUPT_RCP C0_INTERRUPT_2` (`ref-proj/libdragon/include/cop0.h`), which also gives `IP3` = CART, `IP4` = PRENMI, `IP7` = timer. libdragon is public domain, so this is citable rather than merely observed | **closed** |
 | U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | Sprint 2 |
 | U-6 | `Config.EC` on the N64 | `0b111` (1:1.5) is allowed *"with the 100 MHz model only"* (UM Appendix A note 1, p. 628), and the N64's ratio is 1:1.5 — so `0b111` is a strong **inference**, but the manual never names the N64 | Sprint 2 |
 
@@ -263,4 +263,5 @@ Behaviour we model differently *on purpose*, so it is never mistaken for a bug.
 | # | Deviation | Why | Bounded by |
 | --- | --- | --- | --- |
 | D-1 | Power-on CPU/RCP phase comes from a seeded PRNG, not from real indeterminacy | The determinism contract requires reproducibility; the hardware's own indeterminacy is documented (UM Table 11-1's "1 to 2 PCycles: synchronize with SClock") and is modelled as a *parameter* rather than eliminated | ADR 0004, ADR 0006 |
+| D-3 | `Count` and `Compare` both reset to a deterministic **0**, so the timer matches at power-on and latches `IP7` | Both reset values are **undefined** (UM §6.4.4, p. 183) and ADR 0004 forbids entropy, so *some* fixed pair must be chosen; 0/0 is the least surprising. The consequence is a timer interrupt pending before software writes `Compare` — masked in practice, since cold reset also leaves `IE` clear and `ERL` set | ADR 0004; IPL3 writes `Compare` during boot, so no real ROM observes it. Revisit if n64-systemtest's startup set disagrees |
 | D-2 | The VR4300 errata are **reproduced**, not fixed | They are observable behaviour that software depends on; `sra`/`srav` in particular affects every console | ADR 0007; pinned by named tests that fail if "corrected" |

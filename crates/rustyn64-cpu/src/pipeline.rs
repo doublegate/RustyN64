@@ -452,6 +452,32 @@ impl Pipeline {
     ///
     /// Hot path: allocation-free.
     pub fn advance<B: Bus>(&mut self, bus: &mut B, regs: &mut Regs, next_pc: &mut u64) {
+        // The timeline is HELD, not advanced. `Count` runs at half PClock, so
+        // bumping it once per PClock here would run the timer at double rate --
+        // and inventing a parity bit to halve it would be a second incremented
+        // counter, which is what ADR 0006 exists to forbid.
+        //
+        // Holding is the honest option: with no scheduler attached there is no
+        // timeline, so `Count` does not move. Anything exercising `Count` or
+        // `Compare` must call `advance_at` and supply the position.
+        self.advance_at(bus, regs, next_pc, self.cop0.count_now());
+    }
+
+    /// [`Pipeline::advance`], with the scheduler's `Count` timeline supplied.
+    ///
+    /// `Count` is **derived** from the master clock (ADR 0006), so the position
+    /// is passed in rather than incremented here. This is the path the scheduler
+    /// uses ([`crate::Cpu::tick_at`]); [`Pipeline::advance`] is a convenience
+    /// for callers with no scheduler, and **holds** the timeline rather than
+    /// guessing at it.
+    pub fn advance_at<B: Bus>(
+        &mut self,
+        bus: &mut B,
+        regs: &mut Regs,
+        next_pc: &mut u64,
+        count_now: u64,
+    ) {
+        self.cop0.set_now(count_now);
         // A stall consumes the cycle. The pipeline holds its state, and the cycle
         // is recorded as NOT a run cycle so an interrupt cannot be accepted on the
         // cycle following it (UM §4.7.1).
@@ -521,7 +547,26 @@ impl Pipeline {
         // PCycle was a run cycle (UM §4.7.1). This is the ONLY interrupt
         // recognition predicate in the tree -- carrying two subtly different ones
         // is a known source of one-cycle discrepancies in other emulators.
-        if self.prev_was_run && bus.poll_irq() {
+        //
+        // Two steps, and they are different things: the IP bits track what the
+        // hardware is *asserting* regardless of masks, and recognition then
+        // applies IE/EXL/ERL/IM. Folding them together would make a masked
+        // interrupt invisible to `MFC0 Cause`, which software polls.
+        //
+        // IP2 is the RCP's aggregate line from the MI (libdragon `cop0.h`:
+        // `C0_INTERRUPT_RCP = C0_INTERRUPT_2`; ledger U-4). IP3 is CART, IP4
+        // PRENMI, IP7 the timer; the rest are unused on this board.
+        self.cop0.set_ip(2, bus.poll_irq());
+        // IP7 is LATCHED on the match and stays set until `Compare` is written
+        // (UM §6.4.18, p. 200) -- note the one-way `if`, with no `else` clearing
+        // it. Modelling it as a level tied to `Count == Compare` looks tidier
+        // and silently DROPS any timer interrupt that fires while `EXL` is set,
+        // because the equality holds for one tick and the handler never sees it.
+        if self.cop0.timer_matches() {
+            self.cop0.set_ip(7, true);
+        }
+
+        if self.prev_was_run && self.cop0.interrupt_pending() {
             self.abort_from(Stage::Dc, Exception::Interrupt);
         }
         // The memory access. This is the point the scheduler interleaves the RCP
@@ -1106,7 +1151,15 @@ mod tests {
     /// *previous* `PCycle` was a run cycle. The cycle right after a stall is not.
     #[test]
     fn interrupt_is_not_accepted_on_the_cycle_after_a_stall() {
+        /// `IE` set, `IM2` (the RCP line) unmasked, `EXL`/`ERL` clear.
+        ///
+        /// Needed since T-12-003: an asserted line is no longer sufficient on
+        /// its own, and cold reset leaves `ERL` **set**, which alone blocks
+        /// every interrupt.
+        const IRQ_READY: u64 = 1 | (1 << 10);
+
         let mut p = Pipeline::new();
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, IRQ_READY);
         let mut pc = 0x8000_0000;
         let mut regs = Regs::new();
         let mut bus = NullBus { irq: true };
@@ -1123,6 +1176,7 @@ mod tests {
 
         // Now stall, and check the very next cycle refuses it.
         let mut p = Pipeline::new();
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, IRQ_READY);
         let mut pc = 0x8000_0000;
         let mut regs = Regs::new();
         p.advance(&mut bus, &mut regs, &mut pc);
@@ -1848,6 +1902,25 @@ mod tests {
 
     use crate::mem::{LoadKind, StoreKind};
 
+    /// A bus that fetches `NOP`s and holds its interrupt line asserted.
+    ///
+    /// Reads return 0, which decodes to `SLL $0, $0, 0` — the canonical `NOP` —
+    /// so the pipeline runs without any instruction interfering with what these
+    /// tests observe.
+    struct AlwaysIrq;
+    impl Bus for AlwaysIrq {
+        fn read_u8(&mut self, _a: u32) -> u8 {
+            0
+        }
+        fn write_u8(&mut self, _a: u32, _v: u8) {}
+        fn read_u32(&mut self, _a: u32) -> u32 {
+            0
+        }
+        fn poll_irq(&mut self) -> bool {
+            true
+        }
+    }
+
     /// The synchronisation tests need only the data half of [`Ram`].
     fn ram() -> Ram {
         Ram::new(alloc::vec![])
@@ -2132,6 +2205,11 @@ mod tests {
         let mut bus = Ram::new(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
+        // Move `Compare` off `Count`'s reset value first. Both reset undefined
+        // (UM §6.4.4) and we choose a deterministic zero for each, so they match
+        // at power-on and latch IP7 -- see accuracy-ledger D-3. Harmless, but it
+        // would show up in `Cause` here and obscure what this test is about.
+        p.cop0.mtc0(crate::cop0::reg::COMPARE, 0xFFFF);
         let mut pc = 0x800u64;
         for _ in 0..24 {
             p.advance(&mut bus, &mut regs, &mut pc);
@@ -2365,6 +2443,201 @@ mod tests {
             p.cop0.read(crate::cop0::reg::EPC),
             first_epc,
             "the first handler's return address must survive (UM §6.3.7)"
+        );
+    }
+
+    // --- interrupts, Count/Compare (T-12-003) -------------------------------
+
+    /// Every term of the recognition predicate is load-bearing. Dropping the
+    /// `EXL`/`ERL` terms is the classic bug: it works until an interrupt arrives
+    /// inside a handler, and then re-enters it forever.
+    #[test]
+    fn every_term_of_the_interrupt_predicate_is_required() {
+        use crate::cop0::reg;
+        let ready = 1u64 | (1 << 10); // IE | IM2
+
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, ready);
+        p.cop0.set_ip(2, true);
+        assert!(p.cop0.interrupt_pending(), "all four conditions met");
+
+        for (name, status) in [
+            ("IE clear", ready & !1),
+            ("EXL set", ready | (1 << 1)),
+            ("ERL set", ready | (1 << 2)),
+            ("IM2 masked", ready & !(1 << 10)),
+        ] {
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, status);
+            p.cop0.set_ip(2, true);
+            assert!(
+                !p.cop0.interrupt_pending(),
+                "{name}: the interrupt must NOT be recognised"
+            );
+        }
+    }
+
+    /// A masked interrupt must still be *visible* in `Cause.IP`, because
+    /// software polls it. Folding assertion and recognition into one step makes
+    /// a masked line invisible to `MFC0 Cause`.
+    #[test]
+    fn a_masked_interrupt_is_still_visible_in_cause() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = AlwaysIrq;
+        // IE set but IM2 MASKED, so nothing is recognised.
+        p.cop0.set_hardware(reg::STATUS, 1);
+
+        p.advance(&mut bus, &mut regs, &mut pc);
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 10),
+            0,
+            "IP2 is asserted even though it is masked"
+        );
+        assert!(!p.cop0.interrupt_pending(), "but not recognised");
+    }
+
+    /// `Count` reaching `Compare` raises `IP7`, and writing `Compare` clears it
+    /// as a side effect (UM §6.3.4, p. 165).
+    #[test]
+    fn the_timer_interrupt_sets_ip7_and_a_compare_write_clears_it() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        p.cop0.mtc0(reg::COMPARE, 3);
+
+        // Walk the timeline to the match.
+        for now in 0..=3 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+        }
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 15),
+            0,
+            "IP7 set at Count==Compare"
+        );
+
+        // It must PERSIST as Count runs past Compare. A level implementation
+        // clears here, and with it drops any timer interrupt raised while the
+        // CPU could not accept one.
+        for now in 4..20 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+            assert_ne!(
+                p.cop0.read(reg::CAUSE) & (1 << 15),
+                0,
+                "IP7 must stay latched past the match (UM §6.4.18)"
+            );
+        }
+
+        // Only writing Compare clears it.
+        p.cop0.mtc0(reg::COMPARE, 999);
+        assert_eq!(
+            p.cop0.read(reg::CAUSE) & (1 << 15),
+            0,
+            "writing Compare clears the timer interrupt"
+        );
+        p.advance_at(&mut bus, &mut regs, &mut pc, 20);
+        assert_eq!(p.cop0.read(reg::CAUSE) & (1 << 15), 0, "and it stays clear");
+    }
+
+    /// The convenience [`Pipeline::advance`] **holds** the `Count` timeline
+    /// rather than guessing a rate for it.
+    ///
+    /// `Count` runs at half `PClock`, so stepping it once per `advance` would run
+    /// the timer at double rate — and halving it with a parity bit would be a
+    /// second incremented counter, exactly what ADR 0006 forbids. Anything that
+    /// exercises `Count` must use `advance_at`.
+    #[test]
+    fn the_convenience_advance_holds_the_count_timeline() {
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = Ram::new(alloc::vec![]);
+
+        p.advance_at(&mut bus, &mut regs, &mut pc, 7);
+        assert_eq!(p.cop0.read(crate::cop0::reg::COUNT), 7);
+        for _ in 0..10 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::COUNT),
+            7,
+            "held, not advanced at PClock rate"
+        );
+    }
+
+    /// **Why `IP7` must latch.** A timer interrupt that fires while the CPU
+    /// cannot accept one — `EXL` set, i.e. inside a handler — must still be
+    /// waiting when the handler returns.
+    ///
+    /// With `IP7` modelled as a level tied to `Count == Compare`, the equality
+    /// holds for a single tick, so the interrupt is silently **lost**. That is
+    /// the failure the latch prevents, and it is invisible to any test that only
+    /// checks the match cycle itself.
+    #[test]
+    fn a_timer_interrupt_raised_while_exl_is_set_survives_until_eret() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = Ram::new(alloc::vec![]);
+        // IE and IM7 set, but EXL set too: a handler is running.
+        p.cop0.set_hardware(reg::STATUS, 1 | (1 << 15) | (1 << 1));
+        p.cop0.mtc0(reg::COMPARE, 3);
+
+        for now in 0..=10 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+        }
+        assert!(
+            !p.cop0.interrupt_pending(),
+            "EXL blocks it, correctly, for now"
+        );
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 15),
+            0,
+            "but IP7 is still asserted, waiting"
+        );
+
+        // The handler returns.
+        let status = p.cop0.read(reg::STATUS);
+        p.cop0.set_hardware(reg::STATUS, status & !(1 << 1));
+        assert!(
+            p.cop0.interrupt_pending(),
+            "and the timer interrupt is taken now, not dropped"
+        );
+    }
+
+    /// An interrupt taken through the pipeline runs the whole epilogue: `EXL`
+    /// set, `ExcCode` = 0, vectored.
+    #[test]
+    fn an_accepted_interrupt_vectors_with_exccode_zero() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = AlwaysIrq;
+        p.cop0.set_hardware(reg::STATUS, 1 | (1 << 10));
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 12, "the interrupt was never taken");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::INT
+        );
+        assert_ne!(p.cop0.read(reg::STATUS) & (1 << 1), 0, "EXL set");
+        assert_eq!(pc, 0xFFFF_FFFF_8000_0180);
+        // And now that EXL is set, the still-asserted line must NOT re-enter.
+        assert!(
+            !p.cop0.interrupt_pending(),
+            "EXL blocks re-entry while the handler runs"
         );
     }
 }
