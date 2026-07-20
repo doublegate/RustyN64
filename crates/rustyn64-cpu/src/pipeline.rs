@@ -744,7 +744,8 @@ impl Pipeline {
     /// Translate a data address through the TLB.
     fn translate_data(&mut self, vaddr: u64, store: bool) -> Result<u32, Exception> {
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store) {
+        let erl = self.erl();
+        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store, erl) {
             Ok(p) => Ok(p.addr),
             Err(f) => {
                 self.fault_vaddr = vaddr;
@@ -867,6 +868,11 @@ impl Pipeline {
             return Some(unit);
         }
         None
+    }
+
+    /// `Status.ERL` — the error level, which makes KUSEG unmapped (UM §5.2.2).
+    fn erl(&self) -> bool {
+        self.cop0.read(crate::cop0::reg::STATUS) & (1 << 2) != 0
     }
 
     /// Mirror a TLB shutdown into `Status.TS`.
@@ -1241,7 +1247,7 @@ impl Pipeline {
         // JTLB miss is an exception. Only the mapped segments involve either --
         // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let phys = match crate::addr::segment(pc) {
+        let phys = match crate::addr::segment(pc, self.erl()) {
             crate::addr::Segment::Direct { addr, .. } => addr,
             crate::addr::Segment::Mapped => {
                 // The 3-PCycle penalty is "incurred when the micro-TLB is
