@@ -366,14 +366,26 @@ short of asking it.
    **Fixed** — advanced at retirement, pinned by a test driven through `advance` rather than by
    calling the method directly — **and the loop persists unchanged**: still one distinct `EPC`,
    still `TLBL`. So the refill failure is candidate 2 or 3.
-2. The handler itself faults, so the exception nests: the first fault takes the refill vector
-   (`0x8000_0000`, `EXL=0`), the nested one takes the general vector (`0x8000_0180`, `EXL=1`) —
-   consistent with the earlier histogram showing `0x180` hottest rather than `0x000`.
-3. The address at `0x8018_32E8` is one the suite expects to be *unmapped* — meaning our segment
-   decode sends it through the TLB when hardware would not.
+2. **CONFIRMED — the handler itself faults.** The instruction at `0x8018_32E8` is `0x42800060`:
+   COP0 CO-class, funct **`0x20`**, which is n64-systemtest's `XDETECT_FUNCT` — the **emux probe
+   opcode** (`ref-proj/n64-systemtest/src/emux.rs`). The suite executes it deliberately to ask
+   *"am I running under emux?"*, expecting a Reserved Instruction exception on anything else.
 
-Disassembling the load at `0x8018_32E8` and dumping the TLB after the handler's first `TLBWR` will
-separate these; both are one probe each.
+   Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set to `0x8018_32E8`.
+   But the reported `ExcCode` is **2 (`TLBL`)**, not 10 (`RI`) — meaning a **second** fault happens
+   *inside the handler*, and `EPC` survives it exactly as the `EXL` gate requires. That also
+   explains the histogram: `0x180` (general, `EXL=1`) hotter than `0x000` (refill, `EXL=0`).
+
+   **So the bug is a load inside the suite's exception handler that TLB-misses and never
+   resolves.** The next probe is narrow: trace PCs *between* the RI and the nested `TLBL` to find
+   which load in the handler faults, and what address it computes.
+3. ~~The address at `0x8018_32E8` is one the suite expects to be unmapped.~~ **Ruled out** —
+   `0x8018_32E8` is the *instruction* address, in KSEG0, and it fetches fine. The faulting access
+   is a data load elsewhere.
+
+Disassembling `0x8018_32E8` separated these in one step. Note what made it possible: the
+**instruction word**, not the address. `0x42800060` is meaningless as an address and unambiguous
+as an encoding.
 
 Output routing and budget are **secondary** and were previously mis-ranked as the remaining work:
 

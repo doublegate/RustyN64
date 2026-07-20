@@ -72,8 +72,18 @@ distinguishes them is whether `EPC` *moves*, and it never does. Worth recording,
 instruction" is the question this whole diagnosis was built on and I stopped one step short of
 asking it.
 
-The remaining problem is therefore a **TLB refill that never resolves**, not output routing.
-Candidates and the probes that separate them are in the ticket.
+The remaining problem is therefore a **TLB refill that never resolves**, and disassembling the
+faulting address identified it precisely. `0x8018_32E8` holds `0x42800060` — COP0 CO-class, funct
+`0x20`, which is n64-systemtest's **emux probe opcode**. The suite executes it deliberately to ask
+"am I running under emux?", expecting a Reserved Instruction exception anywhere else.
+
+Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set. But the reported
+`ExcCode` is **2 (`TLBL`)**, not 10 (`RI`) — meaning a **second fault happens inside the handler**,
+with `EPC` surviving exactly as the `EXL` gate requires. That also explains why `0x180` (general,
+`EXL=1`) was hotter than `0x000` (refill, `EXL=0`).
+
+So the bug is a load inside the suite's own exception handler that TLB-misses and never resolves.
+The next probe is narrow: trace PCs between the RI and the nested `TLBL`.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
