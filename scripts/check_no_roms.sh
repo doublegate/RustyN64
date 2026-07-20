@@ -18,10 +18,23 @@
 
 set -euo pipefail
 
-# A commercial N64 cartridge is 4-64 MB. The largest legitimately committed file
-# in this repo is ref-docs/research-report.md at ~51 KB, so 2 MB is a generous
-# ceiling that still catches every real ROM.
+# A commercial N64 cartridge is 4-64 MB. Outside the allowlist below, nothing in
+# this repo is legitimately large, so 2 MB catches every real ROM.
 MAX_BYTES=$((2 * 1024 * 1024))
+
+# Committed-tier test ROMs are ALLOWED here, but only under these exact paths and
+# only when permissively licensed. This is the counterpart to the .gitignore
+# re-include rules; keep the two lists in step.
+#
+# Adding a path here is a licensing decision, not a convenience: the corpus must
+# be redistributable (MIT / BSD / Zlib / CC0 / public domain). Copyleft (GPL) and
+# unlicensed corpora stay in the gitignored tests/roms/external/ tier, and
+# commercial ROMs never enter the tree at all. See tests/roms/README.md.
+ALLOW_RE='^tests/roms/n64-systemtest/'
+
+# Allowlisted ROMs are exempt from MAX_BYTES (a test ROM legitimately runs to a
+# few MB), but capped so a commercial dump cannot hide behind the allowlist.
+ALLOW_MAX_BYTES=$((8 * 1024 * 1024))
 
 ROM_RE='\.(z64|n64|v64|ndd)$'
 
@@ -44,15 +57,34 @@ fail=0
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
 
-  if [ "$size_only" -eq 0 ] && printf '%s' "$f" | grep -qiE "$ROM_RE"; then
+  allowed=0
+  if printf '%s' "$f" | grep -qE "$ALLOW_RE"; then
+    allowed=1
+  fi
+
+  if [ "$size_only" -eq 0 ] && [ "$allowed" -eq 0 ] \
+     && printf '%s' "$f" | grep -qiE "$ROM_RE"; then
     echo "ERROR: $f looks like a console ROM (extension)." >&2
     fail=1
     continue
   fi
 
+  # A committed ROM must ship its upstream licence alongside it, so the grant
+  # travels with the binary instead of living only in a README someone can
+  # forget to update.
+  if [ "$allowed" -eq 1 ] && printf '%s' "$f" | grep -qiE "$ROM_RE"; then
+    dir=$(dirname "$f")
+    if ! compgen -G "$dir/LICENSE*" > /dev/null; then
+      echo "ERROR: $f is allowlisted but $dir/ has no LICENSE file." >&2
+      fail=1
+    fi
+  fi
+
+  limit=$MAX_BYTES
+  [ "$allowed" -eq 1 ] && limit=$ALLOW_MAX_BYTES
   bytes=$(wc -c < "$f")
-  if [ "$bytes" -gt "$MAX_BYTES" ]; then
-    echo "ERROR: $f is $((bytes / 1024 / 1024)) MB, over the $((MAX_BYTES / 1024 / 1024)) MB limit." >&2
+  if [ "$bytes" -gt "$limit" ]; then
+    echo "ERROR: $f is $((bytes / 1024 / 1024)) MB, over the $((limit / 1024 / 1024)) MB limit." >&2
     fail=1
   fi
 done

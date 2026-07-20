@@ -1,5 +1,11 @@
 [workspace]
 resolver = "2"
+# Gitignored study/reference trees that contain their own Cargo projects
+# (ref-proj/n64-systemtest, ref-proj/gopher64, ...). Without this, cargo's
+# upward workspace discovery makes those crates resolve THIS workspace as their
+# root and try to parse our members -- which fails outright on the older pinned
+# toolchains some of them require. Excluding them lets each build standalone.
+exclude = ["ref-proj", "n64brew_wiki"]
 members = [
     "crates/rustyn64-core",
     "crates/rustyn64-cpu",

@@ -66,6 +66,15 @@ __pycache__/
 *.n64
 *.v64
 *.ndd
+
+# Re-include the COMMITTED tier: permissively-licensed test suites only, each
+# shipping its upstream LICENSE verbatim. Keep this list in step with ALLOW_RE
+# in scripts/check_no_roms.sh, and see tests/roms/README.md for the tier rules.
+# Copyleft and unlicensed corpora do NOT get a negation -- they stay external.
+!/tests/roms/n64-systemtest/*.z64
+
+# ...then hard-exclude the external tier again, so no negation above can ever
+# accidentally re-include a commercial dump. Order matters: this comes last.
 /tests/roms/external/
 
 # rusty-console-forge additions

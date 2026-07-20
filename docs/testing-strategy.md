@@ -27,6 +27,25 @@ Angrylion reference is non-commercial MAME-licensed despite shipping no
 `LICENSE` file, so it is compare-outputs-only). The commercial corpus is staged
 locally at `tests/roms/external/commercial/` — see **Layer 5** below.
 
+### Corpus tiers and what is actually staged
+
+`tests/roms/` is split into a **committed tier** (permissively licensed, in the
+git tree) and an **external tier** (gitignored, local only). Promotion to the
+committed tier is a licensing decision, not a convenience — full rules and
+provenance in `tests/roms/README.md`.
+
+| Corpus | Licence (verified) | Tier | Staged |
+|---|---|---|---|
+| `n64-systemtest/` | MIT | **committed** | 1 ROM, 2.7 MB — built from source |
+| `external/krom/` | Unlicense (public domain) | external (size) | 196 ROMs, 182 MB |
+| `external/dillon-n64-tests/` | **none** | external (no grant) | 26 ROMs, 38 MB |
+| `external/commercial/` | copyrighted | external (never) | 66 ROMs, 1.5 GB |
+| `external/240p/` | GPL-2.0 | external (copyleft) | not yet fetched |
+
+Absence of a licence is **not** public domain — it means no grant, so
+`dillon-n64-tests` is run-only and never redistributed. `krom` is public domain
+and *could* be committed; it stays external purely on footprint.
+
 n64-systemtest is **self-judging** — it decides pass/fail itself and finishes with
 a line like "Done! Tests: 262. Failed: 0", so no image comparison is needed for
 the CPU/COP0/TLB/RSP gate (`ref-docs/research-report.md` §7).
