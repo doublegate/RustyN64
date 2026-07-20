@@ -22,6 +22,8 @@
 
 extern crate alloc;
 
+pub mod pi;
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
