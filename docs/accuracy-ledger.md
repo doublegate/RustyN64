@@ -599,6 +599,54 @@ would stop being evidence.
 FPU computes normally instead; the suite's `expected_unimplemented` cases fail
 for that reason and not because of the enables.
 
+### C-11 RESOLVED — soft-float, and the fix uncovered a second bug
+
+`crates/rustyn64-cpu/src/softfloat.rs` computes both formats and all four
+operations from unpacked `(sign, significand, exponent)` triples in `u128`,
+rounding **once** at the end. Discarded bits are folded into a sticky bit rather
+than dropped, which is what makes `inexact` exact rather than approximate.
+`FCSR.RM` falls out of the same step, closing the rounding-mode half of C-10
+as well.
+
+n64-systemtest: **2,794 → 2,682**.
+
+**How it is known to be right.** The soft-float is checked against an
+independent oracle — Rust's own `f32`/`f64` operators — with the requirement
+that in round-to-nearest its result is *bit-identical* for every case in three
+corpora: 40,000 uniformly random bit patterns (which are mostly extreme
+exponents), 40,000 draws from the ordinary numeric range (where cancellation
+happens), and 20,000 around the subnormal boundary. The flags come from the same
+rounding step as the value, so a value that matches bit-for-bit is real evidence
+that the guard/sticky bookkeeping the flags are read from is right. Testing the
+flags alone would have been self-referential: there is no second implementation
+here for them to disagree with. Rounding-mode results are pinned separately
+against vectors transcribed from n64-systemtest.
+
+**The measurement did not move on the first attempt, and that was the useful
+part.** Wiring the soft-float in produced 2,794 → 2,794, with the suite
+reporting `flags: inexact` but `causes: ""`. The sticky half was surviving and
+the per-operation half was gone — the signature of *a later instruction
+overwriting `Cause`*, not of a flag never raised. The culprit was mine: the
+`ABS`/`MOV`/`NEG` path added in the previous change cleared `FCSR.Cause`, on no
+evidence. Because the compiler emits `MOV.fmt` to move an FP return value, a
+`MOV` sits between almost every arithmetic operation and the `CFC1` that reads
+its result, so it erased exactly the bits the program was about to inspect.
+`MOV`/`ABS`/`NEG` now leave `FCSR` untouched: the architectural rule is that
+`Cause` is written by operations that *can* raise, and these cannot. That alone
+was worth 112 assertions, and it is pinned by a named regression test.
+
+Twice now in this ticket an invented value has cost more than the feature it was
+attached to (the other being ledger U-7's premise). Both were written as
+plausible-looking one-liners with no citation.
+
+**What remains, and it is not flags.** Every surviving `ADD.S` failure is a
+subnormal case: either `Err(())` — the suite expecting the unmaskable
+unimplemented-operation cause — or an `FS = 1` flush-to-zero case whose result
+is rounding-mode dependent. The normal range passes. The dominant remaining
+block across the whole suite is the still-undecoded COP1 funct space:
+`C.cond.fmt` (16 tests × 84 assertions) and the `CVT`/`ROUND`/`TRUNC`/`FLOOR`/
+`CEIL` conversions, together roughly 1,700 of the 2,682.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

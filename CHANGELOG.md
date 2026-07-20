@@ -9,6 +9,44 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — soft-float arithmetic with exact IEEE flags and all four rounding modes
+
+New `crates/rustyn64-cpu/src/softfloat.rs`. Both formats and all four arithmetic operations are
+computed from unpacked `(sign, significand, exponent)` triples in `u128` and rounded **once** at
+the end; discarded bits are folded into a sticky bit rather than dropped, which is what makes
+`inexact` exact rather than approximate. `FCSR.RM` falls out of the same step, so the directed
+rounding modes now apply to arithmetic as well as conversions.
+
+**n64-systemtest: 2,794 → 2,682.**
+
+Verified against an independent oracle — Rust's own `f32`/`f64` operators — with the requirement
+that in round-to-nearest the result is *bit-identical* across three corpora: 40,000 random bit
+patterns, 40,000 draws from the ordinary numeric range, and 20,000 around the subnormal boundary.
+The flags come from the same rounding step as the value, so a bit-exact value is real evidence
+about the guard/sticky bookkeeping the flags are read from; testing the flags alone would have
+been self-referential. Rounding-mode results are pinned separately against vectors transcribed
+from n64-systemtest.
+
+The `f64`-comparison shortcut was deliberately **not** used: the exact sum of two `f32`s can span
+~277 significand bits, so an `f64` sum is itself rounded and the comparison silently becomes a
+guess in exactly the range the oracle probes.
+
+Removed as superseded: `fpu::{round_f64_to_f32, next_up_f32, next_down_f32}` and the private
+`classify_f32`/`classify_f64`. `round_f64_to_f32` in particular was a double-rounding trap once a
+correct path existed.
+
+### Fixed — `MOV`/`ABS`/`NEG` cleared `FCSR.Cause`, erasing the previous operation's result
+
+Introduced by the `MOV.fmt` change below and found by the soft-float work: wiring exact flags in
+moved the oracle by **zero**, with the suite reporting `flags: inexact` but `causes: ""` — the
+sticky half surviving and the per-operation half gone, which is the signature of a later
+instruction overwriting `Cause` rather than of a flag never raised.
+
+Because the compiler emits `MOV.fmt` to move an FP return value, a `MOV` sits between almost every
+arithmetic operation and the `CFC1` that reads its result, so it erased exactly the bits the
+program was about to inspect. These three instructions cannot raise, so they now write nothing to
+`FCSR`. Worth **112** assertions on its own, and pinned by a named regression test.
+
 ### Added — enabled floating-point traps (`Exception::FloatingPoint`)
 
 A COP1 condition whose `FCSR.Enable` bit is set now raises an FP exception (`ExcCode` 15) instead

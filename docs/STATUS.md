@@ -103,26 +103,25 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
 registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, and `ABS`/`MOV`/`NEG`
-decode and execute. Three things do **not** work, and none of them is visible
+decode and execute. Two things do **not** work, and neither is visible
 from a green `cargo test`:
 
-- **Arithmetic is correct only in round-to-nearest-even.** `FCSR.RM`'s three
-  directed modes and the `FS` denormal flush are ignored, because the operations
-  use Rust's native `+`/`-`/`*`/`/`. Note this is **no longer** believed to be a
-  large contributor: routing the ops through explicit directed rounding was
-  tried and moved the oracle by nothing (accuracy-ledger C-10).
-- **The IEEE flags are barely detected**, which is the live blocker.
-  `invalid`, `div_by_zero` and `overflow` are set; `inexact` only as a side
-  effect of overflow, and `underflow` never. Accuracy-ledger **C-11**.
+- **Most of the COP1 funct space is still undecoded**, and this is now the
+  dominant blocker by a wide margin: `C.cond.fmt` (the 16 compares) and the
+  `CVT`/`ROUND`/`TRUNC`/`FLOOR`/`CEIL` conversions are implemented in `fpu.rs`
+  but never reached, because decode admits only `funct 0..=3` and `5..=7`.
+  Together they are roughly **1,700** of the 2,682 remaining failures.
 - **The unmaskable unimplemented-operation cause (bit 17) is not produced.** The
   VR4300 raises it for subnormal operands and results; this FPU computes them
-  normally instead.
+  normally instead. Every surviving `ADD.S` failure is one of these, or an
+  `FS = 1` flush-to-zero case.
 
-Enabled FP traps **are** implemented: an enabled condition raises
-`Exception::FloatingPoint`, leaves `fd` unwritten, does not accumulate the
-sticky `Flags`, and does not retire. It moved the oracle by one assertion,
-because a trap needs a *raised* condition and the flags above are mostly not
-raised — see C-11 rather than reading the small number as a broken trap path.
+What **is** done: the arithmetic runs on a soft-float core
+(`crates/rustyn64-cpu/src/softfloat.rs`) that produces exact IEEE flags and
+honours all four `FCSR.RM` modes, verified bit-for-bit against Rust's native
+operators over 100,000 cases; and enabled FP traps raise
+`Exception::FloatingPoint`, leave `fd` unwritten, do not accumulate the sticky
+`Flags`, and do not retire.
 
 `SQRT` (funct 4), the conversions and the `C.cond.fmt` compares are implemented
 in `fpu.rs` but **not yet decoded**, so they remain unreachable. `ABS`, `MOV`
@@ -172,7 +171,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,794 failing** — next: IEEE flag detection (ledger C-11), then the undecoded COP1 funct space |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,682 failing** — next: the undecoded COP1 funct space (compares + conversions, ~1,700 of them) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

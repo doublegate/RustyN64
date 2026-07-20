@@ -1514,8 +1514,19 @@ impl Pipeline {
                 };
                 self.fpr.write_d(fd, fr, v.to_bits());
             }
-            let fcsr = self.cop1.fcsr();
-            self.cop1.ctc1(31, fcsr & !CAUSE_MASK);
+            // **`FCSR` is left completely alone**, `Cause` included.
+            //
+            // Clearing `Cause` here was written first, on no evidence, and was
+            // measurably wrong: the compiler emits `MOV.fmt` to move an FP
+            // return value, so a `MOV` sitting between an arithmetic operation
+            // and the `CFC1` that reads its result wiped the very `Cause` bits
+            // the program was about to inspect. n64-systemtest saw
+            // `flags: inexact` with `causes: ""` — the sticky half surviving
+            // and the per-operation half erased — which is the signature of a
+            // later instruction overwriting it, not of a flag never set.
+            //
+            // The architectural rule is that `Cause` is written by operations
+            // that *can* raise. These cannot, so they write nothing.
             return false;
         }
 
@@ -1524,20 +1535,19 @@ impl Pipeline {
         // Writing inside the arithmetic branch and undoing it afterwards would
         // be wrong under `FR = 0`, where a `.S` write can disturb a neighbouring
         // register's half.
+        // `FCSR.RM` is read **here**, per operation, rather than being captured
+        // anywhere earlier: software changes it between instructions, and
+        // n64-systemtest sweeps all four modes over the same operand pair.
+        let mode = fpu::Rounding::from_rm(self.cop1.rounding_mode());
         let (bits, flags, wide) = if fmt == 0o20 {
             {
                 let a = f32::from_bits(self.fpr.read_s(fs));
                 let b = f32::from_bits(self.fpr.read_s(ft));
-                // Round-to-nearest only: `FCSR.RM` is not honoured here, and
-                // routing this through `fpu::arith_s_rm` was tried and REVERTED
-                // -- see ledger C-10. It changed nothing the oracle measures and
-                // made `ADD.S` marginally worse, because computing in `f64` and
-                // rounding to `f32` double-rounds in the subnormal range.
                 let out = match funct {
-                    0 => fpu::add_s(a, b),
-                    1 => fpu::sub_s(a, b),
-                    2 => fpu::mul_s(a, b),
-                    _ => fpu::div_s(a, b),
+                    0 => fpu::add_s(a, b, mode),
+                    1 => fpu::sub_s(a, b, mode),
+                    2 => fpu::mul_s(a, b, mode),
+                    _ => fpu::div_s(a, b, mode),
                 };
                 (u64::from(out.value.to_bits()), out.flags, false)
             }
@@ -1546,10 +1556,10 @@ impl Pipeline {
                 let a = f64::from_bits(self.fpr.read_d(fs, fr));
                 let b = f64::from_bits(self.fpr.read_d(ft, fr));
                 let out = match funct {
-                    0 => fpu::add_d(a, b),
-                    1 => fpu::sub_d(a, b),
-                    2 => fpu::mul_d(a, b),
-                    _ => fpu::div_d(a, b),
+                    0 => fpu::add_d(a, b, mode),
+                    1 => fpu::sub_d(a, b, mode),
+                    2 => fpu::mul_d(a, b, mode),
+                    _ => fpu::div_d(a, b, mode),
                 };
                 (out.value.to_bits(), out.flags, true)
             }
@@ -3947,6 +3957,59 @@ mod tests {
             }
         }
         assert!(saw_trap, "no FP trap was taken -- the test proved nothing");
+    }
+
+    /// **A `MOV.S` must not disturb `FCSR.Cause`.**
+    ///
+    /// This is a regression test for a real defect. `MOV`/`ABS`/`NEG` were
+    /// first written to clear the `Cause` field, on no evidence — and because
+    /// the compiler emits `MOV.fmt` to move an FP return value, a `MOV` almost
+    /// always sits between an arithmetic operation and the `CFC1` that reads
+    /// its result. It therefore erased the very bits the program was about to
+    /// inspect, costing 112 n64-systemtest assertions.
+    ///
+    /// The signature was distinctive and worth recording: the suite reported
+    /// `flags: inexact` with `causes: ""` — the sticky half surviving and the
+    /// per-operation half gone. That shape means *a later instruction
+    /// overwrote it*, not that the flag was never raised.
+    ///
+    /// The sequence below is exactly the shape a compiled FP call has:
+    /// arithmetic, then a move of the result.
+    #[test]
+    fn a_following_mov_s_leaves_the_cause_field_of_a_previous_operation_intact() {
+        use crate::cop0::reg;
+        /// `ADD.S $f4, $f0, $f2` then `MOV.S $f6, $f4`.
+        const MOV_S_F6_F4: u32 = (0o21 << 26) | (0o20 << 21) | (4 << 11) | (6 << 6) | 6;
+        /// `FCSR.Cause` for Inexact (bit 12).
+        const CAUSE_INEXACT: u32 = 1 << 12;
+
+        let mut bus = Ram::new(alloc::vec![ADD_S_F4_F0_F2, MOV_S_F6_F4]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        // f32::MAX + 1.0 -- the value is unchanged and the operation is
+        // inexact, which is the n64-systemtest case from ledger C-11.
+        p.fpr.write_s(0, f32::MAX.to_bits());
+        p.fpr.write_s(2, 1.0f32.to_bits());
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..8 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_ne!(
+            p.cop1.fcsr() & CAUSE_INEXACT,
+            0,
+            "ADD.S must raise Cause.Inexact in the first place"
+        );
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(p.fpr.read_s(6), p.fpr.read_s(4), "the MOV.S did run");
+        assert_ne!(
+            p.cop1.fcsr() & CAUSE_INEXACT,
+            0,
+            "and must not have cleared the ADD.S's Cause"
+        );
     }
 
     // --- CACHE (T-12-005) ---------------------------------------------------

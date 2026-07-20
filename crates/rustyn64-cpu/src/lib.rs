@@ -42,6 +42,7 @@ pub mod fpu;
 pub mod mem;
 pub mod pipeline;
 pub mod regs;
+pub mod softfloat;
 pub mod sysad;
 pub mod tlb;
 
