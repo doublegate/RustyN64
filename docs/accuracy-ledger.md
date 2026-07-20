@@ -383,6 +383,28 @@ after an `ADD.S` retires and compare against what the test reads back. **Do not
 assume the third is right because it is the tidiest** — that reasoning has now
 failed nine times in this ticket.
 
+**Targeted run: the arithmetic is CORRECT; the write-back is not.** Breaking on a
+real `ADD.S fd=4, fs=0, ft=2` and reading the raw FGRs afterwards:
+
+```text
+fd_raw = 0x0011_0011_4000_0000   <- low word 0x40000000 = 2.0, correct
+fs_raw = 0x0000_1111_4000_0000
+```
+
+The low word is right. The **upper half retains its sentinel**, and the suite
+expects `0x4000_0000` — matching the `Upper bits of 32 bit operation (half mode)`
+case, which reports `0x1111_40C0_0000` against an expected `0x40C0_0000`. So
+every hypothesis about the *arithmetic* was aimed at the wrong half of the
+register.
+
+**A fix was attempted and reverted.** Writing the full 64-bit FGR
+(`write_raw`, zeroing the upper half) moved the failure count by **nothing**
+(2,897 either way) and bypasses the `FR` view — the precise mistake ledger U-7
+records. Under `FR = 0` a `.S` destination is not simply "FGR *fd* low half", so
+`write_raw` cannot be right even where it looks right. The correct change has to
+express what a single-precision *arithmetic* write-back does **through** the
+`FR` view, and that is not yet known.
+
 **Run done. FPR writes do occur**, so the `Arith` request is not being dropped
 wholesale — candidate two is weakened. (Watching all 32 raw FGRs, values change
 during the COP1 phase; pairs appearing to change together are an artefact of

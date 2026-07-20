@@ -1476,6 +1476,11 @@ impl Pipeline {
                     2 => fpu::mul_s(a, b),
                     _ => fpu::div_s(a, b),
                 };
+                // Preserves the upper half, as `MTC1` does. Writing the full
+                // register (`write_raw`, zeroing the upper half) was tried and
+                // REVERTED: it is what the observed values suggest, but it moved
+                // the oracle by nothing and it bypasses the `FR` view, which is
+                // exactly the mistake ledger U-7 records. See ledger C-10.
                 self.fpr.write_s(fd, out.value.to_bits());
                 out.flags
             }
