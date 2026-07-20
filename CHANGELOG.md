@@ -9,6 +9,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — FPU arithmetic (T-13-002)
+
+`ADD`/`SUB`/`MUL`/`DIV` in single and double precision, plus `ABS`/`NEG`, as pure functions that
+return a value **and the `FCSR` flags they raised** — rather than mutating `FCSR`, which belongs to
+`Cop1Control`. An arithmetic helper that reached into it would have to own it.
+
+Three distinctions that are easy to collapse, each pinned:
+
+- **Signalling vs quiet NaN.** Only a signalling NaN raises Invalid. IEEE puts the quiet bit at the
+  top of the mantissa, so `is_nan()` cannot tell them apart, and treating every NaN as signalling
+  raises Invalid on ordinary quiet-NaN propagation. The bit sits at a different position for `f64`,
+  so the double case is not a free consequence of the single one.
+- **`x/0` vs `0/0`.** `DivByZero` and Invalid are different flags and a handler distinguishes them;
+  `0/0` is an undefined form, not a division fault. `x/0` is also *not* an overflow, despite the
+  infinite result.
+- **A NaN from non-NaN inputs** — `inf - inf`, `0 * inf` — is Invalid even though neither operand
+  was a NaN.
+
+Flags populate **both** the `Cause` and sticky `Flags` fields, since hardware sets them together;
+writing only one leaves software unable to distinguish "raised now" from "raised at some point".
+
+The **FP multiplication erratum is deliberately absent**: it is a property of specific early console
+revisions and belongs with the revision model. Implementing it inline would make every multiply on
+every console wrong.
+
+Four of five mutations fail the suite. The fifth — `ABS` written as `f32::abs` rather than an
+explicit sign-bit clear — is **equivalent**, including for NaN payloads, and is documented as a
+readability choice rather than implied to be load-bearing.
+
 ### Added — the PI DMA engine (T-14-001), pulled forward from Phase 5
 
 n64-systemtest loads the rest of its own ELF from cart through PI, so the Phase 1 exit criterion —
