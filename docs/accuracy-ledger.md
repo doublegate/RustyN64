@@ -397,6 +397,23 @@ case, which reports `0x1111_40C0_0000` against an expected `0x40C0_0000`. So
 every hypothesis about the *arithmetic* was aimed at the wrong half of the
 register.
 
+**Re-reading the same probe output shows the operands are wrong too.** For the
+case `(false, Nearest, 0.0, 2e0, …)`:
+
+```text
+fs_raw = 0x0000_1111_4000_0000   low = 0x40000000 = 2.0   <- correct operand
+ft_raw = 0x0000_0000_0123_4567   low = 0x01234567         <- a SENTINEL, not 0.0
+```
+
+`ft` never received `0.0`; it still holds a fill pattern. The result was only
+**coincidentally** correct, because `2.0 + 3e-38` rounds to `2.0` — which is
+exactly the kind of accident that makes a broken path look healthy.
+
+So the operand **load** is implicated as well as the write-back, and "the
+arithmetic is correct" is a weaker claim than it appeared: it was verified on one
+case whose wrong operand could not change the answer. Do not treat the FPU as
+validated on this evidence.
+
 **A fix was attempted and reverted.** Writing the full 64-bit FGR
 (`write_raw`, zeroing the upper half) moved the failure count by **nothing**
 (2,897 either way) and bypasses the `FR` view — the precise mistake ledger U-7
