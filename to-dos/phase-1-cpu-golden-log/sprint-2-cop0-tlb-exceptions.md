@@ -376,25 +376,51 @@ short of asking it.
    *inside the handler*, and `EPC` survives it exactly as the `EXL` gate requires. That also
    explains the histogram: `0x180` (general, `EXL=1`) hotter than `0x000` (refill, `EXL=0`).
 
-   **The nested fault is `BadVAddr = 0x0000_000C`** — a load from address **12**, inside the
-   handler at `0x8000_03F8`–`0x8000_0448`. An address that small is a base register of **zero**
-   plus a small offset, not a plausible data pointer.
+   **The `$gp` hypothesis was wrong, and checking it cost one command.** `readelf -Ws` reports
+   `_gp` as `NOTYPE LOCAL HIDDEN ABS 0x00000000` — the linker never assigns it, because Rust's
+   MIPS backend does not use `$gp`-relative addressing here. `$gp = 0` is *correct*. Seeding it
+   would have invented a value and buried the real fault under a plausible-looking fix.
 
-   **Leading hypothesis: `$gp` (r28) is unset.** MIPS compiled code reaches small globals as
-   `LW $x, off($gp)`, and `crt0`/IPL3 establishes it. `seed_ipl3_handoff` currently sets `$sp` and
-   `Status` but **not** `$gp` — the same class of omission as the stack pointer, which produced an
-   almost identical signature (a store through a zero base) two rounds earlier.
+   **Root cause found: the suite's exception vectors are never installed.** At the instant of the
+   Reserved Instruction, RDRAM holds
 
-   The ELF's `_gp` value is the thing to read: MIPS convention puts it at the start of `.sdata`
-   plus `0x7FF0`, and it is available from the ELF's symbol table or `.reginfo`/`.MIPS.options`
-   section. That is the next step, and it is bounded.
+   | Address | Contents | Expected |
+   | --- | --- | --- |
+   | `0x8000_0000` | `0x7F454C46` (`\x7fELF`) | `la $26, 0x80000000` |
+   | `0x8000_0180` | `0x0000_0000` | `la $26, 0x80000180` |
 
-   Worth noting the pattern: **three faults now have been missing boot-time register state**
-   (`$sp`, `Status`, probably `$gp`), not emulation defects. "Load the image correctly" keeps
-   turning out to be a smaller part of an IPL3 stand-in than it looks.
-3. ~~The address at `0x8018_32E8` is one the suite expects to be unmapped.~~ **Ruled out** —
-   `0x8018_32E8` is the *instruction* address, in KSEG0, and it fetches fine. The faulting access
-   is a data load elsewhere.
+   `main()` calls `install_exception_handlers` **before** the emux probe, so those three-word stubs
+   (`la $26, <vector>; j generic; nop`) should be in place. They are not — **the installer's stores
+   are being lost**, and `0x8000_0000` still holds the ELF header we loaded there.
+
+   That explains the whole signature end to end, with nothing left over:
+
+   1. The RI fires correctly and dispatches to `0x8000_0180`.
+   2. `0x180` is zeros; `0x0000_0000` decodes as `SLL $0, $0, 0` — a `NOP`.
+   3. The CPU therefore NOPs from `0x180` all the way to `0x8000_0400`, which is exactly the PC
+      trail we recorded (`…0x3F8, 0x3FC, 0x400, 0x404…`).
+   4. `0x8000_0400` is the start of `.text` — arbitrary code entered mid-function with no
+      register context, which faults on a load through a zero base: `BadVAddr = 0xC`.
+   5. `EXL` is set by then, so `EPC` keeps the *first* exception's value — which is why the
+      reported `ExcCode` (2, `TLBL`) and `EPC` (`0x8018_32E8`, the RI site) disagreed and made
+      this look like a TLB bug for three rounds.
+
+   **A note on the ELF header at `0x8000_0000`.** The image's first `PT_LOAD` is
+   `off=0 vaddr=0x8000_0000 filesz=0x400` — the ELF header and program headers themselves, which
+   the linker maps over the vector region. Loading it is *correct* ELF behaviour and is not the
+   bug; hardware never populates that range because IPL3 copies from ROM `0x1000` to
+   `0x8000_0400`. It is benign precisely because the suite overwrites the vectors — which is the
+   step that is failing.
+
+   **Next: find why the stores are lost.** The installer copies to the vector addresses and then
+   flushes; the candidates are (a) the writes go through KSEG1/uncached or a `CACHE`-op path we
+   drop, (b) they go through an address our store path mistranslates, or (c) they are `SD`/block
+   stores we mishandle at that address. Instrumenting the *store* side — log every write whose
+   physical address is under `0x400` — answers this directly and is the next probe.
+
+   **Method note.** Every round of this diagnosis that guessed at a cause (run it longer, seed
+   `$gp`) was wrong; every round that asked *what is actually in memory at the faulting moment*
+   was right. The winning probe here was three words of RDRAM, not another million instructions.
 
 Disassembling `0x8018_32E8` separated these in one step. Note what made it possible: the
 **instruction word**, not the address. `0x42800060` is meaningless as an address and unambiguous

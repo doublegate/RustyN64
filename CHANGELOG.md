@@ -82,18 +82,29 @@ Our decoder correctly leaves it `Reserved`, so the RI fires and `EPC` is set. Bu
 with `EPC` surviving exactly as the `EXL` gate requires. That also explains why `0x180` (general,
 `EXL=1`) was hotter than `0x000` (refill, `EXL=0`).
 
-Tracing between the RI and the nested fault gave **`BadVAddr = 0x0000_000C`** — a load from
-address **12**, inside the handler at `0x8000_03F8`–`0x8000_0448`. An address that small is a base
-register of *zero* plus a small offset, not a plausible pointer.
+The `$gp` hypothesis was **wrong**, and one command showed it: `_gp` is
+`NOTYPE LOCAL HIDDEN ABS 0x00000000` — the linker never assigns it, because Rust's MIPS backend
+does not use `$gp`-relative addressing. `$gp = 0` is correct, and seeding it would have invented a
+value and buried the real fault.
 
-**Leading hypothesis: `$gp` (r28) is unset.** MIPS compiled code reaches small globals as
-`LW $x, off($gp)`, and `crt0`/IPL3 establishes it; `seed_ipl3_handoff` sets `$sp` and `Status` but
-not `$gp`. That is the same class of omission as the stack pointer two rounds earlier, with an
-almost identical signature — an access through a zero base.
+**Root cause identified: the suite's exception vectors are never installed.** At the instant of the
+Reserved Instruction, `0x8000_0180` reads `0x0000_0000` and `0x8000_0000` still reads `0x7F454C46`
+(`\x7fELF`) — yet `main()` calls `install_exception_handlers` *before* the emux probe, so both
+should hold `la $26, <vector>; j generic; nop`. The installer's stores are being lost.
 
-Three faults now have been missing boot-time **register state** rather than emulation defects.
-"Load the image correctly" keeps turning out to be a smaller part of an IPL3 stand-in than it
-looks.
+That accounts for the entire signature: the RI dispatches to `0x180`; zeros there decode as
+`SLL $0, $0, 0` (`NOP`); the CPU NOPs from `0x180` to `0x8000_0400` — precisely the recorded PC
+trail — and enters `.text` mid-function with no register context, faulting on a load through a zero
+base (`BadVAddr = 0xC`). `EXL` is set by then, so `EPC` retains the *first* exception's value,
+which is why the reported `ExcCode` (`TLBL`) and `EPC` (the RI site) disagreed and made this look
+like a TLB bug for three rounds.
+
+Separately noted and **not** a bug: the image's first `PT_LOAD` is `off=0 vaddr=0x8000_0000
+filesz=0x400` — the ELF header itself, which the linker maps over the vector region. Loading it is
+correct ELF behaviour, and is harmless only because the suite is supposed to overwrite the vectors.
+
+Every round of this diagnosis that guessed at a cause was wrong; every round that asked what was
+actually in memory at the faulting moment was right.
 
 **The failure moved rather than disappearing.** Before the `$sp` fix the suite ran six instructions
 and vectored to `0xBFC0_0200` — the `BEV=1` TLB refill vector, in PIF ROM we do not emulate. Two separate problems
