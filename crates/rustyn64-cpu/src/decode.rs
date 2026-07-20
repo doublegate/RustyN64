@@ -882,9 +882,19 @@ pub const fn decode(word: u32) -> Decoded {
                     ..base
                 },
                 // Format 16 = single, 17 = double. `funct` 0..=3 are
-                // ADD/SUB/MUL/DIV; everything else in these formats stays
-                // `Cop1Unimplemented` until it is wired.
-                0o20 | 0o21 if (word & 0o77) <= 3 => Decoded {
+                // ADD/SUB/MUL/DIV and 5..=7 are ABS/MOV/NEG; `funct` 4 is
+                // `SQRT`, still unwired, and everything above 7 (the
+                // conversions and `C.cond.fmt`) stays `Cop1Unimplemented`.
+                //
+                // **`MOV` matters far more than its size suggests.** It is
+                // funct 6, so admitting only `<= 3` made every `MOV.fmt` a
+                // silent no-op — and the compiler emits one for each FP
+                // argument and each FP return value. A single n64-systemtest
+                // FP thunk contains three, so its operands were stale and its
+                // result never left the callee. That accounted for the whole
+                // `Result after <op>` failure block, which had been read as an
+                // FPU arithmetic fault for nine rounds (ledger C-10).
+                0o20 | 0o21 if matches!(word & 0o77, 0..=3 | 5..=7) => Decoded {
                     op: Op::FpArith,
                     ..base
                 },
@@ -1239,5 +1249,39 @@ mod tests {
         // funct 4 (SQRT) is not wired yet and must stay unimplemented, NOT
         // become a wrong ADD.
         assert_eq!(decode(enc(0o20, 4)).op, Op::Cop1Unimplemented);
+    }
+
+    /// **`MOV.fmt` (funct 6) must decode.** With the arm admitting only
+    /// `funct <= 3` it did not, and executed as a silent no-op.
+    ///
+    /// That is not a cosmetic gap. The compiler emits `MOV.fmt` for every FP
+    /// argument and every FP return value, so a no-op left callees reading
+    /// stale operands and callers reading a register the callee never wrote.
+    /// It cost the whole `Result after <op>` block in n64-systemtest and nine
+    /// rounds of investigation aimed at the FPU (ledger C-10) — the arithmetic
+    /// was correct the entire time.
+    ///
+    /// ABS (5) and NEG (7) share the arm and are covered here for the same
+    /// reason: nothing fails when a move quietly does nothing.
+    #[test]
+    fn abs_mov_and_neg_decode_rather_than_silently_doing_nothing() {
+        let enc = |fmt: u32, funct: u32| (0o21 << 26) | (fmt << 21) | (3 << 11) | (4 << 6) | funct;
+        for fmt in [0o20u32, 0o21] {
+            for funct in 5..=7u32 {
+                let d = decode(enc(fmt, funct));
+                assert_eq!(
+                    d.op,
+                    Op::FpArith,
+                    "fmt {fmt:#o} funct {funct} must not be a no-op"
+                );
+                assert_eq!(d.rd, 3, "rd = fs");
+                assert_eq!(d.sa, 4, "sa = fd");
+            }
+        }
+        // The exact encoding the correlated capture found in the delay slot of
+        // the failing test's `jr $ra`: `MOV.S $f0, $f4`.
+        let d = decode(0x4600_2006);
+        assert_eq!(d.op, Op::FpArith, "MOV.S $f0, $f4 must decode");
+        assert_eq!((d.rs, d.rd, d.sa), (0o20, 4, 0), "fmt=S, fs=4, fd=0");
     }
 }

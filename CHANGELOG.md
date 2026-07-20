@@ -9,6 +9,29 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — `MOV.fmt` was a silent no-op, and it was not an FPU bug (T-12-007)
+
+`MOV.fmt` is COP1 funct **6**. The decoder admitted only `funct <= 3` to the FP arithmetic path
+and sent everything else to `Cop1Unimplemented`, which executes as a no-op. Compilers emit
+`MOV.fmt` for every FP argument and every FP return value, so callees read stale operands and
+callers read a register the callee never wrote. `ABS` (5) and `NEG` (7) share the arm and were
+equally absent. All three now decode and execute; `SQRT` (4) remains unwired.
+
+n64-systemtest failures: **2,897 → 2,795**.
+
+This had been read as an FPU arithmetic fault for nine rounds — see
+[`docs/accuracy-ledger.md`](docs/accuracy-ledger.md) C-10, which records each wrong hypothesis and
+what refuted it. The arithmetic was correct the whole time: `ADD.S` wrote the right value to the
+right register, and the suite then reported a *different* register, because the move that was
+supposed to carry the result out of the callee did nothing. Every `Result after <op>` failure was
+measured against a value the instruction under test never produced.
+
+What finally located it was a **correlated capture** — arming on the suite's own
+`Running COP1: ADD.S...` marker so the captured instruction is provably the failing test's, and
+dumping the *instruction stream* rather than the registers. Nine earlier probes watched state and
+inferred cause; two of their conclusions had to be retracted. The eight words either side of the
+site named the bug immediately.
+
 ### Fixed — `Random` never advanced, so every `TLBWR` overwrote the same entry
 
 `Cop0::tick_random` was implemented and **never called from the pipeline** — only from a unit test.

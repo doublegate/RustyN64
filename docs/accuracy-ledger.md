@@ -482,6 +482,73 @@ the specific `ADD.S`, then read back `fd` through both `read_s` and `read_d` and
 compare with the `0x11223344` the test sees. A global FGR watch cannot answer it,
 which is worth stating because this run looked informative and was not.
 
+### C-10 RESOLVED — the cause is `MOV.S`, and it is not in the FPU at all
+
+The correlated capture at retirement was finally performed, and it identifies the
+cause outright. Two things made it work where nine previous attempts failed:
+
+1. **The correlation trigger is the suite's own progress marker.** Capture arms
+   only after `Running COP1: ADD.S...` appears in the ISViewer stream, so the
+   captured `ADD.S` is provably the failing test's. Every earlier probe took the
+   first `ADD.S` in the run and hoped.
+2. **The capture is of the instruction stream, not of the registers.** Dumping
+   `(pc, word)` either side of the site answered in one run a question that four
+   register-watching probes could not.
+
+The site is `0x8000_5FE4`, and the eight words around it are the whole story:
+
+```text
+80005FD4  46006006   MOV.S $f0, $f12     <- argument 1
+80005FD8  46007086   MOV.S $f2, $f14     <- argument 2
+80005FDC  C424FA10   LWC1  $f4, ...      <- the 0x4B3C614E sentinel
+80005FE0  00000000   nop                 <- the test's BRANCH_INSTRUCTION slot
+80005FE4  46020100   ADD.S $f4, $f0, $f2 <- the instruction under test
+80005FE8  00000000   nop
+80005FEC  03E00008   jr    $ra
+80005FF0  46002006   MOV.S $f0, $f4      <- delay slot: THE RETURN VALUE
+```
+
+`MOV.fmt` is COP1 funct **6**. The decoder admits funct `<= 3` to `Op::FpArith`
+and sends everything else to `Op::Cop1Unimplemented`, which executes as a no-op.
+So **all three `MOV.S` in this one function do nothing**:
+
+- the two operand moves never run, so `$f0`/`$f2` hold whatever a previous test
+  left — which is why the probe saw `$f2 = 0x0000_0000_0123_4567`, a stale fill
+  pattern, and read it as "the operand load is broken";
+- the return move never runs, so the caller reads a `$f0` the callee never wrote.
+  `0x1122_3344` is simply what was in `$f0` at that moment, left by the earlier
+  `full_vs_half_mode` tests. It is **not** a sentinel belonging to this test —
+  the string `0x11223344` does not occur anywhere in `AddS`'s source.
+
+`ADD.S` itself is fine: the trace shows `$f4` going `0x0011_0011_4B3C_614E` →
+`0x0011_0011_4000_0000`, i.e. exactly `2.0`, the expected result. **Every one of
+the ~250 `Result after <op>` failures was reported against a value the tested
+instruction never produced.** The constant `a = 0x11223344` across all 30-odd
+`ADD.S` cases regardless of operands was the tell, and it was visible in the very
+first capture of this entry.
+
+What this retires:
+
+- the `FR = 0` view — the last live candidate — is **excluded**. `Status.FR` is 1
+  here (IPL3 leaves it set), and the leading `false` in the failing tuple is
+  `flush_denorm_to_zero`, **not** `FR`. That misreading survived three rounds.
+- "the arithmetic is correct" is now **confirmed** rather than retracted, on
+  evidence that actually correlates.
+- "the operands are wrong" is confirmed *as an observation* and **misattributed**
+  as a diagnosis: the operands are stale because the moves that set them no-op,
+  not because `LWC1` is broken.
+
+**Method note, since this entry is mostly a record of being wrong.** Nine
+hypotheses were formed by reasoning about the FPU and every one was wrong. The
+tenth was formed by reading the eight instructions the test actually executes,
+and it was right immediately. The prior probes all watched *state* and inferred
+*cause*; this one read the *code*. When a value looks stale, dump the instruction
+stream that was supposed to write it before theorising about the writer.
+
+**Fix:** decode and execute the remaining COP1 funct space — funct 4-7
+(`SQRT`, `ABS`, `MOV`, `NEG`) first, since `MOV` is load-bearing for every
+compiled FP call, then the conversions and `C.cond.fmt`.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

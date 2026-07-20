@@ -1461,6 +1461,33 @@ impl Pipeline {
         let fr = fr_of(&self.cop0);
         // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
         // into `FpArith`, so this is a two-way split, not a table.
+        // `funct` 5/6/7 — ABS/MOV/NEG — are **not** arithmetic: they read only
+        // `fs`, touch no exponent or significand, round nothing, and raise
+        // nothing. Handled ahead of the arithmetic split so `ft` is never read
+        // for an instruction whose `ft` field is architecturally zero.
+        if matches!(funct, 5..=7) {
+            if fmt == 0o20 {
+                let a = f32::from_bits(self.fpr.read_s(fs));
+                let v = match funct {
+                    5 => fpu::abs_s(a),
+                    6 => a,
+                    _ => fpu::neg_s(a),
+                };
+                self.fpr.write_s(fd, v.to_bits());
+            } else {
+                let a = f64::from_bits(self.fpr.read_d(fs, fr));
+                let v = match funct {
+                    5 => fpu::abs_d(a),
+                    6 => a,
+                    _ => fpu::neg_d(a),
+                };
+                self.fpr.write_d(fd, fr, v.to_bits());
+            }
+            let fcsr = self.cop1.fcsr();
+            self.cop1.ctc1(31, fcsr & !CAUSE_MASK);
+            return;
+        }
+
         let flags = if fmt == 0o20 {
             {
                 let a = f32::from_bits(self.fpr.read_s(fs));
@@ -3662,6 +3689,76 @@ mod tests {
             0,
             "no exception with CU1 set"
         );
+    }
+
+    /// **`MOV.S` must actually move.** Decoding it is not enough — the failure
+    /// this pins is a *silent no-op*, which is invisible to every test that
+    /// only checks for an absent exception.
+    ///
+    /// The encoding is the one the correlated capture found in the delay slot
+    /// of the failing n64-systemtest thunk's `jr $ra` (ledger C-10): with the
+    /// move doing nothing, the callee's result never reached its caller and
+    /// ~250 FP results were reported against a register the instruction under
+    /// test never wrote.
+    ///
+    /// The destination is seeded with a value that differs from the source in
+    /// **both halves**, so neither a no-op nor a half-width copy passes.
+    #[test]
+    fn mov_s_copies_the_low_word_and_a_no_op_would_fail_here() {
+        use crate::cop0::reg;
+        /// `MOV.S $f0, $f4` — fmt 16, fs 4, fd 0, funct 6.
+        const MOV_S: u32 = 0x4600_2006;
+
+        let mut bus = Ram::new(alloc::vec![MOV_S]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 | FR
+        p.fpr.write_raw(4, 0x0011_0011_4000_0000); // source: 2.0f
+        p.fpr.write_raw(0, 0xDEAD_BEEF_1122_3344); // destination: junk
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        assert_eq!(
+            p.fpr.read_s(0),
+            0x4000_0000,
+            "MOV.S must copy fs's low word into fd"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            0,
+            "MOV.S raises nothing"
+        );
+    }
+
+    /// `NEG.S` and `ABS.S` share the arm `MOV.S` was missing from, and are just
+    /// as silent when absent: both leave a plausible-looking value behind.
+    #[test]
+    fn neg_s_and_abs_s_execute_rather_than_no_op() {
+        use crate::cop0::reg;
+        /// fmt 16, fs 4, fd 0.
+        const fn fp(funct: u32) -> u32 {
+            (0o21 << 26) | (0o20 << 21) | (4 << 11) | funct
+        }
+
+        for (funct, input, want) in [
+            (7u32, 0x4000_0000u32, 0xC000_0000u32), // NEG.S: 2.0 -> -2.0
+            (5, 0xC000_0000, 0x4000_0000),          // ABS.S: -2.0 -> 2.0
+        ] {
+            let mut bus = Ram::new(alloc::vec![fp(funct)]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_s(4, input);
+            p.fpr.write_s(0, 0x1122_3344);
+            let mut pc = KSEG0_PROG;
+            for _ in 0..16 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(p.fpr.read_s(0), want, "funct {funct} did not execute");
+        }
     }
 
     // --- CACHE (T-12-005) ---------------------------------------------------

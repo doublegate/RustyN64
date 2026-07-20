@@ -107,13 +107,18 @@ Two things do **not** work, and neither is visible from a green `cargo test`:
 
 - **Arithmetic is correct only in round-to-nearest-even.** `FCSR.RM`'s three
   directed modes and the `FS` denormal flush are ignored, because the operations
-  use Rust's native `+`/`-`/`*`/`/`. This is accuracy-ledger **C-10** and is the
-  single largest contributor to n64-systemtest's remaining failures.
+  use Rust's native `+`/`-`/`*`/`/`. Note this is **no longer** believed to be a
+  large contributor: routing the ops through explicit directed rounding was
+  tried and moved the oracle by nothing (accuracy-ledger C-10).
 - **Enabled FP traps do not raise.** `Cause`/`Flags` are set in `FCSR`, but an
-  enabled exception does not become `Exception::FloatingPoint`.
+  enabled exception does not become `Exception::FloatingPoint`. The remaining
+  `ADD.S` failures are now all `FCSR`-shaped, which makes this the next item.
 
-`SQRT`, `ABS`, `NEG`, `MOV`, the conversions and the `C.cond.fmt` compares are
-implemented in `fpu.rs` but **not yet decoded**, so they remain unreachable.
+`SQRT` (funct 4), the conversions and the `C.cond.fmt` compares are implemented
+in `fpu.rs` but **not yet decoded**, so they remain unreachable. `ABS`, `MOV`
+and `NEG` were in that list until they were found to be the cause of ~100
+failures — a *decoded-but-no-op* instruction is invisible to `cargo test`, and
+`MOV` in particular is emitted by the compiler for every FP call boundary.
 | RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
@@ -157,7 +162,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,897 failing** — blocked on COP1 rounding (ledger C-10) |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 2,795 failing** — next: enabled FP traps, then the undecoded COP1 funct space (ledger C-10) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
