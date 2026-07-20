@@ -452,15 +452,24 @@ impl Pipeline {
     ///
     /// Hot path: allocation-free.
     pub fn advance<B: Bus>(&mut self, bus: &mut B, regs: &mut Regs, next_pc: &mut u64) {
-        self.advance_at(bus, regs, next_pc, self.cop0.count_now().wrapping_add(1));
+        // The timeline is HELD, not advanced. `Count` runs at half PClock, so
+        // bumping it once per PClock here would run the timer at double rate --
+        // and inventing a parity bit to halve it would be a second incremented
+        // counter, which is what ADR 0006 exists to forbid.
+        //
+        // Holding is the honest option: with no scheduler attached there is no
+        // timeline, so `Count` does not move. Anything exercising `Count` or
+        // `Compare` must call `advance_at` and supply the position.
+        self.advance_at(bus, regs, next_pc, self.cop0.count_now());
     }
 
     /// [`Pipeline::advance`], with the scheduler's `Count` timeline supplied.
     ///
     /// `Count` is **derived** from the master clock (ADR 0006), so the position
-    /// is passed in rather than incremented here. [`Pipeline::advance`] exists
-    /// for tests and for callers with no scheduler, and simply walks the
-    /// timeline forward one step.
+    /// is passed in rather than incremented here. This is the path the scheduler
+    /// uses ([`crate::Cpu::tick_at`]); [`Pipeline::advance`] is a convenience
+    /// for callers with no scheduler, and **holds** the timeline rather than
+    /// guessing at it.
     pub fn advance_at<B: Bus>(
         &mut self,
         bus: &mut B,
@@ -2196,6 +2205,11 @@ mod tests {
         let mut bus = Ram::new(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
+        // Move `Compare` off `Count`'s reset value first. Both reset undefined
+        // (UM §6.4.4) and we choose a deterministic zero for each, so they match
+        // at power-on and latch IP7 -- see accuracy-ledger D-3. Harmless, but it
+        // would show up in `Cause` here and obscure what this test is about.
+        p.cop0.mtc0(crate::cop0::reg::COMPARE, 0xFFFF);
         let mut pc = 0x800u64;
         for _ in 0..24 {
             p.advance(&mut bus, &mut regs, &mut pc);
@@ -2528,6 +2542,32 @@ mod tests {
         );
         p.advance_at(&mut bus, &mut regs, &mut pc, 20);
         assert_eq!(p.cop0.read(reg::CAUSE) & (1 << 15), 0, "and it stays clear");
+    }
+
+    /// The convenience [`Pipeline::advance`] **holds** the `Count` timeline
+    /// rather than guessing a rate for it.
+    ///
+    /// `Count` runs at half `PClock`, so stepping it once per `advance` would run
+    /// the timer at double rate — and halving it with a parity bit would be a
+    /// second incremented counter, exactly what ADR 0006 forbids. Anything that
+    /// exercises `Count` must use `advance_at`.
+    #[test]
+    fn the_convenience_advance_holds_the_count_timeline() {
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = 0x800u64;
+        let mut bus = Ram::new(alloc::vec![]);
+
+        p.advance_at(&mut bus, &mut regs, &mut pc, 7);
+        assert_eq!(p.cop0.read(crate::cop0::reg::COUNT), 7);
+        for _ in 0..10 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::COUNT),
+            7,
+            "held, not advanced at PClock rate"
+        );
     }
 
     /// **Why `IP7` must latch.** A timer interrupt that fires while the CPU

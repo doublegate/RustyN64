@@ -186,6 +186,12 @@ impl Cpu {
     ///
     /// Hot path: keep allocation-free (no `Vec`/`Box` in `tick`). The `bus`
     /// argument is the `&mut Bus` the scheduler hands down each step.
+    /// **Prefer [`Cpu::tick_at`] when a scheduler is present.** This path holds
+    /// the COP0 `Count` timeline still, because `Count` is derived from the
+    /// master clock (ADR 0006) and this function has no access to it — so
+    /// `Count`/`Compare` and the timer interrupt do not advance. That is
+    /// deliberate: guessing a rate here would be wrong, and `Count` runs at half
+    /// `PClock`, not one step per call.
     pub fn tick<B: Bus>(&mut self, bus: &mut B) {
         self.pipeline.advance(bus, &mut self.regs, &mut self.pc);
         self.retired = self.pipeline.retired;
