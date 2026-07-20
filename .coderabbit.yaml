@@ -421,8 +421,14 @@ reviews:
           until a test ROM passes makes every later result built on it
           unfalsifiable. This applies to invented BEHAVIOUR too — an incidental
           state change with no cited authority.
+      # `warning`, not `error`: an `error`-mode check only blocks when
+      # `request_changes_workflow` is enabled, which it is not here — so
+      # declaring it `error` would claim a gate that cannot fire. It does not
+      # need to. `#![forbid(unsafe_code)]` makes this a COMPILE error in every
+      # chip crate, which is a harder gate than any bot, and the config's own
+      # principle is not to duplicate those.
       - name: unsafe stays out of the chip crates
-        mode: error
+        mode: warning
         instructions: >-
           Every chip crate and rustyn64-core carry #![forbid(unsafe_code)] and
           the tree has zero `unsafe`. Fail if this PR adds `unsafe` anywhere

@@ -125,9 +125,11 @@ and the compares and conversions decode and execute — **all sixteen
 `C.cond.fmt` tests pass outright**. NaN classification follows the VR4300's
 inverted convention (ledger C-12), not IEEE-754:2008.
 
-**Only `SQRT` (funct 4) is still implemented-but-undecoded.** The conversions
-and the `C.cond.fmt` compares were in that list until this sprint, and `ABS`,
-`MOV` and `NEG` before them — `MOV` alone cost ~100 failures, because a
+**`SQRT` (funct 4) is the only COP1 operation that is neither decoded nor
+implemented**, so it is not an instance of the pattern below. The conversions
+and the `C.cond.fmt` compares *were* — implemented in `fpu.rs` and unreachable —
+until this sprint, and `ABS`, `MOV` and `NEG` before them; `MOV` alone cost
+~100 failures, because a
 *decoded-but-no-op* instruction is invisible to `cargo test` and the compiler
 emits one at every FP call boundary. That pattern has now cost two separate
 investigations; when adding a decode arm, enumerate the neighbouring funct
