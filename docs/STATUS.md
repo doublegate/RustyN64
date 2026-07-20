@@ -9,6 +9,14 @@ one-directional crate graph + the narrow chip bus traits) is in place. The
 accuracy work — the LLE RSP, the LLE RDP, the VR4300 interpreter — has **not
 started**; those are the major roadmap phases (`to-dos/ROADMAP.md`).
 
+**Read this before trusting any green checkmark:** CI passing means the skeleton
+compiles and its 42 unit tests pass. It does **not** mean any chip emulates
+anything. Stubs are `TODO(T-XXX-NN)` comments inside no-op bodies that compile
+and return, not `todo!()` panics, so nothing fails loudly. Likewise, the test-ROM
+corpora described below are **staged but not yet executed by anything** — the
+harness runner is still a stub. Availability of an oracle is not the same as a
+wired gate.
+
 ## What compiles today (v0.1.0)
 
 - The Cargo workspace: all `rustyn64-*` crates build; `cargo test --workspace`
@@ -27,6 +35,42 @@ started**; those are the major roadmap phases (`to-dos/ROADMAP.md`).
   probe battery are **stubbed** pending a reference trace.
 - The chip stack is `#![no_std]` + `alloc` and cross-compiles to
   `thumbv7em-none-eabihf`; only the frontend carries `std` + `unsafe`.
+
+## Project infrastructure
+
+Distinct from emulation progress: the scaffolding around the code, and where it
+actually stands.
+
+| Area | State |
+|---|---|
+| Repository | `github.com/doublegate/RustyN64`, **private**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
+| CI | **Green, verified.** All 8 jobs pass on `ubuntu`/`macOS`/`windows`: fmt, clippy, test, rustdoc, `test-roms`, `no_std`, `no-commercial-roms`, `wasm-bindgen-pin`. |
+| Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
+| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Never yet exercised — no tag has been cut. |
+| wasm | Compiles for `wasm32-unknown-unknown`, but there is **no browser entry point** (no `wasm-bindgen` dep, no `#[wasm_bindgen(start)]`, no `index.html`), so `trunk build` cannot produce a demo. Phase 6. |
+| Hardware reference | `n64brew_wiki/` — offline mirror of the N64brew Wiki (324 pages, 96 media, gitignored). Rebuild with `scripts/mirror_n64brew_wiki.py`. |
+| Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licences vary and several forbid copying** — read `ref-proj/README.md` first. |
+
+## Test-ROM corpora (staged, not yet wired)
+
+Full provenance and licence rules in `tests/roms/README.md`.
+
+| Corpus | Licence | Tier | Staged |
+|---|---|---|---|
+| `n64-systemtest` | MIT | committed | 1 ROM, 2.7 MB — built from source |
+| `krom` (PeterLemon) | Unlicense | external | 196 ROMs, 182 MB |
+| `dillon-n64-tests` | none | external (run-only) | 26 ROMs, 38 MB |
+| `240p Test Suite` | GPL-2.0-or-later | external | 1 ROM, 12 MB — built from source |
+| commercial | copyrighted | external (never committed) | 66 ROMs, 1.5 GB |
+
+Commercial ROMs are blocked by three independent guards (`.gitignore`,
+`scripts/check_no_roms.sh` pre-commit, and the `no-commercial-roms` CI job); only
+`tests/roms/n64-systemtest/` is allowlisted, and a committed ROM must ship its
+upstream `LICENSE` beside it.
+
+**None of these are executed yet.** Wiring them up is Phase 1 onward: the
+harness `run_until_complete` sentinel decode is stubbed and always returns
+`Timeout`, and the golden-log source returns an empty `Vec`.
 
 ## What is stubbed (the roadmap)
 
@@ -57,13 +101,20 @@ started**; those are the major roadmap phases (`to-dos/ROADMAP.md`).
 
 ## Accuracy
 
-| Gate | Status |
-|---|---|
-| CPU/RSP golden-log (n64-systemtest reference trace) | not started (golden source stubbed) |
-| n64-systemtest "Failed: 0" (CPU/COP0/TLB/RSP) | not started |
-| ParaLLEl-RDP fuzz suite (RDP bit-exactness) | not started |
-| Accuracy battery (AccuracyCoin-equivalent) | 0% (battery stubbed) |
-| Visual golden / screenshots | not started |
+Every gate is **not started**. The ROMs now exist locally for most of them, but
+nothing loads or scores a ROM yet, so no gate can report a number.
+
+| Gate | Oracle available? | Status |
+|---|---|---|
+| CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
+| n64-systemtest "Failed: 0" (CPU/COP0/TLB/RSP) | **yes** — ROM committed | not started (no CPU to run it) |
+| ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
+| Accuracy battery (AccuracyCoin-equivalent) | probes not authored | 0% (battery stubbed) |
+| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
+
+The distinction matters: "oracle available" means the ROM is on disk; it says
+nothing about whether the emulator can execute it. Both must be true before a
+gate reports a real number, and today the second never is.
 
 See `docs/testing-strategy.md` for the oracle and the five test layers.
 
@@ -76,7 +127,10 @@ accuracy oracle is n64-systemtest pass/fail + the RDP fuzz suite, not a tier
 matrix.
 
 Save-type coverage target (per-game DB resolved): EEPROM 4k/16k, SRAM, FlashRAM,
-Controller Pak (`docs/cart.md`).
+Controller Pak (`docs/cart.md`). All five backends have regression ROMs staged
+under `tests/roms/external/commercial/`, one folder per backend, with save types
+resolved by MD5 against the mupen64plus catalogue rather than guessed. None are
+implemented yet (Phase 5).
 
 ## Version policy
 
@@ -89,4 +143,6 @@ Controller Pak (`docs/cart.md`).
   a current release, and the one expected to break byte-identity / save-state
   compatibility.
 - v1.0.0 is the production cut (Phases 1–8 complete; README/CHANGELOG/docs/STATUS
-  in sync; release matrix + Pages green). See `to-dos/ROADMAP.md`.
+  in sync; release matrix + Pages green). See `to-dos/ROADMAP.md`. Of those
+  release-readiness items, **Pages is already green** and the release matrix is
+  written but untested — no tag has been cut, so `release.yml` has never run.
