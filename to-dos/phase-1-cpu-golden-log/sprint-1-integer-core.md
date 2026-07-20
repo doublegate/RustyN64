@@ -262,10 +262,17 @@ from the same seed and input must produce byte-identical traces.
 
 **Acceptance criteria:**
 
-- [ ] A test runs the same ROM twice from one seed and compares the full trace byte for byte.
-- [ ] The test fails if any wall-clock, OS entropy, or iteration-order dependency is introduced.
-- [ ] `docs/adr/0004-determinism-contract.md` and `docs/STATUS.md` are updated to say the
-      contract is exercised rather than merely specified.
+- [x] A test runs the same ROM twice from one seed and compares the full machine byte for byte
+      — registers, `HI`/`LO`, PC, all three cycle positions, and a content hash of all of RDRAM.
+      Repeated eleven times, since an entropy dependency surfaces intermittently.
+- [x] The test fails if any wall-clock, OS entropy, or iteration-order dependency is introduced
+      — a **source-level** guard, because such dependencies are intermittent and a run-twice
+      test can pass for months before the first divergence.
+- [x] A **different seed produces a different machine**, so the contract is not vacuous. Added
+      beyond the stated criteria: without it, a build that ignored the seed entirely would pass.
+- [x] `docs/adr/0004-determinism-contract.md` and `docs/STATUS.md` are updated to say the
+      contract is exercised rather than merely specified. (Note `STATUS.md` did not in fact
+      contain the "unexercised" claim this ticket referred to; it now records the gate.)
 
 **Dependencies:** T-11-006
 **Reference:** `docs/adr/0004-determinism-contract.md`

@@ -48,6 +48,29 @@ Concretely:
   run-ahead, netplay rollback orchestration — lives in `rustyn64-frontend`, outside the
   simulated machine.
 
+## Status of enforcement
+
+**Exercised as of 2026-07-20** (T-11-007), not merely specified. Four tests in
+`crates/rustyn64-test-harness/tests/determinism.rs`:
+
+- The same seed and ROM produce a **bit-identical machine** — full register file,
+  `HI`/`LO`, PC, all three cycle positions, and a content hash of the whole of
+  RDRAM. Deliberately the entire machine rather than a summary: a partial hash
+  can hide a divergence in a field that only later leaks into the hashed region.
+  Repeated eleven times, because a wall-clock or entropy dependency is more
+  likely to surface intermittently than on the very next run.
+- **Different seeds produce different machines**, so the contract is not vacuous.
+  A build that ignored the seed entirely would satisfy the first test.
+- **Reset returns to a reproducible state** regardless of what ran before it.
+- **A source-level guard** rejects `std::time`, `SystemTime`, `Instant::now`,
+  `getrandom`, `thread::spawn`, `HashMap` and `HashSet` anywhere in the core
+  crates. This is deliberately *not* behavioural: those dependencies are often
+  intermittent, so a run-twice test can pass for months before the first
+  divergence. The guard fails on the commit that introduces one.
+
+All are mutation-tested: ignoring the seed fails the second, and naming a banned
+construct in any core crate fails the fourth with a precise file and line.
+
 ## Consequences
 
 ### Positive

@@ -115,9 +115,16 @@ That is a small number of tests, but it is the first time this emulator has
 executed a ROM at all, and it independently validates the delay-slot and
 branch-likely work against something other than our own expectations.
 
+**The ADR 0004 determinism contract is now exercised** (T-11-007) rather than
+merely written down: same seed + ROM produces a bit-identical machine across
+repeated runs, different seeds produce different machines so the check is not
+vacuous, reset is reproducible, and a source-level guard rejects wall-clock, OS
+entropy, threads and unordered collections anywhere in the core.
+
 | Gate | Oracle available? | Status |
 | --- | --- | --- |
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
+| **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
 | n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | blocked on COP0/COP1/exceptions (T-11-009, Sprint 2) |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
