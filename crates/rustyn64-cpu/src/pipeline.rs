@@ -908,6 +908,16 @@ impl Pipeline {
         }
         let pc = *next_pc;
 
+        // Computed BEFORE the alignment check, so a faulting fetch carries the
+        // right delay-slot flag into its latch and therefore into `Cause.BD`.
+        // Depends only on `rf_ex`, never on the fetch, so hoisting it is safe.
+        //
+        // Check `rf_ex`, not `ic_rf`: `rf_stage` runs immediately before this in
+        // the reverse cascade and has already moved the previous instruction out
+        // of `ic_rf`, so a branch fetched last cycle is in `rf_ex` by now.
+        // Reading `ic_rf` here makes the flag silently always false.
+        let in_delay_slot = self.rf_ex.occupied && self.rf_ex.decoded.op.has_delay_slot();
+
         // An instruction fetch must be word-aligned. An unaligned PC raises an
         // address error (AdEL) rather than fetching -- so the bus is NOT touched,
         // because the access itself is what is invalid.
@@ -918,19 +928,25 @@ impl Pipeline {
         // already reachable through the public `Cpu::set_pc` the golden-log
         // harness uses.
         if !pc.is_multiple_of(4) {
-            self.abort_with(Stage::Ic, Exception::AddressError { store: false }, pc);
+            // Populate the latch BEFORE raising. `abort_with` captures the
+            // faulting instruction's context out of the latch its stage reads,
+            // which for `Stage::Ic` is `ic_rf` -- so raising first would capture
+            // the PREVIOUS fetch's `pc` and delay-slot flag and write a wrong
+            // `EPC`. Stamp before you move, and populate before you stamp.
             self.ic_rf = Latch {
                 cop0: None,
                 occupied: true,
                 pc,
+                in_delay_slot,
                 abort: Some(Exception::AddressError { store: false }),
                 ..Latch::default()
             };
+            self.abort_with(Stage::Ic, Exception::AddressError { store: false }, pc);
             // `next_pc` is deliberately NOT realigned. Rounding it down would
             // silently "fix" the faulting address and let execution continue on a
             // path hardware never takes -- turning a raised exception into a
-            // wrong answer. TODO(T-11-004): redirect to the exception vector,
-            // which is where hardware actually goes.
+            // wrong answer. The redirect to the exception vector happens in
+            // `advance`, after the cascade (T-12-002).
             return;
         }
 
@@ -942,17 +958,9 @@ impl Pipeline {
         // Decode here rather than at RF: a branch must be decoded before the
         // NEXT fetch, so that fetch can be marked as its delay slot.
         //
-        // A branch decoded last cycle is sitting in `ic_rf` right now, so the
-        // instruction being fetched now is its delay slot. The flag then travels
-        // with the latch and is never global state -- a multi-cycle stall between
-        // a branch and its slot would desynchronise a global flag, which is the
-        // classic bug here.
-        // Check `rf_ex`, not `ic_rf`. `rf_stage` runs immediately before this in
-        // the reverse cascade and has already moved the previous instruction out
-        // of `ic_rf` (clearing `occupied`), so a branch fetched last cycle is in
-        // `rf_ex` by now. Reading `ic_rf` here makes the flag silently always
-        // false -- which is exactly what it did until the fetch trace showed it.
-        let in_delay_slot = self.rf_ex.occupied && self.rf_ex.decoded.op.has_delay_slot();
+        // A branch decoded last cycle is in `rf_ex` by now, so the instruction
+        // being fetched here is its delay slot -- see `in_delay_slot` above,
+        // computed once at the top of the stage and used by both paths.
         self.ic_rf = Latch {
             occupied: true,
             pc,
@@ -1412,6 +1420,15 @@ mod tests {
             (p.cop0.read(crate::cop0::reg::CAUSE) >> 2) & 0x1F,
             crate::exception::exc_code::ADEL,
             "an instruction fetch is a load: AdEL, not AdES"
+        );
+        // EPC must name the FAULTING fetch. `abort_with` captures its context
+        // out of `ic_rf`, so raising before populating that latch would silently
+        // record the previous fetch's PC here -- which is exactly what this code
+        // did until review caught it.
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::EPC),
+            0x8000_0002,
+            "EPC names the faulting fetch, not the previous one"
         );
 
         // And the faulting instruction must never retire. Bounded to the
@@ -2157,6 +2174,46 @@ mod tests {
     }
 
     // --- exception dispatch and ERET through the pipeline (T-12-002) --------
+
+    /// The stale-capture regression, with a *plausible* wrong answer available.
+    ///
+    /// The pipeline runs valid instructions first, so `ic_rf` holds a real PC
+    /// when the unaligned fetch arrives. A capture taken before the latch is
+    /// populated therefore reports that earlier PC — a value that looks entirely
+    /// reasonable in `EPC`, which is what makes the bug survive inspection.
+    #[test]
+    fn an_unaligned_fetch_after_valid_ones_still_reports_its_own_address() {
+        let program = alloc::vec![addiu_zero(1, 1), addiu_zero(2, 2), addiu_zero(3, 3)];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
+        let mut pc = 0x800u64;
+
+        // Let the pipeline fill with real instructions.
+        for _ in 0..3 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert!(
+            p.ic_rf.pc >= 0x800,
+            "a real PC is latched to be stale about"
+        );
+
+        // Now fetch an unaligned address.
+        pc = 0x8000_0006;
+        p.advance(&mut bus, &mut regs, &mut pc);
+
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::EPC),
+            0x8000_0006,
+            "EPC must be the unaligned fetch, not the last good one"
+        );
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::BAD_VADDR),
+            0x8000_0006,
+            "and BadVAddr likewise"
+        );
+    }
 
     /// `ERET` clears `LLbit`, completing the `LL`/`SC` contract that Sprint 1
     /// left open: until now **nothing** cleared the link, so a `LL`; `ERET`;
