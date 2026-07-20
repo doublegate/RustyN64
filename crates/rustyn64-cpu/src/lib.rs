@@ -34,6 +34,7 @@ pub mod addr;
 pub mod alu;
 pub mod cop0;
 pub mod decode;
+pub mod exception;
 pub mod exec;
 pub mod mem;
 pub mod pipeline;

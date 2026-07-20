@@ -41,6 +41,7 @@ use crate::addr::translate;
 use crate::alu::HiLo;
 use crate::cop0::Cop0;
 use crate::decode::{Decoded, decode};
+use crate::exception;
 use crate::exec::{Cop0Access, MemOp, WriteBack, execute};
 use crate::mem;
 use crate::regs::Regs;
@@ -75,7 +76,14 @@ pub enum Exception {
     /// An interrupt was accepted (`Cause.IP` unmasked, `IE` set, `EXL`/`ERL` clear).
     Interrupt,
     /// Address error on an instruction fetch or data access.
-    AddressError,
+    ///
+    /// Carries the direction because the architecture does: `AdEL` (4) and
+    /// `AdES` (5) are **different** `ExcCode` values (UM Table 6-2, p. 172), and
+    /// a handler distinguishes them. An instruction fetch is a load.
+    AddressError {
+        /// The faulting access was a store.
+        store: bool,
+    },
     /// Integer overflow (`ADD`, `ADDI`, `SUB`, `DADD`, …).
     Overflow,
     /// `SYSCALL`.
@@ -114,9 +122,19 @@ pub enum Interlock {
     Mci,
     /// Cache operation (UM Table 4-3).
     Cop,
-    /// CP0 bypass interlock (UM §4.6.9). **Cycle cost undocumented** — see
-    /// `docs/accuracy-ledger.md` C-3.
+    /// CP0 bypass interlock — **1 `PCycle`** (UM §4.6.9, p. 113).
+    ///
+    /// Fires when an instruction that caused an exception reaches `WB` while the
+    /// next instruction in `DC` reads any CP0 register. The cost was recorded as
+    /// undocumented in three files while sitting in the very paragraph they
+    /// cited; see `docs/engineering-lessons.md` §3.3b.
     Cp0i,
+    /// Taking an exception — **2 `PCycle`s** (UM §4.7, p. 114).
+    ///
+    /// Not strictly one of Table 4-3's eight interlocks: the pipeline stalls
+    /// while the epilogue runs and the aborted instructions drain. Named here so
+    /// a trace can attribute the cycles rather than showing an unexplained gap.
+    Exception,
 }
 
 /// A stall request: how long, and what caused it.
@@ -205,6 +223,20 @@ pub const fn load_interlocks(load_rt: u8, rs: u8, rt: u8, same_reg_file: bool) -
     load_rt == rs || load_rt == rt
 }
 
+/// An exception captured at its raising site, with the context the epilogue
+/// needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Pending {
+    /// What happened.
+    exc: Exception,
+    /// The faulting instruction's address.
+    pc: u64,
+    /// Was the faulting instruction in a branch delay slot?
+    in_delay_slot: bool,
+    /// The offending address, for the exceptions that write `BadVAddr`.
+    bad_vaddr: u64,
+}
+
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default)]
 pub struct Pipeline {
@@ -231,6 +263,13 @@ pub struct Pipeline {
     flush_pending: bool,
     /// Instructions retired at `WB` — a work tally, not a time position.
     pub retired: u64,
+    /// An exception raised this cycle, awaiting dispatch at the end of it.
+    ///
+    /// Captured where it is *raised* rather than reconstructed afterwards,
+    /// because the epilogue needs the faulting instruction's PC and delay-slot
+    /// flag — and by the end of the cycle the reverse cascade has moved every
+    /// latch, so the faulting instruction is no longer where it was.
+    pending: Option<Pending>,
     /// The COP0 register file (T-12-001).
     ///
     /// Public because exception dispatch, the TLB and the interrupt path all
@@ -285,6 +324,7 @@ impl Pipeline {
             prev_was_run: false,
             flush_pending: false,
             retired: 0,
+            pending: None,
             cop0: Cop0::new(),
             ll_bit: false,
         }
@@ -356,6 +396,33 @@ impl Pipeline {
     /// fetched later in the same cycle is a bubble rather than a live
     /// wrong-path fetch.
     pub const fn abort_from(&mut self, at: Stage, exc: Exception) {
+        self.abort_with(at, exc, 0);
+    }
+
+    /// [`Pipeline::abort_from`], additionally recording the offending address
+    /// for the exceptions that write `BadVAddr`.
+    pub const fn abort_with(&mut self, at: Stage, exc: Exception, bad_vaddr: u64) {
+        // Capture the faulting instruction's context NOW. The latch holding it
+        // is the one this stage is reading -- `ex_dc` for DC, `rf_ex` for EX --
+        // and by the end of the cycle the cascade will have moved it on.
+        //
+        // Priority: an exception already pending this cycle came from a LATER
+        // stage (the cascade runs WB first), and UM §4.7.2 gives a later stage
+        // precedence over an earlier one. So the first capture wins.
+        if self.pending.is_none() {
+            let src = match at {
+                Stage::Wb => &self.dc_wb,
+                Stage::Dc => &self.ex_dc,
+                Stage::Ex => &self.rf_ex,
+                Stage::Rf | Stage::Ic => &self.ic_rf,
+            };
+            self.pending = Some(Pending {
+                exc,
+                pc: src.pc,
+                in_delay_slot: src.in_delay_slot,
+                bad_vaddr,
+            });
+        }
         self.flush_pending = true;
         match at {
             Stage::Wb => {
@@ -403,6 +470,15 @@ impl Pipeline {
 
         self.prev_was_run = true;
         self.flush_pending = false;
+
+        // Dispatch AFTER the cascade, so every stage has seen the abort and the
+        // pipeline is drained, and exactly once per cycle regardless of how many
+        // stages raised.
+        if let Some(p) = self.pending.take() {
+            let d = exception::dispatch(&mut self.cop0, p.exc, p.pc, p.in_delay_slot, p.bad_vaddr);
+            *next_pc = d.vector;
+            self.stall_for(d.stall_cycles, Interlock::Exception);
+        }
     }
 
     /// `WB` — commit the result and retire the instruction.
@@ -543,7 +619,7 @@ impl Pipeline {
         match op {
             MemOp::Load { kind, addr, dest } => {
                 if !kind.is_aligned(addr) {
-                    return Err(Exception::AddressError);
+                    return Err(Exception::AddressError { store: false });
                 }
                 let raw = Self::read_width(bus, translate(addr).addr, kind.width());
                 Ok(WriteBack::Gpr {
@@ -553,7 +629,7 @@ impl Pipeline {
             }
             MemOp::Store { kind, addr, value } => {
                 if !kind.is_aligned(addr) {
-                    return Err(Exception::AddressError);
+                    return Err(Exception::AddressError { store: true });
                 }
                 Self::write_width(bus, translate(addr).addr, kind.width(), value);
                 Ok(WriteBack::None)
@@ -565,7 +641,7 @@ impl Pipeline {
                     // not zero, an address error exception takes place" (UM §16
                     // p. 453) -- and the link is NOT armed, because the
                     // instruction did not complete.
-                    return Err(Exception::AddressError);
+                    return Err(Exception::AddressError { store: false });
                 }
                 let phys = translate(addr).addr;
                 let raw = Self::read_width(bus, phys, kind.width());
@@ -593,7 +669,7 @@ impl Pipeline {
                     // the exception takes precedence" (UM §16 p. 487) -- so the
                     // address check runs before the link bit is even consulted,
                     // and `dest` is left alone.
-                    return Err(Exception::AddressError);
+                    return Err(Exception::AddressError { store: true });
                 }
                 let stored = self.ll_bit;
                 if stored {
@@ -745,6 +821,23 @@ impl Pipeline {
                     if e.stall_cycles > 0 {
                         self.stall_for(e.stall_cycles, Interlock::Mci);
                     }
+                    // ERET. Resolved here rather than in `execute` because its
+                    // target comes out of COP0, not out of the instruction.
+                    //
+                    // It has NO delay slot (UM Ch. 16, p. 434) -- alone among
+                    // the control transfers -- so the instruction IC already
+                    // fetched must be squashed. Every branch reaches this point
+                    // with its delay slot legitimately in flight, which is why
+                    // the squash is spelled out here instead of falling out of
+                    // the reverse cascade as a branch's does.
+                    if matches!(e.cop0, Some(Cop0Access::Eret)) {
+                        *next_pc = exception::eret(&mut self.cop0);
+                        // "cleared by an ERET" (UM §3.1) -- the other half of
+                        // the LL/SC contract, which had nothing clearing it
+                        // until now.
+                        self.ll_bit = false;
+                        self.ic_rf = Latch::default();
+                    }
                 }
                 // Stamp BEFORE the latch move, so the abort travels with the
                 // instruction that caused it -- see `abort_from`.
@@ -825,12 +918,12 @@ impl Pipeline {
         // already reachable through the public `Cpu::set_pc` the golden-log
         // harness uses.
         if !pc.is_multiple_of(4) {
-            self.abort_from(Stage::Ic, Exception::AddressError);
+            self.abort_with(Stage::Ic, Exception::AddressError { store: false }, pc);
             self.ic_rf = Latch {
                 cop0: None,
                 occupied: true,
                 pc,
-                abort: Some(Exception::AddressError),
+                abort: Some(Exception::AddressError { store: false }),
                 ..Latch::default()
             };
             // `next_pc` is deliberately NOT realigned. Rounding it down would
@@ -1057,21 +1150,21 @@ mod tests {
         }
 
         // Abort at DC: the instruction in DC plus everything younger.
-        p.abort_from(Stage::Dc, Exception::AddressError);
+        p.abort_from(Stage::Dc, Exception::AddressError { store: false });
         let aborted_pc = p.ex_dc.pc;
         p.advance(&mut bus, &mut regs, &mut pc);
 
         // The causing instruction carried its abort forward into WB's latch...
         assert_eq!(
             (p.dc_wb.abort, p.dc_wb.pc),
-            (Some(Exception::AddressError), aborted_pc),
+            (Some(Exception::AddressError { store: false }), aborted_pc),
             "the aborting instruction lost its flag while advancing"
         );
         // ...and the younger ones kept theirs rather than having them
         // overwritten by the latch moves.
         assert_eq!(
             p.ex_dc.abort,
-            Some(Exception::AddressError),
+            Some(Exception::AddressError { store: false }),
             "a younger instruction's abort was overwritten by the cascade"
         );
 
@@ -1079,7 +1172,7 @@ mod tests {
         // advanced, rather than having it overwritten by the latch move.
         assert_eq!(
             p.rf_ex.abort,
-            Some(Exception::AddressError),
+            Some(Exception::AddressError { store: false }),
             "an in-flight younger instruction lost its abort while advancing"
         );
 
@@ -1141,7 +1234,7 @@ mod tests {
         for _ in 0..4 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        p.dc_wb.abort = Some(Exception::AddressError);
+        p.dc_wb.abort = Some(Exception::AddressError { store: false });
         let retired = p.retired;
         p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.retired, retired, "an aborted instruction retired anyway");
@@ -1294,21 +1387,48 @@ mod tests {
 
         assert_eq!(
             p.ic_rf.abort,
-            Some(Exception::AddressError),
+            Some(Exception::AddressError { store: false }),
             "an unaligned fetch must raise AdEL"
         );
         assert!(
             !bus.fetched,
             "the bus must not be accessed for a bad address"
         );
-        assert_eq!(pc, 0x8000_0002, "the PC must NOT be silently realigned");
+        // The PC is not silently realigned -- it is *vectored*, which is the
+        // architectural response. Before T-12-002 nothing dispatched and this
+        // asserted the PC stayed at the bad address; that was the absence of
+        // dispatch, not a rule.
+        assert_eq!(
+            pc, 0xFFFF_FFFF_BFC0_0380,
+            "the BEV=1 general vector -- cold reset leaves BEV set (UM §6.4.4), \
+             so a fresh CPU vectors into the boot ROM, not into RDRAM"
+        );
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::BAD_VADDR),
+            0x8000_0002,
+            "and BadVAddr holds the unaligned address, un-realigned"
+        );
+        assert_eq!(
+            (p.cop0.read(crate::cop0::reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::ADEL,
+            "an instruction fetch is a load: AdEL, not AdES"
+        );
 
-        // And the faulting instruction must never retire.
-        let retired = p.retired;
-        for _ in 0..8 {
+        // And the faulting instruction must never retire. Bounded to the
+        // epilogue stall on purpose: past that the CPU is running the *handler*,
+        // whose instructions retire legitimately, so a longer window would be
+        // asserting that exception handling does not work.
+        assert_eq!(p.retired, 0, "the faulting fetch retired");
+        assert_eq!(
+            p.stalled_by(),
+            Some(Interlock::Exception),
+            "the 2-PCycle epilogue stall is in progress (UM §4.7 p.114)"
+        );
+        for _ in 0..crate::exception::EPILOGUE_STALL {
             p.advance(&mut bus, &mut regs, &mut pc);
+            assert_eq!(p.retired, 0, "nothing retires while the pipe drains");
         }
-        assert_eq!(p.retired, retired, "a faulting fetch retired anyway");
+        assert_eq!(p.stalled_by(), None, "the stall was exactly 2 PCycles");
     }
 
     /// A RAM-backed bus, so loads and stores can be exercised end to end.
@@ -1849,7 +1969,11 @@ mod tests {
                 },
             )
             .expect_err("misaligned");
-        assert_eq!(err, Exception::AddressError);
+        assert_eq!(
+            err,
+            Exception::AddressError { store: true },
+            "SC is a store, so AdES not AdEL"
+        );
     }
 
     /// A misaligned `LL` must not arm the link — the instruction did not
@@ -1868,7 +1992,11 @@ mod tests {
                 },
             )
             .expect_err("misaligned");
-        assert_eq!(err, Exception::AddressError);
+        assert_eq!(
+            err,
+            Exception::AddressError { store: false },
+            "LL is a load, so AdEL not AdES"
+        );
         assert!(!p.ll_bit(), "a faulted LL leaves the link disarmed");
     }
 
@@ -2025,6 +2153,161 @@ mod tests {
             p.cop0.mfc0(crate::cop0::reg::LL_ADDR),
             0x04,
             "and software can read it back with MFC0"
+        );
+    }
+
+    // --- exception dispatch and ERET through the pipeline (T-12-002) --------
+
+    /// `ERET` clears `LLbit`, completing the `LL`/`SC` contract that Sprint 1
+    /// left open: until now **nothing** cleared the link, so a `LL`; `ERET`;
+    /// `SC` sequence wrongly succeeded.
+    #[test]
+    fn eret_clears_the_link_bit_and_makes_a_following_sc_fail() {
+        let mut p = Pipeline::new();
+        let mut bus = ram();
+        p.access(
+            &mut bus,
+            MemOp::LinkedLoad {
+                kind: LoadKind::SignedWord,
+                addr: 0x40,
+                dest: 8,
+            },
+        )
+        .expect("aligned");
+        assert!(p.ll_bit(), "LL armed the link");
+
+        // ERET: opcode 0o20, rs = 0o20 (CO), funct = 0o30.
+        let word = (0o20 << 26) | (0o20 << 21) | 0o30;
+        assert_eq!(decode(word).op, crate::decode::Op::Eret);
+
+        p.cop0
+            .set_hardware(crate::cop0::reg::STATUS, 1 << 1 /* EXL */);
+        p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
+
+        let mut regs = Regs::new();
+        let mut prog = Ram::new(alloc::vec![word]);
+        let mut pc = 0x800u64;
+        for _ in 0..16 {
+            p.advance(&mut prog, &mut regs, &mut pc);
+        }
+
+        assert!(!p.ll_bit(), "ERET cleared the link (UM §3.1)");
+        let wb = p
+            .access(
+                &mut bus,
+                MemOp::ConditionalStore {
+                    kind: StoreKind::Word,
+                    addr: 0x40,
+                    value: 0xFFFF,
+                    dest: 9,
+                },
+            )
+            .expect("aligned");
+        assert_eq!(
+            wb,
+            WriteBack::Gpr { dest: 9, value: 0 },
+            "SC after ERET must fail"
+        );
+        assert_eq!(bus.data[0x40..0x44], [0, 0, 0, 0], "and store nothing");
+    }
+
+    /// `ERET` resumes at `EPC` and clears `EXL`, and it has **no delay slot** —
+    /// the instruction after it must not execute.
+    #[test]
+    fn eret_resumes_at_epc_and_has_no_delay_slot() {
+        let eret = (0o20 << 26) | (0o20 << 21) | 0o30;
+        // ERET, then an instruction that would be a delay slot for any branch.
+        // If it runs, $5 becomes 0x1234 -- which is the whole assertion.
+        let program = alloc::vec![eret, addiu_zero(5, 0x1234)];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, 1 << 1);
+        p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
+        let mut pc = 0x800u64;
+
+        for _ in 0..12 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        assert_eq!(
+            regs.read(5),
+            0,
+            "ERET has no delay slot -- the following instruction must be squashed"
+        );
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1),
+            0,
+            "EXL cleared"
+        );
+    }
+
+    /// A `SYSCALL` executed through the pipeline must vector, record `EPC`, and
+    /// set the right `ExcCode` — the whole epilogue, end to end.
+    #[test]
+    fn a_syscall_vectors_and_records_its_cause() {
+        // SYSCALL is SPECIAL funct 0o14.
+        let program = alloc::vec![0o14];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // BEV=0 so the vector is the RDRAM one, which is what a running game
+        // uses; cold reset would otherwise send us to the boot ROM.
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
+        let mut pc = 0x800u64;
+
+        // Stop AT the dispatch cycle. Running on would be fine architecturally
+        // -- the handler starts fetching -- but then `pc` has moved past the
+        // vector and asserting on it would be asserting that nothing executes.
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 8, "SYSCALL never dispatched");
+        }
+
+        assert_eq!(
+            (p.cop0.read(crate::cop0::reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::SYS
+        );
+        assert_eq!(p.cop0.read(crate::cop0::reg::EPC), 0x800);
+        assert_eq!(pc, 0xFFFF_FFFF_8000_0180);
+        assert_ne!(
+            p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1),
+            0,
+            "EXL set, so the handler runs in kernel mode with interrupts off"
+        );
+    }
+
+    /// The epilogue must not overwrite `EPC` when `EXL` is already set — tested
+    /// **through the pipeline**, not just against `dispatch` directly, because
+    /// this is the failure that only shows up when handlers nest.
+    #[test]
+    fn a_second_exception_in_a_handler_preserves_the_first_epc() {
+        let program = alloc::vec![0o14, 0o14];
+        let mut bus = Ram::new(program);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
+        let mut pc = 0x800u64;
+
+        for _ in 0..8 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        let first_epc = p.cop0.read(crate::cop0::reg::EPC);
+        assert_eq!(first_epc, 0x800);
+        assert_ne!(p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1), 0);
+
+        // Now run a second SYSCALL while EXL is still set. Point the fetch back
+        // at the program so it hits the second word.
+        pc = 0x804;
+        for _ in 0..8 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            p.cop0.read(crate::cop0::reg::EPC),
+            first_epc,
+            "the first handler's return address must survive (UM §6.3.7)"
         );
     }
 }

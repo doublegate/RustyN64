@@ -136,6 +136,12 @@ pub enum Cop0Access {
         /// 64-bit (`DMFC0`) rather than 32-bit sign-extended (`MFC0`).
         wide: bool,
     },
+    /// `ERET` — restore `PC` from `EPC`/`ErrorEPC`, clear `EXL`/`ERL`, clear
+    /// the link bit.
+    ///
+    /// Cannot be resolved in `EX` like an ordinary redirect, because the target
+    /// comes out of COP0 rather than out of the instruction.
+    Eret,
     /// Write `value` to COP0 register `dest`, in `WB`.
     Write {
         /// COP0 register number.
@@ -553,6 +559,10 @@ pub const fn execute(
                 dest: d.dest,
                 wide: matches!(d.op, Op::Dmfc0),
             }),
+            ..NOTHING
+        }),
+        Op::Eret => Ok(Executed {
+            cop0: Some(Cop0Access::Eret),
             ..NOTHING
         }),
         Op::Mtc0 | Op::Dmtc0 => Ok(Executed {
