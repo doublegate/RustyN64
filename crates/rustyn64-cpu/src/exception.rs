@@ -299,10 +299,15 @@ pub fn dispatch(
     //    reason the hardware assembles it here rather than leaving it to
     //    software.
     if writes_tlb_context(exc) {
-        let vpn2 = bad_vaddr & 0x0000_00FF_FFFF_E000;
+        let vpn2 = bad_vaddr & crate::tlb::VPN2_MASK;
         let hi = cop0.read(reg::ENTRY_HI);
-        // ASID is preserved; only the VPN2 field is replaced.
-        cop0.set_hardware(reg::ENTRY_HI, (hi & 0xFF) | vpn2);
+        // The `R` field (63:62) comes from the faulting address too, not just
+        // `VPN2`. Leaving it zero puts every sign-extended kernel fault in
+        // region 0, so the handler's `TLBWR` would install an entry that can
+        // never match the address that faulted.
+        let region = bad_vaddr & 0xC000_0000_0000_0000;
+        // ASID is preserved; VPN2 and R are replaced.
+        cop0.set_hardware(reg::ENTRY_HI, (hi & crate::tlb::ASID_MASK) | vpn2 | region);
         // Context: PTEBase (63:23) kept, BadVPN2 (22:4) = VA(31:13).
         let ctx = cop0.read(reg::CONTEXT);
         cop0.set_hardware(

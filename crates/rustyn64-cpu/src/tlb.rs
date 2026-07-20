@@ -27,6 +27,18 @@
 
 use crate::cop0::{Cop0, reg};
 
+/// The bits of a virtual address that `EntryHi.VPN2` can hold: VA(39:0).
+///
+/// Everything above is either the `R` region field or sign extension, neither of
+/// which belongs in a `VPN2` comparison.
+pub const VA_MASK: u64 = 0x0000_00FF_FFFF_FFFF;
+
+/// The `EntryHi.VPN2` field mask.
+pub const VPN2_MASK: u64 = 0x0000_00FF_FFFF_E000;
+
+/// The `EntryHi.ASID` field mask.
+pub const ASID_MASK: u64 = 0xFF;
+
 /// JTLB entries. Fully associative (UM §5.1, p. 122).
 pub const JTLB_ENTRIES: usize = 32;
 
@@ -226,6 +238,12 @@ impl Tlb {
     ///
     /// [`TlbFault`] describing which of the three TLB exceptions to raise.
     pub fn lookup(&mut self, vaddr: u64, asid: u8, store: bool) -> Result<Translated, TlbFault> {
+        // "the TLB cannot be used" and "the processor must be reset to restart"
+        // (UM §5.1 p. 122, Fig. 6-6 p. 167). Without this the flag would be
+        // recorded and then ignored, which is worse than not having it.
+        if self.shutdown {
+            return Err(TlbFault::Refill);
+        }
         let mut found: Option<usize> = None;
         for (i, e) in self.entries.iter().enumerate() {
             if !Self::matches(e, vaddr, asid) {
@@ -278,11 +296,34 @@ impl Tlb {
     /// `VPN2` **and** (`G` **or** `ASID`). `V` is deliberately absent — see the
     /// module docs for why including it breaks two separate behaviours.
     fn matches(e: &Entry, vaddr: u64, asid: u8) -> bool {
-        // The tag is compared at PAIR granularity, not page granularity.
-        if (vaddr / Self::pair_size(e.page_mask)) != e.vpn2 {
+        // Compare the ARCHITECTURAL fields, not the raw 64-bit value.
+        //
+        // A 32-bit kernel address arrives sign-extended -- KSEG3 is
+        // `0xFFFF_FFFF_E000_0000`, not `0xE000_0000` -- while `EntryHi.VPN2`
+        // holds only VA(39:13). Dividing the raw value would compare the sign
+        // extension against zero, so **no mapped kernel address would ever
+        // match**, however correct the entry. KUSEG addresses have no sign
+        // extension, which is why a test suite built on them sees nothing wrong.
+        if Self::region_of(vaddr) != e.region {
+            return false;
+        }
+        if Self::vpn2_of(vaddr, e.page_mask) != e.vpn2 {
             return false;
         }
         e.global || e.asid == asid
+    }
+
+    /// The `R` field: VA(63:62), selecting the 64-bit address region.
+    const fn region_of(vaddr: u64) -> u8 {
+        ((vaddr >> 62) & 0b11) as u8
+    }
+
+    /// `VPN2` for an address: VA(39:13) at pair granularity.
+    ///
+    /// Masked to 40 bits **before** dividing, so the sign extension of a 32-bit
+    /// address is discarded rather than compared.
+    const fn vpn2_of(vaddr: u64, page_mask: u32) -> u64 {
+        (vaddr & VA_MASK) / Self::pair_size(page_mask)
     }
 
     /// `TLBWI` / `TLBWR` — write `EntryHi`/`EntryLo0`/`EntryLo1`/`PageMask` into
@@ -295,8 +336,8 @@ impl Tlb {
 
         self.entries[index & (JTLB_ENTRIES - 1)] = Entry {
             page_mask: mask,
-            vpn2: (hi & 0x0000_00FF_FFFF_E000) / Self::pair_size(mask),
-            asid: (hi & 0xFF) as u8,
+            vpn2: (hi & VPN2_MASK) / Self::pair_size(mask),
+            asid: (hi & ASID_MASK) as u8,
             // "If this bit is set in BOTH EntryLo0 and EntryLo1, then the
             // processor ignores the ASID during TLB lookup" (UM Fig. 5-10,
             // p. 145). An OR here would make far too many entries global.
@@ -353,14 +394,27 @@ impl Tlb {
     /// U-2). This implementation leaves them zero — a guess, not a fact.
     pub fn probe(&self, cop0: &mut Cop0) {
         let hi = cop0.read(reg::ENTRY_HI);
-        let asid = (hi & 0xFF) as u8;
+        let asid = (hi & ASID_MASK) as u8;
         for (i, e) in self.entries.iter().enumerate() {
-            if Self::matches(e, hi & 0x0000_00FF_FFFF_E000, asid) {
+            // The FULL EntryHi, not a VPN2-masked copy: masking would clear the
+            // R field and make every non-zero region fail to probe.
+            if Self::matches(e, hi, asid) {
                 cop0.set_hardware(reg::INDEX, i as u64);
                 return;
             }
         }
         cop0.set_hardware(reg::INDEX, 1 << 31);
+    }
+
+    /// Does any entry match, without translating or shutting down?
+    ///
+    /// Used by the instruction-fetch path to decide whether a micro-TLB reload
+    /// can actually happen: the 3-PCycle penalty is *"incurred when the
+    /// micro-TLB is updated from the JTLB"* (UM §4.6.2), so a lookup that misses
+    /// the JTLB too must not be charged for a reload that never occurred.
+    #[must_use]
+    pub fn jtlb_has_match(&self, vaddr: u64, asid: u8) -> bool {
+        !self.shutdown && self.entries.iter().any(|e| Self::matches(e, vaddr, asid))
     }
 
     /// Probe the instruction micro-TLB, reporting whether it hit.
@@ -655,5 +709,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The sign-extension bug.** A 32-bit kernel address arrives
+    /// sign-extended — KSEG3 is `0xFFFF_FFFF_E000_0000`, not `0xE000_0000` —
+    /// while `EntryHi.VPN2` holds only VA(39:13).
+    ///
+    /// Comparing the raw 64-bit value pits the sign extension against zero, so
+    /// **no mapped kernel address ever matches**, however correct the entry.
+    /// Every test above uses KUSEG, which has no sign extension — which is
+    /// exactly why the suite was silent about it until review pointed it out.
+    #[test]
+    fn a_sign_extended_kernel_address_matches_its_entry() {
+        let mut t = Tlb::new();
+        let mut c = Cop0::new();
+        // Software in 32-bit mode writes EntryHi through MTC0, which
+        // sign-extends -- so the entry carries R = 3 as well.
+        c.set_hardware(reg::PAGE_MASK, 0);
+        c.set_hardware(reg::ENTRY_HI, 0xFFFF_FFFF_E000_0000);
+        c.set_hardware(reg::ENTRY_LO0, lo(0x100) | 1);
+        c.set_hardware(reg::ENTRY_LO1, lo(0x101) | 1);
+        t.write_entry(0, &c);
+
+        let r = t
+            .lookup(0xFFFF_FFFF_E000_0000, 0, false)
+            .expect("KSEG3 must translate");
+        assert_eq!(r.addr, 0x100 << 12);
+
+        // And the probe path must agree -- it previously masked the region away.
+        let mut c2 = Cop0::new();
+        c2.set_hardware(reg::ENTRY_HI, 0xFFFF_FFFF_E000_0000);
+        t.probe(&mut c2);
+        assert_eq!(c2.read(reg::INDEX), 0, "TLBP must find it too");
+    }
+
+    /// The `R` region field participates in matching: the same low address in a
+    /// different region is a different translation.
+    #[test]
+    fn the_region_field_distinguishes_otherwise_identical_addresses() {
+        let mut t = Tlb::new();
+        let mut c = Cop0::new();
+        c.set_hardware(reg::PAGE_MASK, 0);
+        // Region 0 (xkuseg).
+        c.set_hardware(reg::ENTRY_HI, 0x0000_0000_0000_2000);
+        c.set_hardware(reg::ENTRY_LO0, lo(0x100) | 1);
+        c.set_hardware(reg::ENTRY_LO1, lo(0x101) | 1);
+        t.write_entry(0, &c);
+
+        assert!(t.lookup(0x0000_2000, 0, false).is_ok());
+        assert_eq!(
+            t.lookup(0xC000_0000_0000_2000, 0, false),
+            Err(TlbFault::Refill),
+            "same VPN2, different region -- must not match"
+        );
+    }
+
+    /// A shut-down TLB is **unusable** until reset (UM §5.1, Fig. 6-6). Recording
+    /// the flag and then continuing to translate is worse than not tracking it.
+    #[test]
+    fn a_shut_down_tlb_refuses_every_subsequent_lookup() {
+        let mut t = Tlb::new();
+        install(&mut t, 0, 0x0000_2000, 0, lo(0x100), lo(0x101));
+        install(&mut t, 5, 0x0000_2000, 0, lo(0x200), lo(0x201));
+        let _ = t.lookup(0x0000_2000, 0, false);
+        assert!(t.is_shutdown());
+
+        // A completely unrelated, singly-mapped address must now fail too.
+        install(&mut t, 9, 0x0004_0000, 0, lo(0x300), lo(0x301));
+        assert_eq!(
+            t.lookup(0x0004_0000, 0, false),
+            Err(TlbFault::Refill),
+            "the TLB is dead until reset"
+        );
+    }
+
+    /// `jtlb_has_match` reports matching without translating or shutting down —
+    /// the instruction-fetch path needs to know whether a micro-TLB reload can
+    /// happen *before* deciding to charge for one.
+    #[test]
+    fn jtlb_has_match_is_side_effect_free() {
+        let mut t = Tlb::new();
+        install(&mut t, 0, 0x0000_2000, 0, lo(0x100), lo(0x101));
+        install(&mut t, 5, 0x0000_2000, 0, lo(0x200), lo(0x201));
+        assert!(t.jtlb_has_match(0x0000_2000, 0));
+        assert!(
+            !t.is_shutdown(),
+            "a query must not trip shutdown -- only a real lookup does"
+        );
+        assert!(!t.jtlb_has_match(0x0040_0000, 0));
     }
 }

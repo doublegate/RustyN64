@@ -43,7 +43,20 @@ page-pair 0 matches all 32 and triggers TLB shutdown. Found by a test, not by re
 it: an unused function that quietly gets translation wrong is the inert-API hazard
 `docs/engineering-lessons.md` §3.2 describes.
 
-All ten mutations of the TLB were confirmed to fail the suite. One initially survived — nothing
+**Review caught a bug the entire test suite was structurally blind to.** TLB matching compared the
+raw 64-bit address, so a sign-extended kernel address — KSEG3 is `0xFFFF_FFFF_E000_0000`, not
+`0xE000_0000` — pitted its sign extension against a `VPN2` holding only VA(39:13). **No mapped
+kernel address could ever match**, however correct the entry. Every TLB test used KUSEG, which has
+no sign extension, so nothing could see it. Matching now compares the architectural `R` and
+`VPN2` fields, and there are regressions for both translating and probing a KSEG3 address.
+
+Three more from the same review: `EntryHi.R` was left zero on a fault (which makes the handler
+install an entry that can never match, so an infinite refill loop rather than a wrong value);
+`TLBP` masked the region away before probing; and **TLB shutdown set a flag nobody could
+observe** — the ticket's own criterion said `Status.TS ← 1` and *TLB unusable*, and neither half
+was propagated.
+
+All ten original TLB mutations plus six of the seven fix mutations fail the suite. One initially survived — nothing
 checked that TLB Invalid takes the *general* vector — and there is now a test for the one
 distinction `Cause` cannot express.
 

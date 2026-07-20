@@ -723,6 +723,7 @@ impl Pipeline {
             Ok(p) => Ok(p.addr),
             Err(f) => {
                 self.fault_vaddr = vaddr;
+                self.note_shutdown();
                 Err(Self::tlb_exception(f, store))
             }
         }
@@ -796,6 +797,20 @@ impl Pipeline {
             // forms above.
             _ => WriteBack::None,
         })
+    }
+
+    /// Mirror a TLB shutdown into `Status.TS`.
+    ///
+    /// `TS` is read-only to software (UM Fig. 6-6, p. 167), so it goes through
+    /// `set_hardware`. Without this the shutdown flag would be recorded inside
+    /// the TLB and never observed, which is worse than not tracking it: software
+    /// polls `Status.TS` precisely to discover that the TLB has died.
+    fn note_shutdown(&mut self) {
+        if self.tlb.is_shutdown() {
+            let status = self.cop0.read(crate::cop0::reg::STATUS);
+            self.cop0
+                .set_hardware(crate::cop0::reg::STATUS, status | (1 << 21));
+        }
     }
 
     /// Perform a memory access.
@@ -1115,7 +1130,12 @@ impl Pipeline {
         let phys = match crate::addr::segment(pc) {
             crate::addr::Segment::Direct { addr, .. } => addr,
             crate::addr::Segment::Mapped => {
-                if !self.tlb.itlb_probe(pc, asid) {
+                // The 3-PCycle penalty is "incurred when the micro-TLB is
+                // updated from the JTLB" (UM §4.6.2) -- so it is charged only
+                // when a reload can actually happen. A fetch that misses BOTH
+                // levels goes straight to its exception without paying for a
+                // reload that never occurred.
+                if !self.tlb.itlb_probe(pc, asid) && self.tlb.jtlb_has_match(pc, asid) {
                     self.tlb.itlb_fill(pc, asid);
                     self.stall_for(crate::tlb::ITLB_MISS_PCYCLES, Interlock::Itm);
                 }
@@ -3026,5 +3046,108 @@ mod tests {
                 "Random must never select a wired entry"
             );
         }
+    }
+
+    /// A TLB fault on a sign-extended kernel address must record the **`R`**
+    /// region in `EntryHi`, not just `VPN2`.
+    ///
+    /// Leaving `R` zero puts every such fault in region 0, so the handler's
+    /// `TLBWR` installs an entry that can never match the address that faulted —
+    /// an infinite refill loop, not a visibly wrong value.
+    #[test]
+    fn a_fault_on_a_sign_extended_address_records_its_region_in_entryhi() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        // LW $3, 0($1) with $1 = 0xFFFF_FFFF_E000_0000 (KSEG3, mapped).
+        let mut bus = Ram::new(alloc::vec![
+            (0o17 << 26) | (1 << 16) | 0xE000, // LUI $1, 0xE000
+            ld_st(0o43, 1, 3, 0),
+        ]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 20, "no TLB exception raised");
+        }
+        assert_eq!(
+            p.cop0.read(reg::BAD_VADDR),
+            0xFFFF_FFFF_E000_0000,
+            "the full sign-extended address faulted"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::ENTRY_HI) >> 62) & 0b11,
+            0b11,
+            "EntryHi.R must carry the faulting region, not 0"
+        );
+        assert_eq!(
+            p.cop0.read(reg::ENTRY_HI) & crate::tlb::VPN2_MASK,
+            0xFFFF_FFFF_E000_0000 & crate::tlb::VPN2_MASK,
+            "and VPN2 alongside it"
+        );
+    }
+
+    /// TLB shutdown must reach **`Status.TS`**, not just an internal flag —
+    /// software polls `TS` precisely to discover that the TLB has died.
+    #[test]
+    fn tlb_shutdown_sets_status_ts() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![ld_st(0o43, 0, 3, 0x100)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        // Two coinciding entries.
+        map(&mut p, 0, 0x0000, 0);
+        map(&mut p, 7, 0x0000, 4);
+        assert_eq!(p.cop0.read(reg::STATUS) & (1 << 21), 0, "TS clear so far");
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert!(p.tlb.is_shutdown(), "the duplicate was noticed");
+        assert_ne!(
+            p.cop0.read(reg::STATUS) & (1 << 21),
+            0,
+            "Status.TS must be set (UM Fig. 6-6) -- an internal flag nobody can \
+             read is worse than not tracking it"
+        );
+    }
+
+    /// The 3-PCycle micro-ITLB reload is charged **only when a reload happens**
+    /// (UM §4.6.2). A fetch that misses both levels goes straight to its
+    /// exception rather than paying for a reload that never occurred.
+    ///
+    /// **This test cannot currently observe the charge itself.** `stall_for`
+    /// replaces any pending stall, so the exception's 2-PCycle stall supersedes
+    /// a wrongly-charged 3-PCycle reload in the same cycle — mutating the guard
+    /// away produces no behavioural difference today, which mutation testing
+    /// duly reported. The guard is kept because it is what the manual says and
+    /// because it becomes observable the moment stalls compose rather than
+    /// replace; what is asserted here is the *decision*
+    /// ([`Tlb::jtlb_has_match`]) and the absence of a reload, not the timing.
+    #[test]
+    fn a_fetch_missing_both_tlb_levels_is_not_charged_for_a_reload() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        // Fetch from an unmapped KUSEG address: misses ITLB and JTLB alike.
+        let mut pc = 0x0000_4000u64;
+
+        assert!(
+            !p.tlb.jtlb_has_match(pc, 0),
+            "the JTLB has nothing to reload the micro-TLB from"
+        );
+        p.advance(&mut bus, &mut regs, &mut pc);
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::TLBL,
+            "it went straight to the refill exception"
+        );
     }
 }
