@@ -9,6 +9,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — rustdoc gets its own CI job
+
+`RUSTDOCFLAGS="-D warnings" cargo doc` was the **last step of the `test` job**, after the slow
+test run. Two consequences, both observed rather than theorised:
+
+- It was the most likely thing to be lost to `cancel-in-progress`. A commit with a broken
+  intra-doc link (public docs linking to a private item) went through with its run marked
+  **`cancelled`, not failed** — rustdoc never executed. The gate did not fail; it did not run.
+- A rustdoc failure reported as `test (ubuntu-latest) failed`, pointing at the wrong subsystem.
+
+Now a dedicated `rustdoc (-D warnings)` job with no `needs:`, so it starts immediately, runs in
+parallel with the tests, and finishes in well under a minute — fast enough to be useful feedback
+and small enough to rarely be mid-flight when a supersede happens. Verified by reintroducing the
+exact defect that slipped through: the job's command rejects it, and `cargo test` is blind to it.
+
 ### Added — the ADR 0007 five-stage pipeline (T-11-001, second half)
 
 `crates/rustyn64-cpu/src/pipeline.rs`. **Structure, not instructions** — the stages move latches
