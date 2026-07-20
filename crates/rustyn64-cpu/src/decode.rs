@@ -192,9 +192,138 @@ pub enum Op {
     Sdl,
     /// `SDR rt, off(base)`.
     Sdr,
+
+    // --- jumps
+    /// `J target` — 26-bit region form.
+    J,
+    /// `JAL target` — links to `$31`.
+    Jal,
+    /// `JR rs` — register indirect.
+    Jr,
+    /// `JALR rd, rs` — register indirect, links to `rd`.
+    Jalr,
+
+    // --- branches. The `*L` forms are **branch-likely**: when NOT taken they
+    // nullify the delay slot instead of executing it.
+    /// `BEQ rs, rt, off`.
+    Beq,
+    /// `BNE rs, rt, off`.
+    Bne,
+    /// `BLEZ rs, off`.
+    Blez,
+    /// `BGTZ rs, off`.
+    Bgtz,
+    /// `BLTZ rs, off`.
+    Bltz,
+    /// `BGEZ rs, off`.
+    Bgez,
+    /// `BLTZAL rs, off` — links to `$31`.
+    Bltzal,
+    /// `BGEZAL rs, off` — links to `$31`.
+    Bgezal,
+    /// `BEQL` — branch-likely.
+    Beql,
+    /// `BNEL` — branch-likely.
+    Bnel,
+    /// `BLEZL` — branch-likely.
+    Blezl,
+    /// `BGTZL` — branch-likely.
+    Bgtzl,
+    /// `BLTZL` — branch-likely.
+    Bltzl,
+    /// `BGEZL` — branch-likely.
+    Bgezl,
+    /// `BLTZALL` — branch-likely, links.
+    Bltzall,
+    /// `BGEZALL` — branch-likely, links.
+    Bgezall,
+
+    // --- the trap family
+    /// `TGE rs, rt`.
+    Tge,
+    /// `TGEU rs, rt`.
+    Tgeu,
+    /// `TLT rs, rt`.
+    Tlt,
+    /// `TLTU rs, rt`.
+    Tltu,
+    /// `TEQ rs, rt`.
+    Teq,
+    /// `TNE rs, rt`.
+    Tne,
+    /// `TGEI rs, imm`.
+    Tgei,
+    /// `TGEIU rs, imm`.
+    Tgeiu,
+    /// `TLTI rs, imm`.
+    Tlti,
+    /// `TLTIU rs, imm`.
+    Tltiu,
+    /// `TEQI rs, imm`.
+    Teqi,
+    /// `TNEI rs, imm`.
+    Tnei,
+
+    /// `SYSCALL`.
+    Syscall,
+    /// `BREAK`.
+    Break,
 }
 
 impl Op {
+    /// Does this instruction have a branch delay slot?
+    ///
+    /// Every jump and branch on MIPS does. The instruction *after* it executes
+    /// before the target — which is why `in_delay_slot` has to travel with the
+    /// instruction rather than live in a global flag.
+    #[must_use]
+    pub const fn has_delay_slot(self) -> bool {
+        matches!(
+            self,
+            Self::J
+                | Self::Jal
+                | Self::Jr
+                | Self::Jalr
+                | Self::Beq
+                | Self::Bne
+                | Self::Blez
+                | Self::Bgtz
+                | Self::Bltz
+                | Self::Bgez
+                | Self::Bltzal
+                | Self::Bgezal
+                | Self::Beql
+                | Self::Bnel
+                | Self::Blezl
+                | Self::Bgtzl
+                | Self::Bltzl
+                | Self::Bgezl
+                | Self::Bltzall
+                | Self::Bgezall
+        )
+    }
+
+    /// Is this a **branch-likely** form?
+    ///
+    /// When a likely branch is *not* taken it **nullifies** its delay slot — the
+    /// instruction is fetched and then squashed. An ordinary branch executes its
+    /// delay slot either way. Getting this backwards silently executes or skips
+    /// one instruction per untaken branch.
+    #[must_use]
+    pub const fn is_likely(self) -> bool {
+        matches!(
+            self,
+            Self::Beql
+                | Self::Bnel
+                | Self::Blezl
+                | Self::Bgtzl
+                | Self::Bltzl
+                | Self::Bgezl
+                | Self::Bltzall
+                | Self::Bgezall
+        )
+    }
+
     /// Does this operation write `HI`/`LO` rather than a general register?
     ///
     /// Used for the `MFHI`/`MFLO` hazard window: a `MFHI` followed within two
@@ -244,6 +373,9 @@ pub struct Decoded {
     /// The general register this writes, or 0 for none. `$zero` is never
     /// actually written, so 0 doubles as "no destination".
     pub dest: u8,
+    /// The J-type 26-bit target field, bits 25..0. Shifted left 2 and combined
+    /// with the delay slot's region bits to form the address.
+    pub target: u32,
 }
 
 impl Decoded {
@@ -311,6 +443,17 @@ const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
 const OP_LD: u32 = 0o67;
 const OP_SD: u32 = 0o77;
+const OP_REGIMM: u32 = 0o01;
+const OP_J: u32 = 0o02;
+const OP_JAL: u32 = 0o03;
+const OP_BEQ: u32 = 0o04;
+const OP_BNE: u32 = 0o05;
+const OP_BLEZ: u32 = 0o06;
+const OP_BGTZ: u32 = 0o07;
+const OP_BEQL: u32 = 0o24;
+const OP_BNEL: u32 = 0o25;
+const OP_BLEZL: u32 = 0o26;
+const OP_BGTZL: u32 = 0o27;
 
 /// Decode one instruction word. Total — never fails, never panics.
 #[must_use]
@@ -332,6 +475,7 @@ pub const fn decode(word: u32) -> Decoded {
         sa,
         imm,
         dest: 0,
+        target: word & 0x03FF_FFFF,
     };
 
     // R-type: the operation is in `funct`, and the destination is `rd`.
@@ -409,6 +553,40 @@ pub const fn decode(word: u32) -> Decoded {
             0o55 => r!(Op::Daddu),
             0o56 => r!(Op::Dsub),
             0o57 => r!(Op::Dsubu),
+            0o10 => Decoded { op: Op::Jr, ..base },
+            0o11 => r!(Op::Jalr),
+            0o14 => Decoded {
+                op: Op::Syscall,
+                ..base
+            },
+            0o15 => Decoded {
+                op: Op::Break,
+                ..base
+            },
+            0o60 => Decoded {
+                op: Op::Tge,
+                ..base
+            },
+            0o61 => Decoded {
+                op: Op::Tgeu,
+                ..base
+            },
+            0o62 => Decoded {
+                op: Op::Tlt,
+                ..base
+            },
+            0o63 => Decoded {
+                op: Op::Tltu,
+                ..base
+            },
+            0o64 => Decoded {
+                op: Op::Teq,
+                ..base
+            },
+            0o66 => Decoded {
+                op: Op::Tne,
+                ..base
+            },
             0o70 => r!(Op::Dsll),
             0o72 => r!(Op::Dsrl),
             0o73 => r!(Op::Dsra),
@@ -461,6 +639,74 @@ pub const fn decode(word: u32) -> Decoded {
             op: Op::Sdr,
             ..base
         },
+
+        // Jumps and branches write no general register except the linking forms,
+        // which target $31 (or `rd` for JALR).
+        OP_J => Decoded { op: Op::J, ..base },
+        OP_JAL => Decoded {
+            op: Op::Jal,
+            dest: 31,
+            ..base
+        },
+        OP_BEQ => Decoded {
+            op: Op::Beq,
+            ..base
+        },
+        OP_BNE => Decoded {
+            op: Op::Bne,
+            ..base
+        },
+        OP_BLEZ => Decoded {
+            op: Op::Blez,
+            ..base
+        },
+        OP_BGTZ => Decoded {
+            op: Op::Bgtz,
+            ..base
+        },
+        OP_BEQL => Decoded {
+            op: Op::Beql,
+            ..base
+        },
+        OP_BNEL => Decoded {
+            op: Op::Bnel,
+            ..base
+        },
+        OP_BLEZL => Decoded {
+            op: Op::Blezl,
+            ..base
+        },
+        OP_BGTZL => Decoded {
+            op: Op::Bgtzl,
+            ..base
+        },
+
+        // REGIMM: the `rt` field selects the operation, not a register.
+        OP_REGIMM => {
+            let linking = matches!(rt, 0o20..=0o23);
+            let op = match rt {
+                0o00 => Op::Bltz,
+                0o01 => Op::Bgez,
+                0o02 => Op::Bltzl,
+                0o03 => Op::Bgezl,
+                0o10 => Op::Tgei,
+                0o11 => Op::Tgeiu,
+                0o12 => Op::Tlti,
+                0o13 => Op::Tltiu,
+                0o14 => Op::Teqi,
+                0o16 => Op::Tnei,
+                0o20 => Op::Bltzal,
+                0o21 => Op::Bgezal,
+                0o22 => Op::Bltzall,
+                0o23 => Op::Bgezall,
+                _ => Op::Reserved,
+            };
+            Decoded {
+                op,
+                dest: if linking { 31 } else { 0 },
+                ..base
+            }
+        }
         _ => base,
     }
 }
@@ -516,10 +762,15 @@ mod tests {
         for bit in 0..32 {
             let _ = decode(1u32 << bit);
         }
-        // Not yet implemented => Reserved, which is loud. SPECIAL funct 0o01 is
-        // unused on MIPS III, and `BEQ` (0o04) arrives with T-11-004.
+        // These must be encodings the VR4300 genuinely leaves UNASSIGNED, not
+        // merely ones this project has not implemented yet. Primary opcodes
+        // 0o34..0o37 are reserved on MIPS III, and SPECIAL funct 0o01 is unused.
+        // Earlier revisions of this test used LW and then BEQ, and had to be
+        // repointed each time that opcode landed -- which made the test track
+        // implementation progress instead of the architecture.
         assert_eq!(decode(r(0o01, 1, 2, 3, 0)).op, Op::Reserved);
-        assert_eq!(decode(i(0o04, 1, 2, 0)).op, Op::Reserved);
+        assert_eq!(decode(i(0o35, 1, 2, 0)).op, Op::Reserved);
+        assert_eq!(decode(i(0o36, 1, 2, 0)).op, Op::Reserved);
     }
 
     /// The `*32` shift variants add 32 to the encoded 5-bit field, so `sa` is the
