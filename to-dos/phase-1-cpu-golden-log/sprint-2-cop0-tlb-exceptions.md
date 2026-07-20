@@ -535,12 +535,35 @@ short of asking it.
    ranges are `0x0500_0000-0x1FBF_FFFF` and `0x1FD0_0000-0x7FFF_FFFF`. So a CPU byte or halfword
    load from cart is not a narrow bus access at all — the PI performs a full 32-bit read.
 
-   **Do not implement this from the two data points above.** They are consistent with an address
-   latch that advanced past the previous read, but that is an inferred *mechanism*, and every
-   inferred mechanism in this ticket has been wrong. Read the wiki's
-   `Memory map#Ranges 0x0500'0000 - 0x1FBF'FFFF` section first — it is cross-referenced precisely
-   for this behaviour — and confirm against the `cart: Read32` cases that currently **pass**, so a
-   change here does not regress them.
+   **The rule, read rather than inferred.** I guessed "an address latch advanced past the previous
+   read". **Wrong**, and the wiki says so plainly (`Memory map`, PI external bus):
+
+   > The external PI bus is 16-bit. Given that the RCP only knows of 32-bit accesses (as access
+   > size is ignored), this means that each read or write performed by the VR4300 will cause
+   > exactly two reads or two writes on the PI bus: first the MSB at the address specified by the
+   > CPU (ignoring bit 0), then the LSB at address+2. [...] effectively a 16-bit read at
+   > `0x1000'0002` returns the 16-bit word at `0x1000'0004`.
+
+   So: **access size is ignored**; the RCP always returns the 32-bit word starting at
+   `addr & !1`, while the CPU selects its byte lane assuming a word at `addr & !3`. The
+   off-by-two between those two bases *is* the bug, and it is a hardware bug we must reproduce.
+
+   Checking it against every data point we have:
+
+   | Access | RCP word base (`addr & !1`) | CPU lane (`addr & 3`) | Result | Expected |
+   | --- | --- | --- | --- | --- |
+   | `LW` @0 | 0 → bytes 0-3 | 0 | `0x01234567` | `0x01234567` ✓ |
+   | `LH` @2 | 2 → bytes 2-5 | 2 (low half) | `0x89AB` | `0x89AB` ✓ |
+   | `LB` @2 | 2 → bytes 2-5 | 2 | byte 4 = `0x89` | `0x89` ✓ |
+
+   **Implementation note that matters.** This cannot be done in `read_u8`: the lane depends on the
+   *original access address and width*, which a byte-granular decomposition throws away — a word
+   read at 0 and a halfword read at 2 both touch byte 2, and they must resolve differently.
+   `Bus` therefore needs `read_u16`/`read_u32` overrides for the PI window, the same shape as the
+   existing `write_u32` override (which exists for the mirror-image reason: a byte-wise default
+   fired four DMAs for one `sw`).
+
+   Confirm against the `cart: Read32` cases that currently **pass**, so this does not regress them.
 
    **One hypothesis already refuted, so nobody re-spends it:** a spurious `IP2` from the PI
    interrupt, which the Bus now mirrors on every PI write and which software must clear
