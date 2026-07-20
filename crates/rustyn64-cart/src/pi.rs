@@ -160,15 +160,32 @@ impl Pi {
     /// Begin a transfer of `len + 1` bytes.
     const fn start(&mut self, len: u32, to_dram: bool) -> Transfer {
         self.busy = true;
-        Transfer {
+        // "+1" is the rule everything gets wrong once: writing 0 transfers
+        // ONE byte. Being short by one corrupts the last byte of every
+        // block, which presents as memory corruption rather than a DMA bug.
+        let len = (len & 0x00FF_FFFF) + 1;
+        let t = Transfer {
             dram: self.dram_addr,
             cart: self.cart_addr,
-            // "+1" is the rule everything gets wrong once: writing 0 transfers
-            // ONE byte. Being short by one corrupts the last byte of every
-            // block, which presents as memory corruption rather than a DMA bug.
-            len: (len & 0x00FF_FFFF) + 1,
+            len,
             to_dram,
-        }
+        };
+        // **Both address registers ADVANCE by the transfer length.** Hardware
+        // walks them as the DMA proceeds, so software reads back the address
+        // *past* the block it just moved -- which is how a driver chains
+        // transfers without rewriting the address each time.
+        //
+        // Leaving them put makes every chained DMA re-transfer the first block,
+        // and n64-systemtest checks the delta directly: after a 0x10-byte
+        // transfer it expects `PI_CART_ADDR` to have moved by `0x10`, and for a
+        // written length of 1 (two bytes) by `0x2`.
+        //
+        // Advanced here rather than on completion because this DMA is
+        // instantaneous; the observable end state is identical, and charging it
+        // real time later moves this line rather than rewriting it.
+        self.dram_addr = self.dram_addr.wrapping_add(len);
+        self.cart_addr = self.cart_addr.wrapping_add(len);
+        t
     }
 
     /// Mark the current transfer complete and raise the PI interrupt.
@@ -223,6 +240,26 @@ mod tests {
         assert_eq!(t.dram, 0x1000, "the addresses latched first are used");
         assert_eq!(t.cart, 0x1000_0000);
         assert_eq!(t.len, 16);
+    }
+
+    /// **Both address registers advance by the transfer length.** Software reads
+    /// back the address past the block it just moved, which is how a driver
+    /// chains transfers; leaving them put makes every chained DMA re-send the
+    /// first block. n64-systemtest checks the delta directly.
+    #[test]
+    fn a_transfer_advances_both_address_registers_by_its_length() {
+        let mut pi = Pi::new();
+        pi.write(PI_DRAM_ADDR, 0x1000);
+        pi.write(PI_CART_ADDR, 0x1000_0000);
+        pi.write(PI_WR_LEN, 0x0F); // 0x10 bytes
+        assert_eq!(pi.read(PI_DRAM_ADDR), 0x1010, "moved by the LENGTH, 0x10");
+        assert_eq!(pi.read(PI_CART_ADDR), 0x1000_0010);
+
+        // A written length of 1 is a TWO-byte transfer, so the delta is 2.
+        let mut pi = Pi::new();
+        pi.write(PI_CART_ADDR, 0x1000_0000);
+        pi.write(PI_WR_LEN, 1);
+        assert_eq!(pi.read(PI_CART_ADDR), 0x1000_0002);
     }
 
     /// Busy is visible through **both** status flags, because software polls

@@ -131,6 +131,13 @@ Fixing it removed the abort, so the suite now reaches its later groups — which
 failure count *rose* (2,551 to 2,909) while the emulator strictly improved. The earlier count was
 a floor, exactly as suspected.
 
+**7. PI address registers never advanced after a transfer.** Hardware walks `PI_DRAM_ADDR` and
+`PI_CART_ADDR` as the DMA proceeds, so software reads back the address *past* the block it just
+moved — which is how a driver chains transfers without rewriting the address each time. Leaving
+them put makes every chained DMA re-send the first block. The oracle checks the delta directly:
+after a `0x10`-byte transfer it expects `PI_CART_ADDR` to have moved by `0x10`, and for a written
+length of 1 (a two-byte transfer) by `0x2`. Failure count 2,909 to 2,907.
+
 The next distinct blocker is a panic inside the suite's own `MemoryMap::uncached`
 (`0xA000_0000` passed where `0x8000_0000` was expected) during `spmem: DMA RDRAM -> DMEM`.
 
