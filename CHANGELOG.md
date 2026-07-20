@@ -9,6 +9,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — a merge-conflict-marker guard (CI + pre-commit)
+
+A `|||||||` diff3 marker was committed into `CHANGELOG.md` during a rebase: the resolution handled
+`<<<<<<<`, `=======` and `>>>>>>>` but not the diff3 middle section. **It would have shipped into
+the release notes** — a stray marker line is valid Markdown, and valid inside a comment, so
+nothing downstream complained.
+
+`scripts/check_no_conflict_markers.sh` now runs in CI and pre-commit, matching the three-layer
+shape the commercial-ROM guard already uses: the local hook can be skipped with `--no-verify`, the
+CI job cannot.
+
 ### Added — FPU arithmetic (T-13-002)
 
 `ADD`/`SUB`/`MUL`/`DIV` in single and double precision, plus `ABS`/`NEG`, as pure functions that
@@ -105,8 +116,6 @@ progressing):
 The suite therefore still does not report a count: it runs cleanly but does not reach its
 reporting stage, which points at further unimplemented hardware (VI/RSP initialisation) rather
 than at the channel. Recorded as a measurement rather than a claim of progress toward `Failed: 0`.
-
-||||||| parent of ae2d14c (feat(cpu): FPU arithmetic (T-13-002))
 
 ### Added — the PI DMA engine (T-14-001), pulled forward from Phase 5
 

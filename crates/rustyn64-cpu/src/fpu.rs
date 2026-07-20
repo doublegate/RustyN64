@@ -155,11 +155,15 @@ impl Flags {
         ..Self::NONE
     };
 
-    /// Pack into the `FCSR` **Cause** field (bits 17..=12) and **Flags** field
-    /// (bits 6..=2).
+    /// Pack into the `FCSR` **Cause** bits 16..=12 and **Flags** bits 6..=2.
     ///
     /// Both at once because hardware sets them together: `Cause` is what the
     /// current operation raised, `Flags` is the sticky accumulation.
+    ///
+    /// **Bit 17 (`Unimplemented Operation`) is not produced here** — it is not
+    /// an IEEE exception, and it is raised on its own by the conversions via
+    /// [`CAUSE_UNIMPLEMENTED`]. Documenting the range as 17..=12 implied this
+    /// helper could set it, which it cannot.
     #[must_use]
     pub const fn to_fcsr_bits(self) -> u32 {
         let mut cause = 0u32;
