@@ -46,27 +46,27 @@ reads or writes, and it is the one where a wrong *width* is invisible until 64-b
 
 **Acceptance criteria:**
 
-- [ ] All 32 registers present, with the **eight 64-bit-wide ones** exactly right: `EntryLo0`,
+- [x] All 32 registers present, with the **eight 64-bit-wide ones** exactly right: `EntryLo0`,
       `EntryLo1`, `Context`, `BadVAddr`, `EntryHi`, `EPC`, `XContext`, `ErrorEPC`. Every other
       register is 32-bit. Pinned by a test per register, because "which ones are 64-bit" is a
       list that cannot be derived from anything.
-- [ ] Read-only registers reject writes: `Random`, `BadVAddr`, `PRId`, `CacheErr`, and
+- [x] Read-only registers reject writes: `Random`, `BadVAddr`, `PRId`, `CacheErr`, and
       `Status.DS.TS`. `Cause` is read-only **except** `IP1:IP0` (UM §6.3.6 p. 171) — a mask, not
       a whole-register rule.
-- [ ] `Config` returns its **hardwired** bit fields on read: bits 23:16 = `0b00000110` and bits
+- [x] `Config` returns its **hardwired** bit fields on read: bits 23:16 = `0b00000110` and bits
       14:4 = `0b11001000110`, with only `EP`, `BE`, `CU`, `K0` writable and `EC` read-only from
       the DivMode pins (UM Fig. 5-16 p. 152).
-- [ ] **Cross-validated against the real IPL boot values**, which decompose exactly:
+- [x] **Cross-validated against the real IPL boot values**, which decompose exactly:
       `Config = 0x0006E463` reproduces both hardwired constants bit-for-bit with `BE=1`, `K0=3`;
       `Status = 0x34000000` is `CU1|CU0|FR`. A test asserts our read-back of those writes matches.
       This is the cheapest independent check available that the layouts are right.
-- [ ] `Random` decrements per instruction, floors at `Wired`, wraps at 31, reads 31 after cold
+- [x] `Random` decrements per instruction, floors at `Wired`, wraps at 31, reads 31 after cold
       reset, **and is forced to 31 whenever `Wired` is written** (UM §5.4.2 p. 147).
-- [ ] `EntryHi.Fill` (bits 61:40) is write-ignored and reads 0.
-- [ ] Reserved registers 7, 21–25, 31: behaviour is **undocumented** (ledger U-1). Implement one
+- [x] `EntryHi.Fill` (bits 61:40) is write-ignored and reads 0.
+- [x] Reserved registers 7, 21–25, 31: behaviour is **undocumented** (ledger U-1). Implement one
       explicit choice, comment it as a guess, and make it a ledger entry — do not let it look
       decided.
-- [ ] `PRId.Imp = 0x0B`; the `Rev` field is undocumented (ledger U-3) and must not be invented
+- [x] `PRId.Imp = 0x0B`; the `Rev` field is undocumented (ledger U-3) and must not be invented
       into a plausible-looking value.
 
 **Dependencies:** none within the sprint

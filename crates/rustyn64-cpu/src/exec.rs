@@ -116,6 +116,37 @@ pub struct Redirect {
     pub nullify_delay_slot: bool,
 }
 
+/// A COP0 register access that `EX` resolved but must not itself perform.
+///
+/// The stage split is the manual's, not a convenience: UM §4.6.9 describes the
+/// CP0 bypass interlock as firing when *"an instruction which caused an
+/// exception reaches the WB stage and the subsequent instruction in the DC stage
+/// requests a read of any CP0 register"* — so a COP0 **read happens in DC** and a
+/// COP0 **write happens in WB**. Performing both in `EX` would make that
+/// interlock unexpressible, which is the same mistake ADR 0007 exists to prevent
+/// one level up.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cop0Access {
+    /// Read COP0 register `src` into GPR `dest`, in `DC`.
+    Read {
+        /// COP0 register number.
+        src: u8,
+        /// GPR destination.
+        dest: u8,
+        /// 64-bit (`DMFC0`) rather than 32-bit sign-extended (`MFC0`).
+        wide: bool,
+    },
+    /// Write `value` to COP0 register `dest`, in `WB`.
+    Write {
+        /// COP0 register number.
+        dest: u8,
+        /// Value from `rt`.
+        value: u64,
+        /// 64-bit (`DMTC0`) rather than 32-bit (`MTC0`).
+        wide: bool,
+    },
+}
+
 /// The outcome of executing one instruction in `EX`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Executed {
@@ -128,7 +159,19 @@ pub struct Executed {
     /// A control-flow redirect, if this was a taken branch, a jump, or an
     /// untaken branch-likely.
     pub redirect: Option<Redirect>,
+    /// A COP0 access for `DC` (read) or `WB` (write) to perform.
+    pub cop0: Option<Cop0Access>,
 }
+
+/// An `Executed` that does nothing: no write-back, no stall, no access, no
+/// redirect. Base for the arms that only set one field.
+const NOTHING: Executed = Executed {
+    write_back: WriteBack::None,
+    stall_cycles: 0,
+    mem: None,
+    redirect: None,
+    cop0: None,
+};
 
 /// Sign-extend a 16-bit immediate — the arithmetic and `SLT` immediate forms.
 const fn sext_imm(imm: u16) -> u64 {
@@ -154,6 +197,7 @@ const fn control(d: Decoded, target: u64, nullify: bool, pc: u64) -> Executed {
             target,
             nullify_delay_slot: nullify,
         }),
+        cop0: None,
     }
 }
 
@@ -180,6 +224,7 @@ const fn branch(d: Decoded, taken: bool, pc: u64) -> Executed {
         },
         stall_cycles: 0,
         mem: None,
+        cop0: None,
         redirect: if d.op.is_likely() {
             Some(Redirect {
                 target: pc.wrapping_add(8),
@@ -204,6 +249,7 @@ const fn trap_if(cond: bool) -> Result<Executed, Exception> {
             stall_cycles: 0,
             mem: None,
             redirect: None,
+            cop0: None,
         })
     }
 }
@@ -253,6 +299,7 @@ pub const fn execute(
                 stall_cycles: 0,
                 mem: None,
                 redirect: None,
+                cop0: None,
             })
         };
     }
@@ -269,6 +316,7 @@ pub const fn execute(
                     dest: d.dest,
                 }),
                 redirect: None,
+                cop0: None,
             })
         };
     }
@@ -283,6 +331,7 @@ pub const fn execute(
                     value: rt_val,
                 }),
                 redirect: None,
+                cop0: None,
             })
         };
     }
@@ -295,6 +344,7 @@ pub const fn execute(
                 stall_cycles: alu::muldiv_stall_cycles($kind),
                 mem: None,
                 redirect: None,
+                cop0: None,
             })
         };
     }
@@ -383,12 +433,14 @@ pub const fn execute(
             stall_cycles: 0,
             mem: None,
             redirect: None,
+            cop0: None,
         }),
         Op::Mtlo => Ok(Executed {
             write_back: WriteBack::Lo(rs_val),
             stall_cycles: 0,
             mem: None,
             redirect: None,
+            cop0: None,
         }),
 
         // --- memory. EX resolves the effective address only; DC performs the
@@ -416,6 +468,7 @@ pub const fn execute(
                 dest: d.dest,
             }),
             redirect: None,
+            cop0: None,
         }),
         Op::Lld => Ok(Executed {
             write_back: WriteBack::None,
@@ -426,6 +479,7 @@ pub const fn execute(
                 dest: d.dest,
             }),
             redirect: None,
+            cop0: None,
         }),
         Op::Sc => Ok(Executed {
             write_back: WriteBack::None,
@@ -437,6 +491,7 @@ pub const fn execute(
                 dest: d.dest,
             }),
             redirect: None,
+            cop0: None,
         }),
         Op::Scd => Ok(Executed {
             write_back: WriteBack::None,
@@ -448,6 +503,7 @@ pub const fn execute(
                 dest: d.dest,
             }),
             redirect: None,
+            cop0: None,
         }),
         // --- control flow. `pc` is this instruction's address; the delay slot
         // is at `pc + 4` and the instruction after it at `pc + 8`, which is what
@@ -490,11 +546,29 @@ pub const fn execute(
         // "all load/store instructions in this processor are executed in program
         // order since the SYNC instruction is handled as a NOP" (UM §3.1). It
         // retires normally -- what it must NOT do is raise reserved-instruction.
+        // COP0 access. `rd` is the COP0 register; `EX` only resolves which.
+        Op::Mfc0 | Op::Dmfc0 => Ok(Executed {
+            cop0: Some(Cop0Access::Read {
+                src: d.rd,
+                dest: d.dest,
+                wide: matches!(d.op, Op::Dmfc0),
+            }),
+            ..NOTHING
+        }),
+        Op::Mtc0 | Op::Dmtc0 => Ok(Executed {
+            cop0: Some(Cop0Access::Write {
+                dest: d.rd,
+                value: rt_val,
+                wide: matches!(d.op, Op::Dmtc0),
+            }),
+            ..NOTHING
+        }),
         Op::Sync => Ok(Executed {
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: None,
             redirect: None,
+            cop0: None,
         }),
         Op::Syscall => Err(Exception::Syscall),
         Op::Break => Err(Exception::Breakpoint),
@@ -510,6 +584,7 @@ pub const fn execute(
                     dest: d.dest,
                 }),
                 redirect: None,
+                cop0: None,
             })
         }
     }

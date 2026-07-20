@@ -278,6 +278,18 @@ pub enum Op {
     /// `TNEI rs, imm`.
     Tnei,
 
+    // --- COP0 access (T-12-001). The TLB and `ERET` encodings of this opcode
+    // are NOT here: they are separate instructions landing in T-12-002/T-12-004,
+    // and lumping them in would make `Op` claim support this crate lacks.
+    /// `MFC0 rt, rd` — 32-bit read of a COP0 register, sign-extended.
+    Mfc0,
+    /// `DMFC0 rt, rd` — 64-bit read of a COP0 register.
+    Dmfc0,
+    /// `MTC0 rt, rd` — 32-bit write to a COP0 register.
+    Mtc0,
+    /// `DMTC0 rt, rd` — 64-bit write to a COP0 register.
+    Dmtc0,
+
     /// `SYNC` — *"handled as a NOP"* on this processor (UM §3.1).
     ///
     /// Not folded into [`Op::Sll`]-as-NOP: it is a distinct encoding that
@@ -483,6 +495,7 @@ const OP_SW: u32 = 0o53;
 const OP_SDL: u32 = 0o54;
 const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
+const OP_COP0: u32 = 0o20;
 const OP_LL: u32 = 0o60;
 const OP_LLD: u32 = 0o64;
 const OP_SC: u32 = 0o70;
@@ -673,6 +686,35 @@ pub const fn decode(word: u32) -> Decoded {
         // though SC also stores. A store form with a destination is unusual
         // enough that giving SC the store shape here is the natural mistake:
         // the success flag would then never reach the register file.
+        // COP0. The form is in `rs`; `rd` names the COP0 register, and for the
+        // move-from forms `rt` is the GPR destination.
+        OP_COP0 => {
+            let rs = ((word >> 21) & 31) as u8;
+            match rs {
+                0o00 => Decoded {
+                    op: Op::Mfc0,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                0o01 => Decoded {
+                    op: Op::Dmfc0,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                // The move-TO forms write COP0, not a GPR, so `dest` stays 0 --
+                // giving them a GPR destination would corrupt the register the
+                // instruction reads its value from.
+                0o04 => Decoded {
+                    op: Op::Mtc0,
+                    ..base
+                },
+                0o05 => Decoded {
+                    op: Op::Dmtc0,
+                    ..base
+                },
+                _ => base,
+            }
+        }
         OP_LL => i!(Op::Ll),
         OP_LLD => i!(Op::Lld),
         OP_SC => i!(Op::Sc),

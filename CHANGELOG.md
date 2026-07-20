@@ -9,6 +9,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the COP0 register file (T-12-001)
+
+Table-driven, because nearly every accuracy rule in COP0 is data rather than logic — "register N
+is 64 bits wide", "bits 23:16 of `Config` are hardwired". Written as data each rule is asserted
+directly against the manual; written as `match` arms they become 32 places to forget one.
+
+- **Exactly eight 64-bit-wide registers**, pinned element by element: there is no generating rule,
+  and a wrong entry is invisible until 64-bit software runs.
+- **Per-register writable-bit masks.** A write to a masked-off bit preserves the old value rather
+  than zeroing it — hardware discards the write, which is not the same thing. `Cause` is read-only
+  except `IP1:IP0`; `Status.DS.TS` is read-only while the rest of `DS` is not.
+- **`Config` hardwired fields are merged on read**, so no write path can erase them. Seeding them
+  at construction would let a too-wide mask destroy them permanently.
+- **Cross-checked against the real N64 IPL boot values**, which decompose exactly: `0x0006E463`
+  reproduces both hardwired constants bit-for-bit with `BE=1`, `K0=3`. That is the cheapest
+  evidence available that the field positions are right, and it comes from outside the manual.
+- **`LLAddr` now has one storage location.** Sprint 1 put it on `Pipeline` because COP0 did not
+  exist; it is COP0 register 17, and two copies of one architectural value would have let
+  `MFC0 $rt, $17` disagree with the CPU's own link address.
+
+`MFC0`/`DMFC0` read in **DC** and `MTC0`/`DMTC0` write in **WB**, because UM §4.6.9 defines the
+CP0 bypass interlock in terms of a write reaching WB while the next instruction reads in DC.
+Doing both in EX would make that interlock unexpressible — the same mistake ADR 0007 exists to
+prevent one level up.
+
+Undocumented behaviour is marked as such rather than invented: reserved registers 7/21–25/31
+(ledger U-1) and `PRId.Rev` (U-3) are explicit guesses with tests pinning the *choice*, not the
+hardware. All nine mutations of the mask and width tables were confirmed to fail the suite.
+
 ### Added — `LL` / `SC` / `LLD` / `SCD`, closing a Sprint 1 gap (T-11-003)
 
 The synchronisation pair was listed in T-11-003's acceptance criteria and in the Phase 1 exit
