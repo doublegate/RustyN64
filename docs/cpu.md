@@ -543,9 +543,28 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   as a NOP"* (UM §3.1), which is also why the VR4300 needs no memory barrier
   model: loads and stores already execute in program order. Decoding it to
   `Reserved` would raise on code that runs on hardware.
-- **`CACHE` (`0o57`) is still `Reserved`** — deliberately, until the cache model
-  lands in Sprint 2. Note this means it currently *raises*; IPL3 and libdragon
-  both use it, so this is a known blocker for anything past a bare test ROM.
+- **`CACHE` (`0o57`) executes as an address-translating no-op** (T-12-005). It
+  decodes, resolves its effective address — so it can still raise a TLB fault,
+  like any other memory instruction — and performs no data transfer. The cache
+  *contents* are not modelled, so invalidate and write-back have nothing to act
+  on, which is sound **only** because no cache state exists to become stale.
+  That is the depth answer to Phase 1's open question, recorded as ledger **D-5**
+  along with where it stops being sound (Phase 5 DMA coherency).
+
+  The thing that mattered was that it must **not raise**: IPL3 and libdragon both
+  issue `CACHE`, so a `Reserved` decode blocked every real ROM.
+
+  Note its `rt` slot is the **operation selector**, not a destination — decoding
+  it as a load clobbers whichever GPR the cache-op encoding names, so the
+  register destroyed depends on which operation was requested.
+
+  **Only the address-addressed operations translate.** `op4..2` (UM Ch. 16,
+  p. 404): 0–2 are `Index_*`, defined *"at the index specified"*, so they never
+  consult the TLB and cannot fault; 3 (`Create_Dirty_Exclusive`) and 4–6
+  (`Hit_*`) are defined in terms of *"the specified address"* and do. Translating
+  unconditionally raises spurious refills on exactly the code that matters —
+  cache-init walks every index with an arbitrary base, before any mapping
+  exists.
 - **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
   detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
   entry rather than a special case.

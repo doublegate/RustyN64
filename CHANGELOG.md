@@ -9,6 +9,53 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — README and `.gitignore` brought up to date
+
+`README.md` described the superseded fractional scheduler, claimed Phase 1 had not started, and
+carried a "no chip emulates anything" banner that stopped being true several tickets ago. It now
+describes the canonical 187.5 MHz clock, the five-stage pipeline, the integer set, COP0, the TLB
+and the exception model — and is equally explicit that **everything else is still a stub** and
+that a green test run does not mean a subsystem works. The accuracy table reports the one gate
+that produces a real number (`basic.z64`, 5/5) instead of asserting that none do, and points at
+the accuracy ledger. Release status now names the v0.1.0 tag and the v0.2.0 cut criterion rather
+than saying no release has been cut.
+
+Kept deliberately out of the README: per-release detail. That belongs here.
+
+`.gitignore` gained `*.preedit` / `*.pre` (snapshots taken before instrumenting a file, so cleanup
+restores a known copy rather than discarding unrelated uncommitted work) and `um.txt` (the
+extracted VR4300 manual text — a large derived artifact whose extraction is *not* reproducible by
+the obvious command, since `pdftotext` scrambles that PDF and only `mutool` works, which is
+precisely why someone would be tempted to commit it).
+
+### Added — `CACHE` executes instead of raising (T-12-005, partial)
+
+`CACHE` decoded to `Reserved` and therefore **raised**. IPL3 and libdragon both issue it, so that
+blocked every real ROM — the last hard blocker of its kind in Sprint 2.
+
+It now decodes, resolves its effective address — so it can still raise a TLB fault, like any other
+memory instruction — and performs no data transfer. Its `rt` slot is the **operation selector**,
+not a destination; decoding it as a load clobbers whichever GPR the cache-op encoding names, so
+the register destroyed would depend on which operation was requested.
+
+**Only the address-addressed operations translate.** `op4..2` 0–2 are `Index_*`, defined *"at the
+index specified"*, so they never consult the TLB; 3 and 4–6 are defined in terms of *"the specified
+address"* and do. Translating unconditionally raised spurious TLB refills on exactly the code that
+matters — cache-init walks every index with an arbitrary base, before any mapping exists to satisfy
+it. Caught in review, where the first version's *comment* described the distinction while the code
+ignored it and the test asserted the wrong side of it.
+
+**The cache depth question is answered explicitly, and the answer is zero.** Phase 1 listed
+"how exact must the cache model be" as an open question. Cache *contents* are not modelled at all,
+so invalidate and write-back have nothing to act on — which is observationally sound **only**
+because no cache state exists to become stale. Recorded as ledger **D-5**, together with the point
+it stops being sound: Phase 5, when cart/RSP DMA writes land in RDRAM behind a cache games
+explicitly flush.
+
+Cache-miss costs are **deferred with the model** rather than applied to a cache that does not
+exist, and **`M` remains unmeasured with no value** (ledger C-1). That criterion is met by *not*
+producing a number: a fitted `M` would make every later timing result unfalsifiable.
+
 ### Added — COP1 control registers and coprocessor usability (T-12-006)
 
 **Control registers only** — `CTC1`/`CFC1` on `FCR31` and `FCR0`. FPU arithmetic is Sprint 3, and

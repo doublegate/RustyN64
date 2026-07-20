@@ -281,6 +281,14 @@ pub enum Op {
     // --- COP0 access (T-12-001). The TLB and `ERET` encodings of this opcode
     // are NOT here: they are separate instructions landing in T-12-002/T-12-004,
     // and lumping them in would make `Op` claim support this crate lacks.
+    /// `CACHE op, off(base)` — a cache maintenance operation.
+    ///
+    /// Decoded and **executed as an address-translating no-op**: this CPU does
+    /// not model cache *contents*, so invalidate and write-back have nothing to
+    /// act on. What matters is that it does **not raise** — IPL3 and libdragon
+    /// both use it, so a `Reserved` decode blocks every real ROM. See
+    /// `docs/cpu.md` and accuracy-ledger D-5.
+    Cache,
     /// `CFC1 rt, fs` — read a COP1 **control** register.
     Cfc1,
     /// `CTC1 rt, fs` — write a COP1 **control** register.
@@ -520,6 +528,7 @@ const OP_SDR: u32 = 0o55;
 const OP_SWR: u32 = 0o56;
 const OP_COP0: u32 = 0o20;
 const OP_COP1: u32 = 0o21;
+const OP_CACHE: u32 = 0o57;
 const OP_LL: u32 = 0o60;
 const OP_LLD: u32 = 0o64;
 const OP_SC: u32 = 0o70;
@@ -788,6 +797,13 @@ pub const fn decode(word: u32) -> Decoded {
                 },
             }
         }
+        // CACHE writes no register: `rt` is the operation selector, not a
+        // destination. Giving it the `i!` shape would clobber a GPR chosen by
+        // the cache-op encoding, which is a spectacularly confusing bug.
+        OP_CACHE => Decoded {
+            op: Op::Cache,
+            ..base
+        },
         OP_LL => i!(Op::Ll),
         OP_LLD => i!(Op::Lld),
         OP_SC => i!(Op::Sc),

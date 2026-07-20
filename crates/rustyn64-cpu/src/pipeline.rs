@@ -966,6 +966,39 @@ impl Pipeline {
                     value: u64::from(stored),
                 })
             }
+            // CACHE: translate (so a TLB fault still raises) and do nothing else.
+            //
+            // The cache CONTENTS are not modelled, so invalidate and write-back
+            // have nothing to act on -- which is observationally sound only
+            // because no cache state exists to become stale. It stops being
+            // sound when DMA coherency arrives in Phase 5, and the ledger says
+            // so (D-5) rather than leaving it to be discovered.
+            //
+            // What matters today is that it does NOT raise: IPL3 and libdragon
+            // both issue CACHE, so a reserved-instruction exception here blocks
+            // every real ROM.
+            MemOp::Cache { addr, op } => {
+                // Only the ADDRESS-addressed operations translate. `op4..2`
+                // (UM Ch. 16, p. 404):
+                //
+                //   0..=2  Index_Invalidate / Index_Load_Tag / Index_Store_Tag
+                //          -- address the cache "at the index specified", so
+                //          they never consult the TLB and cannot fault.
+                //   3      Create_Dirty_Exclusive -- "set the cache block tag to
+                //          the specified physical address", so it does.
+                //   4..=6  Hit_* -- "if the cache block contains the specified
+                //          address", so they do.
+                //
+                // Translating unconditionally raises spurious TLB refills on
+                // `Index_*` ops against unmapped addresses, which is exactly
+                // what cache-init code does at boot: walk every index with an
+                // arbitrary base. An earlier revision of this comment described
+                // the distinction while the code ignored it.
+                if (op >> 2) >= 3 {
+                    self.translate_data(addr, false)?;
+                }
+                Ok(WriteBack::None)
+            }
             // The unaligned family accesses the ALIGNED container holding `addr`
             // and merges, so it can never raise an address error -- but it CAN
             // still raise a TLB fault, which is why it is fallible.
@@ -3385,6 +3418,109 @@ mod tests {
             (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
             0,
             "no exception with CU1 set"
+        );
+    }
+
+    // --- CACHE (T-12-005) ---------------------------------------------------
+
+    /// `CACHE` must **not** raise. IPL3 and libdragon both issue it, so a
+    /// reserved-instruction exception here blocks every real ROM — which is why
+    /// this was called out as a hard blocker before it was implemented.
+    #[test]
+    fn cache_executes_instead_of_raising() {
+        use crate::cop0::reg;
+        // CACHE op=0, 0($1) with $1 = KSEG0 base.
+        let prog = alloc::vec![lui_kseg0(1), ld_st(0o57, 1, 0, 0x100)];
+        assert_eq!(decode(prog[1]).op, crate::decode::Op::Cache);
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            0,
+            "CACHE must not raise"
+        );
+        assert_eq!(p.stalled_by(), None, "and must not be stuck in an epilogue");
+    }
+
+    /// `CACHE`'s `rt` slot is the **operation selector**, not a destination.
+    /// Decoding it as a load would clobber whichever GPR the cache-op encoding
+    /// happens to name — a spectacularly confusing bug, since the register
+    /// destroyed depends on which cache operation was requested.
+    #[test]
+    fn cache_writes_no_general_register() {
+        // op = 0b10101 = 21, which as a destination would be $21.
+        let word = ld_st(0o57, 1, 21, 0);
+        let d = decode(word);
+        assert_eq!(d.op, crate::decode::Op::Cache);
+        assert_eq!(d.dest, 0, "rt is the cache operation, not a destination");
+
+        let prog = alloc::vec![lui_kseg0(1), addiu_zero(21, 0x33), word];
+        let mut bus = Ram::new(prog);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..32 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(regs.read(21), 0x33, "$21 must survive CACHE op 21");
+    }
+
+    /// An **`Index_*`** `CACHE` op addresses the cache by index and **must not
+    /// translate**, so it cannot fault however unmapped the address is.
+    ///
+    /// This matters at boot: cache-initialisation code walks every index with an
+    /// arbitrary base address, and translating would raise a TLB refill on the
+    /// first one — before any mapping exists to satisfy it.
+    #[test]
+    fn an_index_cache_op_never_faults_however_unmapped_the_address() {
+        use crate::cop0::reg;
+        for op in [0u16, 4, 8] {
+            // op4..2 = 0, 1, 2 -> Index_Invalidate / Load_Tag / Store_Tag.
+            assert!((op >> 2) < 3, "op {op} must be an Index form");
+            let mut bus = Ram::new(alloc::vec![ld_st(0o57, 0, u32::from(op), 0x4000)]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0);
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(
+                (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+                0,
+                "Index op {op} must not raise -- it never consults the TLB"
+            );
+        }
+    }
+
+    /// A **`Hit_*`** `CACHE` op translates, so it raises a TLB fault on an
+    /// unmapped address — it is defined in terms of *"the specified address"*.
+    #[test]
+    fn a_hit_cache_op_on_an_unmapped_address_faults() {
+        use crate::cop0::reg;
+        // op = 16 -> op4..2 = 4 = Hit_Invalidate.
+        let mut bus = Ram::new(alloc::vec![ld_st(0o57, 0, 16, 0x4000)]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "CACHE did not translate");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::TLBL
         );
     }
 }
