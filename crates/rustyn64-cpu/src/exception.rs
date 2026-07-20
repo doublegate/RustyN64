@@ -644,7 +644,7 @@ mod tests {
         );
     }
 
-    /// `Context`'s PTEBase (63:23) is **preserved** across the update -- it is
+    /// `Context`'s `PTEBase` (63:23) is **preserved** across the update -- it is
     /// software's page-table pointer, and clobbering it would send the refill
     /// handler to the wrong table.
     #[test]

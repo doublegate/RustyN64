@@ -1011,7 +1011,7 @@ mod tests {
     /// **The timer must not fire at power-on.** `Count` and `Compare` both reset
     /// to zero, so an equality test latches `IP7` before a single instruction
     /// retires -- which n64-systemtest catches as `Cause = 0x8010` instead of
-    /// `0x10` during an AdEL exception.
+    /// `0x10` during an `AdEL` exception.
     #[test]
     fn the_timer_does_not_fire_at_power_on_despite_count_equalling_compare() {
         let mut c = Cop0::new();
