@@ -9,6 +9,39 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the integer ALU (T-11-002, first part)
+
+`crates/rustyn64-cpu/src/alu.rs`: the arithmetic, logical, shift and multiply/divide families as
+**pure functions**, deliberately free of pipeline and register-file state so every rule can be
+tested without constructing a machine. Decode and the `EX`-stage wiring are the remainder of
+T-11-002 and follow separately.
+
+- 32-bit arithmetic (`ADD`/`ADDU`/`SUB`/`SUBU`) trapping on signed overflow where specified, and
+  the 64-bit `D*` forms trapping at 64-bit boundaries.
+- The logical family (`AND`/`OR`/`XOR`/`NOR`/`LUI`) and all shifts including the `D*` forms.
+- `MULT`/`MULTU`/`DIV`/`DIVU` and the `D*` forms writing `HI`/`LO`, with the documented
+  full-pipeline stalls (5 / 37 / 8 / 69 `PCycle`s, UM Table 3-12) — these are not background
+  operations.
+- **Every 32-bit result is sign-extended into the 64-bit register**, the rule that dominates
+  MIPS III and the most common source of emulator bugs in it, since it stays invisible until
+  software inspects the upper half.
+- The `MFHI`/`MFLO` hazard is recorded as a **non-interlocked** two-instruction window producing
+  hardware's wrong result — modelling it as a stall would add timing hardware does not have *and*
+  hide the value software can observe.
+
+**Two errata reproduced rather than corrected**, each pinned by a test that fails if it is
+"fixed":
+
+- `SRA`/`SRAV` leak the upper 32 bits instead of sign-extending bit 31. Present on every console
+  and never known to be fixed, so software can depend on it.
+- `MULT` acts as a 64-bit by **35-bit** signed multiply (second operand sign-extended on bit 34).
+  Invisible for well-formed inputs, which is why ordinary compiler output never trips it.
+
+Two behaviours are **guesses and are recorded as such** in `docs/accuracy-ledger.md` (C-5, C-6)
+rather than left looking authoritative: the `DIV` quotient when divisor bits 63 and 31 differ
+(N64brew calls this "currently unclear"), and the architecturally-undefined divide-by-zero
+values. What is tested and non-negotiable is that neither panics — a guest can do both at will.
+
 ### Fixed — rustdoc gets its own CI job
 
 `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` was the **last step of the
