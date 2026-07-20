@@ -56,6 +56,8 @@ corrected.
 | `../ref-proj/` | Gitignored study clones of reference emulators and test suites. **Licences vary and several forbid copying** — read `ref-proj/README.md` before lifting anything. |
 | [`../tests/roms/README.md`](../tests/roms/README.md) | The test-ROM corpus tiers, their verified licences, and the three-layer commercial-ROM guard. |
 | [`../to-dos/ROADMAP.md`](../to-dos/ROADMAP.md) | The phase spine, Phase 0 through Phase 8 — the planning entry point. |
+| [`../to-dos/VERSION-PLAN.md`](../to-dos/VERSION-PLAN.md) | The named release ladder that sequences the phase spine into tags, `v0.1.0` through `v1.0.0` and beyond. |
+| [`../to-dos/LOCKSTEP-CHECKLIST.md`](../to-dos/LOCKSTEP-CHECKLIST.md) | The pass run when scoping each release, to track the two sibling projects' continuing development. |
 | [`../to-dos/phase-*/`](../to-dos) | Per-phase overviews and sprint ticket breakdowns (`T-PS-NNN`, P = phase, S = sprint). |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | Release history. |
 

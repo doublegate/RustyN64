@@ -309,6 +309,8 @@ wgpu-compute backend, and stays the oracle that backend is graded against (ADR 0
 | [Scheduler](docs/scheduler.md) | The fractional master-clock model |
 | [Testing strategy](docs/testing-strategy.md) | The oracle, the five test layers, and the corpus tiers |
 | [Roadmap](to-dos/ROADMAP.md) | The phase spine, Phase 0 through Phase 8 |
+| [Version plan](to-dos/VERSION-PLAN.md) | The named release ladder from `v0.1.0` to `v1.0.0` and beyond |
+| [Lockstep checklist](to-dos/LOCKSTEP-CHECKLIST.md) | The process for tracking the two sibling projects when scoping each release |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [API documentation](https://doublegate.github.io/RustyN64/) | Published rustdoc for every workspace crate |
 

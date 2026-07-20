@@ -5,6 +5,10 @@ sprints; each sprint contains tickets with stable IDs `T-PS-NNN` (P = phase, S =
 Reference ticket IDs in commit messages. `docs/STATUS.md` is the authoritative current-state
 record; this file frames the phase line.
 
+Companion documents: [`VERSION-PLAN.md`](VERSION-PLAN.md) sequences this phase spine into named,
+tagged releases, and [`LOCKSTEP-CHECKLIST.md`](LOCKSTEP-CHECKLIST.md) is the pass run at the start
+of scoping each release to catch drift against the two sibling projects.
+
 Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.md`).
 
 ## Status
