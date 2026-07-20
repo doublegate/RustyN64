@@ -274,7 +274,7 @@ impl Pipeline {
     /// single-cycle assertion catches. `an_abort_survives_the_cascade` advances
     /// the pipeline to verify it, rather than checking latch state in place.
     ///
-    /// The abort also raises [`Pipeline::flush_pending`], so the instruction
+    /// The abort also raises an internal pending-flush flag, so the instruction
     /// fetched later in the same cycle is a bubble rather than a live
     /// wrong-path fetch.
     pub const fn abort_from(&mut self, at: Stage, exc: Exception) {
