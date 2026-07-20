@@ -6,4 +6,4 @@
 target = "index.html"
 
 [tools]
-wasm_bindgen = "0.2.100"   # <-- keep == Cargo.lock
+wasm_bindgen = "0.2.126"   # <-- keep == Cargo.lock

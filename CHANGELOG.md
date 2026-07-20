@@ -41,3 +41,8 @@ All notable changes to RustyN64 are documented here. The format is based on
 - `release.yml` pins the toolchain to 1.96 instead of `@stable`. `rust-toolchain.toml`
   takes precedence over the action's default, so the previous config installed one
   toolchain and built with another.
+- `crates/rustyn64-frontend/web/Trunk.toml` pinned the wasm-bindgen CLI to 0.2.100 while
+  `Cargo.lock` resolved the library to 0.2.126. Trunk requires these to be equal, so the
+  wasm build would have failed at bindgen time. A new `wasm-bindgen-pin` CI job now
+  compares the two and fails on drift, which is otherwise invisible until someone runs
+  `trunk build`.

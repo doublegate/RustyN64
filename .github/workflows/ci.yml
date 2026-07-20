@@ -106,3 +106,34 @@ jobs:
         with:
           targets: thumbv7em-none-eabihf
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features
+
+  wasm-bindgen-pin:
+    name: trunk pin matches Cargo.lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Trunk resolves the wasm-bindgen CLI from its own pin, which must equal
+      # the wasm-bindgen LIBRARY version cargo resolved. A mismatch fails the
+      # wasm build at bindgen time -- but nothing else notices, so the pin drifts
+      # silently on any dependency bump that moves wasm-bindgen. This is the
+      # cheap guard: no toolchain, no network, just the two numbers.
+      - name: Compare Trunk.toml pin against Cargo.lock
+        run: |
+          set -euo pipefail
+          trunk_toml=crates/rustyn64-frontend/web/Trunk.toml
+          lock=$(python3 - <<'PY'
+          import re
+          for blk in open("Cargo.lock").read().split("[[package]]"):
+              if re.search(r'name = "wasm-bindgen"\s*$', blk, re.M):
+                  print(re.search(r'version = "([^"]+)"', blk).group(1))
+                  break
+          PY
+          )
+          pin=$(grep -oP 'wasm_bindgen\s*=\s*"\K[^"]+' "$trunk_toml")
+          echo "Cargo.lock wasm-bindgen : $lock"
+          echo "Trunk.toml  wasm_bindgen: $pin"
+          if [ "$lock" != "$pin" ]; then
+            echo "::error file=$trunk_toml::wasm_bindgen pin $pin != Cargo.lock $lock -- update the pin"
+            exit 1
+          fi
+          echo "pin matches"
