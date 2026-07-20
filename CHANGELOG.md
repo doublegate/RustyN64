@@ -9,6 +9,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Diagnosed — why n64-systemtest reports nothing (T-12-007)
+
+Not waiting; **lost**. Probing for the first divergence found it **191 retired instructions in**:
+execution jumps from `0x800A15F4` into a zero-filled region and NOP-slides until it falls off the
+top of RDRAM, which is why raising the instruction budget from 6M to 45M never helped.
+
+The cause is in the suite's own `entrypoint()` — `memory_size` and `elf_header_offset` come from
+**SP DMEM**, which is a stub returning 0. IPL3 writes the detected RDRAM size there at boot; we do
+not, so the suite builds its memory map from zeros and jumps into nothing.
+
+The fix is small and specific: make SP DMEM readable and seed it as IPL3 does. That is a
+harness/boot concern rather than the RSP LLE core, so it does not pull Phase 2 forward.
+
+Recorded because the *method* mattered more than the finding: three budget increases
+(2 → 30k → 3M → 45M) all looked like progress and none were. Probing for the first divergence
+found it immediately — the same pattern that found the `ERL` rule and the PI dependency.
+
 ### Added — a merge-conflict-marker guard (CI + pre-commit)
 
 A `|||||||` diff3 marker was committed into `CHANGELOG.md` during a rebase: the resolution handled

@@ -264,6 +264,34 @@ rather than quietly drop. Get the suite to start, run, and report a real pass/fa
 - [ ] The ledger's `U-1`…`U-5` undocumented entries are pinned against the suite where it
       exercises them, and remain open where it does not.
 
+**Diagnosed (2026-07-20): the suite is not waiting, it is lost — and the cause is SP DMEM.**
+
+With PI and `ISViewer` in place the suite still printed nothing, so the failure was traced rather
+than guessed at. Probing for the first divergence found it **191 retired instructions in**:
+execution jumps from `0x800A15F4` into a zero-filled region and NOP-slides until it falls off the
+top of RDRAM at `0x8080_0000`, which is why longer budgets never helped.
+
+The cause is in the suite's own `entrypoint()`:
+
+```rust
+let memory_size = SPMEM::read(0) as usize;
+let elf_header_offset = ((SPMEM::read(12) >> 16) << 8) as usize;
+MemoryMap::init(memory_size, elf_header_offset);
+```
+
+`SPMEM` is **RSP DMEM**, which is a stub returning 0. **IPL3 writes the detected RDRAM size into
+SP DMEM at boot**; we do not, so the suite builds its memory map from zeros and jumps into
+nothing. Everything after that is noise.
+
+**Next step is therefore small and specific**: make SP DMEM readable and seed it as IPL3 does —
+word 0 = RDRAM size, and the ELF-header offset the suite reads from word 12. That is a harness/boot
+concern, not the RSP LLE core, so it does not pull Phase 2 forward.
+
+Worth recording *how* this was found: three successive budget increases (2 → 30k → 3M → 45M
+instructions) all looked like progress and none were. Probing for the **first divergence** found
+it immediately, and would have on the first attempt. Same pattern that found the `ERL` rule and
+the PI dependency (`docs/engineering-lessons.md` §3.2).
+
 **Re-scope note (measured, 2026-07-20).** Running the ROM was itself the most valuable thing
 this ticket did, and it found a real bug nothing else would have: `Status.ERL = 1` makes KUSEG
 unmapped (UM §5.2.2), cold reset **sets** `ERL`, and without that rule the suite died on its
