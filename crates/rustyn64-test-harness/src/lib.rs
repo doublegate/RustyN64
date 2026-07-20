@@ -30,6 +30,7 @@
 pub mod accuracy;
 pub mod frame;
 pub mod golden;
+pub mod rom;
 pub mod runner;
 
 pub use accuracy::{AccuracyReport, AccuracyScorer, ProbeResult};

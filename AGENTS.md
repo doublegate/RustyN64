@@ -196,6 +196,17 @@ in this repo, which is worth fixing even when the suggested wording is not.
   derived accessor (ADR 0006). A new `cycles`/`ticks` field on a chip struct needs justification
   in review; the one legitimate use is a *retired-work* tally that nothing schedules against. The
   residue invariant test exists to catch this and must stay in the default `cargo test` path.
+- **In the reverse cascade, check which latch actually holds what you mean.** Stages run
+  WB → DC → EX → RF → IC, so by the time a stage executes, every *downstream* stage has already
+  moved its latch on. Reading the "obvious" latch has now silently produced a no-op twice — the
+  load interlock read `rf_ex` when the load was in `ex_dc`, and the delay-slot flag read `ic_rf`
+  after `rf_stage` had vacated it. Both compiled, both passed every existing test, and both did
+  nothing. When a pipeline check mysteriously never fires, suspect this first.
+- **Trace, don't reason, about pipeline timing.** Dumping the actual fetch/PC sequence found two
+  such bugs in one run after several minutes of reasoning had produced two wrong answers.
+- **A test whose success and failure paths converge proves nothing.** A control-flow test whose
+  branch target equalled the sequential path passed with the redirect code entirely absent.
+  Choose targets that are unreachable if the feature is broken.
 - **A timing constant the hardware docs do not supply is MEASURED, never tuned.** It goes in
   `docs/accuracy-ledger.md` with its provenance. Adjusting one until a ROM passes makes every
   later timing result unfalsifiable. Currently unmeasured: `M` (memory access time), the
