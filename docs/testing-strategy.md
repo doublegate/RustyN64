@@ -235,7 +235,7 @@ All must be green:
   (the chip stack stays `no_std` + `alloc`)
 - `bash scripts/check_no_roms.sh` (the `no-commercial-roms` job — no ROM and no
   file over 2 MB is tracked)
-- markdownlint (pinned cli v0.39.0; see project config)
+- markdownlint (pinned cli v0.49.1; see `.pre-commit-config.yaml`)
 
 ## Test plan summary by subsystem
 

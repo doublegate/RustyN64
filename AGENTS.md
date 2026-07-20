@@ -62,16 +62,24 @@ Architecture (the load-bearing facts — read `docs/architecture.md`):
 **Phase 1 in progress; tagged release still v0.1.0.** The **VR4300 executes instructions**: the
 canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR 0007), the MIPS III integer
 set, COP0, the TLB + micro-ITLB, the exception model, interrupts, `CACHE`, COP1 (control,
-register file and arithmetic), and **PI DMA** — the last pulled forward from Phase 5 because
-n64-systemtest loads its own ELF through it.
+register file, `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, and enabled FP traps), and **PI DMA**
+— the last pulled forward from Phase 5 because n64-systemtest loads its own ELF through it.
+
+FP arithmetic runs on a **soft-float core** (`crates/rustyn64-cpu/src/softfloat.rs`), not on
+Rust's `f32`/`f64` operators. That is not gratuitous: the native operators discard the exact
+pre-rounding result, so `inexact`/`underflow` cannot be reported and `FCSR.RM` cannot be honoured.
+It is verified bit-for-bit against those same operators in round-to-nearest over ~100k cases —
+they are the independent oracle, which is why the module implements *IEEE* behaviour and leaves
+the VR4300's refusal to produce subnormals as a separate layer.
 
 **The RSP, RDP and AI are still LLE-shaped stubs.** Do not assume any chip *other than the CPU*
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**Phase 1's exit criterion is not met**: n64-systemtest runs 6M+ instructions with no exceptions
-but does not reach its reporting stage, so there is no `Failed: 0`. Do **not** tag v0.2.0 until
-there is — the criterion is an oracle number, and that is the point of it.
+**Phase 1's exit criterion is not met**: n64-systemtest reports **2,682 failing assertions**
+(it does now run its whole corpus and report). Do **not** tag v0.2.0 until it is `Failed: 0` —
+the criterion is an oracle number, and that is the point of it. The dominant remaining block is
+the still-undecoded COP1 funct space (`C.cond.fmt` and the conversions), roughly 1,700 of them.
 
 ## Where things live
 
@@ -122,7 +130,28 @@ ROMs gitignored under `tests/roms/external/`, only screenshots/`.snap` committed
 zero code today** — no `cfg(feature = ...)` exists for either, so `--features test-roms` runs
 exactly the same tests as a bare `cargo test --workspace`. Same for the per-crate `std` features:
 every chip crate is unconditionally `#![no_std]`, so `--no-default-features` is currently a no-op.
-markdownlint runs via `.pre-commit-config.yaml` (cli pinned v0.39.0) — it is NOT in any CI job.
+markdownlint runs via `.pre-commit-config.yaml` (cli pinned **v0.49.1**) — it is NOT in any CI job.
+**So any change touching `*.md` must run it locally**, or the only gate it has never runs at all:
+
+```bash
+pre-commit run markdownlint --all-files      # uses the pinned rev; a newer local
+                                             # binary reports ungated rules
+```
+
+**Never pipe a gate into `tail`/`grep`/`head` when its exit status is what decides the next step.**
+A pipeline reports the *filter's* status, so a failing gate reads as passing. This has let two
+clippy-red commits through and hidden a rustdoc failure inside an `&&` chain that then printed
+`ALL-GATES-OK`. Put the whole gate in one conditional with no filters inside it, and silence noise
+with `>/dev/null` (which preserves status) rather than a pipe. The interactive shell here is
+**fish**, which has no `pipefail`:
+
+```fish
+if cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+    git commit -F msg.txt
+else
+    echo "GATES FAILED"
+end
+```
 
 **CI is split light/full:** ordinary feature PRs get only fmt/clippy/test/rustdoc/no_std on
 ubuntu. The `test-roms` job and the macOS/Windows matrix run ONLY on push-to-main, the merge
@@ -209,9 +238,33 @@ in this repo, which is worth fixing even when the suggested wording is not.
 - **"Undocumented" is a claim about a document, and it decays.** Three files asserted the exception
   epilogue cost was undocumented while it sits in the opening sentence of the section they cited.
   Cite the pages actually read; re-open the manual before relying on such a record (§3.3b).
-- **Never invent a value the documentation does not give.** The FP multiplication erratum's trigger
-  is documented and its *output* is not, so `Stepping::Early` changes no arithmetic (ledger U-7).
-  A fitted constant makes every later result built on it stop being evidence.
+- **Never invent a value the documentation does not give — and that includes *behaviour*.** The FP
+  multiplication erratum's trigger is documented and its *output* is not, so `Stepping::Early`
+  changes no arithmetic (ledger U-7). A fitted constant makes every later result built on it stop
+  being evidence. Invented **side effects** are worse, because a constant at least lands in the
+  ledger where it can be argued with: `MOV`/`ABS`/`NEG` were written to clear `FCSR.Cause` on no
+  authority, which erased the previous operation's result before software could read it — 112
+  n64-systemtest assertions, and it made a separately-correct feature measure as zero improvement.
+  Before writing any incidental state change (clearing a field, zeroing a half-register), ask what
+  documents it; if nothing does, do nothing and say so. Doing nothing is falsifiable.
+- **An instruction that decodes to a silent no-op is invisible to every "does not raise" test.**
+  `MOV.fmt` (COP1 funct 6) fell outside the decode arm and no-op'd; compilers emit it for every FP
+  argument and return value, so operands were stale and results never left their callee. It cost
+  ~100 oracle assertions and nine rounds aimed at the wrong subsystem, while the existing test for
+  that path asserted only "does not raise when `CU1` is set" — which a no-op satisfies. Assert the
+  **effect**: seed the destination so it differs from the expected result in every byte. When
+  adding a decode arm, enumerate the neighbouring funct/opcode space rather than only the encoding
+  that prompted the change.
+- **Capture the instruction stream, not the state, and correlate the capture.** When a value looks
+  wrong or stale, dump `(pc, word)` around the site before theorising about the unit that produced
+  it — four register-watching probes failed where one code dump succeeded. Arm the capture on the
+  suite's own `Running <test>...` marker so the instruction is provably the failing case's;
+  uncorrelated captures produced two confident conclusions here that had to be retracted. Three
+  signatures worth knowing: a value **identical across every case regardless of input** means the
+  instruction never wrote it; a value that is some **earlier test's fill pattern** is stale
+  leftover, not this test's sentinel; a **sticky flag present while its per-operation twin is
+  clear** means a later instruction overwrote it. And read the oracle's own source in `ref-proj/`
+  first — it is cheaper than any probe.
 - **Never increment a cycle counter except `master_ticks`.** Every other cycle position is a
   derived accessor (ADR 0006). A new `cycles`/`ticks` field on a chip struct needs justification
   in review; the one legitimate use is a *retired-work* tally that nothing schedules against. The
@@ -227,6 +280,11 @@ in this repo, which is worth fixing even when the suggested wording is not.
 - **A test whose success and failure paths converge proves nothing.** A control-flow test whose
   branch target equalled the sequential path passed with the redirect code entirely absent.
   Choose targets that are unreachable if the feature is broken.
+- **Mutation-check every guard before keeping it**: revert the fix, confirm the test goes red,
+  restore. A test asserting "a trapped FP operation does not retire" compared *total* retired
+  counts between a trapping and non-trapping run and **passed with the fix removed**, because the
+  trap flushes the pipeline and the totals differ over a fixed cycle budget either way. Put the
+  reason in the test's doc comment or the confounded version returns as a "simplification".
 - **A timing constant the hardware docs do not supply is MEASURED, never tuned.** It goes in
   `docs/accuracy-ledger.md` with its provenance. Adjusting one until a ROM passes makes every
   later timing result unfalsifiable. Currently unmeasured: `M` (memory access time), the
