@@ -90,13 +90,19 @@ Out-of-scope:
 Phase 0 complete. Specifically: the Bus and its `CpuBus` trait, the scheduler's `tick_one_unit`,
 and the harness's golden-log differ, all of which exist. The golden trace itself is the deferred
 Phase 0 criterion (T-02-005) and must land before the 0-diff gate can be met.
+**Resolved:** it landed. `tests/golden/n64-systemtest.log` is a real capture from a patched
+`ares` (50,027 retired records, provenance in the file's own header), and
+`crates/rustyn64-test-harness/tests/golden_log.rs` is the committed gate.
 
 ## Risks
 
-- **The golden trace does not exist yet** — the differ is written against a file contract whose
-  producer is not. Mitigated by n64-systemtest being self-judging: the CPU categories can be
-  driven to `Failed: 0` without any trace, and the trace then becomes a regression net rather
-  than the primary gate.
+- **~~The golden trace does not exist yet~~ — SUPERSEDED.** The trace exists and the gate is
+  green: `tests/golden/n64-systemtest.log`, captured from a patched `ares` and 0-diffing over
+  50,027 retired records (ledger **C-26**). The mitigation named here is what actually happened —
+  n64-systemtest's self-judging categories carried the phase, and the trace arrived afterwards as
+  the regression net rather than the primary gate. Left standing rather than deleted, because a
+  risk that was correctly predicted *and* correctly mitigated is worth more as a record than as a
+  blank line.
 - **Cache-coherency depth is an open question** — modelling the I/D caches exactly is expensive
   and may not be observable. Mitigated by implementing to the depth the test ROMs actually
   detect and recording the decision, rather than guessing at a level up front.

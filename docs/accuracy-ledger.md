@@ -1239,9 +1239,18 @@ about hardware. This entry exists so the folding in `Rsp::mem_read` is understoo
 behaviour with a source, not as a missing guard — and so that if the range is ever found to fault
 or to alias differently, there is a claim to retract rather than an accident to rediscover.
 
-**Bounded.** Only the CPU-visible window is covered. The *upper* bound is asserted by the same
-test's IMEM check plus the SP registers starting at `0x0404_0000`; what the RSP's own DMA sees is
-separate and is the per-bank 4 KiB wrap the wiki does document.
+**Bounded, and the two bounds have different evidence — which is the point of separating them.**
+
+- *That the window repeats at all, and the 8 KiB period*: **oracle**. `spmem: SW (out of bounds)`
+  writes at `0x3E000` and reads the value back at offset 0, with the IMEM half untouched.
+- *That the repetition stops at `0x0404_0000`*: **not** from that test, which never probes the
+  boundary. It comes from the address map — N64brew *RSP Interface* places the SP registers at
+  `0x0404_0000` — so the window ends where the next device begins. Nothing here has *tested* the
+  last repetition before that address, and this entry should not be read as claiming otherwise.
+  A boundary test is the way to close it.
+
+What the RSP's own DMA sees is separate again, and is the per-bank 4 KiB wrap the wiki does
+document.
 
 ---
 
