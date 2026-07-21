@@ -674,7 +674,19 @@ impl CpuBus for Bus {
             8 => (value >> 32) as u32,
             4 => value as u32,
             // Narrow: the register as the VR4300 placed it on the bus.
-            w => (value as u32) << (8 * (4 - w as u32 - (addr & 3))),
+            //
+            // Saturating, not because the invariant is in doubt but because it
+            // is enforced somewhere else. MIPS requires natural alignment and
+            // the CPU raises `AddressError` before a misaligned store ever
+            // reaches the bus, so `width + (addr & 3) <= 4` holds for every
+            // access that gets here — but this is a public trait method, and a
+            // caller that breaks the invariant should get a defined byte lane
+            // rather than an underflow that panics in debug and silently
+            // becomes an over-wide shift in release.
+            w => {
+                let lane = 4u32.saturating_sub(w as u32).saturating_sub(addr & 3);
+                (value as u32) << (8 * lane)
+            }
         };
         self.write_u32(addr & !3, word);
     }
