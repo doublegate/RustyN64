@@ -106,9 +106,11 @@ registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the
 compares and the conversions decode and execute. Two things do **not** work,
 and neither is visible from a green `cargo test`:
 
-- **`BC1F`/`BC1T` are not decoded**, so an FP branch is a silent no-op. The
-  compare tests read `FCSR.C` through `CFC1` and so pass without them, but real
-  code branches on it.
+- **`BC1F`/`BC1T` are decoded but not executed.** They reach
+  `Op::Cop1Unimplemented`, which retires as a **silent no-op** rather than
+  raising — so an FP branch never redirects. The compare tests read `FCSR.C`
+  through `CFC1` and pass without them, but real code branches on it. This is
+  the decoded-but-no-op shape that has already cost two investigations.
 - **37 COP1 assertions remain**, in the `CVT.S`/`CVT.L` families — narrower
   edge cases rather than a missing operation.
 
@@ -176,7 +178,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **yes** — ROM committed | **runs; 508 failing** — RSP 291, cart 75, COP1 37, SP 15, other 90. The LLE RSP is now the dominant block |
+| n64-systemtest `Failed: 0` (**CPU/COP0/TLB** — Phase 1's criterion) | **yes** — ROM committed | **runs; 99 failing in those categories** (508 suite-wide). The RSP's 291 are **Phase 2's** criterion, not this one |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

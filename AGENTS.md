@@ -77,10 +77,17 @@ the VR4300's refusal to produce subnormals as a separate layer.
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**Phase 1's exit criterion is not met**: n64-systemtest reports **508 failing assertions** —
-RSP 291, cart 75, COP1 37, SP 15, other 90. Do **not** tag v0.2.0 until it is `Failed: 0` — the
-criterion is an oracle number, and that is the point of it. COP1 is nearly clear; the **LLE RSP**
-is now the dominant block, and `BC1F`/`BC1T` are still undecoded.
+**Phase 1's exit criterion is not met.** The criterion is `Failed: 0` on the **CPU/COP0/TLB
+categories** (`to-dos/VERSION-PLAN.md` §v0.2.0) — *not* suite-wide. n64-systemtest currently
+reports **99 failing assertions in those categories**, against 508 suite-wide. The RSP's 291 are
+explicitly **Phase 2's** criterion (§v0.3.0), and cart/PIF/RDP belong to later phases still.
+`docs/STATUS.md` said "CPU/COP0/TLB/RSP" for a while, which conflated the two — VERSION-PLAN is
+authoritative for cut criteria.
+
+Do **not** tag v0.2.0 until that number is 0; it is an oracle result, not a self-assessment.
+Of the 99: COP1 35 (`CVT` edge cases, `MUL`/`DIV` residue), and ~64 across COP0 registers, the
+TLB, privilege/user-mode access, and the odd-index `FR=0` register tests. `BC1F`/`BC1T` decode to
+`Cop1Unimplemented` — a silent no-op, so an FP branch never redirects.
 
 ## Where things live
 

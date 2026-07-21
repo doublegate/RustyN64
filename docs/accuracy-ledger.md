@@ -749,10 +749,11 @@ narrowing `softfloat::convert` that rounds once and honours `FCSR.RM`, and
 `SQRT` is implemented in `softfloat::sqrt` and decoded. n64-systemtest 584 →
 **508**; `SQRT.S`/`SQRT.D` reached zero and `CVT.S.fmt` fell 21 → 10.
 
-`sqrt` gets its sticky bit for free, which is worth noting because it is the
-one place `inexact` is *cheaper* than the value: `u128::isqrt` returns the floor
-of the root, so a non-zero remainder **is** the sticky bit — no re-squaring and
-comparing.
+`sqrt`'s sticky bit is exact rather than estimated: `u128::isqrt` returns the
+floor of the root, and the root is exact precisely when `q * q == n`, so that
+comparison **is** the sticky bit. (An earlier version of this sentence claimed
+it avoided re-squaring, which the code never did — the same wrong claim reached
+three files before review caught it.)
 
 ## 5. Deliberate deviations from hardware
 

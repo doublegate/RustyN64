@@ -600,9 +600,10 @@ pub fn div(a_bits: u64, b_bits: u64, f: Format, mode: Rounding) -> Rounded {
 /// sqrt(m x 2^e) = sqrt(m x 2^62) x 2^(e/2 - 31)
 /// ```
 ///
-/// `u128::isqrt` gives the floor of that root, and the remainder being
-/// non-zero is *exactly* the sticky bit — which is what makes `inexact`
-/// exact here rather than a comparison against a re-squared result.
+/// `u128::isqrt` gives the floor of that root, and the root is exact precisely
+/// when `q * q == n` — so that comparison **is** the sticky bit, with no
+/// tolerance and no second rounding. `q < 2^64`, so the square cannot overflow
+/// `u128`.
 ///
 /// # Signs
 ///
@@ -1186,15 +1187,34 @@ mod tests {
         );
     }
 
-    /// A double just below `f32`'s smallest normal narrows into the subnormal
-    /// range, and must report underflow — the case the VR4300 then refuses
+    /// A double inside `f32`'s **subnormal** range must narrow to an actual
+    /// subnormal and report underflow — the case the VR4300 then refuses
     /// outright (ledger C-13), which it can only do if this reports it.
+    ///
+    /// The first draft used `f64::MIN_POSITIVE`, which is ~2.2e-308 and narrows
+    /// to plain **zero** — far below `f32`'s entire range, so it never produced
+    /// a subnormal and did not test what its name claimed. `1e-40` sits between
+    /// `f32`'s smallest subnormal (~1.4e-45) and its smallest normal
+    /// (~1.18e-38), which is the band that matters.
     #[test]
     fn narrowing_into_the_subnormal_range_reports_underflow() {
-        let v = 2.225_073_858_507_201_4e-308_f64.to_bits(); // f64::MIN_POSITIVE
-        let r = convert(v, F64, F32, Rounding::Nearest);
-        assert!(r.flags.underflow && r.flags.inexact);
+        let r = convert(1e-40_f64.to_bits(), F64, F32, Rounding::Nearest);
+        let got = f32::from_bits(r.bits as u32);
+        assert!(got != 0.0, "must not flush to zero: {got:e}");
+        assert!(
+            got.to_bits() & 0x7F80_0000 == 0,
+            "and must be an actual subnormal: {got:e}"
+        );
+        assert!(
+            r.flags.underflow && r.flags.inexact,
+            "flags = {:?}",
+            r.flags
+        );
+
+        // Below the whole range it does reach zero, still underflowing.
+        let r = convert(f64::MIN_POSITIVE.to_bits(), F64, F32, Rounding::Nearest);
         assert_eq!(f32::from_bits(r.bits as u32), 0.0, "far below f32's range");
+        assert!(r.flags.underflow && r.flags.inexact);
     }
 
     /// `SQRT` must be bit-identical to the native square root across the same

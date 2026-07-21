@@ -20,8 +20,8 @@ land in the subnormal range, and each depends on the rounding mode. It previousl
 which reports none of that. `SQRT` (COP1 funct 4) is now decoded and executed; it was the last
 implemented-but-unreachable operation.
 
-`sqrt` gets its sticky bit for free: `u128::isqrt` returns the floor of the root, so a non-zero
-remainder **is** the sticky bit — no re-squaring and comparing.
+`sqrt`'s sticky bit is exact rather than estimated: `u128::isqrt` returns the floor of the root,
+and the root is exact precisely when `q * q == n`, so that comparison **is** the sticky bit.
 
 **n64-systemtest: 584 → 508.** `SQRT.S`/`SQRT.D` reached zero; `CVT.S.fmt` fell 21 → 10.
 
