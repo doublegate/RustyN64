@@ -151,6 +151,16 @@ impl SpRegs {
         self.status & STATUS_HALTED != 0
     }
 
+    /// Latch `BROKE`. Set by a `BREAK` and cleared only by a `CLR_BROKE` write:
+    /// it remembers that a break happened, independently of run state.
+    pub const fn set_broke(&mut self, broke: bool) {
+        if broke {
+            self.status |= STATUS_BROKE;
+        } else {
+            self.status &= !STATUS_BROKE;
+        }
+    }
+
     /// Halt or release the RSP from within the chip (a `BREAK`, or single-step).
     pub const fn set_halted(&mut self, halted: bool) {
         if halted {

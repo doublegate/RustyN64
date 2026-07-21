@@ -128,10 +128,38 @@ Beyond the skeleton fields, the full VU needs (per `ref-docs/research-report.md`
 - SP-DMA **length/skip/count** latches (the DMA supports a strided "skip"
   pattern).
 
+### The scalar unit (implemented, T-21-004/T-21-005)
+
 The SU is a *subset* of MIPS: 32-bit integer ALU/branch/load-store only — no
 64-bit ops, no TLB, no most of COP0, no R4300-style multiply/divide. It addresses
 only DMEM (data) and IMEM (instructions); there is no external bus except via the
 SP DMA engine.
+
+Absent, per N64brew *RSP CPU Core*: the whole multiply/divide unit (`MULT`,
+`DIV`, `MFHI`, `MFLO`, … and `HI`/`LO` themselves); every 64-bit opcode and
+`LD`/`SD`; `LWL`/`LWR`/`SWL`/`SWR`; `SYSCALL` and the trap family; and the
+"likely" branches. There is **no exception mechanism at all**, which has a
+consequence worth stating: `ADD` and `ADDI` cannot trap on overflow, so they are
+indistinguishable from `ADDU`/`ADDIU`.
+
+Two rules catch a MIPS core reused wholesale:
+
+- **The PC is 12 bits and wraps.** Branch and jump targets lose every high bit,
+  and running past `0xFFC` continues at `0x000`. `RSP Wrap around` puts two
+  `nop`s at `0xFF8` and a `BREAK` at `0x000` and expects to stop at `0x4`.
+- **Misaligned data accesses are correct, not faults.** `LW` at `0x001` returns
+  the bytes at `0x1..=0x4`; addresses are masked to 12 bits and each byte wraps
+  inside DMEM independently, so a word read at `0xFFE` takes two bytes from the
+  end and two from the start. The same access on the VR4300 is an
+  `AddressError` — this is the easiest place to get the RSP wrong.
+
+`BREAK` halts the core and latches `SP_STATUS.BROKE`, leaving the PC past the
+instruction; it raises the MI's SP interrupt only when `INTBREAK` is set. Note
+the RSP can also stop itself by writing `SET_HALT`, and *that* does **not** set
+`BROKE` — the latch records that a `BREAK` executed, not that the core stopped.
+
+`MFC0`/`MTC0` reach `c0`–`c7`, which are the same physical SP registers the CPU
+sees at `0x0404_0000`. `c8`–`c15` are the RDP's and read zero until Phase 3.
 
 ## Behavior
 

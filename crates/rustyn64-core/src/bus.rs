@@ -22,7 +22,7 @@ use rustyn64_audio::{Audio, AudioBus};
 use rustyn64_cart::{Cart, Cartridge, RdramBus};
 use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
-use rustyn64_rsp::{Rsp, RspBus};
+use rustyn64_rsp::Rsp;
 
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
@@ -45,6 +45,18 @@ pub struct MiInterrupt {
     pub dp: bool,
 }
 
+/// Pack the six interrupt lines into their register bit order.
+///
+/// `MI_INTERRUPT` and `MI_MASK` share it, which is why one packer serves both.
+const fn pack_mi(l: MiInterrupt) -> u32 {
+    (l.sp as u32)
+        | ((l.si as u32) << 1)
+        | ((l.ai as u32) << 2)
+        | ((l.vi as u32) << 3)
+        | ((l.pi as u32) << 4)
+        | ((l.dp as u32) << 5)
+}
+
 impl MiInterrupt {
     /// `true` if any interrupt line is asserted.
     #[must_use]
@@ -64,6 +76,8 @@ pub struct RcpRegs {
     pub mi_intr: MiInterrupt,
     /// MI interrupt mask (a line drives IP2 only when masked-in).
     pub mi_mask: MiInterrupt,
+    /// `MI_MODE`'s storage bits (the repeat count and flags).
+    pub mi_mode: u32,
     // TODO(T-CORE-02): SP_STATUS/DMA regs, DPC regs, VI_* scanout regs,
     // AI_* regs, PI_* DMA regs, SI_* joybus regs, RI_* RDRAM-controller regs.
 }
@@ -196,16 +210,22 @@ impl Bus {
         self.pi_write_countdown > 0
     }
 
-    /// Step the RSP against this bus's narrow [`RspBus`] view.
+    /// Step the RSP.
     ///
-    /// The RSP is owned by the bus and `Rsp::tick` borrows `&mut impl RspBus`
-    /// (which is the bus itself), so we move the chip out for the duration of
-    /// the tick to satisfy the borrow checker, then move it back — the same
-    /// split-borrow pattern used to step each chip against the Bus. No allocation.
+    /// The chip stays **in place**. It used to be moved out with
+    /// `core::mem::take` so that `Rsp::tick` could borrow the Bus, under a
+    /// comment asserting "No allocation" — which was false: `take` needs
+    /// `Default`, and constructing an `Rsp` allocates DMEM and IMEM, so every
+    /// RCP step allocated and freed 8 KiB. `Rsp::tick` now *returns* what it
+    /// wants done instead of borrowing its owner, so there is nothing to move.
     pub fn rsp_tick(&mut self) {
-        let mut rsp = core::mem::take(&mut self.rsp);
-        rsp.tick(self);
-        self.rsp = rsp;
+        let out = self.rsp.tick();
+        if out.raise_interrupt {
+            self.rcp.mi_intr.sp = true;
+        }
+        if let Some(dma) = out.dma {
+            self.sp_dma(dma);
+        }
         self.rcp_steps = self.rcp_steps.wrapping_add(1);
     }
 
@@ -249,6 +269,86 @@ impl Bus {
     /// because the real duration is not constant. Modelling the domain registers
     /// is the actual fix. Accuracy ledger C-9.
     pub const PI_WRITE_CYCLES: u32 = 100;
+
+    /// Base of the **MI** register block (`0x0430_0000`).
+    pub const MI_BASE: u32 = 0x0430_0000;
+
+    /// `MI_VERSION`, the value *"most consoles report"*.
+    ///
+    /// Packed `RSP:RDP:RAC:IO`. Other values exist in the wild — `0x0101_0101`
+    /// and `0x0201_0202` appear in emulators and docs, iQue reports
+    /// `0x0202_b0b0` — so this is a **choice among documented observations**,
+    /// not a derived constant. Retail NTSC hardware is what this emulator
+    /// models, so it reports what retail hardware reports.
+    pub const MI_VERSION_VALUE: u32 = 0x0202_0102;
+
+    /// Is this address in the MI register block?
+    ///
+    /// The block is four registers, and *"accesses beyond `0x0430 0010` are
+    /// mirrored, so only the least significant four bits are taken into account
+    /// for address decoding"*. The window itself runs to `0x0440_0000`, where
+    /// the VI begins.
+    const fn is_mi_register(addr: u32) -> bool {
+        addr >= Self::MI_BASE && addr < 0x0440_0000
+    }
+
+    /// Read an MI register, after the 4-bit mirroring.
+    const fn mi_read(&self, addr: u32) -> u32 {
+        let i = self.rcp.mi_intr;
+        let m = self.rcp.mi_mask;
+        match (addr >> 2) & 3 {
+            0 => self.rcp.mi_mode,
+            1 => Self::MI_VERSION_VALUE,
+            2 => pack_mi(i),
+            _ => pack_mi(m),
+        }
+    }
+
+    /// Write an MI register, after the 4-bit mirroring.
+    fn mi_write(&mut self, addr: u32, val: u32) {
+        match (addr >> 2) & 3 {
+            0 => {
+                // Only the bits that are storage are kept. `ClearDP` (bit 11)
+                // is an action rather than a mode, and the repeat/EBus/Upper
+                // modes are RDRAM-transfer behaviour this emulator does not
+                // model -- see the note in `docs/rsp.md`.
+                self.rcp.mi_mode = (self.rcp.mi_mode & !0x7F) | (val & 0x7F);
+                if val & (1 << 11) != 0 {
+                    self.rcp.mi_intr.dp = false;
+                }
+            }
+            // MI_VERSION is read-only, and MI_INTERRUPT is driven by the
+            // devices -- a write to either does nothing.
+            1 | 2 => {}
+            _ => {
+                // The mask uses clear/set pairs at `2n` / `2n + 1`, in the same
+                // device order as the read layout. Unlike `SP_STATUS`, the wiki
+                // does not state what both-bits-at-once does here, so this
+                // applies clear before set rather than inventing a rule; if a
+                // test ever pins it, it belongs in the ledger.
+                let mut m = self.rcp.mi_mask;
+                for (bit, line) in [(0u32, 0u32), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)] {
+                    let clear = val & (1 << (bit * 2)) != 0;
+                    let set = val & (1 << (bit * 2 + 1)) != 0;
+                    let slot = match line {
+                        0 => &mut m.sp,
+                        1 => &mut m.si,
+                        2 => &mut m.ai,
+                        3 => &mut m.vi,
+                        4 => &mut m.pi,
+                        _ => &mut m.dp,
+                    };
+                    if clear {
+                        *slot = false;
+                    }
+                    if set {
+                        *slot = true;
+                    }
+                }
+                self.rcp.mi_mask = m;
+            }
+        }
+    }
 
     /// Base of the eight SP interface registers (`0x0404_0000`).
     pub const SP_REGS_BASE: u32 = 0x0404_0000;
@@ -520,6 +620,9 @@ impl CpuBus for Bus {
             let w = self.rsp.sp.read((addr >> 2) & 7);
             return (w >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_mi_register(addr) {
+            return (self.mi_read(addr) >> (8 * (3 - (addr & 3)))) as u8;
+        }
         if addr & !3 == Self::SP_PC {
             return (self.rsp.sp.pc() >> (8 * (3 - (addr & 3)))) as u8;
         }
@@ -569,6 +672,20 @@ impl CpuBus for Bus {
                 self.cart.pi_read(addr.wrapping_add(2)),
                 self.cart.pi_read(addr.wrapping_add(3)),
             ]);
+        }
+        // Registers with a **side effect on read** must be read exactly once.
+        //
+        // `SP_SEMAPHORE` takes the mutex when read, so composing a word out of
+        // four byte reads took it four times: the first byte saw 0 and the rest
+        // saw 1, and the assembled word came back as 1 where hardware returns 0.
+        // n64-systemtest's `SP Semaphore Register (CPU only)` catches exactly
+        // that. On hardware the RCP returns the whole aligned word for one
+        // access regardless of size, so one access is the correct model.
+        if Self::is_sp_register(addr) {
+            return self.rsp.sp.read((addr >> 2) & 7);
+        }
+        if Self::is_mi_register(addr) {
+            return self.mi_read(addr);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -711,6 +828,10 @@ impl CpuBus for Bus {
             self.sp_register_write(addr, val);
             return;
         }
+        if Self::is_mi_register(addr) {
+            self.mi_write(addr, val);
+            return;
+        }
         if addr & !3 == Self::SP_PC {
             self.rsp.sp.set_pc(val);
             return;
@@ -810,18 +931,6 @@ impl VideoBus for Bus {
 }
 
 // --- The RSP's narrow view. ---
-impl RspBus for Bus {
-    fn rdram_read(&self, addr: u32) -> u8 {
-        <Self as RdramBus>::rdram_read(self, addr)
-    }
-    fn rdram_write(&mut self, addr: u32, val: u8) {
-        <Self as RdramBus>::rdram_write(self, addr, val);
-    }
-    fn raise_sp_interrupt(&mut self) {
-        self.rcp.mi_intr.sp = true;
-    }
-}
-
 // --- The AI's narrow view. ---
 impl AudioBus for Bus {
     fn ai_dma_read_u32(&self, addr: u32) -> u32 {
@@ -1261,6 +1370,77 @@ mod pi_tests {
         );
         assert_eq!(spmem_word(&mut bus, 0x1000), 0x89AB_CDEF, "IMEM untouched");
         assert_eq!(spmem_word(&mut bus, 0x3E000), 0x7654_3210);
+    }
+
+    /// **`SP_SEMAPHORE` is taken once per access, not once per byte.**
+    ///
+    /// The register has a side effect on read, so composing a word from four
+    /// byte reads took the mutex four times and returned 1 where hardware
+    /// returns 0 — n64-systemtest's `SP Semaphore Register (CPU only)` fails on
+    /// exactly that. The suite also checks that the value written is irrelevant.
+    #[test]
+    fn reading_the_semaphore_as_a_word_takes_it_exactly_once() {
+        const SEMAPHORE: u32 = Bus::SP_REGS_BASE + 0x1C;
+        for written in [0u32, 1, 0xFFFF_FFFF] {
+            let mut bus = Bus::new();
+            bus.write_u32(SEMAPHORE, written);
+            assert_eq!(bus.read_u32(SEMAPHORE), 0, "the first word read acquires");
+            assert_eq!(bus.read_u32(SEMAPHORE), 1, "and it stays taken");
+        }
+    }
+
+    /// A `SP_STATUS` write raises and acknowledges the **MI's SP line**, and the
+    /// guest can see it in `MI_INTERRUPT`.
+    #[test]
+    fn sp_status_drives_the_mi_interrupt_line() {
+        const SET_INTR: u32 = 1 << 4;
+        const CLR_INTR: u32 = 1 << 3;
+        const MI_INTERRUPT: u32 = Bus::MI_BASE + 0x08;
+        let mut bus = Bus::new();
+
+        bus.write_u32(Bus::SP_STATUS, SET_INTR);
+        assert_eq!(bus.read_u32(MI_INTERRUPT) & 1, 1, "SP line raised");
+        bus.write_u32(Bus::SP_STATUS, CLR_INTR);
+        assert_eq!(bus.read_u32(MI_INTERRUPT) & 1, 0, "and acknowledged");
+
+        // Set and clear together leaves it alone, as for every other flag.
+        bus.write_u32(Bus::SP_STATUS, SET_INTR);
+        bus.write_u32(Bus::SP_STATUS, SET_INTR | CLR_INTR);
+        assert_eq!(bus.read_u32(MI_INTERRUPT) & 1, 1, "unchanged");
+    }
+
+    /// `MI_MASK` writes as clear/set pairs and reads back as a flag word, and
+    /// only a masked-in line reaches `IP2`.
+    #[test]
+    fn the_mi_mask_gates_the_interrupt_line() {
+        const MI_MASK: u32 = Bus::MI_BASE + 0x0C;
+        const SET_SP: u32 = 1 << 1;
+        const CLR_SP: u32 = 1 << 0;
+        let mut bus = Bus::new();
+
+        bus.write_u32(Bus::SP_STATUS, 1 << 4); // raise SP
+        assert!(!bus.poll_irq(), "an unmasked line must not reach IP2");
+
+        bus.write_u32(MI_MASK, SET_SP);
+        assert_eq!(bus.read_u32(MI_MASK) & 1, 1, "the mask reads back");
+        assert!(bus.poll_irq(), "masked in, so IP2 asserts");
+
+        bus.write_u32(MI_MASK, CLR_SP);
+        assert!(!bus.poll_irq(), "masked out again");
+    }
+
+    /// The MI block is four registers **mirrored** on the low four address bits,
+    /// so `MI_VERSION` is readable at every `+0x10` step.
+    #[test]
+    fn the_mi_registers_mirror_every_sixteen_bytes() {
+        let mut bus = Bus::new();
+        assert_eq!(bus.read_u32(Bus::MI_BASE + 0x04), Bus::MI_VERSION_VALUE);
+        assert_eq!(
+            bus.read_u32(Bus::MI_BASE + 0x14),
+            Bus::MI_VERSION_VALUE,
+            "mirrored one block up"
+        );
+        assert_eq!(bus.read_u32(Bus::MI_BASE + 0x1004), Bus::MI_VERSION_VALUE);
     }
 
     /// **The PI external bus is 16 bits wide and the RCP ignores access size**,
