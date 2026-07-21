@@ -1038,6 +1038,63 @@ impl Pipeline {
         None
     }
 
+    /// `Status.RE` — reverse endian, and **only in User mode** (UM §5.2).
+    ///
+    /// `EXL`/`ERL` force kernel mode regardless of `KSU`, so an exception
+    /// handler reads memory the way it wrote it even with `RE` set. That is the
+    /// same rule the coprocessor-usability check applies, for the same reason.
+    fn reverse_endian(&self) -> bool {
+        /// `Status.RE`, bit 25.
+        const RE: u64 = 1 << 25;
+        /// `Status.KSU` (4:3) — 2 is user.
+        const KSU_USER: u64 = 0b10 << 3;
+        /// `Status.KSU` (4:3).
+        const KSU: u64 = 0b11 << 3;
+        /// `Status.EXL` (1) or `Status.ERL` (2).
+        const EXL_OR_ERL: u64 = 0b110;
+        let status = self.cop0.read(crate::cop0::reg::STATUS);
+        status & RE != 0 && status & KSU == KSU_USER && status & EXL_OR_ERL == 0
+    }
+
+    /// The reverse-endian byte-lane swap for an access of `width` bytes.
+    ///
+    /// Reversing endianness on a 64-bit datapath is a permutation of byte lanes
+    /// within the doubleword, expressed as an XOR of the low address bits: a
+    /// doubleword access covers the whole lane set and does not move, a word
+    /// moves by 4, a halfword by 6 and a byte by 7.
+    const fn re_swap(width: u64) -> u32 {
+        match width {
+            1 => 7,
+            2 => 6,
+            4 => 4,
+            _ => 0,
+        }
+    }
+
+    /// Translate a data address and apply the reverse-endian swap, if any.
+    ///
+    /// The swap is applied to the **physical** address, after translation. It
+    /// touches only bits 2:0, which every translation maps identically, so this
+    /// is exactly equivalent to swapping the virtual address first — and it
+    /// keeps `BadVAddr` raw on a fault, which n64-systemtest asserts directly
+    /// ("RE unmapped access keeps raw `BadVAddr`").
+    ///
+    /// # Errors
+    ///
+    /// A TLB fault on the untransformed address.
+    fn translate_re(
+        &mut self,
+        vaddr: u64,
+        store: bool,
+        width: u64,
+    ) -> Result<crate::addr::Physical, Exception> {
+        let mut p = self.translate_data(vaddr, store)?;
+        if self.reverse_endian() {
+            p.addr ^= Self::re_swap(width);
+        }
+        Ok(p)
+    }
+
     /// `Status.ERL` — the error level, which makes KUSEG unmapped (UM §5.2.2).
     fn erl(&self) -> bool {
         self.cop0.read(crate::cop0::reg::STATUS) & (1 << 2) != 0
@@ -1073,7 +1130,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: false });
                 }
-                let phys = self.translate_data(addr, false)?;
+                let phys = self.translate_re(addr, false, kind.width())?;
                 let raw = self.read_width(bus, phys, kind.width());
                 Ok(WriteBack::Gpr {
                     dest,
@@ -1085,7 +1142,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: true });
                 }
-                let phys = self.translate_data(addr, true)?;
+                let phys = self.translate_re(addr, true, kind.width())?;
                 self.write_width(bus, phys, kind.width(), value);
                 Ok(WriteBack::None)
             }
@@ -1099,7 +1156,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: false });
                 }
-                let phys = self.translate_data(addr, false)?;
+                let phys = self.translate_re(addr, false, kind.width())?;
                 let raw = self.read_width(bus, phys, kind.width());
                 self.ll_bit = true;
                 // "the value with the high-order four bits of the physical
@@ -1130,7 +1187,7 @@ impl Pipeline {
                 }
                 let stored = self.ll_bit;
                 if stored {
-                    let phys = self.translate_data(addr, true)?;
+                    let phys = self.translate_re(addr, true, kind.width())?;
                     self.write_width(bus, phys, kind.width(), value);
                 }
                 // Written whether or not the store happened. Note the link bit
@@ -1151,7 +1208,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store });
                 }
-                let phys = self.translate_data(addr, store)?;
+                let phys = self.translate_re(addr, store, if double { 8 } else { 4 })?;
                 // `Status.FR` selects the register-file view; a double under
                 // FR = 0 occupies an FGR pair.
                 let fr = fr_of(&self.cop0);
@@ -1723,6 +1780,15 @@ impl Pipeline {
                     }
                 }
             }
+        };
+        // Instruction fetch is a 4-byte access, so `Status.RE` swaps it within
+        // its doubleword exactly as it swaps a `LW` -- which is why the test ROM
+        // has to emit its reverse-endian programs with each instruction PAIR
+        // exchanged for them to execute in order.
+        let phys = if self.reverse_endian() {
+            phys ^ Self::re_swap(4)
+        } else {
+            phys
         };
         // Fetch through the I-cache when the segment is cached. This is what
         // makes an uncached patch to already-fetched code invisible until a

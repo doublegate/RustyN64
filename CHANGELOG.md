@@ -9,6 +9,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — `Status.RE`, reverse endian in User mode
+
+Reversing endianness on a 64-bit datapath is a permutation of byte lanes within the doubleword,
+expressed as an XOR of the low address bits: a doubleword does not move, a word moves by 4, a
+halfword by 6, a byte by 7. Kernel and Supervisor are unaffected, and so is any access taken while
+`EXL`/`ERL` forces kernel mode.
+
+**Instruction fetch is swapped too** — it is a 4-byte access like any other. That is why the test
+ROM emits its reverse-endian programs with each instruction *pair* exchanged.
+
+The swap is applied to the **physical** address, after translation, which touches only bits 2:0 and
+is therefore exactly equivalent to swapping the virtual address first — and it keeps `BadVAddr` raw
+on a fault, which the suite asserts directly.
+
+The `LWL`/`LWR`/`SWL`/`SWR` family under `RE` is **not** done: it addresses individual bytes, so it
+needs the byte-granular rule rather than its container's width. Two assertions still fail there.
+
+**Phase 1's categories: 31 → 27.**
+
 ### Added — the primary caches, and `CACHE` now has state to operate on
 
 A 16 KiB instruction cache (32-byte lines) and an 8 KiB write-back data cache (16-byte lines),

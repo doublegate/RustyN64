@@ -599,6 +599,26 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   unconditionally raises spurious refills on exactly the code that matters —
   cache-init walks every index with an arbitrary base, before any mapping
   exists.
+- **`Status.RE` reverses endianness, and only in User mode** (UM §5.2). Kernel
+  and Supervisor are unaffected, and so is any access taken while `EXL`/`ERL`
+  forces kernel mode — which is what lets an exception handler read memory the
+  way it wrote it.
+
+  Reversing endianness on a 64-bit datapath is a permutation of byte lanes within
+  the doubleword, expressed as an XOR of the low address bits: a doubleword does
+  not move, a word moves by 4, a halfword by 6 and a byte by 7. **Instruction
+  fetch is a 4-byte access and is swapped too**, which is why n64-systemtest has
+  to emit its reverse-endian programs with each instruction *pair* exchanged for
+  them to execute in order.
+
+  The swap is applied to the **physical** address, after translation. It touches
+  only bits 2:0, which every translation maps identically, so it is exactly
+  equivalent to swapping the virtual address first — and it keeps `BadVAddr` raw
+  on a fault, which the suite asserts directly.
+
+  Still outstanding: the `LWL`/`LWR`/`SWL`/`SWR` family under `RE`, which
+  addresses individual bytes and so needs the byte-granular rule rather than the
+  container's width.
 - **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
   detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
   entry rather than a special case.
