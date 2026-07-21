@@ -92,8 +92,13 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
   32-vs-64-bit register-file aliasing.
 - **Caches** — 16 KB instruction cache (32-byte lines) + 8 KB write-back data
   cache (16-byte lines), 24 KB L1 total, both direct-mapped, virtually-indexed
-  and physically-tagged (UM §11.2). Model coherency against DMA: cart/RSP DMA writes land in
-  RDRAM behind the cache, and games explicitly `CACHE`-flush/invalidate.
+  and physically-tagged (UM §11.2). Modelled as of T-11-003, with one deliberate
+  deviation: indexing is **physical** here, which makes cache aliases impossible
+  rather than merely unlikely (ledger **D-6**). Instruction fetch and every
+  cached load and store run through them; a cached store is a write-allocate that
+  leaves the line dirty until something forces it out. Coherency against DMA is
+  still outstanding: cart/RSP DMA writes land in RDRAM behind the cache, and
+  games explicitly `CACHE`-flush/invalidate.
 - **LL/SC link bit** (`LLbit`) — set by `LL`/`LLD`, cleared by `ERET`; `SC`/`SCD`
   *test* it and succeed only if it is set. **Not** cleared by an intervening
   store, and **not** cleared by `SC` itself — see the gotcha below.
@@ -561,20 +566,31 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   as a NOP"* (UM §3.1), which is also why the VR4300 needs no memory barrier
   model: loads and stores already execute in program order. Decoding it to
   `Reserved` would raise on code that runs on hardware.
-- **`CACHE` (`0o57`) executes as an address-translating no-op** (T-12-005). It
-  decodes, resolves its effective address — so it can still raise a TLB fault,
-  like any other memory instruction — and performs no data transfer. The cache
-  *contents* are not modelled, so invalidate and write-back have nothing to act
-  on, which is sound **only** because no cache state exists to become stale.
-  That is the depth answer to Phase 1's open question, recorded as ledger **D-5**
-  along with where it stops being sound (Phase 5 DMA coherency).
+- **`CACHE` (`0o57`) operates on modelled cache state** (T-11-003). It was an
+  address-translating no-op through T-12-005, which was sound **only** while no
+  cache state existed to become stale — ledger **D-5** named that boundary, and
+  n64-systemtest's `DCACHE:`/`ICACHE:` groups are where it came due. Both primary
+  caches now hold real tags and data: see `crates/rustyn64-cpu/src/cache.rs`.
 
-  The thing that mattered was that it must **not raise**: IPL3 and libdragon both
-  issue `CACHE`, so a `Reserved` decode blocked every real ROM.
+  The thing that mattered first was that it must **not raise**: IPL3 and
+  libdragon both issue `CACHE`, so a `Reserved` decode blocked every real ROM.
 
   Note its `rt` slot is the **operation selector**, not a destination — decoding
   it as a load clobbers whichever GPR the cache-op encoding names, so the
   register destroyed depends on which operation was requested.
+
+  **Invalidation keeps the tag.** `Index_Invalidate` and its relatives clear the
+  valid bit and leave `PTagLo` in place, which `Index_Load_Tag` then reports.
+  Clearing both looks tidier and is wrong; n64-systemtest asserts the PFN is
+  unchanged across an invalidate.
+
+  **The two caches encode `PState` differently**: a valid I-cache line reads back
+  as 2, a valid D-cache line as 3 (UM Figures 5-19/5-20). One shared constant
+  passes every test that only checks "non-zero".
+
+  **The dirty bit has no `TagLo` field.** A clean valid D-cache line and a dirty
+  one are indistinguishable to `Index_Load_Tag` — hardware behaviour, not an
+  omission. Reporting the distinction would mean inventing an encoding.
 
   **Only the address-addressed operations translate.** `op4..2` (UM Ch. 16,
   p. 404): 0–2 are `Index_*`, defined *"at the index specified"*, so they never
