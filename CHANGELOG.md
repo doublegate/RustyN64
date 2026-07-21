@@ -9,6 +9,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — a `PageMask` pair stores only its higher bit
+
+`PageMask` bits 24:13 are six 2-bit pairs, and an entry does not store twelve independent bits: a
+pair reads back as `11` exactly when its **higher** bit was written, and `00` otherwise. So `0b10`
+becomes `0b11` and `0b01` is discarded.
+
+The natural implementation — keep the value, mask to 24:13 — is wrong in both directions and
+silently so: it accepts page sizes the hardware has no encoding for, and reports back a mask that
+was never stored. Canonicalisation happens on **write**, which is where the information is actually
+lost. Mutation-checked: replacing it with the plain mask turns the new test red.
+
+**Phase 1's categories: 7 → 6.**
+
 ### Fixed — a to-integer conversion refuses an integer source format
 
 `CVT.W.W`, `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the whole `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family from

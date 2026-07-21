@@ -332,7 +332,7 @@ impl Tlb {
         let hi = cop0.read(reg::ENTRY_HI);
         let lo0 = cop0.read(reg::ENTRY_LO0);
         let lo1 = cop0.read(reg::ENTRY_LO1);
-        let mask = cop0.read(reg::PAGE_MASK) as u32;
+        let mask = Self::canonical_page_mask(cop0.read(reg::PAGE_MASK) as u32);
 
         self.entries[index & (JTLB_ENTRIES - 1)] = Entry {
             page_mask: mask,
@@ -349,6 +349,35 @@ impl Tlb {
         // A write invalidates the micro-TLB, which caches indices into this
         // array. Cheaper and safer than tracking which way held `index`.
         self.itlb = [None; ITLB_ENTRIES];
+    }
+
+    /// Canonicalise a written `PageMask` to what the entry actually stores.
+    ///
+    /// `PageMask` bits 24:13 are **six 2-bit pairs**, and an entry does not store
+    /// twelve independent bits: each pair reads back as `11` exactly when its
+    /// **higher** bit was written, and as `00` otherwise. A written `0b01` pair
+    /// is discarded; a written `0b10` pair becomes `0b11`.
+    ///
+    /// So the natural implementation — store the value, mask it to 24:13 — is
+    /// wrong in both directions, and quietly: it accepts page sizes the hardware
+    /// has no encoding for, and it reports back a mask that was never stored.
+    /// n64-systemtest writes seventeen values and checks each read-back
+    /// (`tests/tlb/mod.rs`), including `0b00000000100` → `0`, where a masking
+    /// implementation returns the input unchanged.
+    ///
+    /// Applied on **write**, because that is where the information is lost —
+    /// the entry has nowhere to keep the discarded bits.
+    const fn canonical_page_mask(mask: u32) -> u32 {
+        let mut out = 0u32;
+        let mut pair = 0;
+        while pair < 6 {
+            let high = 13 + 2 * pair + 1;
+            if (mask >> high) & 1 != 0 {
+                out |= 0b11 << (13 + 2 * pair);
+            }
+            pair += 1;
+        }
+        out
     }
 
     /// Decode an `EntryLo` into a page.
@@ -691,6 +720,45 @@ mod tests {
     /// every entry at `VPN2 = 0` and `V` not participating in matching, the
     /// first access to page-pair 0 matches all 32 entries and shuts the TLB
     /// down. Entries must therefore start distinct.
+    /// `PageMask` bits 24:13 are six 2-bit pairs, and a pair stores its HIGHER
+    /// bit only: `0b10` becomes `0b11`, `0b01` becomes `0b00`.
+    ///
+    /// The natural implementation — keep the value, mask to 24:13 — is wrong in
+    /// both directions and silently so. It accepts page sizes the hardware has
+    /// no encoding for, and it reports back a mask that was never stored.
+    #[test]
+    fn a_page_mask_pair_stores_only_its_higher_bit() {
+        let m = |v: u32| Tlb::canonical_page_mask(v << 13);
+        // The six legal sizes round-trip unchanged.
+        // Grouped in PAIRS deliberately: that is the unit the hardware stores,
+        // so a mask that looks wrong here is wrong.
+        for legal in [
+            0b0,
+            0b11,
+            0b11_11,
+            0b11_11_11,
+            0b11_11_11_11,
+            0b11_11_11_11_11,
+        ] {
+            assert_eq!(m(legal), legal << 13, "{legal:#b} is a legal mask");
+        }
+        // A lone LOW bit is discarded; a lone HIGH bit fills its pair.
+        assert_eq!(m(0b00_00_00_00_01), 0, "low bit of pair 0 discarded");
+        assert_eq!(
+            m(0b00_00_00_00_10),
+            0b11 << 13,
+            "high bit of pair 0 fills it"
+        );
+        assert_eq!(m(0b00_00_00_01_00), 0, "low bit of pair 1 discarded");
+        assert_eq!(
+            m(0b00_00_00_10_00),
+            0b11_00 << 13,
+            "high bit of pair 1 fills it"
+        );
+        // Mixed: each pair decided independently, from its own higher bit.
+        assert_eq!(m(0b00_11_00_01_10_10_01), 0b11_00_00_11_11_00 << 13);
+    }
+
     #[test]
     fn a_fresh_tlb_does_not_shut_down_on_the_first_low_access() {
         let mut t = Tlb::new();
