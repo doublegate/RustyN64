@@ -276,6 +276,17 @@ software rearranges the two.
 
 ### The TLB (implemented, T-12-004)
 
+A refill miss takes one of **two** vectors, chosen by the addressing width of
+the access that missed: `0x000` under 32-bit addressing, `0x080` (the XTLB refill
+vector) when `Status.KX`/`SX`/`UX` enables 64-bit addressing for the faulting
+mode. The two carry the same `ExcCode`, so the vector is the only thing that
+tells the handler which page-table walk to run — the 64-bit handler reads
+`XContext`, the 32-bit one `Context`. The width is captured on the exception
+rather than re-derived at dispatch, because dispatch has already set `EXL`, which
+forces the reported mode to Kernel and would answer for the handler instead of
+for the access. Pinned by
+`an_unmapped_access_under_64_bit_addressing_takes_the_xtlb_vector`.
+
 32 fully-associative joint-TLB entries, each mapping an **even/odd page pair**,
 with a **two-entry instruction micro-TLB** in front (`crates/rustyn64-cpu/src/tlb.rs`).
 

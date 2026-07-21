@@ -117,6 +117,15 @@ pub enum Exception {
     TlbRefill {
         /// The faulting access was a store (`TLBS` rather than `TLBL`).
         store: bool,
+        /// The access was made with **64-bit addressing** enabled for its mode
+        /// (`Status.KX`/`SX`/`UX`), which selects the **XTLB** refill vector at
+        /// offset `0x080` instead of the 32-bit one at `0x000`.
+        ///
+        /// Carried on the exception rather than re-derived at dispatch because
+        /// by then `EXL` is set, which forces [`Pipeline::access_mode`] to
+        /// report Kernel and would answer for the handler's mode instead of the
+        /// faulting access's.
+        wide: bool,
     },
     /// A TLB entry matched but was invalid. Takes the **general** vector, with
     /// the same `ExcCode` as a refill — the vector is the only difference, which
@@ -885,10 +894,13 @@ impl Pipeline {
     /// Map a TLB fault to the exception it raises.
     ///
     /// The `store` flag selects `TLBL` vs `TLBS`; the *variant* selects the
-    /// vector. Both matter and they are independent.
-    const fn tlb_exception(f: crate::tlb::TlbFault, store: bool) -> Exception {
+    /// vector. Both matter and they are independent. `wide` is the addressing
+    /// width of the faulting access, which picks the XTLB refill vector over the
+    /// 32-bit one -- it is only meaningful for a refill, since every other TLB
+    /// fault takes the general vector regardless.
+    const fn tlb_exception(f: crate::tlb::TlbFault, store: bool, wide: bool) -> Exception {
         match f {
-            crate::tlb::TlbFault::Refill => Exception::TlbRefill { store },
+            crate::tlb::TlbFault::Refill => Exception::TlbRefill { store, wide },
             crate::tlb::TlbFault::Invalid => Exception::TlbInvalid { store },
             // Modified only ever arises on a store, so it carries no flag.
             crate::tlb::TlbFault::Modified => Exception::TlbModified,
@@ -915,7 +927,9 @@ impl Pipeline {
                 self.note_shutdown();
                 Err(match e {
                     crate::addr::TranslateError::Address => Exception::AddressError { store },
-                    crate::addr::TranslateError::Tlb(f) => Self::tlb_exception(f, store),
+                    crate::addr::TranslateError::Tlb(f) => {
+                        Self::tlb_exception(f, store, access.wide)
+                    }
                 })
             }
         }
@@ -2022,7 +2036,8 @@ impl Pipeline {
         // JTLB miss is an exception. Only the mapped segments involve either --
         // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let (phys, cached) = match crate::addr::segment(pc, self.access_mode()) {
+        let fetch_access = self.access_mode();
+        let (phys, cached) = match crate::addr::segment(pc, fetch_access) {
             crate::addr::Segment::Direct { addr, cached } => (addr, cached),
             // Not a valid address in this mode: an address error, raised without
             // consulting the TLB at all.
@@ -2060,7 +2075,7 @@ impl Pipeline {
                     ),
                     Err(f) => {
                         // An instruction fetch is a load, so TLBL never TLBS.
-                        let exc = Self::tlb_exception(f, false);
+                        let exc = Self::tlb_exception(f, false, fetch_access.wide);
                         self.ic_rf = Latch {
                             cop0: None,
                             occupied: true,
@@ -4586,6 +4601,44 @@ mod tests {
             "the REFILL vector (0x000), not the general one (0x180)"
         );
         assert_eq!(p.cop0.read(reg::BAD_VADDR), 0x100);
+    }
+
+    /// The same miss, but with **64-bit addressing enabled**, must reach the
+    /// **XTLB** refill vector at `0x080`.
+    ///
+    /// This is the end-to-end companion to
+    /// `a_refill_in_64_bit_addressing_takes_the_xtlb_vector`, which only pins the
+    /// exception-to-vector mapping. That mapping is satisfied just as well by a
+    /// `wide` flag that is *never true in practice* — the plumbing from
+    /// `Status.KX` through the faulting access to the exception is exactly what
+    /// a mapping test cannot see. The two differ only in `Status`, so the
+    /// vectors landing on different addresses is attributable to nothing else.
+    #[test]
+    fn an_unmapped_access_under_64_bit_addressing_takes_the_xtlb_vector() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![lui_kseg0(1), ld_st(0o43, 0, 3, 0x100)]);
+        // Identical to the 32-bit case except for KX (bit 7), which turns on
+        // 64-bit addressing for Kernel mode.
+        p.cop0.set_hardware(reg::STATUS, 1 << 7);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::TLBL,
+            "still TLBL -- the ExcCode does not change with the vector"
+        );
+        assert_eq!(
+            pc, 0xFFFF_FFFF_8000_0080,
+            "the XTLB refill vector (0x080), not the 32-bit one (0x000)"
+        );
     }
 
     /// A mapped, valid page translates end to end through a real load.

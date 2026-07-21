@@ -156,10 +156,10 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
         Exception::ReservedInstruction | Exception::CoprocessorReserved { .. } => exc_code::RI,
         // Refill and Invalid share an ExcCode -- the handler tells them apart by
         // which vector it was entered through, not by Cause.
-        Exception::TlbRefill { store: false } | Exception::TlbInvalid { store: false } => {
+        Exception::TlbRefill { store: false, .. } | Exception::TlbInvalid { store: false } => {
             exc_code::TLBL
         }
-        Exception::TlbRefill { store: true } | Exception::TlbInvalid { store: true } => {
+        Exception::TlbRefill { store: true, .. } | Exception::TlbInvalid { store: true } => {
             exc_code::TLBS
         }
         Exception::TlbModified => exc_code::MOD,
@@ -190,7 +190,12 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
         | Exception::CoprocessorUnusable { .. }
         | Exception::FloatingPoint
         | Exception::TlbModified => VectorKind::General,
-        // Only a genuine miss takes the refill vector, and only with EXL clear.
+        // Only a genuine miss takes a refill vector, and only with EXL clear.
+        // Which of the two it is depends on the addressing width of the access
+        // that missed: 64-bit addressing has its own refill handler at 0x080,
+        // because the page-table walk it runs is a different one (it reads
+        // XContext, not Context).
+        Exception::TlbRefill { wide: true, .. } => VectorKind::XtlbRefill,
         Exception::TlbRefill { .. } => VectorKind::TlbRefill,
     }
 }
@@ -528,7 +533,7 @@ mod tests {
     #[test]
     fn refill_and_invalid_share_an_exccode_but_not_a_vector() {
         for store in [false, true] {
-            let refill = Exception::TlbRefill { store };
+            let refill = Exception::TlbRefill { store, wide: false };
             let invalid = Exception::TlbInvalid { store };
             assert_eq!(
                 exc_code_of(refill),
@@ -558,7 +563,30 @@ mod tests {
 
     /// Helper for the test above: the refill kind, independent of direction.
     const fn refill_kind(store: bool) -> VectorKind {
-        vector_kind_of(Exception::TlbRefill { store })
+        vector_kind_of(Exception::TlbRefill { store, wide: false })
+    }
+
+    /// **64-bit addressing selects the XTLB refill vector, at `0x080`.**
+    ///
+    /// The two refills carry the same `ExcCode` and differ only in entry point,
+    /// exactly as refill and invalid do -- and the handler behind `0x080` walks
+    /// a different page table (it reads `XContext`, not `Context`). Sending a
+    /// 64-bit miss to `0x000` runs the 32-bit walker over a 64-bit address.
+    #[test]
+    fn a_refill_in_64_bit_addressing_takes_the_xtlb_vector() {
+        for store in [false, true] {
+            let narrow = Exception::TlbRefill { store, wide: false };
+            let wide = Exception::TlbRefill { store, wide: true };
+            assert_eq!(
+                exc_code_of(narrow),
+                exc_code_of(wide),
+                "the ExcCode cannot distinguish them either"
+            );
+            assert_eq!(vector_kind_of(narrow), VectorKind::TlbRefill);
+            assert_eq!(vector_kind_of(wide), VectorKind::XtlbRefill);
+            assert_eq!(vector(0, vector_kind_of(narrow)), 0xFFFF_FFFF_8000_0000);
+            assert_eq!(vector(0, vector_kind_of(wide)), 0xFFFF_FFFF_8000_0080);
+        }
     }
 
     /// `AdEL` and `AdES` are different codes; conflating them loses information
