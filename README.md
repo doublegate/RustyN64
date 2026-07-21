@@ -8,7 +8,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.1.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97-orange.svg" alt="Rust: 1.97"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.2.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97-orange.svg" alt="Rust: 1.97"></a><br>
   <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%201%20in%20progress-yellow.svg" alt="Status: Phase 1 in progress"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/accuracy-basic.z64%205%2F5-yellow.svg" alt="Accuracy: basic.z64 5/5"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
@@ -363,10 +363,19 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.1.0 "Foundation"** is the current tag. The next rung is **v0.2.0 "Interpreter"**, whose cut
-criterion is n64-systemtest reporting `Failed: 0` for the CPU/COP0/TLB categories — a real oracle
-result, not a self-assessment. The release ladder is [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md);
-long-form notes live in [`docs/release-notes/`](docs/release-notes/).
+**v0.2.0 "Interpreter"** is the current tag. Its cut criterion — n64-systemtest reporting
+`Failed: 0` for the CPU/COP0/TLB/COP1 categories — is **met**, and so is Phase 1's second exit
+criterion, the CPU golden-log 0-diff against ares. Both are oracle results with committed runners,
+not self-assessments: reproduce them with
+
+```bash
+cargo test -p rustyn64-test-harness --release --test systemtest  -- --ignored
+cargo test -p rustyn64-test-harness --release --test golden_log  -- --ignored
+```
+
+The next rung is **v0.3.0 "Microcode"** (the LLE RSP). The release ladder is
+[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
+[`docs/release-notes/`](docs/release-notes/).
 
 - **Authoritative current state:** [`docs/STATUS.md`](docs/STATUS.md).
 - **Full history:** [`CHANGELOG.md`](CHANGELOG.md).
@@ -471,13 +480,14 @@ If you use RustyN64 in academic research, please cite:
   author  = {RustyN64 Contributors},
   title   = {RustyN64: A Cycle-Accurate Nintendo 64 Emulator in Rust},
   year    = {2026},
-  version = {0.1.0},
+  version = {0.2.0},
   url     = {https://github.com/doublegate/RustyN64},
   note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,
              a one-directional no_std chip-crate graph, and a hard determinism contract;
-             pure-Rust winit/wgpu/cpal/egui frontend. v0.1.0 is an architectural skeleton:
-             the scheduler and bus are implemented, the chips are not}
+             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.2.0 the VR4300 is
+             complete and verified against n64-systemtest and an ares golden trace;
+             the RSP and RDP are not yet implemented}
 }
 ```
 

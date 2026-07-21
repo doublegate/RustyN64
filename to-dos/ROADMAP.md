@@ -13,12 +13,12 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 1 (CPU golden log) — **Sprint 1 complete**, [Sprint 2](phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md) planned and next. The
+- **Current phase:** Phase 2 (LLE RSP). Phase 1 is complete — [Sprint 2](phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md) planned and next. The
   VR4300 executes the MIPS III integer set as a five-stage pipeline off a canonical 187.5 MHz
   master clock, and `basic.z64` passes 5/5. Phase 0 is complete: the workspace compiles, CI is
   green across Linux/macOS/Windows, the docs site publishes, and the test-ROM corpora are
   staged. No chip *other than the CPU* executes instructions yet.
-- **Release:** v0.1.0, tagged. The architecture is in place — the Bus owns all mutable state,
+- **Release:** v0.2.0, tagged. The architecture is in place — the Bus owns all mutable state,
   the scheduler runs, the crate graph is one-directional — but every chip `tick` is an
   LLE-shaped stub. See `docs/STATUS.md` for the honest per-subsystem state.
 - **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
@@ -36,7 +36,7 @@ oracle and hardware references acquired and organised.
 corpora staged with licence tiers enforced.
 → [overview](phase-0-foundation/overview.md)
 
-### Phase 1 — CPU golden log: IN PROGRESS (Sprint 1 of 3 complete)
+### Phase 1 — CPU golden log: COMPLETE
 
 **Goal:** the VR4300 (MIPS III / R4300i) interpreter executes the full instruction set —
 including the TLB, COP0, and the FPU — and 0-diffs against a golden instruction trace.

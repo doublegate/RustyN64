@@ -104,6 +104,15 @@ __pycache__/
 
 # rusty-console-forge additions
 /ref-proj/
+
+# Emulator-oracle build trees and captured traces. The ORACLES are patched
+# locally (cen64 gains an instruction-trace hook, ares a raw (pc,word) dump);
+# those patches live in the gitignored `ref-proj/` clones above and are
+# regenerated, never committed. The captured raw traces are large and
+# reproducible, so they stay out too -- only the truncated, provenance-headed
+# `tests/golden/*.log` is committed.
+*.trace
+/tests/golden/*.raw
 /tests/captures/
 /perf-logs/
 /web/dist/

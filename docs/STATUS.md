@@ -3,20 +3,25 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.1.0 (SKELETON)** — but the tree has moved well past it.
-**Phase 1 Sprint 1 is complete** (T-11-001 … T-11-008): the scheduler now counts
-one canonical 187.5 MHz master clock with every other cycle position derived
-from it (ADR 0006), and the VR4300 is a real five-stage pipeline executing the
-MIPS III integer instruction set (ADR 0007). The superseded ADR 0001 timebase —
-a 93.75 MHz tick with a 3:2 fractional accumulator — is **gone from the tree**,
-not merely deprecated.
+**Current release:** **v0.2.0 "Interpreter"** — and unlike v0.1.0, the tag matches the tree.
 
-The remaining accuracy work is unstarted: COP0, the TLB, the exception model
-(Sprint 2), COP1 and the golden-log 0-diff (Sprint 3), then the LLE RSP and RDP
-(Phases 2–3). See `to-dos/ROADMAP.md`.
+**Phase 1 is complete.** Both exit criteria are met, and both are oracle results with committed
+runners rather than self-assessments:
+
+| Criterion | Result | Reproduce |
+| --- | --- | --- |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 413 fail suite-wide, all RSP/RCP (Phase 2's criterion) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
+| CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares from the ELF entry | `cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored` |
+
+The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR
+0007), MIPS III including the 64-bit forms, COP0, the TLB and micro-ITLB, the exception model,
+interrupts, the primary I- and D-caches, the privilege-aware segment map, `Status.RE`, and COP1 on a
+soft-float core.
+
+The remaining accuracy work is the LLE RSP and RDP (Phases 2-3). See `to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
-workspace compiles and its **135** tests pass. The CPU genuinely executes
+workspace compiles and its **386** tests pass. The CPU genuinely executes
 instructions now — that is new — but every other chip is still an LLE-shaped
 stub. Stubs are `TODO(T-XXX-NN)` comments inside no-op bodies that compile and
 return, not `todo!()` panics, so nothing fails loudly. And of the test-ROM
