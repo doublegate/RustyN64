@@ -204,7 +204,7 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
 accumulating forms, `VSAR` and the six bitwise operations execute, as do
 `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS`, the `VLT`/`VEQ`/`VNE`/`VGE` compares,
-`VMRG`, and `VRNDN`/`VRNDP`. `VMULQ` too. `VCL`/`VCH`/`VCR`, `VMACQ`, and the packed/strided loads do not yet, and report
+`VMRG`, and `VRNDN`/`VRNDP`. `VMULQ` too. the packed `LPV`/`LUV`/`SPV`/`SUV` too. `VCL`/`VCH`/`VCR`, `VMACQ`, and the strided/transposing loads do not yet, and report
 so rather than writing a wrong result — `vu_compute` returns `false` and the
 instruction retires inertly.
 
@@ -359,10 +359,19 @@ end** of the register — 8 bytes go to `VPR[8..15]`, not `VPR[0..7]`. Writing
 them from byte 0, the natural mirror of `LQV`, puts the right-hand half in the
 left-hand slots and the pair stops reconstructing anything.
 
-Not yet implemented, and reported rather than approximated: the packed
-`LPV`/`LUV`/`SPV`/`SUV`, the strided `LHV`/`LFV`/`SHV`/`SFV`, and the
-transposing `LTV`/`STV`/`SWV`. (`LWV` does not exist on hardware — the suite
-records that it *"does nothing"*.)
+The **packed** family — `LPV`/`LUV` loads, `SPV`/`SUV` stores — moves one byte
+per lane. The loads place each byte in the lane's high portion (`LPV` at bit 15,
+`LUV` one bit lower at 14); the element field rotates which DMEM byte each lane
+reads, wrapping in 16. The stores are **not** a mirror of the loads: each of
+eight consecutive bytes comes from either a lane's high byte or its value
+shifted down 7, chosen by a `(offset & 15) < 8` test, with `SPV` and `SUV`
+taking opposite branches — a split that only appears once the element field
+pushes an offset past 8, and the store address is **not** aligned where the load
+address is.
+
+Not yet implemented, and reported rather than approximated: the strided
+`LHV`/`LFV`/`SHV`/`SFV` and the transposing `LTV`/`STV`/`SWV`. (`LWV` does not
+exist on hardware — the suite records that it *"does nothing"*.)
 
 ### Vector load/store
 

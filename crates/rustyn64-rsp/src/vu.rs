@@ -1129,7 +1129,54 @@ impl Rsp {
                 }
                 true
             }
+            // LPV/LUV (loads) and SPV/SUV (stores): the **packed** family.
+            // Eight bytes move, one per lane, each byte occupying a lane's high
+            // portion. LPV/SPV place it at bit 15 (`<< 8` / `.byte()`), LUV/SUV
+            // one bit lower at bit 14 (`<< 7`). The offset scales by 8.
+            0x06 | 0x07 => {
+                let base = rs.wrapping_add_signed(Self::sext7(offset) * 8);
+                // `index` folds the element field into the DMEM byte the first
+                // lane reads; it can go negative, so it wraps mod 16.
+                let index = (base & 7).wrapping_sub(element as u32);
+                let low = op == 0x07; // LUV/SUV shift one bit lower
+                if store {
+                    // The store side does NOT align the address (ares SPV/SUV),
+                    // unlike the load, which is why `base` is passed unmasked.
+                    self.packed_store(vt, base, element, low);
+                } else {
+                    let addr = base & !7;
+                    for lane in 0..8u32 {
+                        let byte = index.wrapping_add(lane) & 15;
+                        let v = u16::from(self.dmem_read_pub(addr.wrapping_add(byte)));
+                        self.vu_regs[vt & 31][lane as usize] = v << if low { 7 } else { 8 };
+                    }
+                }
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// The `SPV`/`SUV` store half of the packed family.
+    ///
+    /// Each of eight consecutive DMEM bytes comes from either a lane's **high**
+    /// byte or its value shifted down 7, and *which* is chosen alternates on a
+    /// `(offset & 15) < 8` test — with `SPV` and `SUV` taking opposite branches.
+    /// That split is why the store is not a mirror of the load.
+    fn packed_store(&mut self, vt: usize, addr: u32, element: usize, suv: bool) {
+        for i in 0..8u32 {
+            let offset = element as u32 + i;
+            let lane = (offset & 7) as usize;
+            let first_half = offset & 15 < 8;
+            // SPV: high-byte in the first half, shifted-down in the second.
+            // SUV swaps the two.
+            let high_byte = first_half != suv;
+            let byte = if high_byte {
+                self.vu_byte(vt, lane << 1)
+            } else {
+                (self.vu_regs[vt & 31][lane] >> 7) as u8
+            };
+            self.dmem_write_pub(addr.wrapping_add(i), byte);
         }
     }
 
@@ -2107,6 +2154,106 @@ mod vmulq_tests {
         rsp.vu_compute(0x03, 0, 0, 1, 2);
         for lane in 0..8 {
             assert_eq!(rsp.vu_regs[2][lane] & 15, 0, "lane {lane} low nibble");
+        }
+    }
+}
+
+#[cfg(test)]
+mod packed_tests {
+    use super::*;
+
+    fn with_dmem(pattern: &[u8]) -> Rsp {
+        let mut rsp = Rsp::new();
+        for (i, b) in pattern.iter().enumerate() {
+            rsp.dmem[i] = *b;
+        }
+        rsp
+    }
+
+    /// **`LPV` loads one byte per lane into the lane's high byte.**
+    ///
+    /// Each of the eight lanes takes a consecutive DMEM byte and places it at
+    /// bit 15, so the low byte of every lane is zero — a property a 16-bit load
+    /// would not have.
+    #[test]
+    fn lpv_loads_one_byte_per_lane_high() {
+        let bytes: [u8; 8] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        assert!(rsp.vector_mem(false, 0x06, 0, 1, 0, 0));
+        for (lane, &b) in bytes.iter().enumerate() {
+            assert_eq!(
+                rsp.vu_regs[1][lane],
+                u16::from(b) << 8,
+                "lane {lane} in the high byte"
+            );
+        }
+    }
+
+    /// **`LUV` is `LPV` shifted one bit lower** — bit 14 rather than 15.
+    #[test]
+    fn luv_shifts_one_bit_below_lpv() {
+        let bytes: [u8; 8] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        assert!(rsp.vector_mem(false, 0x07, 0, 1, 0, 0));
+        for (lane, &b) in bytes.iter().enumerate() {
+            assert_eq!(rsp.vu_regs[1][lane], u16::from(b) << 7);
+        }
+    }
+
+    /// The element field rotates which DMEM byte each lane reads, wrapping
+    /// within the 16-byte window — the packed loads' equivalent of an offset.
+    #[test]
+    fn lpv_element_rotates_the_source_bytes() {
+        let bytes: [u8; 16] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut base = with_dmem(&bytes);
+        base.vector_mem(false, 0x06, 0, 1, 0, 0);
+        let mut rot = with_dmem(&bytes);
+        rot.vector_mem(false, 0x06, 0, 1, 1, 0); // element 1
+        assert_ne!(
+            base.vu_regs[1], rot.vu_regs[1],
+            "a non-zero element must rotate the mapping"
+        );
+    }
+
+    /// **The `SPV`/`SUV` branch split only appears when the element field
+    /// pushes an offset past 8**, and `SPV`/`SUV` take opposite branches.
+    ///
+    /// With `e = 4` the eight offsets are `4..=11`: the first four (`< 8`) take
+    /// one branch and the last four the other. This test computes the reference
+    /// exactly as the hardware model does, per byte, rather than asserting a
+    /// summary — my earlier attempts at a summary were wrong three times because
+    /// the split is genuinely position-dependent.
+    #[test]
+    fn spv_and_suv_take_opposite_branches() {
+        let regs: [u16; 8] =
+            core::array::from_fn(|lane| ((0x10 + lane as u16) << 8) | (0x80 + lane as u16));
+        // The reference: for offset in e..e+8, byte comes from the high byte
+        // when (offset & 15 < 8) for SPV, or the opposite for SUV.
+        let expect = |suv: bool, e: usize| -> [u8; 8] {
+            core::array::from_fn(|i| {
+                let offset = e + i;
+                let lane = offset & 7;
+                let high = (offset & 15 < 8) != suv;
+                if high {
+                    (regs[lane] >> 8) as u8
+                } else {
+                    (regs[lane] >> 7) as u8
+                }
+            })
+        };
+
+        for (op, suv) in [(0x06u32, false), (0x07u32, true)] {
+            let mut rsp = Rsp::new();
+            rsp.vu_regs[1] = regs;
+            rsp.set_su(2, 0x100);
+            assert!(rsp.vector_mem(true, op, 2, 1, 4, 0)); // e = 4
+            let got: [u8; 8] = core::array::from_fn(|i| rsp.dmem[0x100 + i]);
+            assert_eq!(
+                got,
+                expect(suv, 4),
+                "{} with e=4",
+                if suv { "SUV" } else { "SPV" }
+            );
         }
     }
 }
