@@ -356,6 +356,11 @@ impl Rsp {
             // 15..11 and `vd` at 10..6 -- so the natural reading of a MIPS
             // R-type would swap the source and destination.
             let element = d.rs as u32 & 0xF;
+            // The single-lane group reads `vs` as a destination *element*
+            // rather than a source register, so it is dispatched first.
+            if self.vu_single_lane(d.funct, element, d.rt, d.rd, d.sa as usize) {
+                return;
+            }
             self.vu_compute(d.funct, element, d.rd, d.rt, d.sa as usize);
             return;
         }

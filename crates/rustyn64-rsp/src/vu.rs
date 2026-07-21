@@ -30,6 +30,24 @@ pub struct Control {
     pub vce: u8,
 }
 
+/// The reciprocal unit's staging latches.
+///
+/// `VRCP`/`VRSQ` take a 16-bit operand, but the two-instruction `VRCPH`+`VRCPL`
+/// sequence feeds them a **32-bit** one: the `H` instruction latches the high
+/// half into `input` and sets `pending`, and the following `L` sees it and
+/// combines. `pending` is what distinguishes "a high half was just staged" from
+/// "there is a stale value in the latch" — without it, an `L` instruction issued
+/// on its own would silently consume whatever the last `H` left behind.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Divide {
+    /// The high half staged by a `VRCPH`/`VRSQH`.
+    pub input: u16,
+    /// The high half of the last result, which `VRCPH`/`VRSQH` reads back.
+    pub output: u16,
+    /// Whether `input` was staged by the immediately preceding instruction.
+    pub pending: bool,
+}
+
 /// Which control register a `CFC2`/`CTC2` names.
 ///
 /// Only `0`, `1` and `2` are defined. The RSP has no exception mechanism, so a
@@ -1201,5 +1219,212 @@ mod rom_tests {
                 "the odd entry at {i} must exceed its even neighbour"
             );
         }
+    }
+}
+
+/// The single-lane reciprocal group: `VRCP`, `VRSQ`, their `L`/`H` partners,
+/// `VMOV` and `VNOP`.
+///
+/// These do not operate lane-wise. They read **one** lane of `vt` (selected by
+/// the element field), write **one** lane of `vd` (selected by the `de` field,
+/// which occupies the `vs` position), and set the whole accumulator low slice to
+/// the broadcast `vt`.
+impl Rsp {
+    /// The shared core of `VRCP`/`VRCPL` and `VRSQ`/`VRSQL`.
+    ///
+    /// `long` selects whether a staged high half is consumed; `sqrt` selects the
+    /// inverse-square-root table and its halved shift.
+    fn reciprocal_core(&mut self, element: u32, vt: usize, de: usize, long: bool, sqrt: bool) {
+        let lane = self.vt_lane(vt, element, (element & 7) as usize);
+        // A 32-bit operand only when an `H` instruction staged one immediately
+        // before; otherwise the 16-bit lane, sign-extended.
+        let input: i32 = if long && self.div.pending {
+            ((i32::from(self.div.input)) << 16) | i32::from(lane)
+        } else {
+            i32::from(lane.cast_signed())
+        };
+
+        let mask = input >> 31;
+        let mut data = input ^ mask;
+        if input > -32768 {
+            data -= mask;
+        }
+
+        let result: i32 = if data == 0 {
+            // Division by zero saturates rather than faulting -- the RSP has no
+            // exception mechanism to report it with.
+            0x7FFF_FFFF
+        } else if input == -32768 {
+            // The one input whose negation is not representable.
+            0xFFFF_0000u32.cast_signed()
+        } else {
+            let shift = data.cast_unsigned().leading_zeros();
+            let index = ((u64::from(data.cast_unsigned()) << shift) & 0x7FC0_0000) >> 22;
+            let entry = if sqrt {
+                // The odd/even interleave: the low bit of the shift picks which
+                // of the two sequences the entry comes from.
+                rom::inverse_square_root(((index as usize) & 0x1FE) | (shift as usize & 1))
+            } else {
+                rom::reciprocal(index as usize)
+            };
+            let r = (0x10000 | i32::from(entry)) << 14;
+            // The square root halves the renormalising shift, because it is
+            // undoing a squaring.
+            let back = if sqrt { (31 - shift) >> 1 } else { 31 - shift };
+            (r >> back) ^ mask
+        };
+
+        self.div.pending = false;
+        self.div.output = (result.cast_unsigned() >> 16) as u16;
+        self.acc_low_from_broadcast(element, vt);
+        self.set_vd_lane(de, result.cast_unsigned() as u16);
+    }
+
+    /// Set every accumulator low slice to the broadcast `vt`, which each of
+    /// these instructions does regardless of what it computes.
+    fn acc_low_from_broadcast(&mut self, element: u32, vt: usize) {
+        for lane in 0..8 {
+            let v = self.vt_lane(vt, element, lane);
+            self.vu_acc[lane] = (self.vu_acc[lane] & 0xFFFF_FFFF_0000) | u64::from(v);
+        }
+    }
+
+    /// Write the destination lane. Stored separately so `vd` can be resolved
+    /// once by the caller.
+    fn set_vd_lane(&mut self, de: usize, value: u16) {
+        self.pending_vd_lane = Some((de, value));
+    }
+
+    /// The single-lane group's dispatch. Returns `false` for an opcode outside
+    /// it, so the caller can fall through.
+    pub fn vu_single_lane(
+        &mut self,
+        op: u32,
+        element: u32,
+        vt: usize,
+        de: usize,
+        vd: usize,
+    ) -> bool {
+        let de = de & 7;
+        match op {
+            0x30 | 0x31 | 0x34 | 0x35 => {
+                let long = op == 0x31 || op == 0x35;
+                let sqrt = op >= 0x34;
+                self.reciprocal_core(element, vt, de, long, sqrt);
+            }
+            // The `H` partners stage the high half and hand back the high half
+            // of the previous result. They compute nothing themselves.
+            0x32 | 0x36 => {
+                self.acc_low_from_broadcast(element, vt);
+                self.div.input = self.vt_lane(vt, element, (element & 7) as usize);
+                self.div.pending = true;
+                self.pending_vd_lane = Some((de, self.div.output));
+            }
+            // VMOV copies one lane of the broadcast source.
+            0x33 => {
+                self.acc_low_from_broadcast(element, vt);
+                let v = self.vt_lane(vt, element, de);
+                self.pending_vd_lane = Some((de, v));
+            }
+            // VNOP and VNULL retire without effect.
+            0x37 | 0x3F => return true,
+            _ => return false,
+        }
+        if let Some((lane, value)) = self.pending_vd_lane.take() {
+            self.vu_regs[vd & 31][lane] = value;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod reciprocal_tests {
+    use super::*;
+
+    /// **`VRCPH` stages a high half and hands back the previous result's.**
+    ///
+    /// Both halves of that matter: the write-back is the *old* `DIVOUT`, not
+    /// anything derived from this instruction's operand, so an implementation
+    /// that returns the staged value instead looks plausible and produces
+    /// garbage on the second use.
+    #[test]
+    fn vrcph_stages_the_input_and_returns_the_previous_output() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = [0x1234; 8];
+        rsp.div.output = 0xBEEF;
+
+        assert!(rsp.vu_single_lane(0x32, 0, 1, 0, 2));
+        assert_eq!(rsp.vu_regs[2][0], 0xBEEF, "the PREVIOUS output comes back");
+        assert_eq!(rsp.div.input, 0x1234, "and this operand is staged");
+        assert!(rsp.div.pending);
+    }
+
+    /// **`VRCPL` consumes a staged half only when one was just staged.**
+    ///
+    /// `pending` is what separates "a high half was staged by the preceding
+    /// instruction" from "there is a stale value in the latch". Without it an
+    /// `L` issued on its own silently consumes whatever the last `H` left, and
+    /// the result depends on unrelated code that ran earlier.
+    #[test]
+    fn vrcpl_consumes_a_staged_half_only_once() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = [0x0002; 8];
+
+        // Stage, then consume: `pending` must be cleared by the consumer.
+        rsp.vu_single_lane(0x32, 0, 1, 0, 2);
+        assert!(rsp.div.pending);
+        rsp.vu_single_lane(0x31, 0, 1, 0, 3);
+        assert!(!rsp.div.pending, "the L instruction clears the staging");
+
+        // A second L with nothing staged must take the 16-bit path. Compare it
+        // against a plain VRCP of the same operand, which is the same path.
+        let mut plain = Rsp::new();
+        plain.vu_regs[1] = [0x0002; 8];
+        plain.vu_single_lane(0x30, 0, 1, 0, 4);
+
+        rsp.vu_single_lane(0x31, 0, 1, 0, 5);
+        assert_eq!(
+            rsp.vu_regs[5][0], plain.vu_regs[4][0],
+            "an unstaged L is a plain 16-bit reciprocal"
+        );
+    }
+
+    /// Division by zero **saturates** rather than faulting — the RSP has no
+    /// exception mechanism, so there is nothing for it to raise.
+    #[test]
+    fn reciprocal_of_zero_saturates() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = [0; 8];
+        rsp.vu_single_lane(0x30, 0, 1, 0, 2);
+        assert_eq!(rsp.div.output, 0x7FFF, "the high half of 0x7FFF_FFFF");
+        assert_eq!(rsp.vu_regs[2][0], 0xFFFF, "and the low half");
+    }
+
+    /// Every one of these writes the accumulator's low slice from the broadcast
+    /// source, whatever else it does — including `VRCPH`, which computes
+    /// nothing.
+    #[test]
+    fn the_single_lane_group_always_writes_the_accumulator_low_slice() {
+        for op in [0x30u32, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36] {
+            let mut rsp = Rsp::new();
+            rsp.vu_regs[1] = [0xABCD; 8];
+            rsp.vu_single_lane(op, 0, 1, 0, 2);
+            assert_eq!(
+                (rsp.vu_acc[5] & 0xFFFF) as u16,
+                0xABCD,
+                "opcode {op:#04x} did not write ACC_LO"
+            );
+        }
+    }
+
+    /// `VNOP` retires without touching anything — including the accumulator,
+    /// which separates it from the rest of the group.
+    #[test]
+    fn vnop_does_nothing_at_all() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = [0xABCD; 8];
+        assert!(rsp.vu_single_lane(0x37, 0, 1, 0, 2));
+        assert_eq!(rsp.vu_regs[2], [0; 8]);
+        assert_eq!(rsp.vu_acc, [0; 8], "not even the accumulator");
     }
 }
