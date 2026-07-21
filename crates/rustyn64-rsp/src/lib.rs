@@ -32,6 +32,8 @@
 
 extern crate alloc;
 
+pub mod sp;
+
 /// Size of RSP DMEM / IMEM (each 4 KiB).
 pub const SP_MEM_SIZE: usize = 4 * 1024;
 
@@ -70,6 +72,9 @@ pub struct Rsp {
     pub dmem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
     /// 4 KiB instruction memory.
     pub imem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
+    /// The SP interface registers, shared by the CPU's memory-mapped window and
+    /// the RSP's own COP0 -- one set of physical registers, so one field.
+    pub sp: sp::SpRegs,
     // TODO(T-RSP-01): VCO/VCC/VCE flag registers, the divide-in/out latches for
     // VRCP/VRSQ, the DMA length/skip latches — see `docs/rsp.md`.
 }
@@ -92,6 +97,7 @@ impl Rsp {
             halted: true,
             dmem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
             imem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
+            sp: sp::SpRegs::new(),
         }
     }
 

@@ -70,11 +70,50 @@ access size** — a byte or halfword store writes the whole shifted 32-bit word 
 a 64-bit store touches only four bytes. That rule is not RSP-specific and is
 recorded once, in accuracy ledger **C-28**.
 
-Driven from the CPU side via the **SP interface** (`ref-docs/research-report.md`
-§2): `SP_STATUS` (start/halt + the broadcast semaphore), `SP_DMA_*` (DMEM/IMEM ↔
-RDRAM), `SP_PC`. The CPU DMAs microcode + data in, then clears
-`SP_STATUS.halt`; the RSP runs until a `BREAK` (which sets halt and, if enabled,
-raises the SP interrupt).
+### The SP interface registers (implemented, T-21-002)
+
+Eight registers at `0x0404_0000` and `SP_PC` at `0x0408_0000` — note `SP_PC` is
+in its **own** window, not the ninth slot of the block. The same physical
+registers are exposed to the RSP as COP0 `c0`–`c7`, so `crates/rustyn64-rsp/src/sp.rs`
+holds one copy and both views reach it.
+
+`SP_STATUS` reads as a flag word and writes as **set/clear command pairs**, two
+bits per flag. That asymmetry is the design, not an encoding quirk: it lets
+either processor change one flag with a single store, with no read-modify-write
+to race. The rule that falls out — and that catches naive implementations —
+is that writing a flag's **set and clear bits together leaves it unchanged**.
+n64-systemtest checks it for every reachable flag.
+
+| Read bit | Flag | | Write bits (clear, set) |
+| --- | --- | --- | --- |
+| 0 | `HALTED` | | 0, 1 |
+| 1 | `BROKE` | | 2, — (a latch; hardware sets it) |
+| 2 | `DMA_BUSY` | | — |
+| 3 | `DMA_FULL` | | — |
+| 4 | `IO_BUSY` | | — |
+| 5 | `SSTEP` | | 5, 6 |
+| 6 | `INTBREAK` | | 7, 8 |
+| 7 + n | `SIG<n>` | | 9 + 2n, 10 + 2n |
+
+The interrupt commands (clear 3, set 4) are **not** a `SP_STATUS` flag at all —
+they raise and acknowledge the MI's SP line, which is why the register file
+reports the change and the Bus applies it.
+
+`SP_SEMAPHORE` is a mutex bit: a write releases it *whatever value is written*,
+and a read returns the current value and then takes it. So the observable
+sequence is write, then 0, then 1 for ever — a reader that sees 0 has just
+acquired it.
+
+The DMA registers are **double-buffered**: an address write stages a pending
+value, and reads keep reporting the ongoing or last-completed transfer until a
+length write starts one. After completion the pointers sit past the data and the
+length field reads `0xFF8`, because hardware decrements it per 64-bit word and
+ends at `-8`. Both length registers report the same transfer regardless of the
+direction programmed. The length field rounds **up** to a multiple of 8 — writing
+anything from 0 to 7 transfers exactly 8 bytes.
+
+The CPU DMAs microcode + data in, then clears `SP_STATUS.halt`; the RSP runs
+until a `BREAK` (which sets halt and, if enabled, raises the SP interrupt).
 
 ## State
 
