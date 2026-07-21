@@ -622,6 +622,18 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   unconditionally raises spurious refills on exactly the code that matters —
   cache-init walks every index with an arbitrary base, before any mapping
   exists.
+- **`BC1F`/`BC1T`/`BC1FL`/`BC1TL` branch on `FCSR.C`.** COP1 `rs = 0o10`, with
+  bits 17:16 as `nd:tf`, so the four encodings are true/false crossed with
+  likely/not. The target arithmetic and the branch-likely nullification are
+  shared with every other branch rather than duplicated.
+
+  The condition is passed into `execute` as a parameter rather than reached for,
+  because that function is pure and has no view of coprocessor state — and a
+  parameter makes every call site a compile error until it supplies one.
+
+  **Outstanding:** `BC1` reads the condition in `EX` while `C.cond.fmt` writes it
+  in `WB`, so an adjacent pair samples the previous condition. Hardware
+  interlocks; we do not yet. Accuracy-ledger **R-2**.
 - **A to-integer conversion refuses an integer source format.** `CVT.W.W`,
   `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family
   from `.W`/`.L` are not instructions, and the VR4300 declines them with

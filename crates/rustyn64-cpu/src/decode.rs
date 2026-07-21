@@ -251,6 +251,14 @@ pub enum Op {
     Bltzall,
     /// `BGEZALL` — branch-likely, links.
     Bgezall,
+    /// `BC1F off` — branch if the FP condition is **clear**.
+    Bc1f,
+    /// `BC1T off` — branch if the FP condition is **set**.
+    Bc1t,
+    /// `BC1FL` — branch-likely on a clear FP condition.
+    Bc1fl,
+    /// `BC1TL` — branch-likely on a set FP condition.
+    Bc1tl,
 
     // --- the trap family
     /// `TGE rs, rt`.
@@ -506,7 +514,21 @@ impl Op {
                 | Self::Bgezl
                 | Self::Bltzall
                 | Self::Bgezall
+                | Self::Bc1f
+                | Self::Bc1t
+                | Self::Bc1fl
+                | Self::Bc1tl
         )
+    }
+
+    /// Does this instruction read `FCSR.C`?
+    ///
+    /// Only the `BC1` family does, which is why the condition can be interlocked
+    /// against rather than bypassed everywhere — see accuracy-ledger **R-2** for
+    /// the interlock that is still outstanding.
+    #[must_use]
+    pub const fn reads_fp_condition(self) -> bool {
+        matches!(self, Self::Bc1f | Self::Bc1t | Self::Bc1fl | Self::Bc1tl)
     }
 
     /// Is this a **branch-likely** form?
@@ -527,6 +549,8 @@ impl Op {
                 | Self::Bgezl
                 | Self::Bltzall
                 | Self::Bgezall
+                | Self::Bc1fl
+                | Self::Bc1tl
         )
     }
 
@@ -1046,6 +1070,21 @@ pub const fn decode(word: u32) -> Decoded {
                         ..base
                     }
                 }
+                // `BC1` — branch on the FP condition. `rs = 0o10` selects the
+                // branch family; bits 17:16 are `nd:tf`, so the four encodings
+                // are TF (true/false) crossed with likely/not.
+                //
+                // `imm` carries the offset, as for every other branch, so the
+                // target arithmetic in `exec` is shared rather than duplicated.
+                0o10 => Decoded {
+                    op: match (word >> 16) & 0b11 {
+                        0b00 => Op::Bc1f,
+                        0b01 => Op::Bc1t,
+                        0b10 => Op::Bc1fl,
+                        _ => Op::Bc1tl,
+                    },
+                    ..base
+                },
                 0o04 => Decoded {
                     op: Op::Mtc1,
                     ..base

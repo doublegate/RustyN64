@@ -374,6 +374,13 @@ pub struct Pipeline {
     ll_bit: bool,
 }
 
+/// `FCSR.C`, the compare condition — bit 23, above the `Cause` field.
+///
+/// Written only by `C.cond.fmt` and read only by the `BC1` family, so it is
+/// deliberately outside the `Cause`/`Flags` bookkeeping that every other FP
+/// operation touches.
+const FCSR_C: u32 = 1 << 23;
+
 impl Pipeline {
     /// A fresh, empty pipeline.
     #[must_use]
@@ -1624,7 +1631,16 @@ impl Pipeline {
                 self.ex_dc = out;
                 return;
             }
-            match execute(out.decoded, out.rs_val, out.rt_val, hilo, out.pc) {
+            // `FCSR.C` — read here, in EX, where the branch resolves.
+            let fp_condition = self.cop1.fcsr() & FCSR_C != 0;
+            match execute(
+                out.decoded,
+                out.rs_val,
+                out.rt_val,
+                hilo,
+                out.pc,
+                fp_condition,
+            ) {
                 Ok(e) => {
                     out.write_back = e.write_back;
                     out.mem = e.mem;
@@ -2002,9 +2018,6 @@ impl Pipeline {
         /// reading `FCSR` after a successful conversion would then still see
         /// the previous unimplemented operation.
         const CAUSE_MASK: u32 = 0x3F << 12;
-        /// `FCSR.C`, the compare condition — bit 23, above the Cause field and
-        /// written only by `C.cond.fmt`.
-        const FCSR_C: u32 = 1 << 23;
 
         let fr = fr_of(&self.cop0);
         // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
@@ -4878,20 +4891,22 @@ mod tests {
     #[test]
     fn an_unimplemented_cop1_encoding_does_not_raise_when_cu1_is_set() {
         use crate::cop0::reg;
-        // `BC1F` -- a real, valid COP1 branch that is genuinely not wired yet.
+        // COP1 `rs = 0o11` -- an unassigned encoding in the coprocessor's own
+        // opcode space, so it is valid to *fetch* and does nothing.
         //
-        // This test has now outlived two subjects: it was `ADD.S` until the S/D
-        // arithmetic landed, then `SQRT.S` until T-13-005. Each move is the
-        // test doing its job -- the point is the *unimplemented* path, so the
-        // subject follows whatever is still on it. When `BC1` lands, move it
-        // again rather than deleting it.
-        const BC1F: u32 = (0o21 << 26) | (0o10 << 21);
+        // This test has now outlived three subjects: `ADD.S` until the S/D
+        // arithmetic landed, `SQRT.S` until T-13-005, then `BC1F` until the
+        // branch was wired. Each move is the test doing its job -- the point is
+        // the *unimplemented* path, so the subject follows whatever is still on
+        // it. When `rs = 0o11` acquires a meaning, move it again rather than
+        // deleting it.
+        const UNASSIGNED: u32 = (0o21 << 26) | (0o11 << 21);
         assert_eq!(
-            decode(BC1F).op,
+            decode(UNASSIGNED).op,
             crate::decode::Op::Cop1Unimplemented,
             "valid encoding, not Reserved"
         );
-        let mut bus = Ram::new(alloc::vec![BC1F]);
+        let mut bus = Ram::new(alloc::vec![UNASSIGNED]);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set

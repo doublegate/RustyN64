@@ -9,6 +9,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — `BC1F`/`BC1T`/`BC1FL`/`BC1TL`, branch on the FP condition
+
+They were not implemented: the branch decoded to `Cop1Unimplemented` and retired as a no-op, so a
+program branching on a compare simply fell through. COP1 `rs = 0o10`, bits 17:16 as `nd:tf` — the
+four encodings are true/false crossed with likely/not. Target arithmetic and branch-likely
+nullification are shared with every other branch.
+
+`FCSR.C` is passed into `execute` as a parameter rather than reached for: that function is pure and
+has no view of coprocessor state, and a parameter makes every call site a compile error until it
+supplies one.
+
+**Still outstanding**, and now the sole Phase 1 failure: `BC1` reads the condition in `EX` while
+`C.cond.fmt` writes it in `WB`, so an adjacent pair samples the previous condition. Hardware
+interlocks; we do not yet. A first attempt is documented in ledger **R-2** along with why it is not
+sufficient — the fix must come from tracing where the compare actually is, not from choosing a stall
+count that makes the ROM pass.
+
+**Phase 1's categories: 1 remaining.**
+
 ### Fixed — the unaligned family takes the byte swap under `Status.RE`
 
 `LWL`/`LWR`/`SWL`/`SWR` and their doubleword siblings address **individual bytes**, so `RE` moves
