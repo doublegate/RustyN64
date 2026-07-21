@@ -1144,6 +1144,13 @@ impl Rsp {
                 }
                 true
             }
+            // LFV load. Derived from n64-systemtest's OWN reference, which
+            // conflicts with ares for e != 0 (ares uses `mis - e` for lane 0
+            // where the suite uses `mis + e`). The oracle wins.
+            0x09 if !store => {
+                self.lfv(Self::base_16(rs, offset), vt, element);
+                true
+            }
             _ => false,
         }
     }
@@ -1225,6 +1232,45 @@ impl Rsp {
     /// Base address for a 16-scaled offset, used by the whole-vector ops.
     fn base_16(rs: u32, offset: u32) -> u32 {
         rs.wrapping_add_signed(Self::sext7(offset) * 16)
+    }
+
+    /// `LFV` — the "complicated" fractional load, transcribed from
+    /// n64-systemtest's reference (not ares, which differs for `e != 0`).
+    ///
+    /// Eight lanes are computed from a fixed offset pattern around the aligned
+    /// address, each byte placed at bit 14. Then only the register **bytes**
+    /// `[e, e + min(8, 16 - e))` are written from that temporary — the rest of
+    /// the register is left as it was, which is the partial-write behaviour the
+    /// name hides.
+    fn lfv(&mut self, address: u32, vt: usize, element: usize) {
+        let aligned = address & !7;
+        let mis = (address & 7).cast_signed();
+        let e = i32::try_from(element).unwrap_or(0);
+        let at = |k: i32| -> u16 {
+            let idx = aligned.wrapping_add(((mis + k).rem_euclid(16)) as u32);
+            u16::from(self.dmem_read_pub(idx)) << 7
+        };
+        // The offset pattern, per n64-systemtest's LFV reference.
+        let temp: [u16; 8] = [
+            at(e),
+            at(4 - e),
+            at(8 - e),
+            at(12 - e),
+            at(8 - e),
+            at(12 - e),
+            at(-e),
+            at(4 - e),
+        ];
+        // temp as 16 big-endian bytes.
+        let mut bytes = [0u8; 16];
+        for (lane, v) in temp.iter().enumerate() {
+            bytes[lane * 2] = (v >> 8) as u8;
+            bytes[lane * 2 + 1] = *v as u8;
+        }
+        let length = core::cmp::min(8, 16 - element);
+        for (i, &b) in bytes.iter().enumerate().skip(element).take(length) {
+            self.set_vu_byte(vt, i, b);
+        }
     }
 
     /// `LTV` — load a transposed diagonal into a register group.
@@ -2475,5 +2521,40 @@ mod transpose_tests {
         for (i, want) in expected.iter().enumerate() {
             assert_eq!(rsp.dmem[i], *want, "DMEM byte {i}");
         }
+    }
+}
+
+#[cfg(test)]
+mod lfv_tests {
+    use super::*;
+
+    fn with_dmem() -> Rsp {
+        let mut rsp = Rsp::new();
+        for i in 0..16 {
+            rsp.dmem[i] = 0x10 + i as u8;
+        }
+        rsp
+    }
+
+    /// **`LFV` at `e = 0` writes only the first four lanes** — its length is
+    /// `min(8, 16 - e)` *bytes*, so a zero element fills bytes 0..8 = lanes 0..3
+    /// and leaves the upper half untouched. Computed from n64-systemtest's own
+    /// reference.
+    #[test]
+    fn lfv_at_element_zero_fills_the_low_half() {
+        let mut rsp = with_dmem();
+        assert!(rsp.vector_mem(false, 0x09, 0, 1, 0, 0));
+        assert_eq!(rsp.vu_regs[1], [0x0800, 0x0A00, 0x0C00, 0x0E00, 0, 0, 0, 0]);
+    }
+
+    /// **`LFV` at `e = 4` follows a different offset pattern** — this is the
+    /// case where ares and the suite reference diverge, and the value here is
+    /// the suite's. The partial write now touches bytes 4..12 = lanes 2..5,
+    /// leaving lanes 0, 1, 6, 7 as they were.
+    #[test]
+    fn lfv_at_element_four_matches_the_suite_not_ares() {
+        let mut rsp = with_dmem();
+        assert!(rsp.vector_mem(false, 0x09, 0, 1, 4, 0));
+        assert_eq!(rsp.vu_regs[1], [0, 0, 0x0A00, 0x0C00, 0x0A00, 0x0C00, 0, 0]);
     }
 }

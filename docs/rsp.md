@@ -377,9 +377,16 @@ DMEM index folds in the element field, the store's does not (ares SHV vs LHV).
 wraparound inside the 16-byte window, forming a diagonal. Modelled in a scratch
 script and cross-checked before implementation.
 
-Not yet implemented, and reported rather than approximated: `LFV`/`SFV` (whose
-lane subsets are element-dependent and which the suite itself calls
-"complicated") and `SWV`. (`LWV` does not
+`LFV` is the "complicated" fractional load, and the one place ares and the suite
+reference **disagree** — for `e != 0`, ares uses `mis - e` for lane 0 where the
+suite uses `mis + e`. It is derived from **n64-systemtest's own reference**, not
+ares, since the suite is the oracle. It computes eight lanes from a fixed offset
+pattern and then writes only the register bytes `[e, e + min(8, 16 - e))`,
+leaving the rest untouched.
+
+Not yet implemented, and reported rather than approximated: `SFV` (whose source
+lanes are chosen by an `e`-dependent table, with some `e` writing zero) and
+`SWV`. (`LWV` does not
 exist on hardware — the suite records that it *"does nothing"*.)
 
 ### Vector load/store
