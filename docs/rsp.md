@@ -202,8 +202,9 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 ### The accumulator and the multiply family (partly implemented, Sprint 2)
 
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
-accumulating forms, `VSAR` and the six bitwise operations execute. `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS` execute too. `VLT`/`VEQ`/`VNE`/`VGE` and `VMRG` execute too. `VCL`/`VCH`/`VCR`,
-`VRNDN`/`VRNDP` and `VMULQ` do not yet, and report
+accumulating forms, `VSAR` and the six bitwise operations execute, as do
+`VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS`, the `VLT`/`VEQ`/`VNE`/`VGE` compares,
+`VMRG`, and `VRNDN`/`VRNDP`. `VCL`/`VCH`/`VCR` and `VMULQ` do not yet, and report
 so rather than writing a wrong result — `vu_compute` returns `false` and the
 instruction retires inertly.
 
@@ -303,6 +304,16 @@ unequal operands and wrong on equal ones.
 `VMRG` **consumes** `VCC` without changing it: the consumer of a compare rather
 than another producer. Every one of these clears `VCO` wholesale, so a second
 compare cannot inherit the first's flags.
+
+### VRNDN / VRNDP
+
+Unlike every other computational opcode, these **read the accumulator** and do
+not read a `vs` register at all: the low bit of the `vs` *field* number is an
+immediate that selects whether the sign-extended `vt` element is shifted left 16
+before use. The product is conditionally added to the 48-bit accumulator by its
+**sign** — `VRNDP` adds when it is non-negative, `VRNDN` when it is negative —
+the sum is sign-clipped to 48 bits, and `vd` is the signed-clamped middle. Both
+are pinned against the oracle's full result-plus-three-slices vectors.
 
 `VABS` applies the **sign of `vs` to `vt`** — it is not the absolute value of
 either operand, and a zero in `vs` yields zero regardless of `vt`.

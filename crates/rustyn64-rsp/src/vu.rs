@@ -341,6 +341,15 @@ impl Rsp {
     /// Returns `false` for an opcode this does not implement yet, so the caller
     /// can leave the instruction inert rather than writing a wrong result.
     pub fn vu_compute(&mut self, op: u32, element: u32, vs: usize, vt: usize, vd: usize) -> bool {
+        // VRNDN (0x0A) and VRNDP (0x02) are unlike every other computational
+        // opcode: they read the **accumulator**, use the low bit of the `vs`
+        // *field* as an immediate shift selector rather than reading a `vs`
+        // register, and conditionally add based on the accumulator's sign. They
+        // are handled whole here rather than in the per-lane match below.
+        if op == 0x02 || op == 0x0A {
+            self.vrnd(op == 0x02, element, vs, vt, vd);
+            return true;
+        }
         let mut clear_vco = false;
         let mut set_vco = false;
         let mut new_vco = 0u16;
@@ -393,44 +402,16 @@ impl Rsp {
                     set_vco = true;
                     low
                 }
-                // The compare group. Each writes a **selection** into the
-                // accumulator -- `vs` or `vt` per lane -- and records the
-                // predicate in VCC's low half, then clears VCO wholesale.
-                //
-                // The equality cases consult VCO, which is what chains a
-                // compare onto a preceding `VSUBC`: that is the entire reason
-                // the pair exists, and dropping the VCO terms leaves a compare
-                // that looks right on unequal operands and wrong on equal ones.
-                0x20..=0x23 => {
-                    // VCO's low half is the carry/borrow; its high half is the
-                    // "result was non-zero" flag a preceding VSUBC left.
-                    let carry = (self.vu_ctrl.vco >> lane) & 1 != 0;
-                    let non_zero = (self.vu_ctrl.vco >> (lane + 8)) & 1 != 0;
-                    let cond = match op {
-                        0x20 => ss < ts || (ss == ts && carry && non_zero),
-                        0x21 => !non_zero && s == t,
-                        0x22 => s != t || non_zero,
-                        _ => ss > ts || (ss == ts && (!carry || !non_zero)),
-                    };
-                    if cond {
-                        compare_flags |= 1 << lane;
+                0x20..=0x23 | 0x27 => {
+                    let (picked, flag) = self.compare_lane(op, lane, s, t, ss, ts);
+                    if let Some(set) = flag {
+                        if set {
+                            compare_flags |= 1 << lane;
+                        }
+                        wrote_vcc = true;
                     }
-                    wrote_vcc = true;
                     clear_vco = true;
-                    let picked = if cond { s } else { t };
                     self.set_acc_low(lane, picked);
-                    picked
-                }
-                // VMRG selects on VCC without *changing* it -- the consumer of
-                // a compare rather than another producer. It still clears VCO.
-                0x27 => {
-                    let picked = if (self.vu_ctrl.vcc >> lane) & 1 != 0 {
-                        s
-                    } else {
-                        t
-                    };
-                    self.set_acc_low(lane, picked);
-                    clear_vco = true;
                     picked
                 }
                 // VSAR: read a 16-bit slice of the accumulator. The slice is
@@ -566,6 +547,72 @@ impl Rsp {
             }
             _ => 0,
         }
+    }
+
+    /// One lane of the compare/select group.
+    ///
+    /// Returns the selected operand and, for the four true compares, whether the
+    /// predicate held (`VMRG` returns `None` — it consumes `VCC` and produces no
+    /// new flag). Split out to keep [`Rsp::vu_compute`]'s decode under length.
+    fn compare_lane(
+        &self,
+        op: u32,
+        lane: usize,
+        s: u16,
+        t: u16,
+        ss: i64,
+        ts: i64,
+    ) -> (u16, Option<bool>) {
+        // VCO's low half is the carry/borrow; its high half is the "result was
+        // non-zero" flag a preceding VSUBC left.
+        let carry = (self.vu_ctrl.vco >> lane) & 1 != 0;
+        let non_zero = (self.vu_ctrl.vco >> (lane + 8)) & 1 != 0;
+        if op == 0x27 {
+            // VMRG selects on VCC without changing it.
+            let picked = if (self.vu_ctrl.vcc >> lane) & 1 != 0 {
+                s
+            } else {
+                t
+            };
+            return (picked, None);
+        }
+        let cond = match op {
+            0x20 => ss < ts || (ss == ts && carry && non_zero),
+            0x21 => !non_zero && s == t,
+            0x22 => s != t || non_zero,
+            _ => ss > ts || (ss == ts && (!carry || !non_zero)),
+        };
+        (if cond { s } else { t }, Some(cond))
+    }
+
+    /// `VRNDN`/`VRNDP` — accumulator rounding (N64brew *RSP CPU Core*; ares).
+    ///
+    /// These do **not** read a `vs` register. The low bit of the `vs` *field*
+    /// number selects whether the sign-extended `vt` element is shifted left 16
+    /// before use, and the accumulator — not an operand — is what the product
+    /// is conditionally added to. `positive` is `VRNDP`, which adds when the
+    /// 48-bit accumulator is `>= 0`; `VRNDN` adds when it is `< 0`. The result
+    /// is the signed-clamped middle of the accumulator, and the whole 48-bit
+    /// accumulator is written back.
+    fn vrnd(&mut self, positive: bool, element: u32, vs_field: usize, vt: usize, vd: usize) {
+        let shift = vs_field & 1 != 0;
+        for lane in 0..8 {
+            let mut product = i64::from(self.vt_lane(vt, element, lane).cast_signed());
+            if shift {
+                product <<= 16;
+            }
+            let mut acc = self.acc_signed(lane);
+            if (positive && acc >= 0) || (!positive && acc < 0) {
+                acc = Self::sclip48(acc + product);
+            }
+            self.set_acc(lane, acc);
+            self.vu_regs[vd & 31][lane] = Self::clamp_signed(acc >> 16);
+        }
+    }
+
+    /// Sign-clip to 48 bits, as the accumulator is.
+    const fn sclip48(v: i64) -> i64 {
+        (v << 16) >> 16
     }
 
     /// `VABS` for one lane: the **sign of `vs` applied to `vt`**, which is not
@@ -1869,5 +1916,124 @@ mod compare_tests {
         rsp.vu_ctrl.vco = 0xFFFF;
         rsp.vu_compute(0x21, 0, 1, 0, 2);
         assert_eq!(rsp.vu_ctrl.vco, 0);
+    }
+}
+
+#[cfg(test)]
+mod vrnd_tests {
+    use super::*;
+
+    /// The suite primes the accumulator with `VMUDH` then `VMADL`, using these
+    /// two vectors, before running `VRND`.
+    const V0: [u16; 8] = [
+        0x0000, 0x0001, 0x0001, 0x7FFF, 0xFFFF, 0x7FFF, 0x3FFF, 0x8000,
+    ];
+    const V1: [u16; 8] = [
+        0x0000, 0x0001, 0xFFFF, 0xFFFF, 0xFFFF, 0x7FFF, 0x7FFF, 0x7FFF,
+    ];
+    /// The `vt` input to VRND (`0x20`); its odd lanes are ignored by the suite.
+    const VT: [u16; 8] = [
+        0x0000, 0x0001, 0x0002, 0x7FFF, 0xFFFF, 0x8000, 0x8001, 0x8002,
+    ];
+
+    /// Prime the accumulator the way the oracle does: `V0=$v0`, `V1=$v1`,
+    /// `vmudh $v2,$v0,$v1` then `vmadl $v2,$v0,$v1`.
+    fn primed() -> Rsp {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[0] = V0;
+        rsp.vu_regs[1] = V1;
+        rsp.vu_compute(0x07, 0, 0, 1, 2); // VMUDH: vs=$v0, vt=$v1
+        rsp.vu_compute(0x0C, 0, 0, 1, 2); // VMADL
+        rsp
+    }
+
+    fn acc_slice(rsp: &Rsp, shift: u32) -> [u16; 8] {
+        core::array::from_fn(|i| (rsp.vu_acc[i] >> shift) as u16)
+    }
+
+    /// **`VRNDN` against n64-systemtest's vectors**, with an **even** `vs` field
+    /// (no shift). Result and all three accumulator slices, because VRND writes
+    /// the whole 48-bit accumulator and the result alone hides the low bits.
+    #[test]
+    fn vrndn_matches_the_oracle_with_an_even_vs() {
+        let mut rsp = primed();
+        // vt is $v0 in the oracle's i==0 case; vs field is register 0 (even).
+        rsp.vu_regs[0] = VT;
+        assert!(rsp.vu_compute(0x0A, 0, 0, 0, 2));
+
+        assert_eq!(
+            rsp.vu_regs[2],
+            [0, 1, 0xFFFF, 0x8001, 1, 0x7FFF, 0x7FFF, 0x8000],
+            "VRNDN result"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 32),
+            [0, 0, 0xFFFF, 0xFFFF, 0, 0x3FFF, 0x1FFF, 0xC000],
+            "ACC_HI"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 16),
+            [0, 1, 0xFFFF, 0x8001, 1, 1, 0x4001, 0x7FFF],
+            "ACC_MD"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 0),
+            [0, 0, 2, 0xFFFD, 0xFFFE, 0x3FFF, 0x1FFF, 0xC001],
+            "ACC_LO"
+        );
+    }
+
+    /// **The low bit of the `vs` field shifts the product left 16.** An even
+    /// and an odd `vs` over the same operand must differ, which is the only
+    /// thing that distinguishes the field-as-immediate reading from treating
+    /// `vs` as a register.
+    #[test]
+    fn the_vs_field_low_bit_selects_the_shift() {
+        let mut even = primed();
+        even.vu_regs[0] = VT;
+        even.vu_compute(0x0A, 0, 0, 0, 2); // vs field 0
+
+        let mut odd = primed();
+        odd.vu_regs[0] = VT;
+        odd.vu_compute(0x0A, 0, 1, 0, 2); // vs field 1 -> shift
+
+        assert_ne!(
+            even.vu_regs[2], odd.vu_regs[2],
+            "an odd vs field shifts the product and must change the result"
+        );
+    }
+
+    /// **`VRNDP` against n64-systemtest's vectors.** It shares everything with
+    /// `VRNDN` except the sign condition — `VRNDP` adds on a non-negative
+    /// accumulator — so its `ACC_HI` slice is identical to `VRNDN`'s while `ACC_MD`,
+    /// `ACC_LO` and the result diverge wherever a lane's accumulator sign differs.
+    /// Asserting the full published vector pins that divergence exactly, without
+    /// having to reason about which lanes are negative.
+    #[test]
+    fn vrndp_matches_the_oracle_with_an_even_vs() {
+        let mut rsp = primed();
+        rsp.vu_regs[0] = VT;
+        assert!(rsp.vu_compute(0x02, 0, 0, 0, 2));
+
+        assert_eq!(
+            rsp.vu_regs[2],
+            [0, 1, 0xFFFF, 0x8001, 1, 0x7FFF, 0x7FFF, 0x8000],
+            "VRNDP result"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 32),
+            [0, 0, 0xFFFF, 0xFFFF, 0, 0x3FFF, 0x1FFF, 0xC000],
+            "ACC_HI -- identical to VRNDN's"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 16),
+            [0, 1, 0xFFFF, 0x8001, 1, 0, 0x4000, 0x8000],
+            "ACC_MD"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 0),
+            [0, 1, 0, 0x7FFE, 0xFFFD, 0xBFFF, 0xA000, 0x3FFF],
+            "ACC_LO"
+        );
     }
 }
