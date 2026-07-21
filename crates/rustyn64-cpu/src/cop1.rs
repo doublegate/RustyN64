@@ -18,10 +18,27 @@
 
 /// `FCR0` — the FPU implementation/revision register.
 ///
-/// Read-only. The `Imp` field is `0x0B` for the VR4300 family, matching
-/// `PRId`. The revision half is **not documented** for any specific part
-/// (accuracy-ledger U-3), so it stays zero rather than becoming an invention.
-pub const FCR0_REVISION: u32 = 0x0B00;
+/// Read-only. `Imp` (bits 15:8) is **`0x0A`**, and the revision half is `0x00`.
+///
+/// # `Imp` is NOT the same as `PRId`'s
+///
+/// This was `0x0B00` on the reasoning that the FPU's implementation number
+/// matches the CPU's — and the N64brew Wiki says so outright: *"All VR4300
+/// units will report 0x0B (11) for the implementation number"*
+/// (`n64brew_wiki/markdown/VR4300.md`). That is **wrong**, and it is wrong in
+/// this project's designated primary hardware reference, which is worth knowing
+/// before trusting the wiki on a single-value claim.
+///
+/// Two independent sources give `0x0A00`:
+///
+/// - n64-systemtest asserts it directly, and it runs on real hardware.
+/// - cen64 hardcodes `0xa00` with the comment *"fpu version of both 0xb22 and
+///   0xb10 N64s"* — i.e. checked against two console revisions.
+///
+/// `PRId.Imp` really is `0x0B`; the two registers identify different units, and
+/// the near-identical values are what makes the conflation easy. Accuracy
+/// ledger **S-4**.
+pub const FCR0_REVISION: u32 = 0x0A00;
 
 /// The writable bits of `FCR31` (FCSR).
 ///
@@ -138,7 +155,11 @@ mod tests {
     fn fcr0_is_read_only_and_reports_the_implementation() {
         let mut c = Cop1Control::new();
         assert_eq!(c.cfc1(0), FCR0_REVISION);
-        assert_eq!((c.cfc1(0) >> 8) & 0xFF, 0x0B, "Imp = 0x0B, as in PRId");
+        assert_eq!(
+            (c.cfc1(0) >> 8) & 0xFF,
+            0x0A,
+            "FCR0.Imp is 0x0A -- NOT PRId's 0x0B, and not the 0x0B the wiki claims"
+        );
         c.ctc1(0, 0xFFFF_FFFF);
         assert_eq!(c.cfc1(0), FCR0_REVISION, "writes are discarded");
     }

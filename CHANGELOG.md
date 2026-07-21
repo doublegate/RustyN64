@@ -9,6 +9,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — `FCR0.Imp` is `0x0A`, and `CTC1` can raise on its own
+
+`FCR0` reports implementation `0x0A`, not the `0x0B` this implementation used. `0x0B` is correct
+for `PRId.Imp` — the *CPU's* register — and the two were conflated. The N64brew Wiki states `0x0B`
+for `FCR0` too and is wrong; n64-systemtest and cen64 independently give `0x0A00`. Accuracy ledger
+**S-4**, which is about how to use the wiki rather than a reason to stop.
+
+`CTC1` writing `FCSR` with a Cause bit whose Enable is also set now raises an FP exception
+immediately, reporting the `CTC1` itself as `ExceptPC`. Ledger **C-17**.
+
+**Phase 1's categories: 53 → 49.**
+
 ### Fixed — reserved COP0 registers are a shared write latch; `EntryLo` is 30 bits wide
 
 COP0 registers 7, 21..=25 and 31 are not storage: a write goes nowhere and a read returns the value

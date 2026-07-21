@@ -825,6 +825,29 @@ forcing an odd index even as "a documented choice for an architecturally
 undefined case (UM Ch. 17), not a hardware fact". The choice was reasonable and
 the case is not undefined on this part — the suite defines it.
 
+### S-4 — the N64brew Wiki's `FCR0.Imp` is wrong
+
+**The wiki says:** *"FCR0 bits [15:8] is the implementation number ... All
+VR4300 units will report 0x0B (11) for the implementation number"*
+(`n64brew_wiki/markdown/VR4300.md`).
+
+**Two independent sources say `0x0A`:**
+
+- n64-systemtest asserts `CFC1 $0 == 0xA00`, and it runs on real hardware.
+- cen64 hardcodes `0xa00` with the comment *"fpu version of both 0xb22 and
+  0xb10 N64s"* — checked against two console revisions.
+
+`0x0B` **is** correct for `PRId.Imp`, the *CPU's* revision register, and the
+most likely explanation is a conflation of the two. They identify different
+units and the near-identical values make the mistake easy — this implementation
+made exactly it, with a comment reading "matching `PRId`".
+
+**Why this one is worth an entry rather than a quiet fix.** `AGENTS.md`
+designates the wiki as the primary hardware reference. It is community-edited
+and CC BY-SA, and it is wrong here, so a single-value claim from it wants a
+second source before it becomes code. That is a statement about how to *use* the
+reference, not a reason to stop using it.
+
 ### C-15 — the reserved COP0 registers are one shared write latch
 
 **Claim.** COP0 registers 7, 21..=25 and 31 are not storage. A write goes
@@ -845,6 +868,19 @@ values against three interposed ones, precisely so an implementation that stores
 per-register and echoes the first value cannot pass. Our replacement test does
 the same in miniature: the second assertion is the one that distinguishes a
 latch from storage.
+
+### C-17 — `CTC1` can raise an FP exception on its own
+
+**Claim.** Writing `FCSR` with a Cause bit whose corresponding Enable is also
+set meets the trap condition immediately. No arithmetic has to run: the `CTC1`
+itself is the faulting instruction, and n64-systemtest checks that `ExceptPC`
+points at it.
+
+Bit 17 (Unimplemented) is unmaskable and traps regardless of the enables, so it
+is tested outside the enable comparison.
+
+Easy to miss because `FCSR` looks like storage — the trap check lives with the
+*arithmetic*, so a control-register write is not an obvious place to put one.
 
 ### C-16 — `EntryLo0`/`EntryLo1` are writable to bit 29, not bit 25
 

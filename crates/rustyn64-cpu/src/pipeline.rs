@@ -599,6 +599,19 @@ impl Pipeline {
                 self.dc_wb.cop0
             {
                 self.cop1.ctc1(dest, value);
+                // **`CTC1` can raise on its own.** Writing `FCSR` with a Cause
+                // bit whose Enable is also set meets the trap condition
+                // immediately -- no arithmetic required. n64-systemtest writes
+                // `enable_overflow | cause_overflow` in one go and expects the
+                // FP exception to report the `CTC1` itself as `ExceptPC`.
+                //
+                // Bit 17 (Unimplemented) is unmaskable and traps regardless,
+                // which is why it is tested outside the enable comparison.
+                if self.fcsr_traps_now() {
+                    self.abort_from(Stage::Wb, Exception::FloatingPoint);
+                    self.dc_wb.occupied = false;
+                    return;
+                }
             }
             if let Some(Cop0Access::Cop1(Cop1Access::Arith {
                 fmt,
@@ -1829,6 +1842,20 @@ impl Pipeline {
         flags.inexact = true;
         let v = fpu::flush_subnormal_f64(out.value, mode);
         (FpCommit::Double(v.to_bits()), flags, false)
+    }
+
+    /// Does the CURRENT `FCSR` already meet a trap condition?
+    ///
+    /// Used after a `CTC1` writes it: the register can be put into a trapping
+    /// state directly, without any arithmetic having run.
+    fn fcsr_traps_now(&self) -> bool {
+        /// `FCSR.Cause` maskable bits 16:12, shifted to line up with `Enable`.
+        const CAUSE_SHIFT: u32 = 12;
+        let fcsr = self.cop1.fcsr();
+        if fcsr & crate::fpu::CAUSE_UNIMPLEMENTED != 0 {
+            return true;
+        }
+        (fcsr >> CAUSE_SHIFT) & self.cop1.enables() != 0
     }
 
     /// Is underflow or inexact enabled? Either turns a flushed subnormal into
@@ -4708,6 +4735,66 @@ mod tests {
             p.fpr.read_s(4, true),
             12345.0f32.to_bits(),
             "the integer source must be converted, not reinterpreted"
+        );
+    }
+
+    /// **`CTC1` can raise an FP exception by itself.** Writing `FCSR` with a
+    /// Cause bit whose Enable is also set meets the trap condition
+    /// immediately — no arithmetic has to run.
+    ///
+    /// The instruction must also not retire, exactly as a trapping arithmetic
+    /// operation does not.
+    #[test]
+    fn ctc1_raises_when_it_writes_a_cause_bit_that_is_enabled() {
+        use crate::cop0::reg;
+        /// `CTC1 $1, $f31` — rs 0o06, rt 1, fs 31.
+        const CTC1_F31: u32 = (0o21 << 26) | (0o06 << 21) | (1 << 16) | (31 << 11);
+        /// `Cause.overflow` (bit 14) with `Enable.overflow` (bit 9).
+        const OVERFLOW_ARMED: u64 = (1 << 14) | (1 << 9);
+
+        let mut bus = Ram::new(alloc::vec![CTC1_F31]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        regs.write(1, OVERFLOW_ARMED);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::FPE,
+            "the CTC1 itself must raise"
+        );
+        assert_eq!(
+            u64::from(p.cop1.fcsr()),
+            OVERFLOW_ARMED,
+            "and the written value stands"
+        );
+    }
+
+    /// The *enable* half is load-bearing: the same Cause bit with its Enable
+    /// clear must NOT raise. Without this, an implementation that trapped on
+    /// any non-zero Cause would pass the test above.
+    #[test]
+    fn ctc1_does_not_raise_when_the_matching_enable_is_clear() {
+        use crate::cop0::reg;
+        const CTC1_F31: u32 = (0o21 << 26) | (0o06 << 21) | (1 << 16) | (31 << 11);
+
+        let mut bus = Ram::new(alloc::vec![CTC1_F31]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        // Cause.overflow set, Enable.overflow clear; an unrelated enable set.
+        regs.write(1, (1 << 14) | (1 << 11));
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            0,
+            "a Cause bit whose Enable is clear must not trap"
         );
     }
 
