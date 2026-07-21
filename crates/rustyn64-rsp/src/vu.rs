@@ -341,6 +341,14 @@ impl Rsp {
     /// Returns `false` for an opcode this does not implement yet, so the caller
     /// can leave the instruction inert rather than writing a wrong result.
     pub fn vu_compute(&mut self, op: u32, element: u32, vs: usize, vt: usize, vd: usize) -> bool {
+        let mut clear_vco = false;
+        let mut set_vco = false;
+        let mut new_vco = 0u16;
+        // The compare group rebuilds VCC's low half from its per-lane results
+        // and clears the high half; `wrote_vcc` distinguishes that from an
+        // instruction that leaves VCC alone entirely (VMRG does).
+        let mut wrote_vcc = false;
+        let mut compare_flags = 0u16;
         for lane in 0..8 {
             let s = self.vu_regs[vs & 31][lane];
             let t = self.vt_lane(vt, element, lane);
@@ -350,86 +358,80 @@ impl Rsp {
             let tu = i64::from(t);
 
             let out = match op {
-                // Multiply, S1.15 * S1.15, doubled and rounded. The +0x8000 is
-                // the rounding constant, and it lands in the accumulator, not
-                // just in the result -- the oracle reads ACC_LO back as 0x8000
-                // for a zero product, which is how the constant is visible.
-                0x00 | 0x01 => {
-                    let acc = ss * ts * 2 + 0x8000;
-                    self.set_acc(lane, acc);
-                    let extracted = self.acc_signed(lane) >> 16;
-                    if op == 0x00 {
-                        Self::clamp_signed(extracted)
+                0x00..=0x0F => self.multiply_lane(op, lane, ss, ts, su, tu),
+                // VADD/VSUB: signed, **with the carry from VCO's low half**,
+                // and they CLEAR the whole of VCO afterwards. Forgetting the
+                // clear leaves the next VADD adding a stale carry, which shows
+                // up as an off-by-one in one lane of a later frame.
+                0x10 | 0x11 => {
+                    let carry = i64::from((self.vu_ctrl.vco >> lane) & 1);
+                    let r = if op == 0x10 {
+                        ss + ts + carry
                     } else {
-                        Self::clamp_unsigned(extracted)
+                        ss - ts - carry
+                    };
+                    self.set_acc_low(lane, r.cast_unsigned() as u16);
+                    clear_vco = true;
+                    Self::clamp_signed(r)
+                }
+                0x13 => self.vabs_lane(lane, ss, ts, t),
+                // VADDC/VSUBC: unsigned, and they *produce* the carry rather
+                // than consuming it. VSUBC also sets VCO's high half from
+                // "result was non-zero", which is what makes the pair usable
+                // for a multi-precision compare.
+                0x14 | 0x15 => {
+                    let r = if op == 0x14 { su + tu } else { su - tu };
+                    let low = r.cast_unsigned() as u16;
+                    self.set_acc_low(lane, low);
+                    let borrow = (r >> 16) & 1 != 0;
+                    if borrow {
+                        new_vco |= 1 << lane;
                     }
+                    if op == 0x15 && low != 0 {
+                        new_vco |= 1 << (lane + 8);
+                    }
+                    set_vco = true;
+                    low
                 }
-                // VMUDL: U0.16 * U0.16, keeping the high half. The product is
-                // unsigned, so nothing sign-extends into the upper accumulator.
-                0x04 => {
-                    let acc = (su * tu) >> 16;
-                    self.set_acc(lane, acc);
-                    acc.cast_unsigned() as u16
+                // The compare group. Each writes a **selection** into the
+                // accumulator -- `vs` or `vt` per lane -- and records the
+                // predicate in VCC's low half, then clears VCO wholesale.
+                //
+                // The equality cases consult VCO, which is what chains a
+                // compare onto a preceding `VSUBC`: that is the entire reason
+                // the pair exists, and dropping the VCO terms leaves a compare
+                // that looks right on unequal operands and wrong on equal ones.
+                0x20..=0x23 => {
+                    // VCO's low half is the carry/borrow; its high half is the
+                    // "result was non-zero" flag a preceding VSUBC left.
+                    let carry = (self.vu_ctrl.vco >> lane) & 1 != 0;
+                    let non_zero = (self.vu_ctrl.vco >> (lane + 8)) & 1 != 0;
+                    let cond = match op {
+                        0x20 => ss < ts || (ss == ts && carry && non_zero),
+                        0x21 => !non_zero && s == t,
+                        0x22 => s != t || non_zero,
+                        _ => ss > ts || (ss == ts && (!carry || !non_zero)),
+                    };
+                    if cond {
+                        compare_flags |= 1 << lane;
+                    }
+                    wrote_vcc = true;
+                    clear_vco = true;
+                    let picked = if cond { s } else { t };
+                    self.set_acc_low(lane, picked);
+                    picked
                 }
-                // VMUDM: S0.16 * U0.16.
-                0x05 => {
-                    let acc = ss * tu;
-                    self.set_acc(lane, acc);
-                    (acc >> 16).cast_unsigned() as u16
-                }
-                // VMUDN: U0.16 * S0.16 -- the mirror of VMUDM, and it extracts
-                // the LOW half where VMUDM takes the high one.
-                0x06 => {
-                    let acc = su * ts;
-                    self.set_acc(lane, acc);
-                    acc.cast_unsigned() as u16
-                }
-                // VMUDH: S0.16 * S0.16, shifted into the upper accumulator.
-                0x07 => {
-                    let acc = (ss * ts) << 16;
-                    self.set_acc(lane, acc);
-                    Self::clamp_signed(self.acc_signed(lane) >> 16)
-                }
-                // The accumulating forms. Each adds the same product its
-                // VMUL/VMUD counterpart *sets* -- with one difference that is
-                // easy to miss: VMACF adds `2 * vs * vt` with **no rounding
-                // constant**, where VMULF adds `+ 0x8000`. The oracle shows it
-                // directly: lane 3 moves the accumulator from 0xC000 to
-                // 0x1_0000, a delta of exactly 0x4000 = 2*8192.
-                0x08 | 0x09 => {
-                    let acc = self.acc_signed(lane) + ss * ts * 2;
-                    self.set_acc(lane, acc);
-                    let extracted = self.acc_signed(lane) >> 16;
-                    if op == 0x08 {
-                        Self::clamp_signed(extracted)
+                // VMRG selects on VCC without *changing* it -- the consumer of
+                // a compare rather than another producer. It still clears VCO.
+                0x27 => {
+                    let picked = if (self.vu_ctrl.vcc >> lane) & 1 != 0 {
+                        s
                     } else {
-                        Self::clamp_unsigned(extracted)
-                    }
-                }
-                // VMADL: accumulate VMUDL's product, extract the low slice.
-                0x0C => {
-                    let acc = self.acc_signed(lane) + ((su * tu) >> 16);
-                    self.set_acc(lane, acc);
-                    Self::extract_low(self.acc_signed(lane))
-                }
-                // VMADM: accumulate VMUDM's product. Unlike VMUDM this one
-                // CLAMPS the extracted middle rather than truncating it.
-                0x0D => {
-                    let acc = self.acc_signed(lane) + ss * tu;
-                    self.set_acc(lane, acc);
-                    Self::clamp_signed(self.acc_signed(lane) >> 16)
-                }
-                // VMADN: accumulate VMUDN's product, extract the low slice.
-                0x0E => {
-                    let acc = self.acc_signed(lane) + su * ts;
-                    self.set_acc(lane, acc);
-                    Self::extract_low(self.acc_signed(lane))
-                }
-                // VMADH: accumulate VMUDH's product.
-                0x0F => {
-                    let acc = self.acc_signed(lane) + ((ss * ts) << 16);
-                    self.set_acc(lane, acc);
-                    Self::clamp_signed(self.acc_signed(lane) >> 16)
+                        t
+                    };
+                    self.set_acc_low(lane, picked);
+                    clear_vco = true;
+                    picked
                 }
                 // VSAR: read a 16-bit slice of the accumulator. The slice is
                 // chosen by the *element* field, not by an operand.
@@ -460,7 +462,145 @@ impl Rsp {
             }
             self.vu_regs[vd & 31][lane] = out;
         }
+        // VCC is rebuilt once for the whole instruction: the low half from the
+        // predicates, the high half cleared.
+        if wrote_vcc {
+            self.vu_ctrl.vcc = compare_flags;
+        }
+        // VCO is written once for the whole instruction, not per lane.
+        if clear_vco {
+            self.vu_ctrl.vco = 0;
+        } else if set_vco {
+            self.vu_ctrl.vco = new_vco;
+        }
         true
+    }
+
+    /// The multiply family for one lane: `VMUL*`, `VMUD*` and their
+    /// accumulating `VMAC*`/`VMAD*` partners.
+    ///
+    /// Split out to keep [`Rsp::vu_compute`]'s decode readable; it is one arm of
+    /// that match, not a separable unit.
+    fn multiply_lane(&mut self, op: u32, lane: usize, ss: i64, ts: i64, su: i64, tu: i64) -> u16 {
+        match op {
+            // Multiply, S1.15 * S1.15, doubled and rounded. The +0x8000 is
+            // the rounding constant, and it lands in the accumulator, not
+            // just in the result -- the oracle reads ACC_LO back as 0x8000
+            // for a zero product, which is how the constant is visible.
+            0x00 | 0x01 => {
+                let acc = ss * ts * 2 + 0x8000;
+                self.set_acc(lane, acc);
+                let extracted = self.acc_signed(lane) >> 16;
+                if op == 0x00 {
+                    Self::clamp_signed(extracted)
+                } else {
+                    Self::clamp_unsigned(extracted)
+                }
+            }
+            // VMUDL: U0.16 * U0.16, keeping the high half. The product is
+            // unsigned, so nothing sign-extends into the upper accumulator.
+            0x04 => {
+                let acc = (su * tu) >> 16;
+                self.set_acc(lane, acc);
+                acc.cast_unsigned() as u16
+            }
+            // VMUDM: S0.16 * U0.16.
+            0x05 => {
+                let acc = ss * tu;
+                self.set_acc(lane, acc);
+                (acc >> 16).cast_unsigned() as u16
+            }
+            // VMUDN: U0.16 * S0.16 -- the mirror of VMUDM, and it extracts
+            // the LOW half where VMUDM takes the high one.
+            0x06 => {
+                let acc = su * ts;
+                self.set_acc(lane, acc);
+                acc.cast_unsigned() as u16
+            }
+            // VMUDH: S0.16 * S0.16, shifted into the upper accumulator.
+            0x07 => {
+                let acc = (ss * ts) << 16;
+                self.set_acc(lane, acc);
+                Self::clamp_signed(self.acc_signed(lane) >> 16)
+            }
+            // The accumulating forms. Each adds the same product its
+            // VMUL/VMUD counterpart *sets* -- with one difference that is
+            // easy to miss: VMACF adds `2 * vs * vt` with **no rounding
+            // constant**, where VMULF adds `+ 0x8000`. The oracle shows it
+            // directly: lane 3 moves the accumulator from 0xC000 to
+            // 0x1_0000, a delta of exactly 0x4000 = 2*8192.
+            0x08 | 0x09 => {
+                let acc = self.acc_signed(lane) + ss * ts * 2;
+                self.set_acc(lane, acc);
+                let extracted = self.acc_signed(lane) >> 16;
+                if op == 0x08 {
+                    Self::clamp_signed(extracted)
+                } else {
+                    Self::clamp_unsigned(extracted)
+                }
+            }
+            // VMADL: accumulate VMUDL's product, extract the low slice.
+            0x0C => {
+                let acc = self.acc_signed(lane) + ((su * tu) >> 16);
+                self.set_acc(lane, acc);
+                Self::extract_low(self.acc_signed(lane))
+            }
+            // VMADM: accumulate VMUDM's product. Unlike VMUDM this one
+            // CLAMPS the extracted middle rather than truncating it.
+            0x0D => {
+                let acc = self.acc_signed(lane) + ss * tu;
+                self.set_acc(lane, acc);
+                Self::clamp_signed(self.acc_signed(lane) >> 16)
+            }
+            // VMADN: accumulate VMUDN's product, extract the low slice.
+            0x0E => {
+                let acc = self.acc_signed(lane) + su * ts;
+                self.set_acc(lane, acc);
+                Self::extract_low(self.acc_signed(lane))
+            }
+            // VMADH: accumulate VMUDH's product.
+            0x0F => {
+                let acc = self.acc_signed(lane) + ((ss * ts) << 16);
+                self.set_acc(lane, acc);
+                Self::clamp_signed(self.acc_signed(lane) >> 16)
+            }
+            _ => 0,
+        }
+    }
+
+    /// `VABS` for one lane: the **sign of `vs` applied to `vt`**, which is not
+    /// the absolute value of either operand despite the mnemonic.
+    ///
+    /// The most negative input is the interesting case: its negation is not
+    /// representable, so `vd` saturates to `0x7FFF` while the accumulator keeps
+    /// `0x8000`. The two deliberately disagree, and a test reading only `vd`
+    /// cannot see it.
+    fn vabs_lane(&mut self, lane: usize, ss: i64, ts: i64, t: u16) -> u16 {
+        match ss.cmp(&0) {
+            core::cmp::Ordering::Less => {
+                if ts == -32768 {
+                    self.set_acc_low(lane, 0x8000);
+                    0x7FFF
+                } else {
+                    let neg = (-ts).cast_unsigned() as u16;
+                    self.set_acc_low(lane, neg);
+                    neg
+                }
+            }
+            core::cmp::Ordering::Greater => {
+                self.set_acc_low(lane, t);
+                t
+            }
+            core::cmp::Ordering::Equal => {
+                self.set_acc_low(lane, 0);
+                0
+            }
+        }
+    }
+
+    /// Write one lane's accumulator low slice, leaving the upper 32 bits alone.
+    const fn set_acc_low(&mut self, lane: usize, value: u16) {
+        self.vu_acc[lane] = (self.vu_acc[lane] & 0xFFFF_FFFF_0000) | value as u64;
     }
 }
 
@@ -1525,5 +1665,209 @@ mod reciprocal_tests {
         assert!(rsp.vu_single_lane(0x37, 0, 1, 0, 2));
         assert_eq!(rsp.vu_regs[2], [0; 8]);
         assert_eq!(rsp.vu_acc, [0; 8], "not even the accumulator");
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::*;
+
+    fn pair(a: [u16; 8], b: [u16; 8]) -> Rsp {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = a; // vs
+        rsp.vu_regs[0] = b; // vt
+        rsp
+    }
+
+    /// **`VADD` consumes `VCO`'s carry and then clears the whole register.**
+    ///
+    /// Both halves matter. Not consuming it makes multi-precision addition
+    /// silently lose the carry; not clearing it makes the *next* `VADD` add a
+    /// stale one, which surfaces as an off-by-one in a single lane much later.
+    #[test]
+    fn vadd_consumes_the_carry_and_clears_vco() {
+        let mut rsp = pair([1; 8], [1; 8]);
+        rsp.vu_ctrl.vco = 0b0000_0101; // carry into lanes 0 and 2
+        assert!(rsp.vu_compute(0x10, 0, 1, 0, 2));
+
+        assert_eq!(rsp.vu_regs[2][0], 3, "1 + 1 + carry");
+        assert_eq!(rsp.vu_regs[2][1], 2, "1 + 1, no carry");
+        assert_eq!(rsp.vu_regs[2][2], 3, "carry again");
+        assert_eq!(rsp.vu_ctrl.vco, 0, "VCO is cleared wholesale");
+    }
+
+    /// `VADD` **clamps** its result while the accumulator keeps the unclamped
+    /// low bits — the two disagree on overflow, and a test reading only `vd`
+    /// cannot tell.
+    #[test]
+    fn vadd_clamps_the_result_but_not_the_accumulator() {
+        let mut rsp = pair([0x7FFF; 8], [0x7FFF; 8]);
+        rsp.vu_compute(0x10, 0, 1, 0, 2);
+        assert_eq!(rsp.vu_regs[2][0], 0x7FFF, "saturated");
+        assert_eq!(
+            (rsp.vu_acc[0] & 0xFFFF) as u16,
+            0xFFFE,
+            "the accumulator keeps 0x7FFF + 0x7FFF unclamped"
+        );
+    }
+
+    /// **`VADDC` produces a carry where `VADD` consumes one**, and writes no
+    /// clamped result — it is the low half of a multi-precision add.
+    #[test]
+    fn vaddc_produces_the_carry() {
+        let mut rsp = pair([0xFFFF; 8], [0x0001; 8]);
+        assert!(rsp.vu_compute(0x14, 0, 1, 0, 2));
+        assert_eq!(rsp.vu_regs[2][0], 0, "the wrapped low half, not clamped");
+        assert_eq!(rsp.vu_ctrl.vco, 0xFF, "a carry out of every lane");
+    }
+
+    /// `VSUBC` sets `VCO`'s **high** half from "the result was non-zero", which
+    /// is what makes the pair usable as a comparison.
+    #[test]
+    fn vsubc_records_borrow_and_non_zero_separately() {
+        let mut rsp = pair([5, 5, 0, 0, 0, 0, 0, 0], [3, 7, 0, 0, 0, 0, 0, 0]);
+        assert!(rsp.vu_compute(0x15, 0, 1, 0, 2));
+        assert_eq!(rsp.vu_regs[2][0], 2, "5 - 3");
+        assert_eq!(rsp.vu_regs[2][1], 0xFFFE, "5 - 7 wraps");
+        assert_eq!(rsp.vu_ctrl.vco & 1, 0, "no borrow out of lane 0");
+        assert_ne!(rsp.vu_ctrl.vco & 2, 0, "lane 1 borrowed");
+        assert_ne!(rsp.vu_ctrl.vco & (1 << 8), 0, "lane 0 was non-zero");
+        assert_ne!(rsp.vu_ctrl.vco & (1 << 9), 0, "lane 1 was non-zero");
+        assert_eq!(rsp.vu_ctrl.vco & (1 << 10), 0, "lane 2 was zero");
+    }
+
+    /// **`VABS` applies the sign of `vs` to `vt`** — it is not the absolute
+    /// value of either operand, which is what the name suggests.
+    #[test]
+    fn vabs_applies_the_sign_of_vs_to_vt() {
+        let mut rsp = pair(
+            [0xFFFF, 0x0001, 0x0000, 0, 0, 0, 0, 0], // vs: negative, positive, zero
+            [0x0005, 0x0005, 0x0005, 0, 0, 0, 0, 0], // vt: 5 throughout
+        );
+        assert!(rsp.vu_compute(0x13, 0, 1, 0, 2));
+        assert_eq!(rsp.vu_regs[2][0], 0xFFFB, "negative vs negates vt");
+        assert_eq!(rsp.vu_regs[2][1], 5, "positive vs passes it through");
+        assert_eq!(rsp.vu_regs[2][2], 0, "zero vs yields zero, not 5");
+    }
+
+    /// The one input whose negation is not representable: `vd` saturates while
+    /// the **accumulator keeps the unsaturated value**, so the two disagree.
+    #[test]
+    fn vabs_of_the_most_negative_value_disagrees_with_its_accumulator() {
+        let mut rsp = pair([0xFFFF; 8], [0x8000; 8]);
+        rsp.vu_compute(0x13, 0, 1, 0, 2);
+        assert_eq!(rsp.vu_regs[2][0], 0x7FFF, "the result saturates");
+        assert_eq!(
+            (rsp.vu_acc[0] & 0xFFFF) as u16,
+            0x8000,
+            "the accumulator does not"
+        );
+    }
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::*;
+
+    fn pair(a: [u16; 8], b: [u16; 8]) -> Rsp {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = a; // vs
+        rsp.vu_regs[0] = b; // vt
+        rsp
+    }
+
+    /// **A compare writes a *selection*, not a boolean.** `vd` receives `vs` or
+    /// `vt` per lane; the predicate goes to `VCC`. An implementation that wrote
+    /// 0/1 into `vd` would satisfy any test that only inspected `VCC`.
+    #[test]
+    fn a_compare_selects_an_operand_and_records_the_predicate() {
+        let mut rsp = pair([1, 9, 5, 0, 0, 0, 0, 0], [5, 5, 5, 0, 0, 0, 0, 0]);
+        assert!(rsp.vu_compute(0x20, 0, 1, 0, 2)); // VLT
+
+        assert_eq!(rsp.vu_regs[2][0], 1, "1 < 5, so vs is selected");
+        assert_eq!(rsp.vu_regs[2][1], 5, "9 !< 5, so vt is");
+        assert_eq!(rsp.vu_ctrl.vcc & 0b011, 0b001, "only lane 0 compared true");
+        assert_eq!(rsp.vu_ctrl.vcc >> 8, 0, "VCC's high half is cleared");
+    }
+
+    /// **`VLT`'s equality case consults `VCO`**, which is what chains it onto a
+    /// preceding `VSUBC`. Dropping the `VCO` terms leaves a compare that looks
+    /// right on unequal operands and wrong on equal ones — the exact case a
+    /// casual test omits.
+    #[test]
+    fn vlt_on_equal_operands_depends_on_vco() {
+        // Equal operands, with both VCO halves set for lane 0 only.
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = (1 << 0) | (1 << 8);
+        rsp.vu_compute(0x20, 0, 1, 0, 2);
+        assert_ne!(rsp.vu_ctrl.vcc & 1, 0, "equal + carry + ne compares true");
+        assert_eq!(rsp.vu_ctrl.vcc & 2, 0, "lane 1 has neither, so false");
+
+        // Same operands, no VCO: now false everywhere.
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_compute(0x20, 0, 1, 0, 2);
+        assert_eq!(rsp.vu_ctrl.vcc, 0, "without VCO, equal is not less-than");
+    }
+
+    /// `VGE`'s equality case uses the **opposite** VCO condition to `VLT`'s, so
+    /// the two are not complements of each other on equal operands.
+    #[test]
+    fn vge_and_vlt_are_not_complements_on_equal_operands() {
+        let mut lt = pair([5; 8], [5; 8]);
+        lt.vu_ctrl.vco = (1 << 0) | (1 << 8);
+        lt.vu_compute(0x20, 0, 1, 0, 2);
+
+        let mut ge = pair([5; 8], [5; 8]);
+        ge.vu_ctrl.vco = (1 << 0) | (1 << 8);
+        ge.vu_compute(0x23, 0, 1, 0, 2);
+
+        assert_ne!(lt.vu_ctrl.vcc & 1, 0, "VLT true for lane 0");
+        assert_eq!(
+            ge.vu_ctrl.vcc & 1,
+            0,
+            "and VGE ALSO false -- not a negation"
+        );
+    }
+
+    /// `VEQ` and `VNE` consult `VCO`'s **high** half (the non-zero flag) rather
+    /// than its carry.
+    #[test]
+    fn veq_and_vne_consult_the_non_zero_flag() {
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = 1 << 8; // lane 0's "non-zero" flag
+        rsp.vu_compute(0x21, 0, 1, 0, 2); // VEQ
+        assert_eq!(rsp.vu_ctrl.vcc & 1, 0, "equal, but the ne flag suppresses");
+        assert_ne!(rsp.vu_ctrl.vcc & 2, 0, "lane 1 has no flag, so equal holds");
+
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = 1 << 8;
+        rsp.vu_compute(0x22, 0, 1, 0, 2); // VNE
+        assert_ne!(rsp.vu_ctrl.vcc & 1, 0, "the flag forces not-equal");
+        assert_eq!(rsp.vu_ctrl.vcc & 2, 0, "lane 1 is genuinely equal");
+    }
+
+    /// **`VMRG` consumes `VCC` without changing it** — it is the consumer of a
+    /// compare, not another producer. It still clears `VCO`.
+    #[test]
+    fn vmrg_selects_on_vcc_and_leaves_it_alone() {
+        let mut rsp = pair([0xAAAA; 8], [0xBBBB; 8]);
+        rsp.vu_ctrl.vcc = 0b1010_0101;
+        rsp.vu_ctrl.vco = 0xFFFF;
+        assert!(rsp.vu_compute(0x27, 0, 1, 0, 2));
+
+        assert_eq!(rsp.vu_regs[2][0], 0xAAAA, "VCC bit set selects vs");
+        assert_eq!(rsp.vu_regs[2][1], 0xBBBB, "clear selects vt");
+        assert_eq!(rsp.vu_ctrl.vcc, 0b1010_0101, "VCC survives untouched");
+        assert_eq!(rsp.vu_ctrl.vco, 0, "but VCO is cleared");
+    }
+
+    /// Every compare clears `VCO` wholesale, so a second compare does not
+    /// inherit the first's flags.
+    #[test]
+    fn a_compare_clears_vco() {
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = 0xFFFF;
+        rsp.vu_compute(0x21, 0, 1, 0, 2);
+        assert_eq!(rsp.vu_ctrl.vco, 0);
     }
 }
