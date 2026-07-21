@@ -13,14 +13,15 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 2 (LLE RSP). Phase 1 is complete — [Sprint 2](phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md) planned and next. The
-  VR4300 executes the MIPS III integer set as a five-stage pipeline off a canonical 187.5 MHz
-  master clock, and `basic.z64` passes 5/5. Phase 0 is complete: the workspace compiles, CI is
-  green across Linux/macOS/Windows, the docs site publishes, and the test-ROM corpora are
-  staged. No chip *other than the CPU* executes instructions yet.
-- **Release:** v0.2.0, tagged. The architecture is in place — the Bus owns all mutable state,
-  the scheduler runs, the crate graph is one-directional — but every chip `tick` is an
-  LLE-shaped stub. See `docs/STATUS.md` for the honest per-subsystem state.
+- **Current phase:** Phase 2 (LLE RSP), [Sprint 1](phase-2-rsp-lle/sprint-1-scalar-sp.md) next.
+  Phases 0 and 1 are complete. The VR4300 executes MIPS III — the integer set, COP0, the TLB,
+  the exception model, the primary caches, and a soft-float COP1 — as a five-stage pipeline off
+  the canonical 187.5 MHz master clock. **No chip other than the CPU executes anything yet**:
+  the RSP, RDP and AI are LLE-shaped stubs, so a green `cargo test` says nothing about them.
+- **Release:** v0.2.0 "Interpreter", tagged, with both Phase 1 exit criteria met by oracle —
+  n64-systemtest reports `Failed: 0` for the CPU/COP0/TLB/COP1 categories, and the golden-log
+  differ finds no divergence across 50,027 retired records. The suite-wide failures that
+  remain are Phase 2's and later. See `docs/STATUS.md` for the per-subsystem state.
 - **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
   and ADR 0007's cycle-accurate five-stage pipeline are both **implemented** (T-11-001); the
   93.75 MHz tick and its 3:2 fractional accumulator no longer exist in the tree. The residue
@@ -40,8 +41,8 @@ corpora staged with licence tiers enforced.
 
 **Goal:** the VR4300 (MIPS III / R4300i) interpreter executes the full instruction set —
 including the TLB, COP0, and the FPU — and 0-diffs against a golden instruction trace.
-**Exit:** n64-systemtest reports `Failed: 0` for the CPU/COP0/TLB categories; the golden-log
-differ finds no divergence over the captured trace.
+**Exit:** n64-systemtest reports `Failed: 0` for the CPU/COP0/TLB/**COP1** categories; the
+golden-log differ finds no divergence over the captured trace. Both met.
 → [overview](phase-1-cpu-golden-log/overview.md)
 
 ### Phase 2 — RSP LLE: NOT STARTED
@@ -101,8 +102,8 @@ additive and off by default.
 
 - **v1.0.0** — the production cut: Phases 1-8 complete; README, CHANGELOG, `docs/`, and
   `docs/STATUS.md` in sync; the release matrix and Pages green. Of those readiness items, Pages
-  is already green and the release workflow is written but has never run, because no tag has
-  been cut.
+  is already green, and the release workflow has now run for real: `v0.1.0` and `v0.2.0` are
+  both tagged, and `v0.2.0` published checksummed binaries for the three-target matrix.
 - **Beyond v1.0** — the sub-cycle bus-timing refactor (ADR 0005), *only if* hard residuals
   from Phase 7 warrant it. The one release expected to break byte-identity and save-state
   compatibility; it will be announced in advance.

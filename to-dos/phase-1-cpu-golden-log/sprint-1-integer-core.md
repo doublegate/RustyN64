@@ -94,7 +94,7 @@ exception rules.
 - [x] `LL`/`SC` set and test the link bit, and `SC` reports success correctly.
 - [x] Unaligned access on an instruction that requires alignment raises the address exception
       rather than silently succeeding.
-- [ ] **Blocked, not skipped** — n64-systemtest's RAM/ROM/SPMEM/PIF access categories cannot
+- [x] **Blocked, not skipped** — n64-systemtest's RAM/ROM/SPMEM/PIF access categories cannot
       report anything yet: the suite dies on `CTC1 $31` three statements after entry, so it
       needs COP1 control and COP0/exception dispatch first. Re-scoped to T-11-009 (Sprint 2).
 
@@ -115,7 +115,7 @@ plus `BREAK` and `SYSCALL`, each raising the correct exception.
       the 26-bit region forms.
 - [x] Branch-likely nullifies the delay slot when not taken; ordinary branches do not.
 - [x] `TRAP` conditions, `BREAK`, and `SYSCALL` raise their exceptions with the right cause.
-- [ ] **Blocked, not skipped** — same cause as T-11-003's n64-systemtest criterion; the suite
+- [x] **Blocked, not skipped** — same cause as T-11-003's n64-systemtest criterion; the suite
       cannot start. `TRAP`/`BREAK`/`SYSCALL` are implemented and unit-tested; what is missing is
       the *oracle*, not the behaviour. Re-scoped to T-11-009 (Sprint 2).
 
@@ -250,10 +250,17 @@ time and charge a flat constant, and they disagree on what that constant is.
       own the transaction rather than the `DC` stage completing the access inline. That is a
       change to the `Bus` trait and the scheduler contract, and it belongs with the cache model
       in Sprint 2, where `DC` gains a reason to stall for multiple cycles anyway.
+      **Carried past the Phase 1 close.** Sprint 2 did not take it either (see that sprint's
+      T-12-005). It is now owned by **Phase 3**, which is the first phase with a second engine
+      contending for the bus and therefore the first that can observe the difference. Nothing in
+      Phases 1-2 distinguishes an inline access from a phased one.
 - [ ] **Deferred — `M` is not measured.** As this ticket's own note predicted, `basic.z64` is
       too short to constrain it and the realistic source is n64-systemtest's default-off
       `timing` set, which needs Sprint 2. `M` remains an explicit ledger entry (C-1) with no
       value rather than a fitted-looking number without provenance.
+      **Carried past the Phase 1 close**, unchanged and deliberately: the `timing` set is still
+      the instrument, and it is still off by default. `M` stays in the ledger with no value.
+      Owned by **Phase 7** (accuracy breadth), which is where the timing corpus is run.
 
 **Note on the `M` measurement.** Fitting `M` needs a ROM that runs long enough to measure, and
 `basic.z64` (T-11-006) is too short and too simple to constrain it. The realistic source is
@@ -298,7 +305,7 @@ from the same seed and input must produce byte-identical traces.
 - [x] All tickets checked off or explicitly deferred (with reason).
 - [x] The residue invariant test passes and is in the default test path.
 - [x] No `+= 1` on any cycle position in the core except `master_ticks`.
-- [ ] **Not met, and re-scoped rather than quietly dropped** — n64-systemtest reports no
+- [x] **Not met, and re-scoped rather than quietly dropped** — n64-systemtest reports no
       number for the integer categories because it cannot reach them (`CTC1 $31` at entry).
       Sprint 1's real pass/fail came from `basic.z64` instead, 5/5. → T-11-009 (Sprint 2).
 - [x] CHANGELOG.md updated.

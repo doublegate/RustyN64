@@ -99,7 +99,8 @@ to the very next CPU step.
 - [ ] n64-systemtest's RSP category reports a real number.
 
 **Dependencies:** T-21-004
-**Reference:** `docs/scheduler.md`; `docs/adr/0001-master-clock-lockstep-scheduler.md`
+**Reference:** `docs/scheduler.md`; `docs/adr/0006-one-canonical-master-clock.md`
+(which supersedes ADR 0001 — the lockstep contract this ticket must preserve is 0006's)
 **Estimated complexity:** M
 
 ---

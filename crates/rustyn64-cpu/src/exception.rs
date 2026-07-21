@@ -89,7 +89,12 @@ pub enum VectorKind {
 const STATUS_EXL: u64 = 1 << 1;
 /// `Status.ERL`.
 const STATUS_ERL: u64 = 1 << 2;
-/// `Status.DS.BEV`.
+/// `Status.SR` (bit 20) — "Indicates a Soft Reset or NMI has occurred"
+/// (UM Fig. 6-6, the Self-Diagnostic Status Field).
+const STATUS_SR: u64 = 1 << 20;
+/// `Status.TS` (bit 21) — TLB shutdown, cleared by an NMI (UM Fig. 6-6).
+const STATUS_TS: u64 = 1 << 21;
+/// `Status.DS.BEV` (bit 22) — bootstrap exception vectors (UM Fig. 6-6).
 const STATUS_BEV: u64 = 1 << 22;
 
 /// The exception vector address (UM Tables 6-3/6-4, p. 181).
@@ -144,7 +149,10 @@ pub const fn vector(status: u64, kind: VectorKind) -> u64 {
 #[must_use]
 pub const fn exc_code_of(exc: Exception) -> u64 {
     match exc {
-        Exception::Interrupt => exc_code::INT,
+        // NMI writes no `Cause` at all -- `dispatch` intercepts it before this
+        // is consulted. It shares `INT` only to keep the match total; nothing
+        // reads it, and a test pins that `Cause` survives an NMI untouched.
+        Exception::Nmi | Exception::Interrupt => exc_code::INT,
         // The direction matters: AdEL and AdES are different codes, and a
         // handler distinguishes them.
         Exception::AddressError { store: false } => exc_code::ADEL,
@@ -156,10 +164,10 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
         Exception::ReservedInstruction | Exception::CoprocessorReserved { .. } => exc_code::RI,
         // Refill and Invalid share an ExcCode -- the handler tells them apart by
         // which vector it was entered through, not by Cause.
-        Exception::TlbRefill { store: false } | Exception::TlbInvalid { store: false } => {
+        Exception::TlbRefill { store: false, .. } | Exception::TlbInvalid { store: false } => {
             exc_code::TLBL
         }
-        Exception::TlbRefill { store: true } | Exception::TlbInvalid { store: true } => {
+        Exception::TlbRefill { store: true, .. } | Exception::TlbInvalid { store: true } => {
             exc_code::TLBS
         }
         Exception::TlbModified => exc_code::MOD,
@@ -176,6 +184,10 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
 #[must_use]
 pub const fn vector_kind_of(exc: Exception) -> VectorKind {
     match exc {
+        // NMI never reaches `vector_kind_of` through `dispatch` (it is
+        // intercepted first), but the match must stay total and Reset is the
+        // vector it would name.
+        Exception::Nmi => VectorKind::Reset,
         Exception::Interrupt
         | Exception::AddressError { .. }
         | Exception::Overflow
@@ -190,7 +202,12 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
         | Exception::CoprocessorUnusable { .. }
         | Exception::FloatingPoint
         | Exception::TlbModified => VectorKind::General,
-        // Only a genuine miss takes the refill vector, and only with EXL clear.
+        // Only a genuine miss takes a refill vector, and only with EXL clear.
+        // Which of the two it is depends on the addressing width of the access
+        // that missed: 64-bit addressing has its own refill handler at 0x080,
+        // because the page-table walk it runs is a different one (it reads
+        // XContext, not Context).
+        Exception::TlbRefill { wide: true, .. } => VectorKind::XtlbRefill,
         Exception::TlbRefill { .. } => VectorKind::TlbRefill,
     }
 }
@@ -257,6 +274,58 @@ pub const EPILOGUE_STALL: u32 = 2;
 /// it sits in a branch delay slot; when it does, `EPC` gets **`pc - 4`** — the
 /// branch, not the delay-slot instruction — because that is where a handler must
 /// resume for the branch to be re-evaluated.
+/// The **NMI** exception (UM §6.4.6, p. 185).
+///
+/// Kept out of [`dispatch`] because almost none of that function applies. NMI
+/// writes `ErrorEPC`, not `EPC`; it sets `ERL`, not `EXL`; and it writes no
+/// `Cause` at all — *"the contents of all registers are preserved except for"*
+/// `ErrorEPC` and four `Status` bits. Routing it through the general path would
+/// overwrite `Cause.ExcCode` with a code NMI does not have.
+///
+/// It is **not maskable**: *"it occurs regardless of the settings of the EXL,
+/// ERL, and the IE bits in the Status register"*. The one condition it does
+/// respect is the instruction boundary — unlike Cold and Soft Reset, *"NMI is
+/// taken only at instruction boundaries"*, and the caches and memory are
+/// preserved.
+///
+/// `SR` is what distinguishes it from a reset afterwards: the manual notes
+/// there is otherwise *"no indication from the processor to differentiate
+/// between NMI & Soft Reset"*.
+pub fn nmi(cop0: &mut Cop0, pc: u64) -> Dispatch {
+    // The PC of the instruction boundary, so the handler can report where the
+    // machine was. No delay-slot adjustment: NMI is not attributed to an
+    // instruction the way a synchronous exception is.
+    cop0.set_hardware(reg::ERROR_EPC, pc);
+    let status = cop0.read(reg::STATUS);
+    cop0.set_hardware(
+        reg::STATUS,
+        (status & !STATUS_TS) | STATUS_ERL | STATUS_SR | STATUS_BEV,
+    );
+    Dispatch {
+        // Same location as Cold Reset, and unmapped/uncached so neither the
+        // cache nor the TLB needs to be valid to service it.
+        vector: vector(status, VectorKind::Reset),
+        stall_cycles: EPILOGUE_STALL,
+    }
+}
+
+/// Perform the exception epilogue and return where to vector.
+///
+/// The order is the flowchart's (UM Fig. 6-14, p. 201), and it matters:
+///
+/// 1. `Cause.ExcCode` and `Cause.CE`.
+/// 2. `BadVAddr` — address errors and TLB exceptions only.
+/// 3. `EntryHi` / `Context` / `XContext` — TLB exceptions only (T-12-004).
+/// 4. **If `EXL` was 0**: `Cause.BD` and `EPC`. Otherwise both are left alone.
+/// 5. `EXL ← 1`.
+/// 6. `PC ← vector`.
+///
+/// `pc` is the faulting instruction's address and `in_delay_slot` says whether
+/// it sits in a branch delay slot; when it does, `EPC` gets **`pc - 4`** — the
+/// branch, not the delay-slot instruction — because that is where a handler must
+/// resume for the branch to be re-evaluated.
+///
+/// [`nmi`] is intercepted at the top: none of the six steps above describe it.
 pub fn dispatch(
     cop0: &mut Cop0,
     exc: Exception,
@@ -264,6 +333,9 @@ pub fn dispatch(
     in_delay_slot: bool,
     bad_vaddr: u64,
 ) -> Dispatch {
+    if matches!(exc, Exception::Nmi) {
+        return nmi(cop0, pc);
+    }
     let status = cop0.read(reg::STATUS);
     let exl_was_set = status & STATUS_EXL != 0;
 
@@ -528,7 +600,7 @@ mod tests {
     #[test]
     fn refill_and_invalid_share_an_exccode_but_not_a_vector() {
         for store in [false, true] {
-            let refill = Exception::TlbRefill { store };
+            let refill = Exception::TlbRefill { store, wide: false };
             let invalid = Exception::TlbInvalid { store };
             assert_eq!(
                 exc_code_of(refill),
@@ -558,7 +630,30 @@ mod tests {
 
     /// Helper for the test above: the refill kind, independent of direction.
     const fn refill_kind(store: bool) -> VectorKind {
-        vector_kind_of(Exception::TlbRefill { store })
+        vector_kind_of(Exception::TlbRefill { store, wide: false })
+    }
+
+    /// **64-bit addressing selects the XTLB refill vector, at `0x080`.**
+    ///
+    /// The two refills carry the same `ExcCode` and differ only in entry point,
+    /// exactly as refill and invalid do -- and the handler behind `0x080` walks
+    /// a different page table (it reads `XContext`, not `Context`). Sending a
+    /// 64-bit miss to `0x000` runs the 32-bit walker over a 64-bit address.
+    #[test]
+    fn a_refill_in_64_bit_addressing_takes_the_xtlb_vector() {
+        for store in [false, true] {
+            let narrow = Exception::TlbRefill { store, wide: false };
+            let wide = Exception::TlbRefill { store, wide: true };
+            assert_eq!(
+                exc_code_of(narrow),
+                exc_code_of(wide),
+                "the ExcCode cannot distinguish them either"
+            );
+            assert_eq!(vector_kind_of(narrow), VectorKind::TlbRefill);
+            assert_eq!(vector_kind_of(wide), VectorKind::XtlbRefill);
+            assert_eq!(vector(0, vector_kind_of(narrow)), 0xFFFF_FFFF_8000_0000);
+            assert_eq!(vector(0, vector_kind_of(wide)), 0xFFFF_FFFF_8000_0080);
+        }
     }
 
     /// `AdEL` and `AdES` are different codes; conflating them loses information

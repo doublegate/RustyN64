@@ -113,10 +113,28 @@ pub enum Exception {
         /// Which coprocessor, for `Cause.CE`.
         unit: u8,
     },
+    /// **Non-maskable interrupt** (UM §6.4.6).
+    ///
+    /// Not one of the `Cause.ExcCode` exceptions: it writes no `Cause`, saves to
+    /// `ErrorEPC` rather than `EPC`, sets `ERL` rather than `EXL`, and is taken
+    /// *"regardless of the settings of the EXL, ERL, and the IE bits"*. It rides
+    /// in this enum anyway so it can reuse the pipeline-flush machinery every
+    /// other exception uses; [`crate::exception::dispatch`] intercepts it before
+    /// any of the general path runs.
+    Nmi,
     /// A TLB refill — no entry matched. Takes the **refill** vector.
     TlbRefill {
         /// The faulting access was a store (`TLBS` rather than `TLBL`).
         store: bool,
+        /// The access was made with **64-bit addressing** enabled for its mode
+        /// (`Status.KX`/`SX`/`UX`), which selects the **XTLB** refill vector at
+        /// offset `0x080` instead of the 32-bit one at `0x000`.
+        ///
+        /// Carried on the exception rather than re-derived at dispatch because
+        /// by then `EXL` is set, which forces `Pipeline::access_mode` to
+        /// report Kernel and would answer for the handler's mode instead of the
+        /// faulting access's.
+        wide: bool,
     },
     /// A TLB entry matched but was invalid. Takes the **general** vector, with
     /// the same `ExcCode` as a refill — the vector is the only difference, which
@@ -181,10 +199,20 @@ pub enum Interlock {
     Cop,
     /// CP0 bypass interlock — **1 `PCycle`** (UM §4.6.9, p. 113).
     ///
-    /// Fires when an instruction that caused an exception reaches `WB` while the
-    /// next instruction in `DC` reads any CP0 register. The cost was recorded as
-    /// undocumented in three files while sitting in the very paragraph they
-    /// cited; see `docs/engineering-lessons.md` §3.3b.
+    /// **Named but never raised.** On hardware it fires when an instruction that
+    /// caused an exception reaches `WB` while the next instruction in `DC` reads
+    /// any CP0 register. Here, taking an exception already flushes the pipeline
+    /// and stalls for the 2-`PCycle` epilogue, so the two triggers overlap and
+    /// no case distinguishes them — charging this on top would invent a cycle
+    /// the hardware may not spend. Separating them needs the timing set
+    /// n64-systemtest ships default-off, the same instrument ledger C-1 waits on.
+    ///
+    /// The variant stays because [`Interlock`] enumerates the documented
+    /// taxonomy, and a gap in a taxonomy is worth more than a silently missing
+    /// row. This doc previously said it *fires*, in the present tense, which is
+    /// the comment-is-not-an-implementation hazard `docs/engineering-lessons.md`
+    /// §3.3c describes -- the cost was itself recorded as undocumented in three
+    /// files while sitting in the very paragraph they cited (§3.3b).
     Cp0i,
     /// Taking an exception — **2 `PCycle`s** (UM §4.7, p. 114).
     ///
@@ -302,6 +330,12 @@ struct Pending {
 
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default)]
+// The bools are independent hardware lines and latches -- `prev_was_run`,
+// `flush_pending`, `nmi_pending`, `ll_bit`. Clippy suggests folding them into a
+// state machine; they do not form one, because any combination is reachable and
+// each is set and cleared by a different part of the machine. Naming them is
+// what makes the exception and interrupt rules readable.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Pipeline {
     /// The **whole** of COP2: one 64-bit latch.
     ///
@@ -325,6 +359,14 @@ pub struct Pipeline {
     /// previous `PCycle` was a run cycle."* This is the gate, and it is the
     /// reason the flag exists at all.
     prev_was_run: bool,
+    /// The NMI line, latched until an instruction boundary lets it be taken.
+    ///
+    /// A level rather than an edge here: the hardware signal is the falling edge
+    /// of the NMI pin (or bit 6 of the internal interrupt register written over
+    /// `SysAD`), and the edge is what `signal_nmi` represents. Holding it means
+    /// an NMI raised during a stall is taken when the stall drains rather than
+    /// being dropped -- the same reason the timer latches `IP7`.
+    nmi_pending: bool,
     /// An abort was raised this cycle, so `IC` must fetch a bubble rather than a
     /// live instruction — the wrong-path fetch would otherwise escape the flush.
     ///
@@ -416,6 +458,7 @@ impl Pipeline {
             dc_wb: EMPTY,
             stall: None,
             prev_was_run: false,
+            nmi_pending: false,
             flush_pending: false,
             retired: 0,
             pending: None,
@@ -476,6 +519,18 @@ impl Pipeline {
             return;
         }
         self.stall = Some(Stall { cycles, cause });
+    }
+
+    /// Assert the **NMI** line.
+    ///
+    /// Latched, then taken at the next instruction boundary. Nothing in the core
+    /// calls this yet: on hardware the source is the console's reset button,
+    /// which reaches the CPU as PRENMI followed by NMI, and the frontend owns
+    /// that button (Phase 6). It exists now because the exception itself is
+    /// Phase 1 work and belongs with the rest of the exception model — the wire
+    /// from the button is a separate, later concern.
+    pub const fn signal_nmi(&mut self) {
+        self.nmi_pending = true;
     }
 
     /// Stamp an abort into `at` **and every latch upstream of it** — the
@@ -585,6 +640,12 @@ impl Pipeline {
             s.cycles = s.cycles.saturating_sub(1);
             self.stall = if s.cycles == 0 { None } else { Some(s) };
             self.prev_was_run = false;
+            // The timer belongs to the clock, not to the pipeline. `Count` keeps
+            // advancing through the stall, so `Compare` can be reached -- and
+            // passed -- entirely inside one. Latching `IP7` here does not accept
+            // the interrupt (that still needs a run cycle, guarded by
+            // `prev_was_run` below); it only records in `Cause` what the hardware
+            // records, so the handler can run once the pipeline resumes.
             return;
         }
 
@@ -652,14 +713,25 @@ impl Pipeline {
                 fs,
                 fd,
             })) = self.dc_wb.cop0
-                && self.fp_arith(fmt, funct, ft, fs, fd)
             {
-                // Trapped. The instruction does **not** complete, so it must not
-                // reach the retirement tail below: `Random` "decrements as each
-                // instruction executes" (UM §5.4.2), and one that took an
-                // exception did not execute.
-                self.dc_wb.occupied = false;
-                return;
+                if self.fp_arith(fmt, funct, ft, fs, fd) {
+                    // Trapped. The instruction does **not** complete, so it must
+                    // not reach the retirement tail below: `Random` "decrements
+                    // as each instruction executes" (UM §5.4.2), and one that
+                    // took an exception did not execute.
+                    //
+                    // No delay is charged either. A trapped operation abandons
+                    // its result, and the exception's own 2-PCycle epilogue is
+                    // the cost that applies.
+                    self.dc_wb.occupied = false;
+                    return;
+                }
+                // The multi-cycle FPU operations stall the pipeline for their
+                // documented rate (UM Table 7-14). The manual's "latency = rate
+                // + 1 for a dependent consumer" falls out of this rather than
+                // being added: the stall holds every stage, so a consumer spends
+                // its own cycle once the stall drains.
+                self.stall_for(crate::fpu::stall_cycles(funct, fmt), Interlock::Mci);
             }
             if let Some(Cop0Access::Tlb(op)) = self.dc_wb.cop0 {
                 match op {
@@ -755,7 +827,16 @@ impl Pipeline {
             self.cop0.set_ip(7, true);
         }
 
-        if self.prev_was_run && self.cop0.interrupt_pending() {
+        // NMI is checked FIRST and without consulting `interrupt_pending`.
+        // *"Unlike all other interrupts, this interrupt is not maskable; it
+        // occurs regardless of the settings of the EXL, ERL, and the IE bits"*
+        // (UM SS6.4.6). Only the run-cycle gate applies, because NMI is still
+        // *"taken only at instruction boundaries"* -- which is exactly what
+        // `prev_was_run` expresses (UM SS4.7.1).
+        if self.prev_was_run && self.nmi_pending {
+            self.nmi_pending = false;
+            self.abort_from(Stage::Dc, Exception::Nmi);
+        } else if self.prev_was_run && self.cop0.interrupt_pending() {
             self.abort_from(Stage::Dc, Exception::Interrupt);
         }
         // The memory access. This is the point the scheduler interleaves the RCP
@@ -879,10 +960,13 @@ impl Pipeline {
     /// Map a TLB fault to the exception it raises.
     ///
     /// The `store` flag selects `TLBL` vs `TLBS`; the *variant* selects the
-    /// vector. Both matter and they are independent.
-    const fn tlb_exception(f: crate::tlb::TlbFault, store: bool) -> Exception {
+    /// vector. Both matter and they are independent. `wide` is the addressing
+    /// width of the faulting access, which picks the XTLB refill vector over the
+    /// 32-bit one -- it is only meaningful for a refill, since every other TLB
+    /// fault takes the general vector regardless.
+    const fn tlb_exception(f: crate::tlb::TlbFault, store: bool, wide: bool) -> Exception {
         match f {
-            crate::tlb::TlbFault::Refill => Exception::TlbRefill { store },
+            crate::tlb::TlbFault::Refill => Exception::TlbRefill { store, wide },
             crate::tlb::TlbFault::Invalid => Exception::TlbInvalid { store },
             // Modified only ever arises on a store, so it carries no flag.
             crate::tlb::TlbFault::Modified => Exception::TlbModified,
@@ -909,7 +993,9 @@ impl Pipeline {
                 self.note_shutdown();
                 Err(match e {
                     crate::addr::TranslateError::Address => Exception::AddressError { store },
-                    crate::addr::TranslateError::Tlb(f) => Self::tlb_exception(f, store),
+                    crate::addr::TranslateError::Tlb(f) => {
+                        Self::tlb_exception(f, store, access.wide)
+                    }
                 })
             }
         }
@@ -1671,19 +1757,11 @@ impl Pipeline {
             self.dcache.write(addr, width as usize, value);
             return;
         }
-        match width {
-            1 => bus.write_u8(addr, value as u8),
-            2 => {
-                bus.write_u8(addr, (value >> 8) as u8);
-                bus.write_u8(addr.wrapping_add(1), value as u8);
-            }
-            4 => bus.write_u32(addr, value as u32),
-            8 => {
-                bus.write_u32(addr, (value >> 32) as u32);
-                bus.write_u32(addr.wrapping_add(4), value as u32);
-            }
-            _ => {}
-        }
+        // Hand the bus the width and the *untruncated* register. Narrowing here
+        // would discard the upper bits before the target can decide whether it
+        // wants them -- and every device on the RCP's internal bus does (see
+        // `Bus::write_sized`).
+        bus.write_sized(addr, width, value);
     }
 
     /// `EX` — execute.
@@ -2024,7 +2102,8 @@ impl Pipeline {
         // JTLB miss is an exception. Only the mapped segments involve either --
         // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let (phys, cached) = match crate::addr::segment(pc, self.access_mode()) {
+        let fetch_access = self.access_mode();
+        let (phys, cached) = match crate::addr::segment(pc, fetch_access) {
             crate::addr::Segment::Direct { addr, cached } => (addr, cached),
             // Not a valid address in this mode: an address error, raised without
             // consulting the TLB at all.
@@ -2062,7 +2141,7 @@ impl Pipeline {
                     ),
                     Err(f) => {
                         // An instruction fetch is a load, so TLBL never TLBS.
-                        let exc = Self::tlb_exception(f, false);
+                        let exc = Self::tlb_exception(f, false, fetch_access.wide);
                         self.ic_rf = Latch {
                             cop0: None,
                             occupied: true,
@@ -2896,6 +2975,62 @@ mod tests {
         assert_eq!(p.retired, 0, "nothing may retire before WB has run on it");
         p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.retired, 1, "retires at WB on the 5th cycle, not sooner");
+    }
+
+    /// **`Cause.BD` and `EPC` still come out right when a stall separates the
+    /// branch from its delay slot.**
+    ///
+    /// The companion test below pins that the flag stays *attached* to its
+    /// instruction across a stall. That is not the same claim: the flag could
+    /// travel correctly and still be read from the wrong place at dispatch,
+    /// which is the reverse-cascade hazard this project has hit twice. So this
+    /// one drives the flagged instruction into a real exception and reads the
+    /// architectural result — `EPC` must name the **branch**, four bytes back,
+    /// not the faulting instruction.
+    #[test]
+    fn a_delay_slot_exception_after_a_stall_still_reports_the_branch() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        // An unaligned `LW` — offset 0x101 — so the delay-slot instruction
+        // faults with AdEL rather than needing a crafted overflow.
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1), ld_st(0o43, 0, 3, 0x101)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        // Advance until the FAULTING instruction (the second word) is the one
+        // in `IC/RF`, then mark it as the delay slot. Flagging whatever happens
+        // to be there after one step marks the first instruction instead, which
+        // never faults -- and the test would then be asserting BD for an
+        // exception that never came from a delay slot at all.
+        let slot_pc = KSEG0_PROG.wrapping_add(4);
+        let mut warm = 0;
+        while p.ic_rf.pc != slot_pc || !p.ic_rf.occupied {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            warm += 1;
+            assert!(warm < 16, "the faulting instruction never reached IC/RF");
+        }
+        p.ic_rf.in_delay_slot = true;
+
+        // A `DDIV`-length interlock lands between the branch and its slot.
+        p.stall_for(69, Interlock::Mci);
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 128, "the delay-slot instruction never faulted");
+        }
+
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 31),
+            0,
+            "BD must be set -- the faulting instruction was in a delay slot"
+        );
+        assert_eq!(
+            p.cop0.read(reg::EPC),
+            slot_pc.wrapping_sub(4),
+            "EPC must name the branch, so the handler re-evaluates it"
+        );
     }
 
     /// **The delay-slot invariant** — the Phase 1 exit criterion.
@@ -4364,6 +4499,125 @@ mod tests {
         assert!(!p.cop0.interrupt_pending(), "but not recognised");
     }
 
+    /// **NMI ignores every mask, and saves to `ErrorEPC` rather than `EPC`.**
+    ///
+    /// The interesting part is what it is *not*: `Status` here has `IE` clear,
+    /// `EXL` set and `ERL` set, which is the state in which an ordinary
+    /// interrupt is unconditionally ignored. The companion assertion below
+    /// checks exactly that, so the two differ only in which line was raised.
+    #[test]
+    fn an_nmi_is_taken_regardless_of_ie_exl_and_erl() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1); 8]);
+        // IE clear, EXL set, ERL set -- every reason to refuse an interrupt.
+        // EXL (bit 1) and ERL (bit 2).
+        p.cop0.set_hardware(reg::STATUS, (1 << 1) | (1 << 2));
+        p.cop0.set_hardware(reg::CAUSE, 0);
+        let mut pc = KSEG0_PROG;
+
+        // Warm the pipeline first: the NMI is attributed to the instruction at
+        // the boundary, and an empty `DC` latch has no PC to record.
+        for _ in 0..5 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        p.signal_nmi();
+        // Stop at the redirect itself: past it, `pc` is the next fetch address
+        // and has already walked on from the vector.
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "the NMI was never taken");
+        }
+
+        assert_eq!(
+            pc, 0xFFFF_FFFF_BFC0_0000,
+            "NMI vectors to the Cold Reset location (UM §6.4.6)"
+        );
+        let status = p.cop0.read(reg::STATUS);
+        assert_ne!(status & (1 << 20), 0, "SR set, to tell NMI from a reset");
+        assert_ne!(status & (1 << 22), 0, "BEV set");
+        assert_ne!(status & (1 << 2), 0, "ERL set");
+        assert_eq!(status & (1 << 21), 0, "TS cleared");
+        assert_eq!(
+            p.cop0.read(reg::CAUSE),
+            0,
+            "NMI writes no Cause -- all registers are preserved but ErrorEPC \
+             and those four Status bits"
+        );
+        assert_ne!(
+            p.cop0.read(reg::ERROR_EPC),
+            0,
+            "the boundary PC is saved to ErrorEPC, not EPC"
+        );
+        assert_eq!(p.cop0.read(reg::EPC), 0, "and EPC is left alone");
+    }
+
+    /// The control for the test above: in that same `Status`, an ordinary
+    /// interrupt is refused. Without this, "NMI was taken" would be equally
+    /// consistent with the masks simply not working.
+    #[test]
+    fn an_ordinary_interrupt_in_the_same_state_is_refused() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1); 8]);
+        // EXL (bit 1) and ERL (bit 2).
+        p.cop0.set_hardware(reg::STATUS, (1 << 1) | (1 << 2));
+        // Raise the timer line, the strongest ordinary interrupt available.
+        p.cop0.set_ip(7, true);
+        let mut pc = KSEG0_PROG;
+
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            assert_ne!(
+                p.stalled_by(),
+                Some(Interlock::Exception),
+                "a maskable interrupt must NOT be taken with EXL and ERL set"
+            );
+        }
+    }
+
+    /// **A stall must not swallow the timer interrupt.**
+    ///
+    /// `Count` keeps advancing while the pipeline is stalled — it is derived
+    /// from the master clock, not from retired instructions — so `Compare` can
+    /// be passed entirely inside a multi-cycle interlock. An `MCI` stall for a
+    /// 64-bit multiply is 69 `PCycles` (UM Table 3-12), far longer than the
+    /// single cycle for which the equality holds.
+    ///
+    /// The failure this pins is not a *late* interrupt but a **lost** one: an
+    /// edge test that only asks "is `Count == Compare` right now?" and is polled
+    /// only from `DC` never sees the match at all, and `IP7` stays clear
+    /// forever. Software waiting on the timer then hangs.
+    #[test]
+    fn the_timer_interrupt_survives_a_multi_cycle_stall() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = KSEG0_PROG;
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        // Compare sits in the middle of the stall window, never at its edges.
+        p.cop0.mtc0(reg::COMPARE, 40);
+
+        p.advance_at(&mut bus, &mut regs, &mut pc, 0);
+        // A 64-bit multiply's interlock, long enough to step over the match.
+        p.stall_for(69, Interlock::Mci);
+        for now in 1..=80 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+        }
+
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 15),
+            0,
+            "Count passed Compare during the stall -- IP7 must still latch, \
+             because the timer is tied to the clock and not to the pipeline"
+        );
+    }
+
     /// `Count` reaching `Compare` raises `IP7`, and writing `Compare` clears it
     /// as a side effect (UM §6.3.4, p. 165).
     #[test]
@@ -4550,6 +4804,44 @@ mod tests {
             "the REFILL vector (0x000), not the general one (0x180)"
         );
         assert_eq!(p.cop0.read(reg::BAD_VADDR), 0x100);
+    }
+
+    /// The same miss, but with **64-bit addressing enabled**, must reach the
+    /// **XTLB** refill vector at `0x080`.
+    ///
+    /// This is the end-to-end companion to
+    /// `a_refill_in_64_bit_addressing_takes_the_xtlb_vector`, which only pins the
+    /// exception-to-vector mapping. That mapping is satisfied just as well by a
+    /// `wide` flag that is *never true in practice* — the plumbing from
+    /// `Status.KX` through the faulting access to the exception is exactly what
+    /// a mapping test cannot see. The two differ only in `Status`, so the
+    /// vectors landing on different addresses is attributable to nothing else.
+    #[test]
+    fn an_unmapped_access_under_64_bit_addressing_takes_the_xtlb_vector() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![lui_kseg0(1), ld_st(0o43, 0, 3, 0x100)]);
+        // Identical to the 32-bit case except for KX (bit 7), which turns on
+        // 64-bit addressing for Kernel mode.
+        p.cop0.set_hardware(reg::STATUS, 1 << 7);
+        let mut pc = KSEG0_PROG;
+
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "no exception raised");
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::TLBL,
+            "still TLBL -- the ExcCode does not change with the vector"
+        );
+        assert_eq!(
+            pc, 0xFFFF_FFFF_8000_0080,
+            "the XTLB refill vector (0x080), not the 32-bit one (0x000)"
+        );
     }
 
     /// A mapped, valid page translates end to end through a real load.
@@ -5176,6 +5468,52 @@ mod tests {
             0,
             "MOV.S raises nothing"
         );
+    }
+
+    /// **The documented FPU rates are actually charged.**
+    ///
+    /// `fpu::delay_cycles` transcribes UM Table 7-14 and its own test asserts
+    /// the numbers, but a table nothing consults is inert — the failure mode
+    /// here is a correct table that is simply never called. So this drives real
+    /// instructions and reads the interlock back.
+    ///
+    /// The two cases are chosen to differ: `MUL.D` is 8 cycles and `MOV.S` is 1,
+    /// i.e. no stall at all. A blanket stall on every COP1 op would pass a
+    /// `MUL.D`-only test and fail this one.
+    #[test]
+    fn the_documented_fpu_rates_are_charged_as_stalls() {
+        use crate::cop0::reg;
+        /// fmt in bits 25:21, fs 4, ft 2, fd 0.
+        const fn fp(fmt: u32, funct: u32) -> u32 {
+            (0o21 << 26) | (fmt << 21) | (2 << 16) | (4 << 11) | funct
+        }
+        // MUL.D (fmt 17, funct 2) = 8 PCycles; MOV.S (fmt 16, funct 6) = 1, so
+        // it must add nothing.
+        for (word, want) in [(fp(0o21, 2), Some(Interlock::Mci)), (fp(0o20, 6), None)] {
+            let mut bus = Ram::new(alloc::vec![word]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_d(4, true, 2.0f64.to_bits());
+            p.fpr.write_d(2, true, 3.0f64.to_bits());
+            let mut pc = KSEG0_PROG;
+
+            // Run until the instruction reaches WB, where COP1 arithmetic
+            // executes and the delay is charged.
+            let mut seen = None;
+            for _ in 0..8 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+                if p.stalled_by() == Some(Interlock::Mci) {
+                    seen = Some(Interlock::Mci);
+                    break;
+                }
+            }
+            assert_eq!(
+                seen, want,
+                "word {word:#010x}: a multi-cycle FPU op must stall and a \
+                 single-cycle one must not"
+            );
+        }
     }
 
     /// `NEG.S` and `ABS.S` share the arm `MOV.S` was missing from, and are just

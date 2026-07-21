@@ -286,7 +286,7 @@ its sprites. Multiple commercial titles broke at once, and the bug reached the m
 **What it means here.** The N64 has more of this, not less. The Bus steps each chip with a
 `core::mem::take` split-borrow — the chip is moved out, ticked against `&mut Bus`, moved back — so
 every chip `tick` writes shared state other chips may read within the same master tick. The whole
-point of ADR 0001's not-catch-up property is that an RCP event is visible to the very next CPU
+point of ADR 0006's not-catch-up property is that an RCP event is visible to the very next CPU
 step, which makes mid-step visibility a *designed-in* property, not an edge case. Phases 2 and 3
 are where this bites.
 

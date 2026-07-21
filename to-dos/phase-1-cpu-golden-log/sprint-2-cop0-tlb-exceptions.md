@@ -103,7 +103,7 @@ cycle-accurate core differs from an interpreter.
 - [x] `ERET`: `ERL=1` → `PC ← ErrorEPC`, clear `ERL`; else `PC ← EPC`, clear `EXL`. **Always
       clears `LLbit`** — this completes the Sprint 1 `LL`/`SC` work, which currently has nothing
       that clears the link. Pinned by a test that `LL`; `ERET`; `SC` fails.
-- [ ] **Stage-based priority**, not just the Table 6-5 list: WB > DC > EX > RF, with the
+- [x] **Stage-based priority**, not just the Table 6-5 list: WB > DC > EX > RF, with the
       per-stage orderings of UM §4.7.4–4.7.8 (pp. 116–118), and the rule that an exception from
       any stage beats a stall from the same or an earlier stage. ADR 0007's reverse cascade maps
       onto this directly — that is a reason to encode the stage order explicitly rather than
@@ -132,10 +132,10 @@ cycle-accurate core differs from an interpreter.
 - [x] `Count == Compare` sets `Cause.IP7`; it is cleared by clearing `IP7` **or by writing
       `Compare`** (UM §6.3.4 p. 165). The write-side effect is the one that gets missed.
 - [x] `IP1:0` are software-only — settable and clearable by software, with no hardware path.
-- [ ] NMI bypasses `IE`/`EXL`/`ERL` entirely and vectors to `0xBFC0_0000`.
+- [x] NMI bypasses `IE`/`EXL`/`ERL` entirely and vectors to `0xBFC0_0000`.
 - [x] Which `Int[4:0]` line the MI drives is **board-level and not in the CPU manual**
       (ledger U-4). Resolve it from the N64brew wiki before wiring, and record the source.
-- [ ] A `Count`/`Compare` interrupt fires at the right cycle under a multi-cycle stall, not
+- [x] A `Count`/`Compare` interrupt fires at the right cycle under a multi-cycle stall, not
       merely at the right instruction.
 
 **Dependencies:** T-12-002
@@ -168,17 +168,17 @@ front of it, and the full 32-/64-bit segment map.
 - [x] The 32-bit segment map: `kuseg`/`kseg0`/`kseg1`/`ksseg`/`kseg3` with correct
       mapped/unmapped and cached/uncached attributes; `kseg0`/`kseg1` PA = VA − base. This
       replaces Sprint 1's `addr.rs` segment stripping with the real thing.
-- [ ] The 64-bit map including `xkphys`, where **only `C = 2` / window 2 is uncached** and all
+- [x] The 64-bit map including `xkphys`, where **only `C = 2` / window 2 is uncached** and all
       seven other encodings are cached (UM Tables 5-5 p. 140, 5-6 p. 145) — the VR4300 has no
       coherency protocol, so the VR4400's finer encodings collapse.
-- [ ] `Status.KX`/`SX`/`UX` gate 64-bit addressing and select the **XTLB** refill vector for the
+- [x] `Status.KX`/`SX`/`UX` gate 64-bit addressing and select the **XTLB** refill vector for the
       mode the faulting address belongs to.
 - [x] An address outside any valid region raises Address Error (UM §6.4.7 p. 186).
 - [x] The **micro-ITLB is modelled separately** from the JTLB, with its 3-PCycle refill stall
       (UM §4.6.2 p. 107). A micro-TLB miss is a *stall*; a JTLB miss is an *exception*. Collapsing
       the two does not approximate the cost — it deletes the structure the cost occurs in.
       **If this is descoped, it must be descoped explicitly here**, not by omission.
-- [ ] 32-bit address calculation that overflows the sign-extended range is **explicitly
+- [x] 32-bit address calculation that overflows the sign-extended range is **explicitly
       undefined** (UM §5.2.3 p. 130) — ledger U-5, pin with n64-systemtest.
 
 **Dependencies:** T-12-001, T-12-002
@@ -200,14 +200,26 @@ front of it, and the full 32-/64-bit segment map.
       contents are not modelled at all, so `CACHE` is a translating no-op. Sound only because no
       cache state exists to become stale. Recorded as ledger **D-5**, with the point it stops
       being sound (Phase 5 DMA coherency) stated rather than left to be discovered.
+      **SUPERSEDED by T-11-003 (ledger D-6).** The caches are modelled now, with real contents;
+      the boundary this box named came due earlier than it predicted, at n64-systemtest's
+      `DCACHE:`/`ICACHE:` groups rather than at DMA coherency. Left standing rather than
+      rewritten, because the reasoning was sound while it held and the ledger records the
+      supersession the same way.
 - [ ] **Deferred with the cache model.** Cache-miss costs need a cache to miss in; with zero
       modelled depth there is no miss to charge. The formulas and `M` (ledger C-1) stay recorded
       and unimplemented rather than being applied to a cache that does not exist.
+      **Superseded in part, and carried past the Phase 1 close.** The caches *are* modelled now
+      (T-11-003, ledger D-6), so the premise of this deferral is gone — but the cost is still
+      not charged, because both formulas are parameterised on the unmeasured `M`. It is
+      therefore blocked on C-1 rather than on the cache, and moves with it to **Phase 7**.
 - [x] **`M` was not measured, and stays absent.** No real measurement became available, so no
       value was invented. This criterion is met by *not* producing a number.
 - [ ] The deferred T-11-008 criterion — **stepping the RCP between SysAD phases** — lands here,
       since it needs the scheduler to own the transaction rather than `DC` completing it inline.
       That is the `Bus`-trait change T-11-008 named and deferred to this sprint.
+      **Not taken here either, and carried past the Phase 1 close** to **Phase 3** — see
+      T-11-008's own entry in `sprint-1-integer-core.md` for why that is the first phase where
+      the difference is observable.
 
 **Dependencies:** T-12-004
 **Reference:** UM Ch. 11, Tables 11-1/11-2; `docs/accuracy-ledger.md` C-1;
@@ -245,23 +257,28 @@ rather than quietly drop. Get the suite to start, run, and report a real pass/fa
 
 **Acceptance criteria:**
 
-- [ ] **Blocked on PI/cart, which is Phase 5.** Measured rather than assumed: with the `ERL`
+- [x] **Blocked on PI/cart, which is Phase 5.** Measured rather than assumed: with the `ERL`
       rule implemented the suite now retires **30,679 instructions** with no exception (up from
       **2**), and then runs past the end of the 1 MiB IPL3 window at `entry + 0x100000`. It reads
       the rest of its own ELF from cart **via PI DMA**, which does not exist yet — so the
       remaining criteria below cannot be met inside Phase 1 without pulling PI forward.
       → re-scoped; see the note at the end of this ticket.
-- [ ] The suite gets past `entrypoint()` — SP/DMEM reads, `CTC1` FCR31, MI mask writes, KSEG0
+- [x] The suite gets past `entrypoint()` — SP/DMEM reads, `CTC1` FCR31, MI mask writes, KSEG0
       cached and KSEG1 uncached translation, and a working store path into KSEG0.
-- [ ] `install_exception_handlers()` succeeds: handler code is copied to all three of
+- [x] `install_exception_handlers()` succeeds: handler code is copied to all three of
       `0x8000_0000`, `0x8000_0080`, `0x8000_0180` and is subsequently *executed* from there.
-- [ ] The harness reads the result count. **Which channel to read is not yet determined** — the
-      suite has `isviewer.rs`, `sc64.rs` and a `FramebufferConsole`, and more than one may be
-      live. Establish which before building the reader; do not assume.
-- [ ] `docs/STATUS.md`'s accuracy table records the genuine number, whatever it is. **A low
+- [x] The harness reads the result count. **Resolved: both `ISViewer` and EMUX `xlog`, with
+      EMUX preferred.** The question this box left open ("which channel?") was answered by
+      building both and reading whichever produced output — the suite picks its console at
+      runtime from what the emulator advertises, so a single hardcoded choice would have been a
+      guess either way. `ISViewer` is the hardware-plausible path; EMUX is opt-in, ~9x faster,
+      and gives a definite end-of-run via `xioctl(EXIT)` (ledger C-27). The reader is
+      `crates/rustyn64-test-harness/tests/systemtest.rs`, which also witnesses execution before
+      trusting a zero.
+- [x] `docs/STATUS.md`'s accuracy table records the genuine number, whatever it is. **A low
       number is a result, not a failure** — the honest count is the point, and tuning anything to
       raise it violates the ledger's central rule.
-- [ ] The ledger's `U-1`…`U-5` undocumented entries are pinned against the suite where it
+- [x] The ledger's `U-1`…`U-5` undocumented entries are pinned against the suite where it
       exercises them, and remain open where it does not.
 
 **Diagnosed (2026-07-20): the suite is not waiting, it is lost — and the cause is SP DMEM.**
@@ -808,12 +825,12 @@ rather than the change living only in this note.
 
 ## Sprint review checklist
 
-- [ ] All tickets checked off or explicitly deferred **with a reason recorded in the ticket**.
-- [ ] n64-systemtest reports a genuine number, and `docs/STATUS.md` records it honestly.
-- [ ] Ledger entries C-2, C-3, C-7 and S-3 are closed as documented-by-citation; U-1…U-6 are
+- [x] All tickets checked off or explicitly deferred **with a reason recorded in the ticket**.
+- [x] n64-systemtest reports a genuine number, and `docs/STATUS.md` records it honestly.
+- [x] Ledger entries C-2, C-3, C-7 and S-3 are closed as documented-by-citation; U-1…U-6 are
       either pinned or still explicitly open.
-- [ ] No constant was adjusted to make a ROM pass. (`M` in particular either has a real
+- [x] No constant was adjusted to make a ROM pass. (`M` in particular either has a real
       measurement or has no value.)
-- [ ] Still exactly one interrupt-recognition predicate in the tree.
-- [ ] `docs/cpu.md` updated in the same change as the code it describes.
-- [ ] CHANGELOG.md updated.
+- [x] Still exactly one interrupt-recognition predicate in the tree.
+- [x] `docs/cpu.md` updated in the same change as the code it describes.
+- [x] CHANGELOG.md updated.

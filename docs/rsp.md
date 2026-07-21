@@ -41,9 +41,34 @@ pub struct Rsp {
     pub imem: Box<[u8; SP_MEM_SIZE]>,
 }
 impl Rsp {
+    pub fn mem_read(&self, off: u32) -> u8;          // CPU-side DMEM/IMEM view
+    pub fn mem_write(&mut self, off: u32, val: u8);
     pub fn tick<B: RspBus>(&mut self, bus: &mut B); // no-op while halted
 }
 ```
+
+### The RSP owns DMEM and IMEM
+
+Both banks live in `Rsp`, and the Bus reaches them through `mem_read`/`mem_write`
+rather than holding a parallel copy. The CPU-visible window and the RSP's own
+addressing must be **the same storage**: two copies that merely start out equal
+diverge the moment either side writes, and nothing detects it.
+
+### The CPU-visible window
+
+`0x0400_0000-0x0400_0FFF` is DMEM and `0x0400_1000-0x0400_1FFF` is IMEM, but the
+8 KiB **repeats** for the whole range up to `0x0404_0000`, where the SP registers
+begin (n64-systemtest `sp_memory::SW (out of bounds)` writes at `0x3E000` and
+reads the result back at offset 0). Folding the offset is therefore the
+behaviour, not a bounds-check standing in for one — recorded with its provenance
+as accuracy ledger **C-30**, since the N64brew wiki documents only the first
+8 KiB and the mirroring rests on the oracle. Each bank wraps within its own
+4 KiB; nothing ever spills from one into the other.
+
+Accesses to this window go through the RCP's internal bus, which **ignores the
+access size** — a byte or halfword store writes the whole shifted 32-bit word and
+a 64-bit store touches only four bytes. That rule is not RSP-specific and is
+recorded once, in accuracy ledger **C-28**.
 
 Driven from the CPU side via the **SP interface** (`ref-docs/research-report.md`
 §2): `SP_STATUS` (start/halt + the broadcast semaphore), `SP_DMA_*` (DMEM/IMEM ↔

@@ -11,42 +11,46 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
 
 ## Exit criteria
 
-- [ ] Every MIPS III instruction implemented, including the 64-bit `D*` forms, `LL`/`SC`/
+- [x] Every MIPS III instruction implemented, including the 64-bit `D*` forms, `LL`/`SC`/
       `LLD`/`SCD`, and the unaligned `LWL`/`LWR`/`LDL`/`LDR` family.
-- [ ] COP0 implemented: the register file with correct 64-bit widths on `EntryHi`/`BadVAddr`,
+- [x] COP0 implemented: the register file with correct 64-bit widths on `EntryHi`/`BadVAddr`,
       `Count`/`Compare` timer interrupts, and the `Status`/`Cause` exception path.
-- [ ] The TLB implemented: 32 dual entries, variable page sizes, ASID matching, and the
+- [x] The TLB implemented: 32 dual entries, variable page sizes, ASID matching, and the
       TLB refill / invalid / modified exception vectors.
-- [ ] COP1 (FPU) implemented for single and double precision, including the rounding modes and
+- [x] COP1 (FPU) implemented for single and double precision, including the rounding modes and
       the FCSR cause/enable/flag bits.
-- [ ] The exception model is exact: overflow (`ADD`/`DADD`), unaligned access, `TRAP`, `BREAK`,
+- [x] The exception model is exact: overflow (`ADD`/`DADD`), unaligned access, `TRAP`, `BREAK`,
       `SYSCALL`, and interrupt dispatch through IP2 from the MI.
-- [ ] The documented VR4300 errata are reproduced: the multiplication bug, the 32-bit
+- [x] The documented VR4300 errata are reproduced: the multiplication bug, the 32-bit
       shift-right-arithmetic bug, and the sign-extension bugs (`n64brew_wiki/markdown/VR4300.md`).
-- [ ] The load-delay interlock is modelled, since it is observable through the pipeline.
-- [ ] `n64-systemtest` reports `Failed: 0` for the CPU, COP0, and TLB categories.
+- [x] The load-delay interlock is modelled, since it is observable through the pipeline.
+- [x] `n64-systemtest` reports `Failed: 0` for the **CPU, COP0, TLB and COP1** categories.
+      COP1 is named explicitly because `to-dos/VERSION-PLAN.md` §v0.2.0 — which is authoritative
+      for the cut — includes it, and an earlier wording here listed only the first three. That is
+      the same conflation `docs/STATUS.md` once carried; the scope is the four categories, and
+      the suite reports 0 across all of them.
       **Confirmed by reading the suite's source, not assumed**: `entrypoint()` calls
       `set_fcsr` — i.e. `ctc1::<31>` — as its fourth statement, so COP1 *control* access is
       required before any COP0 test runs; `main()` then immediately installs handlers at all
       three of `0x8000_0000`/`0x080`/`0x180`. Sprint 1's first real pass/fail came from
       `basic.z64` instead (5/5). Owned by T-12-007.
-- [ ] The golden-log differ finds no divergence across the captured trace, reporting the first
+- [x] The golden-log differ finds no divergence across the captured trace, reporting the first
       mismatched instruction rather than a bare failure.
-- [ ] A determinism regression test exists: two runs from the same seed produce byte-identical
+- [x] A determinism regression test exists: two runs from the same seed produce byte-identical
       traces (closes the ADR 0004 gap that `docs/STATUS.md` currently records as unexercised).
-- [ ] The scheduler counts **187.5 MHz master ticks** as the only incremented counter, with
+- [x] The scheduler counts **187.5 MHz master ticks** as the only incremented counter, with
       every other cycle position derived from it (ADR 0006), pinned by a residue invariant
       test that fails if any position becomes independently incremented.
-- [ ] The CPU is a **five-stage pipeline** (IC/RF/EX/DC/WB) of inter-stage latches advanced one
+- [x] The CPU is a **five-stage pipeline** (IC/RF/EX/DC/WB) of inter-stage latches advanced one
       PClock per step in **reverse stage order** (WB → DC → EX → RF → IC), so the DC stage is
       the point the scheduler interleaves the RCP around (ADR 0007).
-- [ ] `in_delay_slot` travels *with the instruction* in the latch chain, not as global CPU
+- [x] `in_delay_slot` travels *with the instruction* in the latch chain, not as global CPU
       state — pinned by a test where a multi-cycle stall separates a branch from its delay slot
       and `Cause.BD` / `EPC` still come out right.
-- [ ] COP0 `Count` advances at **half PClock** (every 4th master tick), pinned by a test.
-- [ ] The documented cycle costs are encoded (`docs/cpu.md` §Cycle costs): mul/div pipeline
+- [x] COP0 `Count` advances at **half PClock** (every 4th master tick), pinned by a test.
+- [x] The documented cycle costs are encoded (`docs/cpu.md` §Cycle costs): mul/div pipeline
       stalls, FPU rates with the latency = rate + 1 rule, LDI/DCB/ITM/exception costs.
-- [ ] The load-delay interlock reproduces the hardware's **imprecision** — it stalls on an
+- [x] The load-delay interlock reproduces the hardware's **imprecision** — it stalls on an
       `rs`/`rt` field match whether or not the field is used as a source, exempts `$zero`, and
       does not cross the GPR/FPR boundary.
 
@@ -74,22 +78,31 @@ Out-of-scope:
   the datapath to first-pass completeness against the simplest test ROMs.
 - [Sprint 2 — COP0, the TLB, and the exception model](sprint-2-cop0-tlb-exceptions.md) —
   gets n64-systemtest to report a genuine number, which is the first oracle this project did not
-  write itself. **Status:** planned; tickets T-12-001…T-12-007 minted.
+  write itself. **Status:** COMPLETE.
 - Sprint 3 — COP1 (FPU), the errata, and the golden-log 0-diff.
-  **Status:** stub — refine when Sprint 2 is close to complete.
+  **Status:** COMPLETE. The FPU runs on a soft-float core (ledger C-11), the errata are
+  reproduced (deviation D-2), and the golden log 0-diffs against ares over 50,027 retired
+  records (C-26). Sprint 3 never got its own plan file: it was executed against the ledger and
+  the two oracles rather than a ticket list, which is why this line is the record of it.
 
 ## Dependencies
 
 Phase 0 complete. Specifically: the Bus and its `CpuBus` trait, the scheduler's `tick_one_unit`,
 and the harness's golden-log differ, all of which exist. The golden trace itself is the deferred
 Phase 0 criterion (T-02-005) and must land before the 0-diff gate can be met.
+**Resolved:** it landed. `tests/golden/n64-systemtest.log` is a real capture from a patched
+`ares` (50,027 retired records, provenance in the file's own header), and
+`crates/rustyn64-test-harness/tests/golden_log.rs` is the committed gate.
 
 ## Risks
 
-- **The golden trace does not exist yet** — the differ is written against a file contract whose
-  producer is not. Mitigated by n64-systemtest being self-judging: the CPU categories can be
-  driven to `Failed: 0` without any trace, and the trace then becomes a regression net rather
-  than the primary gate.
+- **~~The golden trace does not exist yet~~ — SUPERSEDED.** The trace exists and the gate is
+  green: `tests/golden/n64-systemtest.log`, captured from a patched `ares` and 0-diffing over
+  50,027 retired records (ledger **C-26**). The mitigation named here is what actually happened —
+  n64-systemtest's self-judging categories carried the phase, and the trace arrived afterwards as
+  the regression net rather than the primary gate. Left standing rather than deleted, because a
+  risk that was correctly predicted *and* correctly mitigated is worth more as a record than as a
+  blank line.
 - **Cache-coherency depth is an open question** — modelling the I/D caches exactly is expensive
   and may not be observable. Mitigated by implementing to the depth the test ROMs actually
   detect and recording the decision, rather than guessing at a level up front.

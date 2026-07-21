@@ -23,12 +23,20 @@ it again and say so; do not nudge it.
 
 ## Status
 
-**The CPU executes instructions; nothing has been *measured* yet.** Sprint 1 landed the integer
-core, so residuals can now be observed in principle — none has been. What has changed is that
-three entries (C-2, C-3, S-3) turned out to be **documented all along** and are resolved by
-citation rather than measurement; C-7 is new and likewise documented. The remaining constants are
-still placeholders with known provenance, recorded so the first implementation does not silently
-invent a value and move on.
+**Phase 1 is complete, and still nothing here has been *measured*.** That is the honest headline:
+every entry resolved so far was resolved by **citation** — it turned out to be documented after all
+(C-2, C-3, C-7, C-22, S-1, S-3, U-1, U-3, U-4) — or by implementing behaviour the sources do
+describe. Not one constant has been obtained by measuring this emulator against hardware, because
+the instrument for that is n64-systemtest's default-off `timing` set and it has not been run.
+
+So the file's shape has changed less than the code has. `M` (**C-1**) still has no value; the
+cache-miss costs that depend on it are still uncharged; the RDRAM bank-state costs (**C-4**) are
+untouched. The FPU execution rates (**C-29**) were added as *documented* numbers, and both oracles
+are insensitive to them — they are unfalsified rather than verified, which is a weaker claim and is
+recorded as one.
+
+What the preamble asks of a reader is unchanged: a constant here without a provenance line is a
+bug, and a number that appeared without one is the failure this file exists to prevent.
 
 ---
 
@@ -162,10 +170,10 @@ implementation choice here is treated as correct.
 | U-2 | `TLBP` low `Index` bits on a miss (we leave them **zero**) | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
 | U-3 | The N64's full `PRId` value | **RESOLVED — see C-22.** Recorded verbatim: *"`Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151)"*. That was true of the manual and false of the N64brew wiki this project mirrors, which names `0x10`/`0x22`/`0x40` — the decay this table exists to make visible | resolved |
 | U-4 | ~~Which `Int[4:0]` line the MI drives~~ | **RESOLVED** — `IP2`. Not in the CPU manual (board-level) nor in the N64brew mirror, but stated by libdragon: `#define C0_INTERRUPT_RCP C0_INTERRUPT_2` (`ref-proj/libdragon/include/cop0.h`), which also gives `IP3` = CART, `IP4` = PRENMI, `IP7` = timer. libdragon is public domain, so this is citable rather than merely observed | **closed** |
-| U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | Sprint 2 |
+| U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | **RESOLVED (Phase 1).** Not by defining the undefined case, but by finding that the suite *does* define the surrounding rule: an address in 32-bit mode must be the sign extension of its low word, and one that is not raises AdEL before the TLB is consulted (`addr::is_compat`). n64-systemtest asserts it directly |
 | U-6 | `Config.EC` on the N64 | `0b111` (1:1.5) is allowed *"with the 100 MHz model only"* (UM Appendix A note 1, p. 628), and the N64's ratio is 1:1.5 — so `0b111` is a strong **inference**, but the manual never names the N64 | Sprint 2 |
 | U-7 | The **corrupted output** of the FP multiplication erratum | The *trigger* is documented (`VR4300.md`: a multiply whose preceding multiply had a NaN, zero or infinity operand) and so are the affected steppings (NUS-01/02/03), but **what wrong value is produced has never been characterised** — recorded in `ref-docs/2026-07-20-vr4300-timing-supplement.md` as an undocumented constant. `Stepping::Early` can therefore be *selected* but changes no arithmetic; inventing a plausible wrong value would be the fitted-constant failure this file's preamble forbids | Sprint 3 modelled the switch and the trigger. Needs an affected console, or a hardware capture, before the output can be reproduced |
-| U-8 | FPU rounding modes and the `inexact` / `underflow` flags are **partial** | `FCSR.RM` is honoured by the conversions but **not** by `add`/`sub`/`mul`/`div`, which use Rust's operators and are nearest-even only. Likewise `inexact` is set for overflow and conversions but not for ordinary rounding, and `underflow` only for conversions that flush to zero. Both need the *exact* result before rounding, which the hardware float operators do not expose | Needs soft-float arithmetic or per-operation re-rounding. Recorded so a caller does not trust a bit that never sets — the module's own doc table says which flags are complete |
+| U-8 | FPU rounding modes and the `inexact` / `underflow` flags are **partial** | `FCSR.RM` is honoured by the conversions but **not** by `add`/`sub`/`mul`/`div`, which use Rust's operators and are nearest-even only. Likewise `inexact` is set for overflow and conversions but not for ordinary rounding, and `underflow` only for conversions that flush to zero. Both need the *exact* result before rounding, which the hardware float operators do not expose | Needs soft-float arithmetic or per-operation re-rounding. Recorded so a caller does not trust a bit that never sets — the module's own doc table says which flags are complete. **RESOLVED (Phase 1)** by the soft-float core: `FCSR.RM` is honoured by `add`/`sub`/`mul`/`div`, and `inexact`/`underflow` are detected from the exact pre-rounding result. See **C-11 RESOLVED**, which also records the second bug the fix uncovered |
 
 U-6 is the one to watch: it is consistent with ADR 0006's clock derivation, which makes it
 tempting to promote to a fact. It is an inference from a part-number restriction, and it stays
@@ -1144,6 +1152,109 @@ where hex digits belonged (`Heap range:          to`). The string had just been 
 stores and was still sitting in dirty D-cache lines. Reading *through* the D-cache fixed it — an
 independent confirmation that the cache model is right, found because the log channel had to obey
 the same rules a guest `LB` does.
+
+### C-28 — the RCP's internal bus is size-blind, and RDRAM is not
+
+**Claim.** Every device in `0x0400_0000-0x04FF_FFFF` ignores the access size and the low two
+address bits, latching the whole 32-bit word the VR4300 placed on `SysAD`. A narrow store there
+writes the *source register shifted into the addressed byte lane*, wiping the rest of the word; a
+64-bit store writes only the upper word and touches four bytes. RDRAM is exempt.
+
+**Basis: documented, and independently stated by the oracle.** N64brew *Memory map* SS Physical
+Memory Map accesses gives the mechanism and the worked example -- with `S0 = 0x1234_5678` and
+`A0 = 0x0400_0001`, `SB S0, 0(A0)` puts `0x3456_7800` on the bus and the RCP writes it to
+`A0 & ~3`. n64-systemtest states the same rule in its own words at the head of
+`src/tests/sp_memory/mod.rs`: *"SH/SB are broken: they overwrite the whole 32 bit, filling
+everything that isn't written with zeroes. SD is broken: it only writes the upper 32 bit of the
+value, touching only 4 bytes."* Two independent sources, one of them executable.
+
+**Why RDRAM differs, and why that asymmetry is the whole point.** The RI forwards the low address
+bits and the access size to the RDRAM devices, which build a real byte mask from them; only the
+RCP's internal path discards that information. So the correct narrowing is a property of the
+**target**, not of the instruction -- which is why `Bus::write_sized` carries the width and the
+untruncated register to the bus rather than letting the CPU narrow first. A CPU that narrows
+eagerly cannot express this, and the bug is invisible until something reads back a neighbouring
+byte it never wrote.
+
+**Scope, stated rather than assumed.** The PI and SI external-bus windows share the size-blindness
+on hardware (same wiki section), and are **not** covered here: the PI already models its own bus
+quirks separately, and merging them without the cart tests to check against would be a change made
+blind. Phase 5 owns that. The 64-bit *read* case -- which hangs the VR4300 outright, because the
+RCP never puts a second word on the bus -- is not modelled either; nothing tests it, since a test
+for it would hang the console.
+
+---
+
+### C-29 — the FPU rates are charged; the early exit on trivial operands is not
+
+**Claim.** COP1 arithmetic stalls the pipeline for its **UM Table 7-14** rate — `ADD`/`SUB` 3,
+`MUL` 5/8, `DIV`/`SQRT` 29/58, the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family 5, the `CVT` forms 1/2/5
+depending on the *source* format, and 1 (no stall) for `ABS`/`MOV`/`NEG`/`C.cond`. What is **not**
+modelled is the documented early exit.
+
+**Basis: documented, transcribed from the table itself.** Extracted from the manual with
+`mutool draw -F txt` and asserted row by row in `fpu::tests::the_fpu_delay_table_matches_the_manual`.
+The manual's *"latency is the execution rate plus one … an EX-to-RF bypass is not performed"* is not
+added anywhere: the stall holds every stage, so a dependent consumer spends its own cycle after the
+stall drains and reaches rate + 1 without a second rule.
+
+**The deviation.** UM §7.5.6, and Table 7-14's own note 2, say a multicycle operation whose result
+is *obvious* completes in **two** cycles instead of its full rate: add/sub on a zero or infinity
+operand or a source exception, multiply when either operand is a power of two, divide and sqrt when
+the result is zero or infinity, and the convert instructions for trivial cases. None of that is
+modelled, so those operands are charged the full rate and the model runs **slower than hardware**
+on them — never faster, which keeps the error one-directional and bounds it: at worst 27 PCycles
+for a `DIV.S` by infinity, 56 for the double.
+
+**Why it is deferred rather than guessed.** The trigger conditions are documented but the exact
+operand classes are prose rather than a table, and charging two cycles for a case the hardware does
+not consider trivial would be as wrong as charging 29 for one it does. This needs the timing set
+n64-systemtest ships default-off to measure against, which is the same instrument C-1 (`M`) is
+waiting on. Until then the honest position is the documented rate.
+
+**Not observable today.** Both oracles are unchanged by adding these stalls: the golden log holds
+its 0-diff over 50,027 records and n64-systemtest's Phase 1 categories stay at 0. That is expected
+— the golden log compares retired instruction streams, not cycle counts — and it means these rates
+are currently *unfalsified* rather than *verified*.
+
+---
+
+### C-30 — the SP memory window mirrors its 8 KiB up to `0x0404_0000`
+
+**Claim.** DMEM and IMEM are 4 KiB each at `0x0400_0000` and `0x0400_1000`, and that 8 KiB of real
+storage **repeats** for the whole range up to `0x0404_0000`, where the SP registers begin.
+
+**Basis: the oracle for the repetition, the address map for where it ends.** The two halves of this
+claim do not share a source, and the *Bounded* note below keeps them apart. For the repetition
+itself the oracle is the only source: the N64brew wiki's *RSP Interface* documents the first
+8 KiB and stops — it gives the DMEM and IMEM ranges and says nothing about what lies between
+`0x0400_2000` and `0x0404_0000`. The mirroring comes from n64-systemtest, in two independent
+forms: its own source comment (`src/tests/sp_memory/mod.rs`) states *"Going out of bounds wraps the
+memory around (until the real end of 0x04040000)"* and *"SPMEM DMEM and IMEM repeat from 0x04000000
+to 0x04040000"*, and its `spmem: SW (out of bounds)` test **executes** the claim: it writes
+`0x7654_3210` at offset `0x3E000`, then reads it back at offset 0 and at `0x3E000`, and separately
+checks that offset `0x1000` (IMEM) was untouched. `0x3E000 & 0x1FFF == 0`, i.e. the 31st repetition.
+
+**Why this is recorded rather than treated as obvious.** Masking an address is the natural
+implementation of *both* "it mirrors" and "we do not bounds-check", and those are different claims
+about hardware. This entry exists so the folding in `Rsp::mem_read` is understood as modelled
+behaviour with a source, not as a missing guard — and so that if the range is ever found to fault
+or to alias differently, there is a claim to retract rather than an accident to rediscover.
+
+**Bounded, and the two bounds have different evidence — which is the point of separating them.**
+
+- *That the window repeats at all, and the 8 KiB period*: **oracle**. `spmem: SW (out of bounds)`
+  writes at `0x3E000` and reads the value back at offset 0, with the IMEM half untouched.
+- *That the repetition stops at `0x0404_0000`*: **not** from that test, which never probes the
+  boundary. It comes from the address map — N64brew *RSP Interface* places the SP registers at
+  `0x0404_0000` — so the window ends where the next device begins. Nothing here has *tested* the
+  last repetition before that address, and this entry should not be read as claiming otherwise.
+  A boundary test is the way to close it.
+
+What the RSP's own DMA sees is separate again, and is the per-bank 4 KiB wrap the wiki does
+document.
+
+---
 
 ---
 

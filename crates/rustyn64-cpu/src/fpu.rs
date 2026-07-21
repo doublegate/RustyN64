@@ -830,6 +830,120 @@ pub fn to_i64(v: f64, mode: Rounding) -> Outcome<i64> {
     Outcome { value, flags }
 }
 
+/// `fmt` for single precision, as the COP1 encoding gives it.
+pub const FMT_S: u8 = 16;
+/// `fmt` for double precision.
+pub const FMT_D: u8 = 17;
+/// `fmt` for 32-bit fixed point (`W`), the source format of `CVT.fmt.W`.
+pub const FMT_W: u8 = 20;
+/// `fmt` for 64-bit fixed point (`L`).
+pub const FMT_L: u8 = 21;
+
+/// Pipeline cycles for a COP1 arithmetic instruction — **UM Table 7-14**.
+///
+/// A direct transcription of the table, indexed by `funct` and the source
+/// `fmt`. Written as data for the same reason the COP0 tables are: every entry
+/// is a documented number with no generating rule, and a `match` over prose
+/// becomes a place to forget one.
+///
+/// | Instruction | S | D | W | L |
+/// | --- | --- | --- | --- | --- |
+/// | `ADD`/`SUB` | 3 | 3 | | |
+/// | `MUL` | 5 | 8 | | |
+/// | `DIV`/`SQRT` | 29 | 58 | | |
+/// | `ABS`/`MOV`/`NEG` | 1 | 1 | | |
+/// | `ROUND`/`TRUNC`/`CEIL`/`FLOOR` (`.W` and `.L`) | 5 | 5 | | |
+/// | `CVT.S` | — | 2 | 5 | 5 |
+/// | `CVT.D` | 1 | — | 5 | 5 |
+/// | `CVT.W`/`CVT.L` | 5 | 5 | | |
+/// | `C.cond` | 1 | 1 | | |
+///
+/// # What a `1` means, and why it is not charged
+///
+/// One cycle is what an ordinary instruction already takes, so a rate of 1 is
+/// *no* stall — `ABS`, `MOV`, `NEG` and `C.cond` cost nothing extra. Charging
+/// them one cycle would make them uniquely slow among single-cycle
+/// instructions.
+///
+/// # The `+1` for a dependent consumer is not in this table
+///
+/// The manual's note is that *"if a floating-point result for these
+/// instructions is needed by the subsequent instruction, the latency is the
+/// execution rate plus one, due to the fact that an EX-to-RF bypass is not
+/// performed"*. That extra cycle is not added here: the stall these numbers
+/// produce holds the whole pipeline, so the consumer spends its own cycle after
+/// the stall drains and arrives at rate + 1 on its own.
+///
+/// # Not modelled: the early exit
+///
+/// UM §7.5.6 and this table's own note 2 say a multicycle operation whose
+/// result is *obvious* — a zero or infinity operand, a power-of-two multiplier
+/// — completes in two cycles instead. That is documented behaviour we do not
+/// yet reproduce, so trivial operands are charged the full rate and the model
+/// runs **slower** than hardware there. Accuracy ledger C-29.
+#[must_use]
+// One arm per table row, kept separate on purpose. Clippy would merge the arms
+// that happen to share a number and fold the 1s into the wildcard; that turns a
+// transcription anyone can check line-by-line against the manual into an
+// expression they have to re-derive. The rows are the documentation.
+#[allow(clippy::match_same_arms, clippy::manual_range_patterns)]
+pub const fn delay_cycles(funct: u8, fmt: u8) -> u32 {
+    let double = fmt == FMT_D;
+    match funct {
+        // ADD, SUB.
+        0o00 | 0o01 => 3,
+        // MUL.
+        0o02 => {
+            if double {
+                8
+            } else {
+                5
+            }
+        }
+        // DIV, and SQRT which costs the same.
+        0o03 | 0o04 => {
+            if double {
+                58
+            } else {
+                29
+            }
+        }
+        // ABS, MOV, NEG — one cycle, i.e. no stall.
+        0o05 | 0o06 | 0o07 => 1,
+        // ROUND.L, TRUNC.L, CEIL.L, FLOOR.L, ROUND.W, TRUNC.W, CEIL.W, FLOOR.W.
+        0o10..=0o17 => 5,
+        // CVT.S: 2 from double, 5 from a fixed-point format.
+        0o40 => {
+            if double {
+                2
+            } else {
+                5
+            }
+        }
+        // CVT.D: 1 from single, 5 from a fixed-point format.
+        0o41 => {
+            if fmt == FMT_S {
+                1
+            } else {
+                5
+            }
+        }
+        // CVT.W, CVT.L.
+        0o44 | 0o45 => 5,
+        // C.cond.fmt and anything else: one cycle.
+        _ => 1,
+    }
+}
+
+/// The stall a COP1 arithmetic instruction adds, in `PCycle`s.
+///
+/// Zero for the single-cycle operations; see [`delay_cycles`].
+#[must_use]
+pub const fn stall_cycles(funct: u8, fmt: u8) -> u32 {
+    let rate = delay_cycles(funct, fmt);
+    if rate > 1 { rate } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,6 +1382,51 @@ mod tests {
     /// deliberate — inventing a plausible wrong value would be the
     /// fitted-constant failure the accuracy ledger forbids, and every later
     /// result built on it would stop being evidence.
+    /// **UM Table 7-14, asserted row by row.** These are documented numbers with
+    /// no generating rule, so the test is the transcription check.
+    #[test]
+    fn the_fpu_delay_table_matches_the_manual() {
+        // ADD, SUB: 3 in both formats.
+        for funct in [0o00, 0o01] {
+            assert_eq!(delay_cycles(funct, FMT_S), 3);
+            assert_eq!(delay_cycles(funct, FMT_D), 3);
+        }
+        assert_eq!(delay_cycles(0o02, FMT_S), 5, "MUL.S");
+        assert_eq!(delay_cycles(0o02, FMT_D), 8, "MUL.D");
+        for funct in [0o03, 0o04] {
+            assert_eq!(delay_cycles(funct, FMT_S), 29, "DIV/SQRT.S");
+            assert_eq!(delay_cycles(funct, FMT_D), 58, "DIV/SQRT.D");
+        }
+        // ABS, MOV, NEG and C.cond are single-cycle, so they add no stall.
+        for funct in [0o05, 0o06, 0o07, 0o60, 0o62, 0o74] {
+            assert_eq!(delay_cycles(funct, FMT_S), 1);
+            assert_eq!(stall_cycles(funct, FMT_S), 0, "no stall for a 1-cycle op");
+        }
+        // The eight ROUND/TRUNC/CEIL/FLOOR forms.
+        for funct in 0o10..=0o17 {
+            assert_eq!(delay_cycles(funct, FMT_S), 5);
+            assert_eq!(delay_cycles(funct, FMT_D), 5);
+        }
+        // The CVT rows are the only ones that differ by SOURCE format, which is
+        // the part a uniform table would get wrong.
+        assert_eq!(delay_cycles(0o40, FMT_D), 2, "CVT.S from double");
+        assert_eq!(delay_cycles(0o40, FMT_W), 5, "CVT.S from word");
+        assert_eq!(delay_cycles(0o40, FMT_L), 5, "CVT.S from long");
+        assert_eq!(delay_cycles(0o41, FMT_S), 1, "CVT.D from single");
+        assert_eq!(delay_cycles(0o41, FMT_W), 5, "CVT.D from word");
+        assert_eq!(delay_cycles(0o41, FMT_L), 5, "CVT.D from long");
+        assert_eq!(delay_cycles(0o44, FMT_S), 5, "CVT.W");
+        assert_eq!(delay_cycles(0o45, FMT_D), 5, "CVT.L");
+    }
+
+    /// A rate of 1 is an ordinary instruction, not a one-cycle penalty.
+    #[test]
+    fn single_cycle_fpu_ops_are_charged_nothing() {
+        assert_eq!(stall_cycles(0o06, FMT_S), 0, "MOV.S");
+        assert_eq!(stall_cycles(0o41, FMT_S), 0, "CVT.D.S is one cycle");
+        assert_eq!(stall_cycles(0o02, FMT_D), 8, "but MUL.D is not");
+    }
+
     #[test]
     fn the_multiplication_erratum_is_modelled_but_not_invented() {
         assert!(!Stepping::default().has_mul_erratum(), "fixed by default");

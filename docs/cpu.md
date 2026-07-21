@@ -259,7 +259,54 @@ Note the manual's first option, writing `Cause.IP7`, is not available on this
 part: `Cause` is read-only to software except `IP1:IP0`. Writing `Compare` is the
 usable path, and the one libdragon takes.
 
+The match is detected as a **crossing**, not as an instantaneous equality: the
+question asked each poll is whether `Compare` lies in the half-open interval
+`(last_count, now]`, in wrapping arithmetic. `Count` runs off the master clock
+and keeps advancing while the pipeline is stalled, so consecutive polls can be
+dozens of cycles apart — a 69-`PCycle` multiply interlock steps clean over the
+one cycle for which `Count == Compare` holds. An equality test loses that
+interrupt outright rather than delaying it. Pinned by
+`the_timer_interrupt_survives_a_multi_cycle_stall` and
+`the_timer_edge_is_detected_even_when_the_poll_steps_over_compare`.
+
+An `MTC0` to `Count` or `Compare` re-bases that interval, because a write moves
+one of its endpoints and would otherwise look like a crossing that never
+happened: the timer fires when `Count` *counts up to* `Compare`, not when
+software rearranges the two.
+
+#### NMI (implemented)
+
+The non-maskable interrupt (UM §6.4.6, p. 185) is deliberately **not** routed
+through the general dispatch path, because almost none of it applies: NMI writes
+`ErrorEPC` rather than `EPC`, sets `ERL` rather than `EXL`, and writes **no
+`Cause` at all** — *"the contents of all registers are preserved except for"*
+`ErrorEPC` and four `Status` bits (`ERL`, `SR`, `BEV` set; `TS` cleared). `SR` is
+what later distinguishes it from a reset; the manual notes there is otherwise
+*"no indication from the processor to differentiate between NMI & Soft Reset"*.
+
+It ignores `IE`, `EXL` and `ERL` entirely, and the only condition it respects is
+the instruction boundary — *"unlike Cold Reset and Soft Reset, but like other
+exceptions, NMI is taken only at instruction boundaries"*, which is the same
+run-cycle gate every interrupt passes. It vectors to `0xFFFF_FFFF_BFC0_0000`,
+unmapped and uncached so neither the cache nor the TLB need be valid.
+
+Nothing in the core asserts it yet: on hardware the source is the console's reset
+button, which arrives as PRENMI and then NMI, and the frontend owns that button
+(Phase 6). `Pipeline::signal_nmi` is the entry point waiting for it. The
+exception itself is Phase 1 work and lives with the rest of the exception model.
+
 ### The TLB (implemented, T-12-004)
+
+A refill miss takes one of **two** vectors, chosen by the addressing width of
+the access that missed: `0x000` under 32-bit addressing, `0x080` (the XTLB refill
+vector) when `Status.KX`/`SX`/`UX` enables 64-bit addressing for the faulting
+mode. The two carry the same `ExcCode`, so the vector is the only thing that
+tells the handler which page-table walk to run — the 64-bit handler reads
+`XContext`, the 32-bit one `Context`. The width is captured on the exception
+rather than re-derived at dispatch, because dispatch has already set `EXL`, which
+forces the reported mode to Kernel and would answer for the handler instead of
+for the access. Pinned by
+`an_unmapped_access_under_64_bit_addressing_takes_the_xtlb_vector`.
 
 32 fully-associative joint-TLB entries, each mapping an **even/odd page pair**,
 with a **two-entry instruction micro-TLB** in front (`crates/rustyn64-cpu/src/tlb.rs`).
@@ -466,11 +513,17 @@ Two rules the table alone does not convey:
 
 - **FPU latency for a dependent consumer is the execution rate + 1**, because no
   EX-to-RF bypass is performed for those results (UM §7.5.6). The numbers above
-  are rates.
+  are rates. **Implemented** as an `Mci` stall of the Table 7-14 rate, charged
+  when the operation completes in `WB` (`fpu::stall_cycles`). The `+1` is not
+  added separately — the stall holds every stage, so the consumer spends its own
+  cycle after it drains. A rate of 1 (`ABS`, `MOV`, `NEG`, `C.cond`, `CVT.D.S`)
+  charges nothing, since one cycle is what an ordinary instruction already takes.
 - **FPU ops exit early on trivial operands.** Add/sub terminate on the second
   cycle on a source exception or if an operand is zero or infinity; multiply also
   finishes in two cycles if either operand is a power of two; divide and sqrt
-  exit on the second cycle for zero/infinity results (UM §7.5.6).
+  exit on the second cycle for zero/infinity results (UM §7.5.6). **Not
+  modelled** — those operands are charged the full rate, so the model is slower
+  than hardware there and never faster. Accuracy ledger **C-29**.
 
 **`M` is not documented anywhere.** It is the memory access time in PCycles, and
 both cache-miss formulas are parameterised on it. The only figures available are

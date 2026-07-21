@@ -221,12 +221,10 @@ fn find_elf_offset(rom: &[u8]) -> Option<usize> {
 }
 
 /// Write a big-endian word into RSP DMEM.
-fn write_spmem_word(system: &mut System, offset: usize, value: u32) {
-    let bytes = value.to_be_bytes();
-    for (i, b) in bytes.iter().enumerate() {
-        if let Some(dst) = system.bus.spmem.get_mut(offset + i) {
-            *dst = *b;
-        }
+fn write_spmem_word(system: &mut System, offset: u32, value: u32) {
+    for (i, b) in value.to_be_bytes().into_iter().enumerate() {
+        let i = u32::try_from(i).unwrap_or(0);
+        system.bus.rsp.mem_write(offset + i, b);
     }
 }
 
@@ -438,12 +436,12 @@ mod tests {
         let elf_offset = seed_ipl3_handoff(&mut sys, &rom).expect("has an ELF");
         assert_eq!(elf_offset, ROM_PAYLOAD_OFFSET, "the ELF starts the payload");
 
-        let word = |o: usize| {
+        let word = |o: u32| {
             u32::from_be_bytes([
-                sys.bus.spmem[o],
-                sys.bus.spmem[o + 1],
-                sys.bus.spmem[o + 2],
-                sys.bus.spmem[o + 3],
+                sys.bus.rsp.mem_read(o),
+                sys.bus.rsp.mem_read(o + 1),
+                sys.bus.rsp.mem_read(o + 2),
+                sys.bus.rsp.mem_read(o + 3),
             ])
         };
         assert_eq!(
