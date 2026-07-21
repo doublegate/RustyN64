@@ -59,12 +59,21 @@ Architecture (the load-bearing facts — read `docs/architecture.md`):
 
 ## Current state (read `docs/STATUS.md` first)
 
-**Phase 1 in progress; tagged release still v0.1.0.** The **VR4300 executes instructions**: the
-canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR 0007), the MIPS III integer
-set, COP0, the TLB + micro-ITLB, the exception model, interrupts, `CACHE`, COP1 (control,
-register file, `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the compares, the conversions and
-enabled FP traps), and **PI DMA** — the last pulled forward from Phase 5 because n64-systemtest
-loads its own ELF through it.
+**Phase 1's cut criterion is MET; tagged release still v0.1.0.** The criterion is `Failed: 0` on
+the **CPU/COP0/TLB/COP1 categories** (`to-dos/VERSION-PLAN.md` §v0.2.0) — *not* suite-wide — and
+n64-systemtest now reports **0** there. The ~413 suite-wide failures that remain are RSP/RCP, which
+is explicitly **Phase 2's** criterion (§v0.3.0); cart/PIF/RDP belong to later phases still.
+`docs/STATUS.md` once said "CPU/COP0/TLB/RSP", conflating the two — VERSION-PLAN is authoritative.
+
+**v0.2.0 is unblocked but NOT tagged.** Tagging is the phase-close ceremony in VERSION-PLAN
+(pre-release gate, annotated tag, notes) and belongs on `main` after the work lands, not on a
+feature branch.
+
+The **VR4300 executes instructions**: the canonical 187.5 MHz clock (ADR 0006), the five-stage
+pipeline (ADR 0007), the MIPS III integer set, COP0, the TLB + micro-ITLB, the exception model,
+interrupts, the **primary I- and D-caches**, the privilege-aware segment map, `Status.RE`, COP1
+(control, register file, arithmetic, compares, conversions, enabled traps, `BC1`), and **PI DMA** —
+the last pulled forward from Phase 5 because n64-systemtest loads its own ELF through it.
 
 FP arithmetic runs on a **soft-float core** (`crates/rustyn64-cpu/src/softfloat.rs`), not on
 Rust's `f32`/`f64` operators. That is not gratuitous: the native operators discard the exact
@@ -77,17 +86,9 @@ the VR4300's refusal to produce subnormals as a separate layer.
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**Phase 1's exit criterion is not met.** The criterion is `Failed: 0` on the **CPU/COP0/TLB
-categories** (`to-dos/VERSION-PLAN.md` §v0.2.0) — *not* suite-wide. n64-systemtest currently
-reports **40 failing assertions in those categories**, against 453 suite-wide. The RSP's 291 are
-explicitly **Phase 2's** criterion (§v0.3.0), and cart/PIF/RDP belong to later phases still.
-`docs/STATUS.md` said "CPU/COP0/TLB/RSP" for a while, which conflated the two — VERSION-PLAN is
-authoritative for cut criteria.
-
-Do **not** tag v0.2.0 until that number is 0; it is an oracle result, not a self-assessment.
-Of the 60: COP1 10 (`CVT` edge cases, `MUL`/`DIV` residue), and ~64 across COP0 registers, the
-TLB, privilege/user-mode access, and the odd-index `FR=0` register tests. `BC1F`/`BC1T` decode to
-`Cop1Unimplemented` — a silent no-op, so an FP branch never redirects.
+**There is no committed n64-systemtest runner.** Every session so far has rebuilt a throwaway one
+(load the ELF, sign-extend its entry, step to a tick budget, read `bus.isviewer_output()`). That is
+a real gap in a project whose primary oracle this is; worth a ticket rather than a fourth rewrite.
 
 ## Where things live
 
@@ -245,7 +246,11 @@ in this repo, which is worth fixing even when the suggested wording is not.
   worth a comment, write the test that fails without it (`docs/engineering-lessons.md` §3.3c).
 - **"Undocumented" is a claim about a document, and it decays.** Three files asserted the exception
   epilogue cost was undocumented while it sits in the opening sentence of the section they cited.
-  Cite the pages actually read; re-open the manual before relying on such a record (§3.3b).
+  It has now happened **three times**; the most recent was `PRId.Rev`, recorded as undocumented on
+  the strength of the User's Manual while the N64brew wiki this project *mirrors* names the values
+  outright. Nothing fails when such a claim goes stale, so it survives review and is then cited as
+  if it described the hardware. Cite the pages actually read, and name the source — "the UM does not
+  say" is checkable, "undocumented" is not (§3.3b).
 - **Never invent a value the documentation does not give — and that includes *behaviour*.** The FP
   multiplication erratum's trigger is documented and its *output* is not, so `Stepping::Early`
   changes no arithmetic (ledger U-7). A fitted constant makes every later result built on it stop
@@ -293,6 +298,35 @@ in this repo, which is worth fixing even when the suggested wording is not.
   counts between a trapping and non-trapping run and **passed with the fix removed**, because the
   trap flushes the pipeline and the totals differ over a fixed cycle budget either way. Put the
   reason in the test's doc comment or the confounded version returns as a "simplification".
+- **Agreeing flags are not evidence the value is right — and vice versa.** Three bugs this project
+  shipped had exactly one half correct: the `as`-cast integer conversions reported `inexact`
+  perfectly while ignoring `FCSR.RM`, so the flag gave no signal at all; the underflow-after-rounding
+  bug produced the *correct value* with a missing flag. When an oracle disagrees, check both halves
+  independently — a matching flag is the most convincing way to look at the wrong one.
+- **An address in 32-bit mode must be the SIGN EXTENSION of its low word.** `0x0000_0000_8000_1000`
+  is not shorthand for `KSEG0`; it is an address error, and n64-systemtest asserts it. Truncating to
+  `u32` is the natural shortcut and accepts it silently — it had reached the reset vector, the ROM
+  entry point, and every kernel address in the test suite, all of which were passing on addresses
+  the hardware rejects.
+- **The segment map is a function of `(address, mode, width)`, never the address alone.** `KSEG0`
+  does not exist in User mode, and it is the *address-space check* — not the TLB — that stops a user
+  program reaching it. An out-of-range address raises AdEL **before** the TLB is consulted; folding
+  it into a refill sends the program to the refill handler, where a well-behaved kernel maps the
+  page and grants the access it was never allowed to make.
+- **Read the oracle's table; do not compute against it.** Three separate rules this session
+  (`FR = 0`'s `fs`/`ft` asymmetry, `PageMask` pairs, the `RE` byte swap) looked self-contradictory
+  under arithmetic and fell out immediately once the expected values were read as a table — twice
+  the suite states the rule outright in its own assertion messages.
+- **A stall cannot substitute for a bypass when the stall freezes both sides.** `stall_for` halts
+  every stage, so holding a consumer also delays the producer's commit and the gap never closes. The
+  load interlock is not a counter-example: it works because its consumer reads through the *bypass
+  network*, and the one-cycle stall merely buys `DC` time. Before adding an interlock, check whether
+  a forwarding path exists for the value at all (ledger C-25).
+- **Delete a superseded function; do not leave it unused.** Four `cvt_*` converters became dead when
+  the pipeline moved to `softfloat::from_int`, and each still rounded to nearest-even. An unused
+  function that quietly gets an operation wrong is the inert-API hazard `docs/engineering-lessons.md`
+  §3.2 describes — `addr.rs` deleted a stale `translate` for the same reason, and that precedent is
+  the argument to cite.
 - **A timing constant the hardware docs do not supply is MEASURED, never tuned.** It goes in
   `docs/accuracy-ledger.md` with its provenance. Adjusting one until a ROM passes makes every
   later timing result unfalsifiable. Currently unmeasured: `M` (memory access time), the
