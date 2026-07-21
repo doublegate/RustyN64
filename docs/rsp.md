@@ -202,8 +202,8 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 ### The accumulator and the multiply family (partly implemented, Sprint 2)
 
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
-accumulating forms, `VSAR` and the six bitwise operations execute. The compares,
-the selects, `VRNDN`/`VRNDP`, `VMULQ` and `VRCP`/`VRSQ` do not yet, and report
+accumulating forms, `VSAR` and the six bitwise operations execute. `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS` execute too. The compares,
+the selects, `VRNDN`/`VRNDP` and `VMULQ` do not yet, and report
 so rather than writing a wrong result — `vu_compute` returns `false` and the
 instruction retires inertly.
 
@@ -268,6 +268,25 @@ garbage on the second use.
 
 Division by zero **saturates** to `0x7FFF_FFFF`; there is no exception mechanism
 to raise instead.
+
+### The add/subtract group and `VCO`
+
+`VADD`/`VSUB` **consume** `VCO`'s low-half carry and then clear the register
+wholesale; `VADDC`/`VSUBC` **produce** it instead. Not consuming loses the carry
+in multi-precision arithmetic; not clearing leaves the *next* `VADD` adding a
+stale one, which surfaces as an off-by-one in a single lane much later.
+`VSUBC` additionally sets `VCO`'s **high** half from "the result was non-zero",
+which is what makes the pair usable as a comparison.
+
+Two places where `vd` and the accumulator **deliberately disagree**, and a test
+reading only `vd` cannot see either:
+
+- `VADD` clamps its result while the accumulator keeps the unclamped low bits.
+- `VABS` of `0x8000` saturates `vd` to `0x7FFF` because the negation is not
+  representable, while the accumulator keeps `0x8000`.
+
+`VABS` applies the **sign of `vs` to `vt`** — it is not the absolute value of
+either operand, and a zero in `vs` yields zero regardless of `vt`.
 
 ### Vector load/store (partly implemented)
 
