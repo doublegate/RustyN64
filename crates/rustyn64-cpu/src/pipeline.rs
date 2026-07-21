@@ -131,7 +131,7 @@ pub enum Exception {
         /// offset `0x080` instead of the 32-bit one at `0x000`.
         ///
         /// Carried on the exception rather than re-derived at dispatch because
-        /// by then `EXL` is set, which forces [`Pipeline::access_mode`] to
+        /// by then `EXL` is set, which forces `Pipeline::access_mode` to
         /// report Kernel and would answer for the handler's mode instead of the
         /// faulting access's.
         wide: bool,
