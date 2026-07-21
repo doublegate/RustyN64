@@ -176,7 +176,7 @@ labelled as one until something reads the register on hardware.
 | # | Symptom | Suspected mechanism | Classification | Status |
 | --- | --- | --- | --- | --- |
 | R-1 | **RESOLVED** — see C-21. The failing instruction was `ADD.S $1, $29, $30`, not the `ADD.S $0` the assertion names; a correlated capture separated cause from visible effect by exactly the pipeline depth | — | absolute | Closed |
-| R-2 | `Comparisons in half mode with odd register indices` reports `different02 = 1` where 0 is expected | **Two causes; the first is fixed.** (1) `BC1F`/`BC1T` were not implemented — the branch decoded to `Cop1Unimplemented` and retired as a no-op. All four forms now decode and execute. (2) The remaining cause is a genuine hazard, and a per-cycle trace pins it exactly: with `C.EQ.S` at cycle 1, `BC1T` executes `EX` at cycle **3** while the compare's `WB` runs at cycle **4**. The branch is one cycle short | absolute | **Open, and the obvious fix is ruled out.** Stalling does **not** work: `stall_for` freezes the whole pipeline, so holding the branch delays the compare's `WB` by the same amount and the branch never catches up — an interlock on `ex_dc`/`dc_wb` was tried, fired once, and changed nothing. A bypass is also unavailable as things stand, because `fp_arith` *computes* the condition in `WB`, not `EX`, so there is no pending value to forward. Two viable routes: **(a)** a draining bubble that holds `IC`/`RF`/`EX` while `DC`/`WB` continue, or **(b)** move the compare's condition computation to `EX` and leave only the commit in `WB`, then bypass it like a GPR. Pick one deliberately — (b) touches ADR 0007's single commit point and needs that written up |
+| R-2 | `Comparisons in half mode with odd register indices` reported `different02 = 1` where 0 was expected | **RESOLVED**, two causes. (1) `BC1F`/`BC1T` were not implemented — the branch decoded to `Cop1Unimplemented` and retired as a no-op. (2) `BC1` resolves in `EX` while `C.cond.fmt` commits `FCSR.C` in `WB`, so an adjacent pair sampled the previous condition. Fixed by a **forwarding path**, not a stall: `stall_for` freezes the whole pipeline, so holding the branch delays the compare's `WB` equally and it never catches up — an interlock was written, fired once, and changed nothing. The load interlock works only because its consumer reads through the bypass network; the FP condition had no such path | absolute | Closed |
 
 Every entry must carry a **classification** of the failing measurement as **absolute** or
 **differential** before any mechanism is proposed (ADR 0005, `engineering-lessons.md` §1.3). A
@@ -1065,6 +1065,30 @@ the inert-API hazard `docs/engineering-lessons.md` §3.2 describes; `addr.rs` de
 The conversion is now one line: an integer is `sign × |v| × 2^0`, so it is the shared rounding
 point with a zero exponent and no sticky bit. Routing it through the same `round_pack` as every
 other operation is what makes the mode impossible to forget.
+
+---
+
+### C-25 — an in-flight `C.cond.fmt` is forwarded to `BC1`, not stalled for
+
+**Claim.** `BC1` reads the condition an in-flight compare is about to commit, by re-evaluating that
+compare from its latched operands, rather than waiting for `WB`.
+
+**Why a stall cannot do it.** `stall_for` freezes every stage. Holding the branch therefore delays
+the compare's `WB` by exactly the same number of cycles, and the gap never closes. This was not
+deduced — an interlock on `ex_dc`/`dc_wb` was implemented and traced: it fires once, is then
+satisfied while the commit still has not happened, and the branch runs early anyway.
+
+**Why the load interlock is not a counter-example.** It stalls one cycle *and* its consumer reads
+through the bypass network. The stall buys `DC` time; forwarding delivers the value. The FP
+condition had no forwarding path at all, which is what this adds.
+
+**Why re-evaluating is sound.** A compare reads two FP registers and writes only `FCSR.C`. Nothing
+between it and the branch can change those registers — a branch has no destination — so the early
+evaluation yields precisely the value `WB` will commit. Flags are discarded: this is a forwarding
+path, and raising from it would make the branch report the *compare's* trap.
+
+`ex_dc` is consulted before `dc_wb` because it holds the younger instruction, and the most recent
+compare is the one whose value stands.
 
 ---
 

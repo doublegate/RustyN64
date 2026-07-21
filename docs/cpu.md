@@ -631,9 +631,10 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   because that function is pure and has no view of coprocessor state — and a
   parameter makes every call site a compile error until it supplies one.
 
-  **Outstanding:** `BC1` reads the condition in `EX` while `C.cond.fmt` writes it
-  in `WB`, so an adjacent pair samples the previous condition. Hardware
-  interlocks; we do not yet. Accuracy-ledger **R-2**.
+  `BC1` reads the condition in `EX` while `C.cond.fmt` commits it in `WB`, so an
+  adjacent pair is served by a **forwarding path** that re-evaluates the in-flight
+  compare from its latched operands. A stall cannot substitute: freezing the
+  pipeline delays the compare's `WB` equally. Accuracy-ledger **C-25**.
 - **A to-integer conversion refuses an integer source format.** `CVT.W.W`,
   `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family
   from `.W`/`.L` are not instructions, and the VR4300 declines them with

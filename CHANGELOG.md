@@ -9,6 +9,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — an in-flight `C.cond.fmt` is forwarded to `BC1`
+
+**This clears Phase 1's cut criterion: n64-systemtest's CPU/COP0/TLB/COP1 categories are at
+`Failed: 0`.**
+
+`BC1` resolves in `EX` while `C.cond.fmt` commits `FCSR.C` in `WB`, so an adjacent pair sampled the
+previous condition — and the ROM emits exactly that pair with no separating instruction.
+
+Fixed by a forwarding path, not a stall. `stall_for` freezes every stage, so holding the branch
+delays the compare's `WB` by the same amount and the gap never closes; an interlock was written,
+traced, and shown to fire once and change nothing. The load interlock is not a counter-example — it
+works because its consumer reads through the bypass network, and the FP condition had no such path.
+
+Re-evaluating the pending compare is sound because it reads two FP registers and writes only
+`FCSR.C`; nothing between it and the branch can change those registers. Flags are discarded, since a
+forwarding path must not raise the compare's trap on the branch's behalf. Ledger **C-25**.
+
+**Phase 1's categories: 1 → 0.**
+
 ### Added — `BC1F`/`BC1T`/`BC1FL`/`BC1TL`, branch on the FP condition
 
 They were not implemented: the branch decoded to `Cop1Unimplemented` and retired as a no-op, so a

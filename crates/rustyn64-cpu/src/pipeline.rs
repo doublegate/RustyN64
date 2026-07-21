@@ -1631,8 +1631,12 @@ impl Pipeline {
                 self.ex_dc = out;
                 return;
             }
-            // `FCSR.C` — read here, in EX, where the branch resolves.
-            let fp_condition = self.cop1.fcsr() & FCSR_C != 0;
+            // `FCSR.C` — read here, in EX, where the branch resolves, THROUGH A
+            // BYPASS. See `pending_fp_condition`.
+            let fp_condition = self.pending_fp_condition().unwrap_or_else(|| {
+                let p: &Self = self;
+                p.cop1.fcsr() & FCSR_C != 0
+            });
             match execute(
                 out.decoded,
                 out.rs_val,
@@ -1785,6 +1789,56 @@ impl Pipeline {
         }
         self.rf_ex = out;
         self.ic_rf.occupied = false;
+    }
+
+    /// The FP condition an in-flight `C.cond.fmt` is about to commit, if any.
+    ///
+    /// `BC1` resolves in `EX`; `C.cond.fmt` computes *and* commits `FCSR.C` in
+    /// `WB` (ADR 0007's single commit-or-trap point). An adjacent pair therefore
+    /// has the branch sampling the previous condition, and the ROM emits exactly
+    /// that pair with no separating instruction.
+    ///
+    /// # Why this is a bypass and not a stall
+    ///
+    /// Stalling cannot work here. `stall_for` freezes the whole pipeline, so
+    /// holding the branch delays the compare's `WB` by the same amount and the
+    /// branch never catches up — an interlock on `ex_dc`/`dc_wb` was written,
+    /// fired once, and changed nothing. This is the same shape as the **load**
+    /// interlock, which works only because its consumer reads through the
+    /// bypass network; the one-cycle stall buys `DC` time, and forwarding does
+    /// the rest. The FP condition had no such path, so this is it.
+    ///
+    /// # Why recomputing is sound
+    ///
+    /// A compare reads two FP registers and writes only `FCSR.C`. Nothing
+    /// between it and the branch can change those registers — the branch has no
+    /// destination — so evaluating it early yields the value `WB` will commit.
+    /// The flags are deliberately discarded: this is a forwarding path, and
+    /// raising an exception from it would make the branch report the *compare's*
+    /// trap.
+    ///
+    /// `ex_dc` is checked before `dc_wb` because it holds the **younger**
+    /// instruction, and the most recent compare is the one whose value stands.
+    fn pending_fp_condition(&self) -> Option<bool> {
+        let fr = fr_of(&self.cop0);
+        for latch in [&self.ex_dc, &self.dc_wb] {
+            if !latch.occupied {
+                continue;
+            }
+            if let Some(Cop0Access::Cop1(Cop1Access::Arith {
+                fmt, funct, ft, fs, ..
+            })) = latch.cop0
+                && funct >= 0o60
+            {
+                if let (FpCommit::Condition(c), _, false) =
+                    self.fp_compare(fmt, funct & 0xF, ft, fs, fr)
+                {
+                    return Some(c);
+                }
+                return None;
+            }
+        }
+        None
     }
 
     /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
@@ -4882,6 +4936,48 @@ mod tests {
                     "{why}: and it is Reserved Instruction, not something else"
                 );
             }
+        }
+    }
+
+    /// A `BC1` immediately after a `C.cond.fmt` sees that compare's result.
+    ///
+    /// `BC1` resolves in `EX`; the compare commits `FCSR.C` in `WB`. Without a
+    /// forwarding path the branch samples the **previous** condition, falls
+    /// through, and nothing anywhere reports an error — the ROM emits exactly
+    /// this pair with no separating instruction.
+    ///
+    /// Both directions are asserted. Testing only the taken case would pass
+    /// against a bypass that returned `true` unconditionally.
+    #[test]
+    fn a_bc1_immediately_after_a_compare_sees_its_result() {
+        use crate::cop0::reg;
+        /// `C.EQ.S $f0, $f2` — fmt S, ft = 2, fs = 0, cond = EQ.
+        const C_EQ: u32 = (0o21 << 26) | (0o20 << 21) | (2 << 16) | 0o62;
+        /// `BC1T +2` — skips the `ORI` two instructions ahead.
+        const BC1T: u32 = (0o21 << 26) | (0o10 << 21) | (1 << 16) | 2;
+        /// `ORI $8, $0, 1` — runs only if the branch was NOT taken.
+        const ORI: u32 = (0o15 << 26) | (8 << 16) | 1;
+
+        for (lo0, equal) in [(0x2222_3333u64, true), (0x4444_5555, false)] {
+            let mut bus = Ram::new(alloc::vec![C_EQ, BC1T, 0, ORI, 0, 0, 0, 0, 0, 0]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 1 << 29); // CU1
+            // Upper halves differ deliberately: a single-precision compare must
+            // ignore them, so a 64-bit comparison would report "not equal" for
+            // the row that is supposed to match.
+            p.fpr.write_d(0, true, lo0);
+            p.fpr.write_d(2, true, 0x1111_1111_2222_3333);
+            let mut pc = KSEG0_PROG;
+            for _ in 0..14 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(
+                regs.read(8) == 0,
+                equal,
+                "operands equal = {equal}: the branch must {} the ORI",
+                if equal { "skip" } else { "run" }
+            );
         }
     }
 
