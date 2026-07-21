@@ -529,21 +529,41 @@ mod tests {
         assert_eq!(out.interrupt_change, None, "unrelated flag write");
     }
 
-    /// `BREAK` raises the line only when `INTBREAK` is set, and never clears it.
+    /// `BREAK` raises the line **only** when `INTBREAK` is set.
+    ///
+    /// Both configurations execute the same single `BREAK` and differ *only* in
+    /// that flag, so the differing `interrupt_change` is attributable to nothing
+    /// else. The disabled case asserts `None` rather than merely "not raised":
+    /// `BREAK` must leave a previously-raised line alone, and `Some(false)`
+    /// would clear it.
     #[test]
     fn break_raises_the_interrupt_only_when_enabled() {
-        let rsp = run(&[BREAK], 0);
-        assert!(rsp.sp.halted());
-
-        let mut rsp = Rsp::new();
-        rsp.sp.write(sp::reg::STATUS, 1 << 8); // SET_INTBREAK
-        for (b, byte) in BREAK.to_be_bytes().iter().enumerate() {
-            rsp.imem[b] = *byte;
+        /// Run one `BREAK` at IMEM 0 and return what the step reported.
+        fn break_once(intbreak: bool) -> (StepResult, u32) {
+            let mut rsp = Rsp::new();
+            for (b, byte) in BREAK.to_be_bytes().iter().enumerate() {
+                rsp.imem[b] = *byte;
+            }
+            if intbreak {
+                rsp.sp.write(sp::reg::STATUS, 1 << 8); // SET_INTBREAK
+            }
+            rsp.sp.set_pc(0);
+            rsp.sp.set_halted(false);
+            let out = rsp.su_step();
+            (out, rsp.sp.status())
         }
-        rsp.sp.set_pc(0);
-        rsp.sp.set_halted(false);
-        let out = rsp.su_step();
+
+        let (out, status) = break_once(false);
+        assert_eq!(
+            out.interrupt_change, None,
+            "with INTBREAK clear, BREAK must not touch the line at all -- \
+             Some(false) would acknowledge an interrupt it never raised"
+        );
+        assert_eq!(status & 0x3, 0x3, "still HALTED | BROKE");
+
+        let (out, status) = break_once(true);
         assert_eq!(out.interrupt_change, Some(true), "INTBREAK set");
+        assert_eq!(status & 0x3, 0x3, "and it halts either way");
     }
 
     /// `MFC0` reads the SP registers the CPU shares, and `MTC0` writes them.
