@@ -46,6 +46,7 @@ use crate::exec::{Cop0Access, Cop1Access, MemOp, TlbOp, WriteBack, execute};
 use crate::fpr::Fpr;
 use crate::mem;
 use crate::regs::Regs;
+use crate::softfloat;
 use crate::tlb::Tlb;
 
 /// The five pipeline stages, in hardware order (UM §4.1, Figure 4-1).
@@ -1583,6 +1584,7 @@ impl Pipeline {
         // register's half.
         let (commit, flags, unimplemented) = match funct {
             0o00..=0o03 => self.fp_binary(fmt, funct, ft, fs, fr, mode),
+            0o04 => self.fp_sqrt(fmt, fs, fr, mode),
             0o10..=0o17 => self.fp_to_integer(fmt, funct, fs, fr),
             0o40 | 0o41 | 0o44 | 0o45 => self.fp_convert(fmt, funct, fs, fr, mode),
             // 0o60..=0o77 -- `C.cond.fmt`. The low four bits ARE the condition
@@ -1716,6 +1718,42 @@ impl Pipeline {
         }
         self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
         false
+    }
+
+    /// `SQRT.fmt`.
+    ///
+    /// Unary, so it takes the operand policy but not the *result* policy: the
+    /// square root of the smallest normal is about `1e-19`, nowhere near the
+    /// subnormal range, so a normal operand cannot produce a subnormal result.
+    ///
+    /// A negative operand is Invalid rather than unimplemented — except `-0`,
+    /// whose root is `-0` and raises nothing. [`softfloat::sqrt`] draws that
+    /// distinction.
+    fn fp_sqrt(
+        &self,
+        fmt: u8,
+        fs: u8,
+        fr: bool,
+        mode: crate::fpu::Rounding,
+    ) -> (FpCommit, crate::fpu::Flags, bool) {
+        use crate::fpu;
+        if fmt == 0o20 {
+            let bits = u64::from(self.fpr.read_s(fs));
+            let a = f32::from_bits(bits as u32);
+            if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
+                return (FpCommit::Single(0), fpu::Flags::NONE, true);
+            }
+            let r = softfloat::sqrt(bits, softfloat::F32, mode);
+            (FpCommit::Single(r.bits as u32), r.flags, false)
+        } else {
+            let bits = self.fpr.read_d(fs, fr);
+            let a = f64::from_bits(bits);
+            if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
+                return (FpCommit::Double(0), fpu::Flags::NONE, true);
+            }
+            let r = softfloat::sqrt(bits, softfloat::F64, mode);
+            (FpCommit::Double(r.bits), r.flags, false)
+        }
     }
 
     /// The VR4300's policy for a **subnormal result**, applied wherever one can
@@ -1916,14 +1954,26 @@ impl Pipeline {
             // To single.
             0o40 => match fmt {
                 0o21 => {
-                    let a = f64::from_bits(self.fpr.read_d(fs, fr));
+                    let bits = self.fpr.read_d(fs, fr);
+                    let a = f64::from_bits(bits);
                     if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                         return (FpCommit::Single(0), fpu::Flags::NONE, true);
                     }
-                    // Narrowing CAN produce a subnormal even from a normal
-                    // double, so the result policy applies here exactly as it
-                    // does to the arithmetic.
-                    self.subnormal_policy_s(fpu::cvt_s_d(a), mode)
+                    // Narrowing is ARITHMETIC: it rounds 53 significand bits
+                    // into 24, so it can be inexact, can overflow, and can land
+                    // in the subnormal range -- each depending on `FCSR.RM`.
+                    // `v as f32` reports none of that and rounds to nearest
+                    // only, which is where ledger C-11 found this operation
+                    // after the arithmetic had already been fixed.
+                    let r = softfloat::convert(bits, softfloat::F64, softfloat::F32, mode);
+                    let out = fpu::Outcome {
+                        value: f32::from_bits(r.bits as u32),
+                        flags: r.flags,
+                    };
+                    // Narrowing can produce a subnormal from a perfectly normal
+                    // double, so the result policy applies exactly as it does
+                    // to the arithmetic.
+                    self.subnormal_policy_s(out, mode)
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
@@ -1946,13 +1996,16 @@ impl Pipeline {
             // To double.
             0o41 => match fmt {
                 0o20 => {
-                    let a = f32::from_bits(self.fpr.read_s(fs));
+                    let bits = u64::from(self.fpr.read_s(fs));
+                    let a = f32::from_bits(bits as u32);
                     if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                         return (FpCommit::Double(0), fpu::Flags::NONE, true);
                     }
-                    // Widening cannot underflow, so no result policy is needed.
-                    let out = fpu::cvt_d_s(a);
-                    (FpCommit::Double(out.value.to_bits()), out.flags, false)
+                    // Widening cannot lose anything, so no result policy is
+                    // needed — but it goes through the same path so there is
+                    // one conversion rather than two that can disagree.
+                    let r = softfloat::convert(bits, softfloat::F32, softfloat::F64, mode);
+                    (FpCommit::Double(r.bits), r.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
                 0o24 => {
@@ -4169,16 +4222,20 @@ mod tests {
     #[test]
     fn an_unimplemented_cop1_encoding_does_not_raise_when_cu1_is_set() {
         use crate::cop0::reg;
-        // SQRT.S -- a real COP1 arithmetic encoding still not wired. (This was
-        // ADD.S until the S/D arithmetic landed; the point of the test is the
-        // *unimplemented* path, so it moves to an encoding that still is.)
-        const SQRT_S: u32 = (0o21 << 26) | (0o20 << 21) | 4;
+        // `BC1F` -- a real, valid COP1 branch that is genuinely not wired yet.
+        //
+        // This test has now outlived two subjects: it was `ADD.S` until the S/D
+        // arithmetic landed, then `SQRT.S` until T-13-005. Each move is the
+        // test doing its job -- the point is the *unimplemented* path, so the
+        // subject follows whatever is still on it. When `BC1` lands, move it
+        // again rather than deleting it.
+        const BC1F: u32 = (0o21 << 26) | (0o10 << 21);
         assert_eq!(
-            decode(SQRT_S).op,
+            decode(BC1F).op,
             crate::decode::Op::Cop1Unimplemented,
             "valid encoding, not Reserved"
         );
-        let mut bus = Ram::new(alloc::vec![SQRT_S]);
+        let mut bus = Ram::new(alloc::vec![BC1F]);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set

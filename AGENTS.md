@@ -77,11 +77,10 @@ the VR4300's refusal to produce subnormals as a separate layer.
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**Phase 1's exit criterion is not met**: n64-systemtest reports **584 failing assertions**
-(it does now run its whole corpus and report). Do **not** tag v0.2.0 until it is `Failed: 0` —
-the criterion is an oracle number, and that is the point of it. COP1 is nearly clear; what remains
-is `SQRT` (undecoded and unimplemented), `CVT.S.D`'s rounding modes, and then the **LLE RSP**,
-cart DMA and SP registers — i.e. mostly Phase 2 work.
+**Phase 1's exit criterion is not met**: n64-systemtest reports **508 failing assertions** —
+RSP 291, cart 75, COP1 37, SP 15, other 90. Do **not** tag v0.2.0 until it is `Failed: 0` — the
+criterion is an oracle number, and that is the point of it. COP1 is nearly clear; the **LLE RSP**
+is now the dominant block, and `BC1F`/`BC1T` are still undecoded.
 
 ## Where things live
 
