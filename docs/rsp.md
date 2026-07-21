@@ -260,14 +260,27 @@ reading `imm` whole gives a wildly wrong address.
 non-zero element moves *fewer* bytes rather than shifting a full-width window.
 
 Implemented: the scalar group (`LBV`/`LSV`/`LLV`/`LDV` and their stores, sizes
-1/2/4/8 with the offset scaled to match) and `LQV`/`SQV`. A misaligned `LQV`
-runs only up to the next 16-byte boundary rather than crossing it — which is
-precisely why `LRV` exists, and an implementation that simply reads 16 bytes
-from the address passes an aligned test and fails a misaligned one.
+1/2/4/8 with the offset scaled to match), `LQV`/`SQV`, and `LRV`/`SRV`.
 
-Not yet implemented, and reported rather than approximated: `LRV`/`SRV`, the
-packed `LPV`/`LUV`/`SPV`/`SUV`, the strided `LHV`/`LFV`/`SHV`/`SFV`, and the
-transposing `LTV`/`STV`/`LWV`/`SWV`.
+**The register side never wraps.** n64-systemtest states it outright: *"the
+element specifier specifies the starting element. If there isn't enough room
+after e, there is no wrap-around but the number of bytes loaded is reduced."*
+Masking the byte index with 15 — the obvious reading of a 16-byte register —
+silently wraps to byte 0 and corrupts the far end of the vector. The **DMEM**
+side does wrap, and only for `LSV`/`LLV`/`LDV`: *"only three instructions can
+overflow"*, the rest stay inside 16 bytes by alignment.
+
+`LQV` and `LRV` are the pair that reconstructs a misaligned 128-bit load, and
+neither alone can. `LQV` runs from the address up to the next 16-byte boundary;
+`LRV` runs from the *previous* boundary up to the address and lands at the **far
+end** of the register — 8 bytes go to `VPR[8..15]`, not `VPR[0..7]`. Writing
+them from byte 0, the natural mirror of `LQV`, puts the right-hand half in the
+left-hand slots and the pair stops reconstructing anything.
+
+Not yet implemented, and reported rather than approximated: the packed
+`LPV`/`LUV`/`SPV`/`SUV`, the strided `LHV`/`LFV`/`SHV`/`SFV`, and the
+transposing `LTV`/`STV`/`SWV`. (`LWV` does not exist on hardware — the suite
+records that it *"does nothing"*.)
 
 ### Vector load/store
 

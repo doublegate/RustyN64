@@ -836,8 +836,19 @@ impl Rsp {
             0x00..=0x03 => {
                 let size = 1usize << op;
                 let addr = rs.wrapping_add_signed(Self::sext7(offset) * size.cast_signed() as i32);
+                // **The register side does not wrap.** n64-systemtest states it
+                // outright: "the element specifier specifies the starting
+                // element. If there isn't enough room after e, there is no
+                // wrap-around but the number of bytes loaded is reduced."
+                //
+                // Masking the byte index with 15 instead -- the obvious reading
+                // of a 16-byte register -- silently wraps back to byte 0 and
+                // corrupts the far end of the vector. The DMEM side *does* wrap,
+                // and only for this group: "only three instructions can
+                // overflow ...: LSV, LLV, LDV".
+                let size = core::cmp::min(size, 16 - element);
                 for i in 0..size {
-                    let byte = (element + i) & 15;
+                    let byte = element + i;
                     let at = addr.wrapping_add(i as u32);
                     if store {
                         let v = self.vu_byte(vt, byte);
@@ -866,6 +877,37 @@ impl Rsp {
                     } else {
                         let v = self.dmem_read_pub(at);
                         self.set_vu_byte(vt, byte, v);
+                    }
+                }
+                true
+            }
+            // `LRV`/`SRV`: the **right-aligned** partner of `LQV`, and the
+            // reason a misaligned 128-bit access needs two instructions.
+            //
+            // The transfer runs from the *previous* 16-byte boundary up to (and
+            // excluding) the address, and it lands at the *far end* of the
+            // register: with 8 bytes to move they go to `VPR[8..15]`, not
+            // `VPR[0..7]`. The element field then shortens it from the front on
+            // the DMEM side while moving the destination up — the wiki's own
+            // worked example has `e(2)` read bytes `0x10..0x13` into
+            // `VPR[12..15]`, which pins both halves of that at once.
+            0x05 => {
+                let end = rs.wrapping_add_signed(Self::sext7(offset) * 16);
+                let addr = end & !15;
+                let n = (end & 15) as usize;
+                if element < n {
+                    let count = n - element;
+                    let dest_base = 16 - n + element;
+                    for i in 0..count {
+                        let byte = dest_base + i;
+                        let at = addr.wrapping_add(i as u32);
+                        if store {
+                            let v = self.vu_byte(vt, byte);
+                            self.dmem_write_pub(at, v);
+                        } else {
+                            let v = self.dmem_read_pub(at);
+                            self.set_vu_byte(vt, byte, v);
+                        }
                     }
                 }
                 true
@@ -969,10 +1011,78 @@ mod mem_tests {
         assert_eq!(rsp.vu_byte(2, 0), 16);
     }
 
+    /// **`LRV` lands at the far end of the register, not the near one.**
+    ///
+    /// The wiki's worked example, reproduced exactly: with `a0` 16-byte aligned,
+    /// `lrv $v0, 0x18(a0)` reads bytes `0x10..0x17` into `VPR[8..15]`. An
+    /// implementation that writes from byte 0 — the natural mirror of `LQV` —
+    /// puts the right-hand half of the vector in the left-hand slots, and the
+    /// pair no longer reconstructs a misaligned 128-bit load.
+    #[test]
+    fn lrv_loads_into_the_far_end_of_the_register() {
+        let bytes: [u8; 48] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        rsp.set_su(2, 0x18);
+        assert!(rsp.vector_mem(false, 0x05, 2, 1, 0, 0));
+        for i in 0..8 {
+            assert_eq!(rsp.vu_byte(1, i), 0, "the left half stays untouched");
+        }
+        for i in 8..16 {
+            assert_eq!(
+                rsp.vu_byte(1, i),
+                bytes[0x10 + (i - 8)],
+                "byte {i} comes from the previous 16-byte boundary"
+            );
+        }
+    }
+
+    /// The element field shortens `LRV` from the front on the DMEM side while
+    /// moving the destination **up** — the wiki's `e(2)` example reads
+    /// `0x10..0x13` into `VPR[12..15]`.
+    #[test]
+    fn lrv_with_an_element_shortens_from_the_front() {
+        let bytes: [u8; 48] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        rsp.set_su(2, 0x18);
+        assert!(rsp.vector_mem(false, 0x05, 2, 1, 4, 0));
+        for i in 0..12 {
+            assert_eq!(rsp.vu_byte(1, i), 0, "byte {i} untouched");
+        }
+        for i in 12..16 {
+            assert_eq!(
+                rsp.vu_byte(1, i),
+                bytes[0x10 + (i - 12)],
+                "byte {i} still starts from the boundary, not from +4"
+            );
+        }
+    }
+
+    /// **`LQV` and `LRV` together reconstruct a misaligned 128-bit load**, which
+    /// is the entire point of the pair. Neither alone can.
+    #[test]
+    fn lqv_and_lrv_together_load_a_misaligned_vector() {
+        let bytes: [u8; 48] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        rsp.set_su(2, 0x08);
+        rsp.vector_mem(false, 0x04, 2, 1, 0, 0); // lqv 0x08
+        rsp.set_su(3, 0x18);
+        rsp.vector_mem(false, 0x05, 3, 1, 0, 0); // lrv 0x18
+        for i in 0..16 {
+            assert_eq!(
+                rsp.vu_byte(1, i),
+                bytes[8 + i],
+                "the pair must yield the 16 bytes at 0x08"
+            );
+        }
+    }
+
     /// An unimplemented opcode reports so rather than moving wrong bytes.
     #[test]
     fn an_unimplemented_vector_memory_op_is_reported() {
         let mut rsp = Rsp::new();
-        assert!(!rsp.vector_mem(false, 0x05, 0, 1, 0, 0), "LRV not in yet");
+        assert!(
+            !rsp.vector_mem(false, 0x0A, 0, 1, 0, 0),
+            "an unassigned opcode"
+        );
     }
 }
