@@ -97,7 +97,7 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | VR4300 integer core, pipeline, delay slots, errata, SysAD | **done** (Sprint 1) | Phase 1 |
 | VR4300 COP0, TLB, exception model | **done** (Sprint 2) | Phase 1 |
 | VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
-| CPU golden-log 0-diff | not started — no reference trace captured | Phase 1 (Sprint 3) |
+| CPU golden-log 0-diff | **done** (T-HARNESS-01) — `tests/golden/n64-systemtest.log`, captured from ares at the ELF entry; gate is `--test golden_log` | Phase 1 |
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
 

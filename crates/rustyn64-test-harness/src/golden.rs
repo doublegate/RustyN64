@@ -1,9 +1,20 @@
 //! VR4300 / RSP golden-log differ (keyed to n64-systemtest).
 //!
 //! Per retired instruction we capture a [`TraceRecord`] — `(pc, gpr, cycle)` —
-//! and diff the captured stream against a golden log. The golden source itself
-//! is **STUBBED** ([`GoldenLogDiffer::load_golden_stub`]) until a reference
-//! trace (e.g. a cen64/ares dump of n64-systemtest) is committed.
+//! and diff the captured stream against the committed reference trace
+//! ([`GoldenLogDiffer::load_golden`], `tests/golden/n64-systemtest.log`),
+//! captured from **ares** at the ELF entry.
+//!
+//! # What the comparison claims
+//!
+//! *Given identical initial state, `RustyN64` retires the same instructions in
+//! the same order as the reference.* This is the shape hardware verification
+//! calls **tandem verification** / step-and-compare co-simulation: the two
+//! models are aligned at a boundary and only deltas from that boundary are the
+//! claim. It says nothing about boot, nor about timing.
+//!
+//! `Count`, `Random` and `Compare` are excluded from comparison — see
+//! [`GoldenLogDiffer::diff`] for why that is forced rather than convenient.
 //!
 //! See `docs/testing-strategy.md` §golden-log compare.
 
@@ -72,19 +83,69 @@ impl GoldenLogDiffer {
         &self.captured
     }
 
-    /// Load the reference golden log for a named suite.
+    /// Load the committed reference trace for a named suite.
     ///
-    /// STUB: returns an empty log. Wire this to a committed reference trace
-    /// (n64-systemtest captured on cen64/ares) when one lands; the diff then
-    /// becomes a real regression gate.
-    #[must_use]
-    pub fn load_golden_stub(_suite: &str) -> Vec<TraceRecord> {
-        // TODO(T-HARNESS-01): load `tests/golden/<suite>.log` once a reference
-        // VR4300 trace is committed.
-        Vec::new()
+    /// Reads `tests/golden/<suite>.log`: `#`-comments carrying the provenance
+    /// header, then one retired-instruction PC per line in hex.
+    ///
+    /// Only `pc` is populated. The log deliberately records nothing else — see
+    /// [`GoldenLogDiffer::diff`] for what is compared and what is excluded.
+    ///
+    /// # Errors
+    ///
+    /// [`std::io::Error`] if the log is missing or a record is unparsable. A
+    /// missing log is an error rather than an empty vector: an empty golden log
+    /// makes [`GoldenLogDiffer::diff`] return [`GoldenDiff::Match`] against
+    /// *anything*, which is the vacuous pass this file exists to prevent.
+    pub fn load_golden(suite: &str) -> std::io::Result<Vec<TraceRecord>> {
+        let path = format!(
+            "{}/../../tests/golden/{suite}.log",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&path)?;
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let pc = u64::from_str_radix(line, 16).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{path}: bad record {line:?}: {e}"),
+                )
+            })?;
+            out.push(TraceRecord {
+                pc,
+                gpr: [0; 32],
+                cycle: 0,
+            });
+        }
+        Ok(out)
     }
 
     /// Diff the captured stream against a golden log by PC, record-for-record.
+    ///
+    /// # What is compared, and what is deliberately not
+    ///
+    /// **Compared:** the retired-instruction PC stream, in order. That is the
+    /// whole claim — "given identical initial state, `RustyN64` executes the same
+    /// instructions in the same order as the reference".
+    ///
+    /// **Excluded: `Count`, `Random` and `Compare`.** Not an oversight and not
+    /// convenience. libdragon's IPL3 zeroes `Count` mid-boot and then
+    /// accumulates PI/SI busy-waits whose length depends on the host's timing
+    /// model; libdragon's own `pi_wait()` passes the result to `entropy_add()`,
+    /// i.e. upstream treats a boot-relative `Count` as a source of **entropy**.
+    /// n64-systemtest's startup test likewise declines to assert `Count` at all,
+    /// and will not even pin `Wired` or `Index`. There is no correct value to
+    /// compare, so comparing one would only encode the reference emulator's
+    /// timing model as though it were hardware.
+    ///
+    /// This is the standard exclusion in retirement-level co-simulation (the
+    /// RISC-V RVVI/RVFI harnesses mask timing CSRs for the same reason). It is
+    /// safe **only** because those three registers have dedicated tests of their
+    /// own in the n64-systemtest COP0 category, which is a separate gate.
     #[must_use]
     pub fn diff(&self, golden: &[TraceRecord]) -> GoldenDiff {
         for (i, (g, a)) in golden.iter().zip(self.captured.iter()).enumerate() {

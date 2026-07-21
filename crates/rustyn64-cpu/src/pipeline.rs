@@ -1327,6 +1327,17 @@ impl Pipeline {
                 }
                 Ok(WriteBack::None)
             }
+            // EMUX — n64-systemtest's emulator-extension protocol, executed
+            // here because it needs the bus. See `docs/cpu.md` and ledger C-8:
+            // hardware leaves COP0 CO `funct` 0x20-0x3F inert, which is exactly
+            // why emux claimed the range.
+            MemOp::Emux {
+                funct,
+                code,
+                ptr,
+                len,
+                dest,
+            } => self.emux(bus, funct, code, ptr, len, dest),
             MemOp::Cache { addr, op } => self.cache_op(bus, addr, op),
             // The unaligned family accesses the ALIGNED container holding `addr`
             // and merges, so it can never raise an address error -- but it CAN
@@ -1334,6 +1345,98 @@ impl Pipeline {
             MemOp::Unaligned { op, addr, rt, dest } => {
                 self.access_unaligned(bus, op, addr, rt, dest)
             }
+        }
+    }
+
+    /// **EMUX** — the emulator-extension protocol n64-systemtest uses to talk to
+    /// its host (`ref-proj/n64-systemtest/src/emux.rs`).
+    ///
+    /// Three operations, all COP0 CO encodings in the `funct` 0x20-0x3F range
+    /// that hardware retires inertly (ledger **C-8**):
+    ///
+    /// | `funct` | name | effect |
+    /// |---|---|---|
+    /// | `0x20` | `xdetect` | return a capability bitmask in `rd` |
+    /// | `0x25` | `xlog` | print `GPR[rt]` bytes from `GPR[rd]` |
+    /// | `0x2C` | `xioctl` | `code 1` exit, `code 2` "fast mode" |
+    ///
+    /// # Why implement it rather than keep the no-op
+    ///
+    /// `xlog` is a console that needs **no PI, SI or `ISViewer` emulation** — the
+    /// suite's output reaches the host directly. `xioctl(EXIT)` turns "the run
+    /// finished" from a tick-budget guess into a definite signal. Both are worth
+    /// having long before the cartridge subsystem exists.
+    ///
+    /// Advertising a capability obliges us to implement it: the bitmask below
+    /// claims exactly `xlog` and `xioctl`, so the suite routes text to us only
+    /// because we can actually take it.
+    fn emux<B: Bus>(
+        &mut self,
+        bus: &mut B,
+        funct: u8,
+        code: u16,
+        ptr: u64,
+        len: u64,
+        dest: u8,
+    ) -> Result<WriteBack, Exception> {
+        /// `XDETECT` — capability probe.
+        const XDETECT: u8 = 0o40;
+        /// `XLOG` — write a string to the host.
+        const XLOG: u8 = 0o45;
+        /// `XIOCTL` — control operations.
+        const XIOCTL: u8 = 0o54;
+        /// `xdetect` code 1: "which of funct 0x20-0x3F do you support?"
+        const CODE_EXTENSIONS: u16 = 1;
+        /// `xioctl` code 1: terminate.
+        const XIOCTL_EXIT: u16 = 1;
+
+        // Hardware has no EMUX. Unless the host opts in, every encoding in the
+        // range stays inert -- which is both ledger C-8 and what a default ares
+        // build does (`if(!system.homebrewMode) return;`). Getting this wrong is
+        // observable: advertising capabilities makes n64-systemtest switch
+        // console backends, which changes the retired-instruction stream and
+        // diverges from a hardware-accurate reference trace.
+        if !bus.emux_enabled() {
+            return Ok(WriteBack::None);
+        }
+        match funct {
+            XDETECT if code == CODE_EXTENSIONS => {
+                // Bit N answers for `funct` 0x20 + N. We claim `xlog` and
+                // `xioctl` and nothing else, because those are what is below.
+                let mask = (1u64 << (XLOG - XDETECT)) | (1u64 << (XIOCTL - XDETECT));
+                Ok(WriteBack::Gpr { dest, value: mask })
+            }
+            XLOG => {
+                // Bounded deliberately: `len` is guest-controlled, and a corrupt
+                // or hostile value must not turn a log call into an unbounded
+                // read. 4 KiB is far above any line the suite emits.
+                const MAX: u64 = 4096;
+                let n = len.min(MAX);
+                let mut buf = alloc::vec::Vec::with_capacity(n as usize);
+                for i in 0..n {
+                    // Translated per byte: the string may straddle a page, and a
+                    // fault here is a real fault the guest must see.
+                    let p = self.translate_data(ptr.wrapping_add(i), false)?;
+                    // Read THROUGH the D-cache, exactly as a guest `LB` would.
+                    // The string was just formatted by cached stores, so it is
+                    // still sitting in dirty cache lines -- going straight to
+                    // the bus reads stale RDRAM and prints blanks where the
+                    // digits should be. That is precisely the staleness the
+                    // cache model exists to reproduce, so the log channel has to
+                    // respect it too.
+                    buf.push(self.read_width(bus, p, 1) as u8);
+                }
+                bus.emux_log(&buf);
+                Ok(WriteBack::None)
+            }
+            XIOCTL if code == XIOCTL_EXIT => {
+                bus.emux_exit();
+                Ok(WriteBack::None)
+            }
+            // Every other encoding in the range stays inert, which is the
+            // hardware behaviour C-8 records and the reason the range is usable
+            // as extension space at all.
+            _ => Ok(WriteBack::None),
         }
     }
 

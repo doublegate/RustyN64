@@ -60,6 +60,11 @@ fn run() -> (Vec<String>, usize, usize, String) {
 
     // The payload is a linked ELF, so its segments carry their own load
     // addresses; a flat copy puts every address in the image at the wrong place.
+    // Opt into EMUX: the `xlog` console needs no PI/SI/ISViewer emulation and
+    // runs ~9x faster, and `xioctl(EXIT)` gives a definite end-of-run. This is a
+    // deliberate departure from hardware, which is why it is opt-in and why the
+    // golden-log gate does NOT enable it.
+    sys.bus.enable_emux();
     rom::load_elf(&mut sys, &image).expect("loadable ELF payload");
     let elf = rom::seed_ipl3_handoff(&mut sys, &image).expect("IPL3 handoff");
 
@@ -75,14 +80,23 @@ fn run() -> (Vec<String>, usize, usize, String) {
     sys.cpu
         .set_pc(i64::from(entry.cast_signed()).cast_unsigned());
 
+    // Stop on the guest's own EXIT rather than only on the budget: a definite
+    // end-of-run beats "we stopped watching". The budget remains as a backstop.
     let deadline = sys.master_ticks() + BUDGET_TICKS;
-    while sys.master_ticks() < deadline {
+    while sys.master_ticks() < deadline && !sys.bus.emux_exited() {
         sys.step_to_next_edge();
     }
 
-    // The suite reports through the ISViewer debug channel, which it drives with
-    // uncached CPU stores -- no DMA, so nothing has to be flushed to read it.
-    let text = String::from_utf8_lossy(sys.bus.isviewer_output()).into_owned();
+    // The suite picks its console at runtime. It prefers EMUX `xlog` when the
+    // emulator advertises it (which we now do) and falls back to ISViewer
+    // otherwise, so both are read and whichever produced output wins. EMUX is
+    // ~9x faster here because it skips ISViewer's PI-status polling entirely.
+    let emux = String::from_utf8_lossy(sys.bus.emux_output()).into_owned();
+    let text = if emux.is_empty() {
+        String::from_utf8_lossy(sys.bus.isviewer_output()).into_owned()
+    } else {
+        emux
+    };
 
     let mut phase1 = Vec::new();
     let mut failures = 0usize;
