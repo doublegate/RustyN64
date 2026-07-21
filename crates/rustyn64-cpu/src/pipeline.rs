@@ -97,6 +97,17 @@ pub enum Exception {
     Trap,
     /// A reserved / unimplemented opcode.
     ReservedInstruction,
+    /// A reserved encoding **within a coprocessor's** instruction space.
+    ///
+    /// Reports the same `ExcCode` as [`Exception::ReservedInstruction`] but
+    /// also sets `Cause.CE` to the coprocessor number. A plain
+    /// `ReservedInstruction` leaves `CE` at zero, so the two are not
+    /// interchangeable — n64-systemtest checks the whole `Cause` register, and
+    /// `DCFC2` with `CU2` set expects `CE = 2`.
+    CoprocessorReserved {
+        /// Which coprocessor, for `Cause.CE`.
+        unit: u8,
+    },
     /// A coprocessor instruction with that unit disabled in `Status.CU`.
     CoprocessorUnusable {
         /// Which coprocessor, for `Cause.CE`.
@@ -292,6 +303,12 @@ struct Pending {
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default)]
 pub struct Pipeline {
+    /// The **whole** of COP2: one 64-bit latch.
+    ///
+    /// COP2 is not populated on the VR4300, and what remains is a single
+    /// value that every `MTC2`/`DMTC2` writes and every `MFC2`/`DMFC2` reads,
+    /// with the register index ignored. See the `EX` stage and ledger C-20.
+    pub cop2_latch: u64,
     /// `IC` → `RF`.
     pub ic_rf: Latch,
     /// `RF` → `EX`.
@@ -380,6 +397,8 @@ impl Pipeline {
             mem: None,
         };
         Self {
+            // Power-on value: a documented zero (ADR 0004).
+            cop2_latch: 0,
             ic_rf: EMPTY,
             rf_ex: EMPTY,
             ex_dc: EMPTY,
@@ -592,13 +611,26 @@ impl Pipeline {
                     let fr = fr_of(&self.cop0);
                     self.fpr.write_d(dest, fr, value);
                 } else {
-                    self.fpr.write_s(dest, value as u32);
+                    self.fpr.write_s(dest, fr_of(&self.cop0), value as u32);
                 }
             }
             if let Some(Cop0Access::Cop1(Cop1Access::WriteControl { dest, value })) =
                 self.dc_wb.cop0
             {
                 self.cop1.ctc1(dest, value);
+                // **`CTC1` can raise on its own.** Writing `FCSR` with a Cause
+                // bit whose Enable is also set meets the trap condition
+                // immediately -- no arithmetic required. n64-systemtest writes
+                // `enable_overflow | cause_overflow` in one go and expects the
+                // FP exception to report the `CTC1` itself as `ExceptPC`.
+                //
+                // Bit 17 (Unimplemented) is unmaskable and traps regardless,
+                // which is why it is tested outside the enable comparison.
+                if self.fcsr_traps_now() {
+                    self.abort_from(Stage::Wb, Exception::FloatingPoint);
+                    self.dc_wb.occupied = false;
+                    return;
+                }
             }
             if let Some(Cop0Access::Cop1(Cop1Access::Arith {
                 fmt,
@@ -754,7 +786,7 @@ impl Pipeline {
                 value: if wide {
                     self.fpr.read_d(src, fr_of(&self.cop0))
                 } else {
-                    crate::alu::sext32(self.fpr.read_s(src))
+                    crate::alu::sext32(self.fpr.read_s(src, fr_of(&self.cop0)))
                 },
             };
         }
@@ -962,13 +994,14 @@ impl Pipeline {
             | Op::Swc1
             | Op::Sdc1
             | Op::Cop1Unimplemented
+            | Op::Cop1ReservedControl
             // FP arithmetic is a COP1 instruction like any other and must raise
             // Coprocessor Unusable with `CU1` clear. It was omitted when
             // `FpArith` was introduced, which left the arithmetic executing
             // unconditionally -- a program that had not enabled COP1 would get
             // results instead of an exception.
             | Op::FpArith => 1,
-            Op::Cop2 => 2,
+            Op::Cop2 | Op::Cop2ReservedControl | Op::Mfc2 | Op::Dmfc2 | Op::Mtc2 => 2,
             _ => return None,
         };
         let status = self.cop0.read(crate::cop0::reg::STATUS);
@@ -1110,14 +1143,14 @@ impl Pipeline {
                 match op {
                     Op::Lwc1 => {
                         let v = Self::read_width(bus, phys, 4) as u32;
-                        self.fpr.write_s(ft, v);
+                        self.fpr.write_s(ft, fr_of(&self.cop0), v);
                     }
                     Op::Ldc1 => {
                         let v = Self::read_width(bus, phys, 8);
                         self.fpr.write_d(ft, fr, v);
                     }
                     Op::Swc1 => {
-                        let v = self.fpr.read_s(ft);
+                        let v = self.fpr.read_s(ft, fr_of(&self.cop0));
                         Self::write_width(bus, phys, 4, u64::from(v));
                     }
                     _ => {
@@ -1234,6 +1267,31 @@ impl Pipeline {
                 self.ex_dc = out;
                 return;
             }
+            // `DCFC1`/`DCTC1` are usable-but-unimplemented: the `CU1` check
+            // above has already passed, so this is the *other* outcome. The
+            // whole `Cause` field is replaced, leaving only bit 17 -- the suite
+            // pre-loads unrelated cause bits specifically to check they clear.
+            // COP2's equivalent declines differently: Reserved Instruction,
+            // and `FCSR` is not involved at all.
+            if out.decoded.op == crate::decode::Op::Cop2ReservedControl {
+                self.abort_from(Stage::Ex, Exception::CoprocessorReserved { unit: 2 });
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
+            if out.decoded.op == crate::decode::Op::Cop1ReservedControl {
+                /// `FCSR.Cause`, bits 17:12.
+                const CAUSE_MASK: u32 = 0x3F << 12;
+                let fcsr = self.cop1.fcsr();
+                self.cop1
+                    .ctc1(31, (fcsr & !CAUSE_MASK) | crate::fpu::CAUSE_UNIMPLEMENTED);
+                self.abort_from(Stage::Ex, Exception::FloatingPoint);
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
             match execute(out.decoded, out.rs_val, out.rt_val, hilo, out.pc) {
                 Ok(e) => {
                     out.write_back = e.write_back;
@@ -1249,6 +1307,52 @@ impl Pipeline {
                     // one delay slot in between. No wrong-path fetch needs
                     // squashing -- that falls out of the reverse order rather
                     // than being arranged.
+                    // **The link is `next_pc`, read BEFORE this instruction's
+                    // own redirect is applied.**
+                    //
+                    // At `EX` time `next_pc` already holds the address of the
+                    // instruction that will run after this one's delay slot:
+                    // `pc + 8` for an ordinary jump, and the OUTER target `+ 4`
+                    // when this jump is itself in a delay slot, because the
+                    // outer jump redirected a cycle earlier and `IC` has since
+                    // advanced past it.
+                    //
+                    // Computing `pc + 8` in `execute` was right for the
+                    // ordinary case and silently wrong for the nested one; the
+                    // live `next_pc` is that address by construction rather
+                    // than by a second formula that can disagree.
+                    // **COP2 is one 64-bit latch, not a register file.** The
+                    // register index is ignored entirely: n64-systemtest writes with
+                    // one index and reads back with several others, including 30 and
+                    // 31, and gets the same value every time. `MTC2` writes all 64
+                    // bits despite being nominally a 32-bit move; `MFC2` returns the
+                    // low half sign-extended and `DMFC2` the whole thing.
+                    //
+                    // The same shape as the reserved COP0 registers (ledger C-15) --
+                    // this processor's answer to "a coprocessor that is not really
+                    // there" is a single latch, twice over.
+                    match out.decoded.op {
+                        crate::decode::Op::Mtc2 => self.cop2_latch = out.rt_val,
+                        crate::decode::Op::Mfc2 => {
+                            out.write_back = WriteBack::Gpr {
+                                dest: out.decoded.dest,
+                                value: crate::alu::sext32(self.cop2_latch as u32),
+                            };
+                        }
+                        crate::decode::Op::Dmfc2 => {
+                            out.write_back = WriteBack::Gpr {
+                                dest: out.decoded.dest,
+                                value: self.cop2_latch,
+                            };
+                        }
+                        _ => {}
+                    }
+                    if let Some(dest) = e.link {
+                        out.write_back = WriteBack::Gpr {
+                            dest,
+                            value: *next_pc,
+                        };
+                    }
                     if let Some(r) = e.redirect {
                         *next_pc = r.target;
                         if r.nullify_delay_slot {
@@ -1550,12 +1654,14 @@ impl Pipeline {
             return self.fp_sign_op(fmt, funct, fs, fd, fr);
         }
         if funct == 6 {
-            if fmt == 0o20 {
-                self.fpr.write_s(fd, self.fpr.read_s(fs));
-            } else {
-                let v = self.fpr.read_d(fs, fr);
-                self.fpr.write_d(fd, fr, v);
-            }
+            // **`MOV.S` moves all 64 bits, not just the formatted half.**
+            // n64-systemtest's "Upper bits of 32 bit operation" reads the
+            // destination back with `DMFC1` after a `MOV.S` and expects the
+            // SOURCE's upper half there, not the destination's previous
+            // contents -- so this is a whole-register transfer that happens to
+            // be spelled `.S`.
+            let v = self.fpr.read_d(fs, fr);
+            self.fpr.write_d(fd, fr, v);
             // **`FCSR` is left completely alone**, `Cause` included.
             //
             // Clearing `Cause` here was written first, on no evidence, and was
@@ -1624,7 +1730,7 @@ impl Pipeline {
             // register (`write_raw`, zeroing the upper half) was tried and
             // REVERTED: it moved the oracle by nothing and it bypasses the `FR`
             // view, which is exactly the mistake ledger U-7 records (C-10).
-            FpCommit::Single(v) => self.fpr.write_s(fd, v),
+            FpCommit::Single(v) => self.fpr.write_s_arith(fd, fr, v),
             FpCommit::Double(v) => self.fpr.write_d(fd, fr, v),
             // `FCSR.C` is bit 23, and it is NOT part of the `Cause`/`Flags`
             // bookkeeping — a compare writes it and no other operation touches
@@ -1656,7 +1762,7 @@ impl Pipeline {
 
         let fcsr = self.cop1.fcsr();
         let (commit, flags, unimplemented) = if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs));
+            let a = f32::from_bits(self.fpr.read_s(fs, fr));
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 (0u64, fpu::Flags::NONE, true)
             } else if fpu::is_snan_f32(a) {
@@ -1712,7 +1818,7 @@ impl Pipeline {
             return true;
         }
         if fmt == 0o20 {
-            self.fpr.write_s(fd, commit as u32);
+            self.fpr.write_s_arith(fd, fr, commit as u32);
         } else {
             self.fpr.write_d(fd, fr, commit);
         }
@@ -1738,7 +1844,7 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let bits = u64::from(self.fpr.read_s(fs));
+            let bits = u64::from(self.fpr.read_s(fs, fr));
             let a = f32::from_bits(bits as u32);
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
@@ -1774,7 +1880,18 @@ impl Pipeline {
         mode: crate::fpu::Rounding,
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
-        if !fpu::is_subnormal_f32(out.value) {
+        // **Either** condition triggers, and both are needed.
+        //
+        // `is_subnormal` alone misses a result that underflows past the
+        // subnormal grid all the way to zero (`f64::MIN_POSITIVE` narrowed to
+        // `f32`; `MIN_POSITIVE` squared) — the VR4300 refuses those exactly as
+        // it refuses a subnormal.
+        //
+        // `flags.underflow` alone misses an *exact* subnormal, because IEEE
+        // signals underflow only when tiny **and inexact**. Replacing the
+        // first test with the second was tried and regressed the oracle from
+        // 89 to 131.
+        if !fpu::is_subnormal_f32(out.value) && !out.flags.underflow {
             return (FpCommit::Single(out.value.to_bits()), out.flags, false);
         }
         if !self.cop1.flush_denorm_to_zero() || self.underflow_traps() {
@@ -1794,7 +1911,18 @@ impl Pipeline {
         mode: crate::fpu::Rounding,
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
-        if !fpu::is_subnormal_f64(out.value) {
+        // **Either** condition triggers, and both are needed.
+        //
+        // `is_subnormal` alone misses a result that underflows past the
+        // subnormal grid all the way to zero (`f64::MIN_POSITIVE` narrowed to
+        // `f32`; `MIN_POSITIVE` squared) — the VR4300 refuses those exactly as
+        // it refuses a subnormal.
+        //
+        // `flags.underflow` alone misses an *exact* subnormal, because IEEE
+        // signals underflow only when tiny **and inexact**. Replacing the
+        // first test with the second was tried and regressed the oracle from
+        // 89 to 131.
+        if !fpu::is_subnormal_f64(out.value) && !out.flags.underflow {
             return (FpCommit::Double(out.value.to_bits()), out.flags, false);
         }
         if !self.cop1.flush_denorm_to_zero() || self.underflow_traps() {
@@ -1805,6 +1933,20 @@ impl Pipeline {
         flags.inexact = true;
         let v = fpu::flush_subnormal_f64(out.value, mode);
         (FpCommit::Double(v.to_bits()), flags, false)
+    }
+
+    /// Does the CURRENT `FCSR` already meet a trap condition?
+    ///
+    /// Used after a `CTC1` writes it: the register can be put into a trapping
+    /// state directly, without any arithmetic having run.
+    fn fcsr_traps_now(&self) -> bool {
+        /// `FCSR.Cause` maskable bits 16:12, shifted to line up with `Enable`.
+        const CAUSE_SHIFT: u32 = 12;
+        let fcsr = self.cop1.fcsr();
+        if fcsr & crate::fpu::CAUSE_UNIMPLEMENTED != 0 {
+            return true;
+        }
+        (fcsr >> CAUSE_SHIFT) & self.cop1.enables() != 0
     }
 
     /// Is underflow or inexact enabled? Either turns a flushed subnormal into
@@ -1849,8 +1991,8 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs));
-            let b = f32::from_bits(self.fpr.read_s(ft));
+            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            let b = f32::from_bits(self.fpr.read_s(ft, fr));
             if fpu::arith_unimplemented_s(a, b) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
             }
@@ -1901,11 +2043,12 @@ impl Pipeline {
         // The source is widened to `f64` first, which is EXACT for an `f32`, so
         // no rounding happens before the one the instruction asks for.
         let v = self.fp_source_as_f64(fmt, fs, fr);
+        // funct 8..=11 target `.L`, 12..=15 target `.W`.
+        let wide = funct < 0o14;
         if self.integer_conversion_unimplemented(fmt, fs, fr) {
             return (FpCommit::Single(0), fpu::Flags::NONE, true);
         }
-        // funct 8..=11 target `.L`, 12..=15 target `.W`.
-        if funct < 0o14 {
+        if wide {
             let out = fpu::to_i64(v, mode);
             // `to_i64` reports NaN and out-of-range as Invalid, which is the
             // IEEE answer and NOT this processor's: the VR4300 declines with
@@ -1928,16 +2071,44 @@ impl Pipeline {
 
     /// Is the source of a float-to-integer conversion one the VR4300 refuses?
     ///
-    /// Only subnormality is checked here; NaN and out-of-range are detected
-    /// from the conversion's own result, because "out of range" depends on the
-    /// target width.
+    /// Subnormality, plus a magnitude of `2^53` or more. NaN and infinity are
+    /// detected from the conversion's own result, because "out of range"
+    /// depends on the target width.
+    ///
+    /// The limit applies to `.W` targets as well, where it is **unobservable**:
+    /// `2^53` is far outside `i32`, so such a value is refused either way. It
+    /// was originally guarded on the target width, and the guard was removed
+    /// because no test could distinguish the two — an undistinguishable branch
+    /// is one that rots.
+    ///
+    /// # The `2^53` limit is narrower than `i64`
+    ///
+    /// `9007198717870080` converts; `9007199254740992` (`2^53`) raises
+    /// unimplemented — both far inside `i64`'s range. n64-systemtest brackets
+    /// the threshold with adjacent values on either side, which is what
+    /// identifies it as `2^53` rather than some larger bound. `2^53` is the
+    /// last integer a `double` represents exactly, so the natural reading is
+    /// that the conversion runs through double precision internally and
+    /// declines whatever it cannot hold exactly.
     fn integer_conversion_unimplemented(&self, fmt: u8, fs: u8, fr: bool) -> bool {
         use crate::fpu;
-        if fmt == 0o20 {
-            fpu::is_subnormal_f32(f32::from_bits(self.fpr.read_s(fs)))
+        /// The last integer a `double` represents exactly.
+        const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
+
+        let v = if fmt == 0o20 {
+            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            if fpu::is_subnormal_f32(a) {
+                return true;
+            }
+            f64::from(a)
         } else {
-            fpu::is_subnormal_f64(f64::from_bits(self.fpr.read_d(fs, fr)))
-        }
+            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            if fpu::is_subnormal_f64(a) {
+                return true;
+            }
+            a
+        };
+        v.abs() >= TWO_POW_53
     }
 
     /// `CVT.S`/`CVT.D`/`CVT.W`/`CVT.L`, from any source format.
@@ -1977,7 +2148,7 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
-                    let out = fpu::cvt_s_w(self.fpr.read_s(fs) as i32);
+                    let out = fpu::cvt_s_w(self.fpr.read_s(fs, fr) as i32);
                     (FpCommit::Single(out.value.to_bits()), out.flags, false)
                 }
                 // From `.L`, which the VR4300 restricts: bits 63:55 must be all
@@ -1996,7 +2167,7 @@ impl Pipeline {
             // To double.
             0o41 => match fmt {
                 0o20 => {
-                    let bits = u64::from(self.fpr.read_s(fs));
+                    let bits = u64::from(self.fpr.read_s(fs, fr));
                     let a = f32::from_bits(bits as u32);
                     if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                         return (FpCommit::Double(0), fpu::Flags::NONE, true);
@@ -2009,7 +2180,7 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)]
                 0o24 => {
-                    let out = fpu::cvt_d_w(self.fpr.read_s(fs) as i32);
+                    let out = fpu::cvt_d_w(self.fpr.read_s(fs, fr) as i32);
                     (FpCommit::Double(out.value.to_bits()), out.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
@@ -2059,8 +2230,8 @@ impl Pipeline {
         use crate::fpu;
         let out = if fmt == 0o20 {
             fpu::compare_s(
-                f32::from_bits(self.fpr.read_s(fs)),
-                f32::from_bits(self.fpr.read_s(ft)),
+                f32::from_bits(self.fpr.read_s(fs, fr)),
+                f32::from_bits(self.fpr.read_s(ft, fr)),
                 cond,
             )
         } else {
@@ -2079,7 +2250,7 @@ impl Pipeline {
     /// the only rounding is the one the instruction performs.
     fn fp_source_as_f64(&self, fmt: u8, fs: u8, fr: bool) -> f64 {
         if fmt == 0o20 {
-            f64::from(f32::from_bits(self.fpr.read_s(fs)))
+            f64::from(f32::from_bits(self.fpr.read_s(fs, fr)))
         } else {
             f64::from_bits(self.fpr.read_d(fs, fr))
         }
@@ -4281,7 +4452,7 @@ mod tests {
         }
 
         assert_eq!(
-            p.fpr.read_s(0),
+            p.fpr.read_s(0, true),
             0x4000_0000,
             "MOV.S must copy fs's low word into fd"
         );
@@ -4310,13 +4481,13 @@ mod tests {
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-            p.fpr.write_s(4, input);
-            p.fpr.write_s(0, 0x1122_3344);
+            p.fpr.write_s(4, true, input);
+            p.fpr.write_s(0, true, 0x1122_3344);
             let mut pc = KSEG0_PROG;
             for _ in 0..16 {
                 p.advance(&mut bus, &mut regs, &mut pc);
             }
-            assert_eq!(p.fpr.read_s(0), want, "funct {funct} did not execute");
+            assert_eq!(p.fpr.read_s(0, true), want, "funct {funct} did not execute");
         }
     }
 
@@ -4340,8 +4511,8 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 | FR
         p.cop1.ctc1(31, fcsr);
-        p.fpr.write_s(0, 0x7F80_0000); // +inf
-        p.fpr.write_s(2, 0xFF80_0000); // -inf
+        p.fpr.write_s(0, true, 0x7F80_0000); // +inf
+        p.fpr.write_s(2, true, 0xFF80_0000); // -inf
         p.fpr.write_raw(4, 0x1122_3344_5566_7788); // untouched-if-trapped marker
         let mut pc = KSEG0_PROG;
         for _ in 0..24 {
@@ -4360,7 +4531,7 @@ mod tests {
         let (p, code) = run_invalid_add_s(0);
         assert_eq!(code, 0, "masked: no exception");
         assert_ne!(
-            p.fpr.read_s(4),
+            p.fpr.read_s(4, true),
             0x5566_7788,
             "fd must be written when no trap is taken"
         );
@@ -4426,8 +4597,8 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         p.cop1.ctc1(31, ENABLE_INVALID);
-        p.fpr.write_s(0, 0x7F80_0000);
-        p.fpr.write_s(2, 0xFF80_0000);
+        p.fpr.write_s(0, true, 0x7F80_0000);
+        p.fpr.write_s(2, true, 0xFF80_0000);
 
         let mut pc = KSEG0_PROG;
         let mut saw_trap = false;
@@ -4482,8 +4653,8 @@ mod tests {
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         // f32::MAX + 1.0 -- the value is unchanged and the operation is
         // inexact, which is the n64-systemtest case from ledger C-11.
-        p.fpr.write_s(0, f32::MAX.to_bits());
-        p.fpr.write_s(2, 1.0f32.to_bits());
+        p.fpr.write_s(0, true, f32::MAX.to_bits());
+        p.fpr.write_s(2, true, 1.0f32.to_bits());
 
         let mut pc = KSEG0_PROG;
         for _ in 0..8 {
@@ -4497,7 +4668,11 @@ mod tests {
         for _ in 0..16 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(6), p.fpr.read_s(4), "the MOV.S did run");
+        assert_eq!(
+            p.fpr.read_s(6, true),
+            p.fpr.read_s(4, true),
+            "the MOV.S did run"
+        );
         assert_ne!(
             p.cop1.fcsr() & CAUSE_INEXACT,
             0,
@@ -4530,14 +4705,14 @@ mod tests {
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         // Pre-set the bit, as a previous unimplemented operation would have.
         p.cop1.ctc1(31, CAUSE_E);
-        p.fpr.write_s(0, 1.0f32.to_bits());
-        p.fpr.write_s(2, 2.0f32.to_bits());
+        p.fpr.write_s(0, true, 1.0f32.to_bits());
+        p.fpr.write_s(2, true, 2.0f32.to_bits());
 
         let mut pc = KSEG0_PROG;
         for _ in 0..16 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(4), 3.0f32.to_bits(), "the ADD.S ran");
+        assert_eq!(p.fpr.read_s(4, true), 3.0f32.to_bits(), "the ADD.S ran");
         assert_eq!(
             p.cop1.fcsr() & CAUSE_E,
             0,
@@ -4566,8 +4741,8 @@ mod tests {
             // Start with the condition at the OPPOSITE of the expected result,
             // so "wrote the right value" is distinguishable from "left it".
             p.cop1.ctc1(31, if want { 0 } else { FCSR_C });
-            p.fpr.write_s(0, a.to_bits());
-            p.fpr.write_s(2, b.to_bits());
+            p.fpr.write_s(0, true, a.to_bits());
+            p.fpr.write_s(2, true, b.to_bits());
             p.fpr.write_raw(4, 0xDEAD_BEEF_1122_3344);
 
             let mut pc = KSEG0_PROG;
@@ -4609,14 +4784,14 @@ mod tests {
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
             p.cop1.ctc1(31, 0); // RM = 0, round to nearest even
-            p.fpr.write_s(0, (-1.5f32).to_bits());
+            p.fpr.write_s(0, true, (-1.5f32).to_bits());
 
             let mut pc = KSEG0_PROG;
             for _ in 0..16 {
                 p.advance(&mut bus, &mut regs, &mut pc);
             }
             #[allow(clippy::cast_possible_wrap)] // reading the word back as signed
-            let got = p.fpr.read_s(4) as i32;
+            let got = p.fpr.read_s(4, true) as i32;
             assert_eq!(got, want, "instruction {word:#010X} on -1.5");
         }
     }
@@ -4637,8 +4812,8 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-        p.fpr.write_s(0, 12345u32);
-        p.fpr.write_s(4, 0x1122_3344);
+        p.fpr.write_s(0, true, 12345u32);
+        p.fpr.write_s(4, true, 0x1122_3344);
 
         let mut pc = KSEG0_PROG;
         for _ in 0..16 {
@@ -4648,9 +4823,238 @@ mod tests {
         // so this is the stricter check and it also catches a wrong-signed
         // zero or a NaN payload that float equality would accept.
         assert_eq!(
-            p.fpr.read_s(4),
+            p.fpr.read_s(4, true),
             12345.0f32.to_bits(),
             "the integer source must be converted, not reinterpreted"
+        );
+    }
+
+    /// **`CTC1` can raise an FP exception by itself.** Writing `FCSR` with a
+    /// Cause bit whose Enable is also set meets the trap condition
+    /// immediately — no arithmetic has to run.
+    ///
+    /// The instruction must also not retire, exactly as a trapping arithmetic
+    /// operation does not.
+    #[test]
+    fn ctc1_raises_when_it_writes_a_cause_bit_that_is_enabled() {
+        use crate::cop0::reg;
+        /// `CTC1 $1, $f31` — rs 0o06, rt 1, fs 31.
+        const CTC1_F31: u32 = (0o21 << 26) | (0o06 << 21) | (1 << 16) | (31 << 11);
+        /// `Cause.overflow` (bit 14) with `Enable.overflow` (bit 9).
+        const OVERFLOW_ARMED: u64 = (1 << 14) | (1 << 9);
+
+        let mut bus = Ram::new(alloc::vec![CTC1_F31]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        regs.write(1, OVERFLOW_ARMED);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::FPE,
+            "the CTC1 itself must raise"
+        );
+        assert_eq!(
+            u64::from(p.cop1.fcsr()),
+            OVERFLOW_ARMED,
+            "and the written value stands"
+        );
+    }
+
+    /// The *enable* half is load-bearing: the same Cause bit with its Enable
+    /// clear must NOT raise. Without this, an implementation that trapped on
+    /// any non-zero Cause would pass the test above.
+    #[test]
+    fn ctc1_does_not_raise_when_the_matching_enable_is_clear() {
+        use crate::cop0::reg;
+        const CTC1_F31: u32 = (0o21 << 26) | (0o06 << 21) | (1 << 16) | (31 << 11);
+
+        let mut bus = Ram::new(alloc::vec![CTC1_F31]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        // Cause.overflow set, Enable.overflow clear; an unrelated enable set.
+        regs.write(1, (1 << 14) | (1 << 11));
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            0,
+            "a Cause bit whose Enable is clear must not trap"
+        );
+    }
+
+    /// **`DCFC1`/`DCTC1` and `DCFC2`/`DCTC2` decline in DIFFERENT ways.**
+    ///
+    /// The encodings are structurally identical — the doubleword control moves
+    /// of their respective coprocessors — and it is tempting to give them one
+    /// behaviour. COP1's raise a *floating-point* exception with `FCSR.Cause`
+    /// set to unimplemented-operation; COP2's raise *Reserved Instruction* with
+    /// `Cause.CE = 2` and do not touch `FCSR` at all.
+    ///
+    /// Both are tested here together precisely because treating them uniformly
+    /// is the natural mistake.
+    #[test]
+    fn the_doubleword_control_moves_decline_differently_per_coprocessor() {
+        use crate::cop0::reg;
+        /// `DCFC1 $1, $f0` — COP1, rs 0o03.
+        const DCFC1: u32 = (0o21 << 26) | (0o03 << 21) | (1 << 16);
+        /// `DCFC2 $1, $0` — COP2, rs 0o03.
+        const DCFC2: u32 = (0o22 << 26) | (0o03 << 21) | (1 << 16);
+
+        // COP1: floating-point exception, FCSR.Cause = unimplemented ONLY.
+        let mut bus = Ram::new(alloc::vec![DCFC1]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set
+        // Pre-load unrelated cause bits: they must be cleared, not merged.
+        p.cop1.ctc1(31, 0x0001_F000);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::FPE,
+            "DCFC1 raises FPE"
+        );
+        assert_eq!(
+            p.cop1.fcsr() & (0x3F << 12),
+            crate::fpu::CAUSE_UNIMPLEMENTED,
+            "and Cause is ONLY the unimplemented bit"
+        );
+
+        // COP2: Reserved Instruction, and Cause.CE names the coprocessor.
+        let mut bus = Ram::new(alloc::vec![DCFC2]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // CU2 set (bit 30) as well as CU1, so this is not an unusable fault.
+        p.cop0.set_hardware(reg::STATUS, 0x7400_0000);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::RI,
+            "DCFC2 raises Reserved Instruction, not FPE"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 28) & 0b11,
+            2,
+            "and Cause.CE names COP2 -- a plain RI would leave it zero"
+        );
+    }
+
+    /// **A `JAL` inside another jump's delay slot links to the OUTER target
+    /// + 4**, not to its own `pc + 8`.
+    ///
+    /// Its own delay slot never runs — the outer jump already redirected — so
+    /// the instruction after it is the outer target. n64-systemtest states the
+    /// rule in its assertion text: *"JAL in delay slot writes target address+4
+    /// of original jump into delay slot"*.
+    ///
+    /// The ordinary case is asserted alongside it, because the two share one
+    /// implementation and a test of only the nested case would pass with the
+    /// link hard-wired to `next_pc` in a way that broke normal jumps.
+    #[test]
+    fn a_jal_in_a_delay_slot_links_past_the_outer_target() {
+        /// `JAL <target>` — the target is a word index within the 256 MB region.
+        const fn jal(target_word: u32) -> u32 {
+            (0o03 << 26) | target_word
+        }
+        /// `J <target>`.
+        const fn j(target_word: u32) -> u32 {
+            (0o02 << 26) | target_word
+        }
+
+        // Ordinary: JAL at KSEG0_PROG, delay slot after it, link = pc + 8.
+        {
+            let outer = u32::try_from(KSEG0_PROG & 0x0FFF_FFFF).unwrap() >> 2;
+            let mut bus = Ram::new(alloc::vec![jal(outer + 8), 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(regs.read(31), KSEG0_PROG + 8, "an ordinary JAL links pc+8");
+        }
+
+        // Nested: J to T, with a JAL in its delay slot. The JAL must link to
+        // T + 4, NOT to its own address + 8.
+        {
+            let base = u32::try_from(KSEG0_PROG & 0x0FFF_FFFF).unwrap() >> 2;
+            // T is eight words along; the JAL sits in the J's delay slot.
+            let t_word = base + 8;
+            let prog = alloc::vec![j(t_word), jal(base + 4), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            let mut bus = Ram::new(prog);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            let outer_target = KSEG0_PROG + 8 * 4;
+            assert_eq!(
+                regs.read(31),
+                outer_target + 4,
+                "the nested JAL links to the OUTER target + 4"
+            );
+            assert_ne!(
+                regs.read(31),
+                KSEG0_PROG + 4 + 8,
+                "and specifically NOT to its own pc + 8"
+            );
+        }
+    }
+
+    /// **COP2 is one 64-bit latch, not a register file.**
+    ///
+    /// The register index is ignored entirely: n64-systemtest writes with one
+    /// index and reads back with several others — including 30 and 31 — and
+    /// gets the same value every time. `MTC2` writes all 64 bits despite being
+    /// nominally a 32-bit move; `MFC2` returns the low half sign-extended and
+    /// `DMFC2` the whole thing.
+    ///
+    /// The index-independence is the assertion that matters: a real 32-entry
+    /// register file passes a write-then-read-same-index test perfectly.
+    #[test]
+    fn cop2_is_a_single_latch_whose_register_index_is_ignored() {
+        use crate::cop0::reg;
+        /// `MTC2 $1, $5` — COP2 rs 0o04, rt 1, rd 5.
+        const MTC2_R1_TO_5: u32 = (0o22 << 26) | (0o04 << 21) | (1 << 16) | (5 << 11);
+        /// `DMFC2 $2, $30` — rs 0o01, rt 2, rd 30. A DIFFERENT index.
+        const DMFC2_30_TO_R2: u32 = (0o22 << 26) | (0o01 << 21) | (2 << 16) | (30 << 11);
+        /// `MFC2 $3, $31` — rs 0o00 (so no `rs` term), rt 3, rd 31. Another
+        /// different index again.
+        const MFC2_31_TO_R3: u32 = (0o22 << 26) | (3 << 16) | (31 << 11);
+
+        let mut bus = Ram::new(alloc::vec![MTC2_R1_TO_5, DMFC2_30_TO_R2, MFC2_31_TO_R3]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // CU2 usable, or these fault before reaching the latch.
+        p.cop0.set_hardware(reg::STATUS, 0x5000_0000);
+        regs.write(1, 0x0123_4567_89AB_CDEF);
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..32 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(2),
+            0x0123_4567_89AB_CDEF,
+            "DMFC2 from a DIFFERENT index reads all 64 bits MTC2 wrote"
+        );
+        assert_eq!(
+            regs.read(3),
+            0xFFFF_FFFF_89AB_CDEF,
+            "MFC2 from another index reads the low half, sign-extended"
         );
     }
 
@@ -4671,8 +5075,8 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         p.cop1.ctc1(31, fcsr);
-        p.fpr.write_s(0, a);
-        p.fpr.write_s(2, b);
+        p.fpr.write_s(0, true, a);
+        p.fpr.write_s(2, true, b);
         p.fpr.write_raw(4, 0x1122_3344_5566_7788);
         let mut pc = KSEG0_PROG;
         for _ in 0..24 {
@@ -4731,6 +5135,43 @@ mod tests {
         assert_ne!(p.cop1.fcsr() & CAUSE_E, 0);
     }
 
+    /// **An underflow that rounds past the subnormal grid to ZERO is refused
+    /// too**, not just one that lands on a subnormal.
+    ///
+    /// `MIN_POSITIVE * MIN_POSITIVE` is about `1.4e-76`, far below `f32`'s
+    /// smallest subnormal, so the rounded result is plain zero and
+    /// `is_subnormal` is false for it. Testing only that condition let every
+    /// such case through silently — worth 22 oracle assertions.
+    ///
+    /// The converse matters as much and is covered by
+    /// `a_subnormal_result_raises_unimplemented_when_fs_is_clear`: IEEE signals
+    /// underflow only when tiny **and inexact**, so an *exact* subnormal has
+    /// `underflow` clear. Neither condition implies the other; the
+    /// implementation needs both.
+    #[test]
+    fn an_underflow_that_reaches_zero_is_refused_as_well() {
+        use crate::cop0::reg;
+        /// `MUL.S $f4, $f0, $f2` — fmt 16, funct 2.
+        const MUL_S: u32 = (0o21 << 26) | (0o20 << 21) | (2 << 16) | (4 << 6) | 2;
+
+        let mut bus = Ram::new(alloc::vec![MUL_S]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        p.fpr.write_s(0, true, f32::MIN_POSITIVE.to_bits());
+        p.fpr.write_s(2, true, f32::MIN_POSITIVE.to_bits());
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_ne!(
+            p.cop1.fcsr() & CAUSE_E,
+            0,
+            "an underflow to zero must raise unimplemented with FS clear"
+        );
+    }
+
     /// With `FS` set, the same operation **flushes** — and where it flushes to
     /// depends on the rounding mode. These are n64-systemtest's own vectors.
     ///
@@ -4750,7 +5191,7 @@ mod tests {
             (3, (-f32::MIN_POSITIVE).to_bits()), // toward -inf: away from zero
         ] {
             let p = run_add_s(FCSR_FS | rm, a, b);
-            assert_eq!(p.fpr.read_s(4), want, "RM={rm}");
+            assert_eq!(p.fpr.read_s(4, true), want, "RM={rm}");
             let fcsr = p.cop1.fcsr();
             assert_ne!(fcsr & (1 << 13), 0, "Cause.underflow, RM={rm}");
             assert_ne!(fcsr & (1 << 12), 0, "Cause.inexact, RM={rm}");
@@ -4763,7 +5204,7 @@ mod tests {
             1.539_154_3e-37f32.to_bits(),
         );
         assert_eq!(
-            p.fpr.read_s(4),
+            p.fpr.read_s(4, true),
             f32::MIN_POSITIVE.to_bits(),
             "a positive tiny result under toward-+inf"
         );
@@ -4830,7 +5271,7 @@ mod tests {
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-            p.fpr.write_s(0, subnormal);
+            p.fpr.write_s(0, true, subnormal);
             let mut pc = KSEG0_PROG;
             for _ in 0..24 {
                 p.advance(&mut bus, &mut regs, &mut pc);
@@ -4848,13 +5289,60 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-        p.fpr.write_s(0, subnormal);
+        p.fpr.write_s(0, true, subnormal);
         let mut pc = KSEG0_PROG;
         for _ in 0..24 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(4), subnormal, "MOV.S moves the subnormal");
+        assert_eq!(
+            p.fpr.read_s(4, true),
+            subnormal,
+            "MOV.S moves the subnormal"
+        );
         assert_eq!(p.cop1.fcsr(), 0, "and raises nothing");
+    }
+
+    /// **A `.L` conversion refuses a magnitude of `2^53` or more**, which is
+    /// far narrower than `i64`.
+    ///
+    /// The threshold is bracketed rather than assumed: `9007198717870080`
+    /// converts and `9007199254740992` (`2^53`) does not, and both are
+    /// comfortably inside `i64`. A test using only a huge value would pass with
+    /// the limit set anywhere between `2^53` and `i64::MAX`.
+    ///
+    /// The same limit applies to `.W`, where it is **unobservable**: `2^53` is
+    /// far outside `i32`, so both paths end in unimplemented. Guarding it on
+    /// the target width was tried and removed — a branch no test can
+    /// distinguish is a branch that will rot.
+    #[test]
+    fn a_long_conversion_refuses_two_to_the_fifty_three_but_not_just_below() {
+        use crate::cop0::reg;
+        /// `CVT.L.D $f4, $f0` — fmt 17 (`.D`), `fs` 0, `fd` 4, funct 0o45.
+        const CVT_L_D: u32 = (0o21 << 26) | (0o21 << 21) | (4 << 6) | 0o45;
+
+        for (src, want_unimplemented) in [
+            (9_007_198_717_870_080.0f64, false),
+            (9_007_199_254_740_992.0f64, true), // 2^53
+            (-9_007_199_254_740_992.0f64, true),
+            (-9_007_198_717_870_080.0f64, false),
+        ] {
+            let mut bus = Ram::new(alloc::vec![CVT_L_D]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_d(0, true, src.to_bits());
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            let raised = p.cop1.fcsr() & CAUSE_E != 0;
+            assert_eq!(raised, want_unimplemented, "{src:e}");
+            if !want_unimplemented {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let want = src as i64 as u64;
+                assert_eq!(p.fpr.read_d(4, true), want, "{src:e} must convert");
+            }
+        }
     }
 
     /// An out-of-range float-to-integer conversion is **unimplemented**, not
@@ -4871,7 +5359,7 @@ mod tests {
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-            p.fpr.write_s(0, src.to_bits());
+            p.fpr.write_s(0, true, src.to_bits());
             let mut pc = KSEG0_PROG;
             for _ in 0..24 {
                 p.advance(&mut bus, &mut regs, &mut pc);
@@ -5010,18 +5498,25 @@ mod tests {
         for _ in 0..40 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(4), 0x55, "MTC1 reached the FP register file");
+        assert_eq!(
+            p.fpr.read_s(4, true),
+            0x55,
+            "MTC1 reached the FP register file"
+        );
         assert_eq!(regs.read(2), 0x55, "and MFC1 read it back");
         assert_eq!(regs.read(1), 0x55, "$1 -- MTC1's source -- must survive");
     }
 
     /// **`DMFC1`/`DMTC1` apply the `FR` view**, they do not move the physical
     /// register. UM Ch. 17's pseudocode: with `FR = 0` and an even `fs`,
-    /// `data <- FGR[fs+1] || FGR[fs]` — the pair, exactly like `LDC1`.
+    /// In half mode a 64-bit access addresses **FGR `fs & !1` in its
+    /// entirety**, and the odd FGR is not part of it.
     ///
-    /// An implementation that moves `FGR[fs]` raw round-trips through
-    /// `DMTC1`/`DMFC1` correctly and disagrees with `SDC1`, which is why this
-    /// asserts across *both* paths.
+    /// This test previously asserted the *pair* model — low word in the even
+    /// FGR, high word in the odd one — which round-trips through
+    /// `DMTC1`/`DMFC1` perfectly and is still wrong: hardware never touches
+    /// the odd register. See `fpr.rs` for the n64-systemtest vector that
+    /// settles it.
     #[test]
     fn dmtc1_and_dmfc1_apply_the_fr_view_rather_than_moving_the_raw_fgr() {
         use crate::cop0::reg;
@@ -5041,17 +5536,13 @@ mod tests {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
 
-        // The pair, not FGR 2 alone -- this is what a raw move gets wrong.
+        // All 64 bits in FGR 2; FGR 3 is not involved.
         assert_eq!(
             p.fpr.read_raw(2),
-            0x5566_7788,
-            "even FGR holds the low word"
+            0x1122_3344_5566_7788,
+            "the whole value lives in the even FGR"
         );
-        assert_eq!(
-            p.fpr.read_raw(3),
-            0x1122_3344,
-            "odd FGR holds the high word"
-        );
+        assert_eq!(p.fpr.read_raw(3), 0, "the odd FGR is untouched");
         assert_eq!(regs.read(2), 0x1122_3344_5566_7788, "DMFC1 reassembles it");
         // And it agrees with the LDC1/SDC1 view of the same register.
         assert_eq!(p.fpr.read_d(2, false), 0x1122_3344_5566_7788);

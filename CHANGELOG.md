@@ -9,6 +9,87 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — COP2 as a single latch, and a not-taken `BGEZAL` links correctly
+
+COP2 is not a register file: it is one 64-bit latch that every `MTC2`/`DMTC2` writes and every
+`MFC2`/`DMFC2` reads, with the register index ignored. `MFC2` returns the low half sign-extended.
+Ledger **C-20** — the same shape as the reserved COP0 registers (C-15).
+
+A **not-taken** `BGEZAL` in another jump's delay slot now links through the same `next_pc` path as
+the taken forms; it was the last place the old `pc + 8` formula survived.
+
+**Phase 1's categories: 42 → 40.**
+
+### Fixed — a jump-and-link inside a delay slot links past the outer target
+
+The link register receives the address of the instruction that runs after the jump's delay slot.
+That is `pc + 8` only when the jump is not *itself* in a delay slot; when it is, its own delay slot
+never runs and the link is the outer jump's `target + 4`.
+
+The fix removes a formula rather than adding one: `EX` now fills the link from the live `next_pc`,
+which is that address by construction in both cases. Ledger **C-19**.
+
+**Phase 1's categories: 45 → 42.**
+
+### Fixed — the doubleword control moves now trap, and differently per coprocessor
+
+`DCFC1`/`DCTC1` raise a floating-point exception with `FCSR.Cause` set to unimplemented-operation
+only; `DCFC2`/`DCTC2` raise Reserved Instruction with `Cause.CE = 2`. All four previously fell into
+the catch-all unimplemented arm and retired silently.
+
+`Cause.CE` is not only for Coprocessor Unusable — it names the coprocessor for a reserved encoding
+inside a *usable* one too, which needed a distinct `Exception::CoprocessorReserved`. Ledger
+**C-18**.
+
+**Phase 1's categories: 49 → 45.**
+
+### Fixed — `FCR0.Imp` is `0x0A`, and `CTC1` can raise on its own
+
+`FCR0` reports implementation `0x0A`, not the `0x0B` this implementation used. `0x0B` is correct
+for `PRId.Imp` — the *CPU's* register — and the two were conflated. The N64brew Wiki states `0x0B`
+for `FCR0` too and is wrong; n64-systemtest and cen64 independently give `0x0A00`. Accuracy ledger
+**S-4**, which is about how to use the wiki rather than a reason to stop.
+
+`CTC1` writing `FCSR` with a Cause bit whose Enable is also set now raises an FP exception
+immediately, reporting the `CTC1` itself as `ExceptPC`. Ledger **C-17**.
+
+**Phase 1's categories: 53 → 49.**
+
+### Fixed — reserved COP0 registers are a shared write latch; `EntryLo` is 30 bits wide
+
+COP0 registers 7, 21..=25 and 31 are not storage: a write goes nowhere and a read returns the value
+of the most recent `MTC0`/`DMTC0` to **any** COP0 register. This replaces the guess recorded as
+accuracy-ledger **U-1** ("discards writes and reads zero"), which the manual's silence licensed and
+which n64-systemtest documents as wrong. Ledger **C-15**.
+
+`EntryLo0`/`EntryLo1` are writable to bit **29**, not bit 25. The architectural fields account only
+for bits 25:0, and the mask had been derived from them; bits 29:26 store and read back exactly as
+written. Ledger **C-16** — a field table and a writable-bits mask are different documents.
+
+**Phase 1's categories: 60 → 53.**
+
+### Fixed — `FR = 0` addresses whole even registers, not FGR pairs
+
+With `Status.FR = 0` an FPR addresses **FGR `n & !1` in its entirety**; odd FGRs are unaddressable,
+and a 32-bit access picks the low half for an even register number and the **high** half for an odd
+one. The previous model assembled a value from two registers' low halves — which round-trips
+perfectly through `DMTC1`/`DMFC1` and is still wrong, because hardware never touches the odd
+register.
+
+Two more behaviours fell out of the same tests: a single-precision **arithmetic** result *clears*
+the other half of its destination while `MTC1`/`LWC1` *preserve* it (now `write_s_arith` vs
+`write_s`), and `MOV.S` moves **all 64 bits** rather than the formatted half.
+
+Alongside it, C-13's subnormal-result policy gained its missing half: a result that underflows
+**past** the subnormal grid to zero is refused too. `is_subnormal` and `flags.underflow` are both
+needed — neither implies the other, since IEEE signals underflow only when tiny *and inexact*.
+
+A float-to-`.L` conversion also refuses a magnitude of **`2^53`** or more — far narrower than
+`i64`, and bracketed by the suite rather than assumed.
+
+**Phase 1's categories: 99 → 60.** The entire odd-index cluster reached zero. Accuracy ledger
+**C-14**.
+
 ### Added — `SQRT` and a correctly-rounded `CVT.S.D`
 
 `softfloat` gains `convert` (format narrowing/widening) and `sqrt`, both correctly rounded with

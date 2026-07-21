@@ -131,9 +131,16 @@ pub const WRITE_MASK: [u64; 32] = {
     m[reg::INDEX as usize] = 0x8000_003F;
     // Random is READ-ONLY (UM §5.4.2, p. 147).
     m[reg::RANDOM as usize] = 0;
-    // EntryLo0/1: PFN (25:6) | C (5:3) | D (2) | V (1) | G (0).
-    m[reg::ENTRY_LO0 as usize] = 0x03FF_FFFF;
-    m[reg::ENTRY_LO1 as usize] = 0x03FF_FFFF;
+    // EntryLo0/1: PFN (25:6) | C (5:3) | D (2) | V (1) | G (0) accounts for
+    // bits 25:0 — but the register is writable up to bit **29**, and the top
+    // four bits read back exactly as written.
+    //
+    // Measured, not derived: n64-systemtest writes `0x0F000000` and expects it
+    // back verbatim, and its expectation for every value is `v & 0x3FFF_FFFF`
+    // (`tests/tlb/mod.rs`). Masking at the architectural field width instead
+    // silently dropped bits 29:26 on write-back.
+    m[reg::ENTRY_LO0 as usize] = 0x3FFF_FFFF;
+    m[reg::ENTRY_LO1 as usize] = 0x3FFF_FFFF;
     // Context: only PTEBase (63:23) is software-writable; BadVPN2 (22:4) is
     // written by hardware on a TLB exception and 3:0 are always zero.
     m[reg::CONTEXT as usize] = 0xFFFF_FFFF_FF80_0000;
@@ -203,8 +210,8 @@ pub const ARCH_MASK: [u64; 32] = {
     let mut m = [0u64; 32];
     m[reg::INDEX as usize] = 0x8000_003F;
     m[reg::RANDOM as usize] = 0x3F;
-    m[reg::ENTRY_LO0 as usize] = 0x03FF_FFFF;
-    m[reg::ENTRY_LO1 as usize] = 0x03FF_FFFF;
+    m[reg::ENTRY_LO0 as usize] = 0x3FFF_FFFF;
+    m[reg::ENTRY_LO1 as usize] = 0x3FFF_FFFF;
     // PTEBase (63:23) | BadVPN2 (22:4); bits 3:0 are always zero.
     m[reg::CONTEXT as usize] = 0xFFFF_FFFF_FFFF_FFF0;
     m[reg::PAGE_MASK as usize] = 0x01FF_E000;
@@ -273,6 +280,14 @@ pub struct Cop0 {
     /// Held apart from `regs` precisely because it is not writable: keeping it
     /// in the array would need a mask exception that a later edit could relax.
     ec: u8,
+
+    /// The value of the most recent write to **any** COP0 register.
+    ///
+    /// The seven unused register numbers (7, 21..=25, 31) are not storage: they
+    /// read back this shared latch. So writing reg 7 and reading it returns
+    /// what was written — until *any other* COP0 write intervenes, after which
+    /// reg 7 reads that value instead. See [`Cop0::UNUSED`].
+    write_latch: u64,
 }
 
 impl Default for Cop0 {
@@ -317,6 +332,10 @@ impl Cop0 {
             // p. 628). The manual never names the N64, so this is an INFERENCE
             // -- accuracy ledger U-6, not a documented fact.
             ec: 0b111,
+            // Power-on value of the shared unused-register latch. The manual
+            // does not define one; ADR 0004 requires reproducibility, so it is
+            // a documented zero.
+            write_latch: 0,
         }
     }
 
@@ -423,6 +442,13 @@ impl Cop0 {
     #[must_use]
     pub const fn read(&self, n: u8) -> u64 {
         let n = n & 31;
+        // The unused registers are a single shared latch, not storage. This is
+        // checked FIRST: they have no `ARCH_MASK` entry, so falling through
+        // would return a masked zero and look like a well-behaved read-only
+        // register rather than the quirk it is.
+        if Self::is_unused(n) {
+            return self.write_latch;
+        }
         let raw = self.regs[n as usize];
         if n == reg::COUNT {
             // Derived, never stored -- see `count`.
@@ -443,16 +469,36 @@ impl Cop0 {
         raw & ARCH_MASK[n as usize]
     }
 
+    /// The COP0 register numbers that are *"Reserved for future use"*
+    /// (UM Table 1-2, p. 46) and behave as a **single shared write latch**
+    /// rather than as storage.
+    ///
+    /// Writing one goes nowhere. Reading one returns the value of the most
+    /// recent `MTC0`/`DMTC0` to **any** COP0 register — so a write-then-read of
+    /// register 7 returns what was written, and the same sequence with any
+    /// other COP0 write in between returns *that* value instead.
+    ///
+    /// **Measured, replacing a guess.** The manual says nothing about these, so
+    /// this implementation previously discarded writes and read zero, recorded
+    /// as accuracy-ledger **U-1**. n64-systemtest documents and exercises the
+    /// real behaviour, sweeping five written values against three interposed
+    /// ones specifically so an emulator cannot pass by echoing the first.
+    pub const UNUSED: [u8; 7] = [7, 21, 22, 23, 24, 25, 31];
+
+    /// Is this one of the [`Cop0::UNUSED`] register numbers?
+    #[must_use]
+    pub const fn is_unused(n: u8) -> bool {
+        matches!(n & 31, 7 | 21..=25 | 31)
+    }
+
     /// Write a register, applying its writable-bit mask.
     ///
     /// Bits outside [`WRITE_MASK`] keep their previous value, which is what
     /// hardware does and is *not* the same as writing zero to them.
     ///
     /// Registers 7, 21..=25 and 31 are *"Reserved for future use"* (UM Table 1-2,
-    /// p. 46). The manual never says what reading them returns or what writing
-    /// them does, so this implementation **discards writes and reads zero** —
-    /// a deliberate, arbitrary choice recorded as accuracy-ledger **U-1**. It is
-    /// a guess; it must not be cited as behaviour.
+    /// p. 46) and are **not storage** — see [`Cop0::UNUSED`]. Writes to them go
+    /// nowhere; reads return the shared write latch.
     pub const fn write(&mut self, n: u8, value: u64) {
         let n = n & 31;
         let mask = WRITE_MASK[n as usize];
@@ -533,11 +579,13 @@ impl Cop0 {
         } else {
             value & 0xFFFF_FFFF
         };
+        self.write_latch = v;
         self.write(n, v);
     }
 
     /// `DMTC0 rd, rt` — write the full 64 bits.
     pub const fn dmtc0(&mut self, n: u8, value: u64) {
+        self.write_latch = value;
         self.write(n, value);
     }
 
@@ -798,15 +846,55 @@ mod tests {
         assert_eq!((c.read(reg::PRID) >> 8) & 0xFF, 0x0B, "PRId.Imp = 0x0B");
     }
 
-    /// Reserved registers: a documented *absence*, so the behaviour here is an
-    /// arbitrary choice (ledger U-1) and this test pins the choice, not the
-    /// hardware. It exists so a future change to it is deliberate.
+    /// **The reserved registers are a shared write latch, not storage.**
+    ///
+    /// This replaces a pinned *guess*: the manual documents an absence, so the
+    /// implementation used to discard writes and read zero (ledger U-1), and
+    /// this test pinned that choice. n64-systemtest documents and exercises the
+    /// real behaviour, so the guess is now evidence.
+    ///
+    /// The second half is the part a naive implementation fails: an intervening
+    /// write to *any other* COP0 register changes what the reserved register
+    /// reads back. Storing the value per-register passes the first assertion
+    /// and fails this one, which is why the oracle sweeps interposed values.
     #[test]
-    fn reserved_registers_read_zero_and_discard_writes_by_choice_not_by_evidence() {
-        for n in [7u8, 21, 22, 23, 24, 25, 31] {
+    fn the_reserved_registers_are_a_shared_write_latch() {
+        for n in Cop0::UNUSED {
             let mut c = Cop0::new();
-            c.dmtc0(n, u64::MAX);
-            assert_eq!(c.read(n), 0, "reserved register {n} -- see ledger U-1");
+            c.mtc0(n, 0x1317_1A1E);
+            assert_eq!(
+                c.read(n) & 0xFFFF_FFFF,
+                0x1317_1A1E,
+                "reg {n} reads back its own write"
+            );
+
+            // Any other COP0 write takes over the latch -- `Compare` here, as
+            // the suite uses.
+            c.mtc0(reg::COMPARE, 0x8BAD_F00D);
+            assert_eq!(
+                c.read(n) & 0xFFFF_FFFF,
+                0x8BAD_F00D,
+                "reg {n} follows the latch, so it is not storage"
+            );
+            // ...and the real register still holds its own value.
+            assert_eq!(c.read(reg::COMPARE) & 0xFFFF_FFFF, 0x8BAD_F00D);
+        }
+    }
+
+    /// The unused set is exactly 7, 21..=25 and 31 — no more and no fewer. A
+    /// range that swept in a real register would make it read the latch instead
+    /// of its own value.
+    #[test]
+    fn only_the_seven_documented_numbers_are_unused() {
+        for n in 0..32u8 {
+            assert_eq!(
+                Cop0::is_unused(n),
+                Cop0::UNUSED.contains(&n),
+                "register {n}"
+            );
+        }
+        for n in [reg::COMPARE, reg::STATUS, reg::CAUSE, reg::EPC, reg::PRID] {
+            assert!(!Cop0::is_unused(n), "{n} is a real register");
         }
     }
 

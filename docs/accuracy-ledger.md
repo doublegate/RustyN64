@@ -158,7 +158,7 @@ implementation choice here is treated as correct.
 
 | # | Question | What the manual says | Owner |
 | --- | --- | --- | --- |
-| U-1 | `MFC0`/`MTC0` on COP0 registers 7, 21–25, 31 | *"Reserved for future use"* (UM Table 1-2 p. 46) and nothing further — no read value, no write effect | Sprint 2 |
+| U-1 | Reserved COP0 registers 7, 21..=25, 31 | **RESOLVED — measured** — they are a shared write latch, see C-15 | resolved |
 | U-2 | `TLBP` low `Index` bits on a miss (we leave them **zero**) | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
 | U-3 | The N64's full `PRId` value | `Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151) | Sprint 2 |
 | U-4 | ~~Which `Int[4:0]` line the MI drives~~ | **RESOLVED** — `IP2`. Not in the CPU manual (board-level) nor in the N64brew mirror, but stated by libdragon: `#define C0_INTERRUPT_RCP C0_INTERRUPT_2` (`ref-proj/libdragon/include/cop0.h`), which also gives `IP3` = CART, `IP4` = PRENMI, `IP7` = timer. libdragon is public domain, so this is citable rather than merely observed | **closed** |
@@ -754,6 +754,223 @@ floor of the root, and the root is exact precisely when `q * q == n`, so that
 comparison **is** the sticky bit. (An earlier version of this sentence claimed
 it avoided re-squaring, which the code never did — the same wrong claim reached
 three files before review caught it.)
+
+### C-14 — `FR = 0` is not the "FGR pair" model
+
+**Claim.** With `Status.FR = 0` the register file presents **16** usable 64-bit
+registers: FPR *n* addresses **FGR `n & !1` in its entirety**, and odd FGRs are
+not addressable at all. A 32-bit access picks a half of that register — the low
+half for an even register number, the **high** half for an odd one.
+
+**What it replaces.** This module implemented the natural reading of "`FR = 0`
+uses register pairs": the value is `FGR[n+1]:FGR[n]`, assembled from two
+registers' *low halves*. That model round-trips through `DMTC1`/`DMFC1`
+perfectly, which is why it survived — every test that wrote and read through the
+same path agreed with it.
+
+**What refutes it.** n64-systemtest writes an odd register in half mode and then
+reads *both* registers back in full mode:
+
+```text
+MTC1 $1, <0x01234567>          ; half mode
+DMFC1(0) == 0x01234567_89ABCDEF ; landed in FGR0's HIGH half
+DMFC1(1) == 0x44445555_66667777 ; UNCHANGED -- the pair model writes here
+```
+
+The second line is the one that matters: under the pair model FGR1 is where the
+value goes, so an implementation cannot satisfy both.
+
+**A second behaviour fell out of the same tests.** A single-precision
+**arithmetic** result *clears* the other half of its destination, while
+`MTC1`/`LWC1` *preserve* it. Both write 32 bits to the same place, so one
+`write_s` for both is the natural implementation — and the difference is
+invisible until something reads the register at a different width, which is
+exactly what `DMFC1` after an `ADD.S` does. They are now `write_s` and
+`write_s_arith`.
+
+**And a third:** `MOV.S` moves **all 64 bits**, not the formatted half. The
+suite reads the destination after a `MOV.S` and expects the *source's* upper
+half there. It is a whole-register transfer that happens to be spelled `.S`.
+
+**A second, independent fix landed alongside it.** C-13's subnormal-result
+policy triggered on *"the result is subnormal"*, which misses a result that
+underflows **past** the subnormal grid to zero — `f64::MIN_POSITIVE` narrowed to
+`f32`, or `MIN_POSITIVE` squared. Both conditions are needed and neither implies
+the other: `is_subnormal` misses the rounds-to-zero case, and `flags.underflow`
+misses an *exact* subnormal, because IEEE signals underflow only when tiny **and
+inexact**. Replacing the first test with the second rather than adding to it was
+tried and regressed the oracle from 89 to **131**, caught immediately by the
+existing tests. Worth 22 assertions once correct.
+
+**A third fix, in the same area.** A float-to-`.L` conversion refuses a
+magnitude of **`2^53`** or more — far narrower than `i64`, and bracketed by the
+suite rather than assumed: `9007198717870080` converts and `9007199254740992`
+does not, both comfortably inside `i64`. `2^53` is the last integer a `double`
+represents exactly, so the natural reading is that the conversion runs through
+double precision internally and declines whatever it cannot hold. Worth 7
+assertions.
+
+The limit is applied to `.W` targets too, where it is **unobservable** — `2^53`
+is far outside `i32`, so such a value is refused either way. It was first
+guarded on the target width; the guard was removed when a mutation test could
+not distinguish the two. An undistinguishable branch is one that rots.
+
+**Effect:** Phase 1's categories 99 → **60**; the whole odd-index cluster
+(`MTC1`/`MFC1`/`DMTC1`/`DMFC1`/`LWC1`/`SWC1`/`LDC1`/`SDC1` "with odd index in
+32 bit mode", plus the half-mode comparison and 64-bit-index tests) reached
+zero.
+
+**Note this supersedes a documented guess.** `fpr.rs` previously recorded
+forcing an odd index even as "a documented choice for an architecturally
+undefined case (UM Ch. 17), not a hardware fact". The choice was reasonable and
+the case is not undefined on this part — the suite defines it.
+
+### S-4 — the N64brew Wiki's `FCR0.Imp` is wrong
+
+**The wiki says:** *"FCR0 bits [15:8] is the implementation number ... All
+VR4300 units will report 0x0B (11) for the implementation number"*
+(`n64brew_wiki/markdown/VR4300.md`).
+
+**Two independent sources say `0x0A`:**
+
+- n64-systemtest asserts `CFC1 $0 == 0xA00`, and it runs on real hardware.
+- cen64 hardcodes `0xa00` with the comment *"fpu version of both 0xb22 and
+  0xb10 N64s"* — checked against two console revisions.
+
+`0x0B` **is** correct for `PRId.Imp`, the *CPU's* revision register, and the
+most likely explanation is a conflation of the two. They identify different
+units and the near-identical values make the mistake easy — this implementation
+made exactly it, with a comment reading "matching `PRId`".
+
+**Why this one is worth an entry rather than a quiet fix.** `AGENTS.md`
+designates the wiki as the primary hardware reference. It is community-edited
+and CC BY-SA, and it is wrong here, so a single-value claim from it wants a
+second source before it becomes code. That is a statement about how to *use* the
+reference, not a reason to stop using it.
+
+### C-15 — the reserved COP0 registers are one shared write latch
+
+**Claim.** COP0 registers 7, 21..=25 and 31 are not storage. A write goes
+nowhere; a read returns the value of the most recent `MTC0`/`DMTC0` to **any**
+COP0 register.
+
+So writing register 7 and reading it back returns what was written — and the
+same sequence with *any other* COP0 write in between returns **that** value
+instead.
+
+**This resolves ledger U-1**, which recorded "discards writes and reads zero" as
+an arbitrary choice because the manual documents only an absence (UM Table 1-2,
+p. 46). It was a reasonable guess and it was wrong; n64-systemtest documents the
+behaviour in its own test comments and exercises it directly.
+
+**The oracle is built to defeat the obvious cheat.** It sweeps five written
+values against three interposed ones, precisely so an implementation that stores
+per-register and echoes the first value cannot pass. Our replacement test does
+the same in miniature: the second assertion is the one that distinguishes a
+latch from storage.
+
+### C-20 — COP2 is one 64-bit latch, not a register file
+
+**Claim.** COP2 is not populated on the VR4300. What remains is a **single**
+64-bit value: every `MTC2`/`DMTC2` writes it and every `MFC2`/`DMFC2` reads it,
+with the register index **ignored**. `MTC2` writes all 64 bits despite being
+nominally a 32-bit move; `MFC2` returns the low half sign-extended and `DMFC2`
+the whole thing.
+
+**Evidence.** n64-systemtest writes with one index and reads back with several
+others — including 30 and 31 — and gets the same value every time. Its own
+comment on a neighbouring test says as much: *"it's unlikely that there are
+actually 32 registers"*.
+
+**Index-independence is the whole test.** A real 32-entry register file passes
+a write-then-read-same-index check perfectly, so the assertion that matters
+reads back through a *different* index.
+
+**The same shape as ledger C-15.** This processor's answer to "a coprocessor
+that is not really there" is a single latch, and it gives that answer twice —
+once for the reserved COP0 registers, once for COP2. Worth knowing before
+implementing either: the natural design (an array) is wrong both times.
+
+### C-19 — a jump-and-link inside a delay slot links past the OUTER target
+
+**Claim.** The link register receives *the address of the instruction that runs
+after this jump's delay slot*. That is `pc + 8` only when the jump is not itself
+in a delay slot. When it is, its own delay slot never executes — the outer jump
+redirected a cycle earlier — so the next instruction is the outer **target**,
+and the link is `target + 4`.
+
+n64-systemtest states it in the assertion text rather than leaving it to be
+inferred: *"JAL in delay slot writes target address+4 of original jump into
+delay slot"*. It covers `JAL` in `J`, `JAL` in `JALR`, `JALR` in `JALR`, and a
+**not-taken** `BGEZAL` in a `J` — the last mattering because the linking forms
+link whether or not they branch.
+
+**The fix is a deletion, not a formula.** `execute` computed `pc + 8`; `EX` now
+fills the value from the live `next_pc`, which *is* that address by
+construction in both cases. A second formula for the nested case would be a
+second thing to keep in agreement; reading the pipeline's own pointer cannot
+disagree with it.
+
+**Order matters and is pinned.** `next_pc` must be read **before** this
+instruction's own redirect is applied — reading it after gives the jump's own
+target, which is wrong for every jump including ordinary ones. Both orderings
+are mutation-tested.
+
+### C-18 — the doubleword control moves decline differently per coprocessor
+
+**Claim.** `DCFC1`/`DCTC1` and `DCFC2`/`DCTC2` are structurally identical — the
+64-bit control moves of their respective coprocessors — and the VR4300 refuses
+them in **different ways**:
+
+| Encoding | Unit usable | Result |
+| --- | --- | --- |
+| `DCFC1` / `DCTC1` | `CU1` set | **Floating-point exception**, `FCSR.Cause` = unimplemented **only** |
+| `DCFC1` / `DCTC1` | `CU1` clear | Coprocessor Unusable, `FCSR` untouched |
+| `DCFC2` / `DCTC2` | `CU2` set | **Reserved Instruction**, with `Cause.CE = 2` |
+| `DCFC2` / `DCTC2` | `CU2` clear | Coprocessor Unusable |
+
+Giving all four one behaviour is the natural mistake, which is why the test
+covers both in a single case.
+
+**`Cause.CE` is not only for Coprocessor Unusable.** It names the coprocessor
+for a reserved encoding *inside a usable one* too. Only the first use is
+obvious, and n64-systemtest compares the whole `Cause` register — so a missing
+`CE` reads as an entirely wrong exception rather than a detail. That needed a
+distinct `Exception::CoprocessorReserved { unit }`, since a plain
+`ReservedInstruction` leaves `CE` at zero by design.
+
+**Note what these are not:** a silent no-op. They previously fell into the
+catch-all `Cop1Unimplemented` arm, which retires without effect — the
+decoded-but-no-op shape this project has been bitten by twice.
+
+### C-17 — `CTC1` can raise an FP exception on its own
+
+**Claim.** Writing `FCSR` with a Cause bit whose corresponding Enable is also
+set meets the trap condition immediately. No arithmetic has to run: the `CTC1`
+itself is the faulting instruction, and n64-systemtest checks that `ExceptPC`
+points at it.
+
+Bit 17 (Unimplemented) is unmaskable and traps regardless of the enables, so it
+is tested outside the enable comparison.
+
+Easy to miss because `FCSR` looks like storage — the trap check lives with the
+*arithmetic*, so a control-register write is not an obvious place to put one.
+
+### C-16 — `EntryLo0`/`EntryLo1` are writable to bit 29, not bit 25
+
+**Claim.** Both registers accept `0x3FFF_FFFF`. The architectural fields —
+PFN (25:6), C (5:3), D (2), V (1), G (0) — account only for bits 25:0, and the
+mask was set to that width. Bits 29:26 are writable too and read back exactly as
+written.
+
+**Evidence.** n64-systemtest writes a sweep including `0x0F000000` and
+`0xFFFFFFFF` and expects `value & 0x3FFF_FFFF` back for each
+(`tests/tlb/mod.rs`). Deriving the mask from the field diagram instead silently
+dropped four bits on every write-back.
+
+A reminder that a *field* table and a *writable-bits* mask are different
+documents: the first says what the hardware interprets, the second what it
+stores.
 
 ## 5. Deliberate deviations from hardware
 

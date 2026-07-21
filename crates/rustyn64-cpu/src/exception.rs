@@ -153,7 +153,7 @@ pub const fn exc_code_of(exc: Exception) -> u64 {
         Exception::Syscall => exc_code::SYS,
         Exception::Breakpoint => exc_code::BP,
         Exception::Trap => exc_code::TR,
-        Exception::ReservedInstruction => exc_code::RI,
+        Exception::ReservedInstruction | Exception::CoprocessorReserved { .. } => exc_code::RI,
         // Refill and Invalid share an ExcCode -- the handler tells them apart by
         // which vector it was entered through, not by Cause.
         Exception::TlbRefill { store: false } | Exception::TlbInvalid { store: false } => {
@@ -183,6 +183,7 @@ pub const fn vector_kind_of(exc: Exception) -> VectorKind {
         | Exception::Breakpoint
         | Exception::Trap
         | Exception::ReservedInstruction
+        | Exception::CoprocessorReserved { .. }
         // Invalid and Modified take the GENERAL vector: an entry was found, so
         // there is nothing for a refill handler to refill.
         | Exception::TlbInvalid { .. }
@@ -283,8 +284,14 @@ pub fn dispatch(
     // after 4k page, expect TLBL` reads `Cause = 0x2000_0008` where hardware
     // gives `0x8`, the difference being a `CE = 2` left over from the COP2
     // usability check that ran earlier in the suite.
+    // `Cause.CE` names the coprocessor for BOTH kinds of coprocessor fault:
+    // unusable, and a reserved encoding inside a usable one. Only the first is
+    // obvious, and n64-systemtest compares the whole `Cause` register, so a
+    // missing `CE` on the second reads as a wrong exception.
     let ce = match exc {
-        Exception::CoprocessorUnusable { unit } => u64::from(unit) & 0b11,
+        Exception::CoprocessorUnusable { unit } | Exception::CoprocessorReserved { unit } => {
+            u64::from(unit) & 0b11
+        }
         _ => 0,
     };
     new_cause = (new_cause & !0x3000_0000) | (ce << 28);
