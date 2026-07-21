@@ -1270,7 +1270,9 @@ computing a reciprocal in floating point, or with a truncated series, gets the l
 wrong and transformed vertices land in the wrong place. What ares does (`ares/n64/rsp/rsp.cpp`,
 ISC, on the vendorable list in `ref-proj/README.md`) is not an approximation: for the reciprocal
 it is `(1 << 34) / (index + 512)`, rounded by `+ 1 >> 8`, in 64-bit integers; for the inverse
-square root it searches for the largest `b` with `a·(b+1)² < 2⁴⁴`. Both are exact integer
+square root it is the **smallest** `b ≥ 2¹⁷` with `a·(b+1)² ≥ 2⁴⁴` — one *past* the last value
+satisfying the strict inequality, which is what the loop actually computes and is not what its
+comment claims (see the off-by-one note below). Both are exact integer
 constructions with no rounding freedom, so they reproduce the ROM rather than estimating it.
 
 **Built at compile time.** The generators are `const fn`s producing `static` arrays, so the
