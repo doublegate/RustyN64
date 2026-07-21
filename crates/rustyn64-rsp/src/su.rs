@@ -83,8 +83,12 @@ const fn sext(imm: u32) -> u32 {
 }
 
 impl Rsp {
-    /// Read one register, with `r0` pinned to zero.
-    const fn r(&self, i: usize) -> u32 {
+    /// Read one scalar register, with `r0` pinned to zero.
+    ///
+    /// Public so the vector load/store family can compute its base address —
+    /// those instructions live in [`crate::vu`] but address DMEM through a GPR.
+    #[must_use]
+    pub const fn r(&self, i: usize) -> u32 {
         if i == 0 { 0 } else { self.su_regs[i] }
     }
 
@@ -254,7 +258,10 @@ impl Rsp {
             // what hardware does with anything it does not implement -- there is
             // no exception mechanism to report it with.
             0o22 => self.cop2(&d),
-            // The vector load/store family is Sprint 3.
+            // The vector load/store family. `opcode` is at 15..11 where `rd`
+            // sits, `element` at 10..7, and the offset is a **signed 7-bit**
+            // field -- not the 16-bit immediate an ordinary load carries.
+            0o62 | 0o72 => self.vector_memory(&d),
             _ => {}
         }
 
@@ -320,6 +327,17 @@ impl Rsp {
             _ => {}
         }
         halt_at
+    }
+
+    /// `LWC2`/`SWC2` — the vector load/store family.
+    ///
+    /// `opcode` sits at 15..11 where `rd` is, `element` at 10..7, and the offset
+    /// is a **signed 7-bit** field rather than the 16-bit immediate an ordinary
+    /// load carries -- so reading `imm` as a whole would give a wildly wrong
+    /// address.
+    fn vector_memory(&mut self, d: &Fields) {
+        let element = ((d.sa >> 1) & 0xF) as usize;
+        self.vector_mem(d.op == 0o72, d.rd as u32, d.rs, d.rt, element, d.imm & 0x7F);
     }
 
     /// The COP2 escape: SU/VU moves today, computational instructions to come.

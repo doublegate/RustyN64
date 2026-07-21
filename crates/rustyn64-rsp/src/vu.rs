@@ -537,3 +537,176 @@ mod compute_tests {
         assert_eq!(rsp.vu_regs[2], [0; 8], "and it wrote nothing");
     }
 }
+
+/// The vector load/store family (Sprint 3, brought forward).
+///
+/// Encoding: `LWC2`/`SWC2` | `base` (25..21) | `vt` (20..16) | `opcode`
+/// (15..11) | `element` (10..7) | `offset` (6..0, **signed 7-bit**).
+///
+/// The offset is scaled by the access size, and `element` is a **byte** index
+/// into the vector register naming the first byte the operation touches — so a
+/// non-zero element means *fewer* bytes move, not a shifted window.
+impl Rsp {
+    /// Sign-extend the 7-bit offset field.
+    const fn sext7(offset: u32) -> i32 {
+        (offset & 0x7F).cast_signed() << 25 >> 25
+    }
+
+    /// Execute a vector load or store. Returns `false` for an opcode not
+    /// implemented yet, leaving the instruction inert.
+    pub fn vector_mem(
+        &mut self,
+        store: bool,
+        op: u32,
+        base: usize,
+        vt: usize,
+        element: usize,
+        offset: u32,
+    ) -> bool {
+        let rs = self.r(base);
+        match op {
+            // Scalar group: 1, 2, 4 or 8 bytes, the size doubling with the
+            // opcode. The offset scales by that same size.
+            0x00..=0x03 => {
+                let size = 1usize << op;
+                let addr = rs.wrapping_add_signed(Self::sext7(offset) * size.cast_signed() as i32);
+                for i in 0..size {
+                    let byte = (element + i) & 15;
+                    let at = addr.wrapping_add(i as u32);
+                    if store {
+                        let v = self.vu_byte(vt, byte);
+                        self.dmem_write_pub(at, v);
+                    } else {
+                        let v = self.dmem_read_pub(at);
+                        self.set_vu_byte(vt, byte, v);
+                    }
+                }
+                true
+            }
+            // `LQV`/`SQV`: up to 16 bytes, **left-aligned** — the transfer runs
+            // from the address up to (and including) the last byte before the
+            // next 16-byte boundary, so a misaligned address moves fewer bytes
+            // rather than crossing the boundary.
+            0x04 => {
+                let addr = rs.wrapping_add_signed(Self::sext7(offset) * 16);
+                let end = addr | 15;
+                let size = core::cmp::min(end - addr, 15 - element as u32);
+                for i in 0..=size {
+                    let byte = (element + i as usize) & 15;
+                    let at = addr.wrapping_add(i);
+                    if store {
+                        let v = self.vu_byte(vt, byte);
+                        self.dmem_write_pub(at, v);
+                    } else {
+                        let v = self.dmem_read_pub(at);
+                        self.set_vu_byte(vt, byte, v);
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// DMEM byte read, for the vector memory paths.
+    pub(crate) const fn dmem_read_pub(&self, addr: u32) -> u8 {
+        self.dmem[(addr & 0xFFF) as usize]
+    }
+
+    /// DMEM byte write, for the vector memory paths.
+    pub(crate) const fn dmem_write_pub(&mut self, addr: u32, val: u8) {
+        self.dmem[(addr & 0xFFF) as usize] = val;
+    }
+}
+
+#[cfg(test)]
+mod mem_tests {
+    use super::*;
+
+    fn with_dmem(pattern: &[u8]) -> Rsp {
+        let mut rsp = Rsp::new();
+        for (i, b) in pattern.iter().enumerate() {
+            rsp.dmem[i] = *b;
+        }
+        rsp
+    }
+
+    /// **An aligned `LQV` fills the whole register.**
+    #[test]
+    fn an_aligned_lqv_loads_sixteen_bytes() {
+        let bytes: [u8; 16] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        assert!(rsp.vector_mem(false, 0x04, 0, 1, 0, 0));
+        for (i, want) in bytes.iter().enumerate() {
+            assert_eq!(rsp.vu_byte(1, i), *want, "byte {i}");
+        }
+    }
+
+    /// **A misaligned `LQV` stops at the 16-byte boundary rather than crossing
+    /// it.** This is the whole reason `LRV` exists, and an implementation that
+    /// simply reads 16 bytes from the address passes an aligned test and fails
+    /// here.
+    #[test]
+    fn a_misaligned_lqv_stops_at_the_boundary() {
+        let bytes: [u8; 32] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        // Address 0x08: eight bytes to the boundary at 0x10.
+        rsp.set_su(2, 8);
+        assert!(rsp.vector_mem(false, 0x04, 2, 1, 0, 0));
+        for i in 0..8 {
+            assert_eq!(rsp.vu_byte(1, i), bytes[8 + i], "loaded byte {i}");
+        }
+        for i in 8..16 {
+            assert_eq!(rsp.vu_byte(1, i), 0, "byte {i} must be untouched");
+        }
+    }
+
+    /// A non-zero `element` moves **fewer** bytes: the window is
+    /// `VPR[element..15]`, not a shifted 16.
+    #[test]
+    fn a_non_zero_element_shortens_the_transfer() {
+        let bytes: [u8; 16] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        assert!(rsp.vector_mem(false, 0x04, 0, 1, 12, 0));
+        for i in 0..12 {
+            assert_eq!(rsp.vu_byte(1, i), 0, "below the element, untouched");
+        }
+        for i in 12..16 {
+            assert_eq!(rsp.vu_byte(1, i), bytes[i - 12], "from the start of DMEM");
+        }
+    }
+
+    /// `SQV` is the mirror: the register's bytes land in DMEM.
+    #[test]
+    fn sqv_round_trips_with_lqv() {
+        let bytes: [u8; 16] = core::array::from_fn(|i| i as u8 + 0xA0);
+        let mut rsp = with_dmem(&bytes);
+        rsp.vector_mem(false, 0x04, 0, 1, 0, 0);
+        rsp.set_su(2, 0x100);
+        assert!(rsp.vector_mem(true, 0x04, 2, 1, 0, 0));
+        for (i, want) in bytes.iter().enumerate() {
+            assert_eq!(rsp.dmem[0x100 + i], *want, "stored byte {i}");
+        }
+    }
+
+    /// The scalar group's offset scales by the access size, which is what makes
+    /// `LDV`'s reach eight times `LBV`'s for the same encoded offset.
+    #[test]
+    fn the_scalar_offset_scales_with_the_access_size() {
+        let bytes: [u8; 64] = core::array::from_fn(|i| i as u8);
+        let mut rsp = with_dmem(&bytes);
+        // LBV, offset 2 -> address 2.
+        assert!(rsp.vector_mem(false, 0x00, 0, 1, 0, 2));
+        assert_eq!(rsp.vu_byte(1, 0), 2);
+        // LDV, offset 2 -> address 16.
+        assert!(rsp.vector_mem(false, 0x03, 0, 2, 0, 2));
+        assert_eq!(rsp.vu_byte(2, 0), 16);
+    }
+
+    /// An unimplemented opcode reports so rather than moving wrong bytes.
+    #[test]
+    fn an_unimplemented_vector_memory_op_is_reported() {
+        let mut rsp = Rsp::new();
+        assert!(!rsp.vector_mem(false, 0x05, 0, 1, 0, 0), "LRV not in yet");
+    }
+}

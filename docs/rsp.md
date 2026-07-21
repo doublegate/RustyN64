@@ -233,6 +233,26 @@ arithmetic; the tables must be bit-exact or transformed vertices land wrong
 (`ref-docs/research-report.md` §3). The H/L pairs stage a 32-bit operand/result
 through `DIV_IN`/`DIV_OUT`.
 
+### Vector load/store (partly implemented)
+
+Encoding: `LWC2`/`SWC2` | `base` (25..21) | `vt` (20..16) | `opcode` (15..11) |
+`element` (10..7) | `offset` (6..0). The offset is a **signed 7-bit** field
+scaled by the access size, not the 16-bit immediate an ordinary load carries —
+reading `imm` whole gives a wildly wrong address.
+
+`element` is a **byte** index naming the first byte the operation touches, so a
+non-zero element moves *fewer* bytes rather than shifting a full-width window.
+
+Implemented: the scalar group (`LBV`/`LSV`/`LLV`/`LDV` and their stores, sizes
+1/2/4/8 with the offset scaled to match) and `LQV`/`SQV`. A misaligned `LQV`
+runs only up to the next 16-byte boundary rather than crossing it — which is
+precisely why `LRV` exists, and an implementation that simply reads 16 bytes
+from the address passes an aligned test and fails a misaligned one.
+
+Not yet implemented, and reported rather than approximated: `LRV`/`SRV`, the
+packed `LPV`/`LUV`/`SPV`/`SUV`, the strided `LHV`/`LFV`/`SHV`/`SFV`, and the
+transposing `LTV`/`STV`/`LWV`/`SWV`.
+
 ### Vector load/store
 
 Sized element loads `LBV`/`LSV`/`LLV`/`LDV` (address = `base + offset*size`,
