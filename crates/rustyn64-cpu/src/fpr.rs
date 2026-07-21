@@ -113,16 +113,73 @@ impl Fpr {
     /// n64-systemtest's *"Upper bits of 32 bit operation"* reads the
     /// destination back with `DMFC1` after an `ADD.S` and expects the upper
     /// 32 bits to be **zero**, not the register's previous contents.
-    pub const fn write_s_arith(&mut self, n: u8, fr: bool, v: u32) {
+    ///
+    /// The destination index is used **as-is in both `FR` modes** — unlike
+    /// [`Fpr::write_s`], which under `FR = 0` reaches an even partner. `ADD.S $1`
+    /// in half mode leaves its result in FGR1, upper half cleared, which is what
+    /// the suite reads back.
+    pub const fn write_s_arith(&mut self, n: u8, _fr: bool, v: u32) {
+        self.fgr[(n & 31) as usize] = v as u64;
+    }
+
+    /// Read the **`fs`** operand of a floating-point *arithmetic* instruction.
+    ///
+    /// Under `FR = 0` an odd index reads its **even partner's** value — the low
+    /// bit of the field is simply dropped. This is *not* the same mapping as
+    /// [`Fpr::read_s`], which models `MTC1`/`LWC1` and reaches the partner's
+    /// **high** half. Two different mappings for two different instruction
+    /// classes is surprising, and it is what the hardware does.
+    ///
+    /// # Why this is measured rather than looked up
+    ///
+    /// The manual declines to specify it: *"If the FR bit is 0, an odd-numbered
+    /// register cannot be specified"*, and for the arithmetic instructions
+    /// *"If an odd number is specified, the operation is undefined"* (UM §7.5.3,
+    /// §16). Undefined in the manual is still deterministic in silicon, and
+    /// n64-systemtest measures it — so the ROM's table is the oracle here, and
+    /// the accuracy ledger records it as such rather than as documentation.
+    #[must_use]
+    pub const fn read_s_fs(&self, n: u8, fr: bool) -> u32 {
         let i = (n & 31) as usize;
-        if !fr && i & 1 == 1 {
-            // An odd destination in half mode still addresses the high half of
-            // its even partner; the *low* half is what gets cleared.
-            self.fgr[i & !1] = (v as u64) << 32;
-        } else {
-            let e = if fr { i } else { i & !1 };
-            self.fgr[e] = v as u64;
-        }
+        self.fgr[if fr { i } else { i & !1 }] as u32
+    }
+
+    /// Read the **`ft`** operand of a floating-point arithmetic instruction.
+    ///
+    /// Unlike [`Fpr::read_s_fs`], the index is used **as-is** in both `FR`
+    /// modes: an odd `ft` reads the odd FGR's own low half.
+    ///
+    /// The asymmetry is the whole point of having two accessors. It is pinned by
+    /// a pair of rows that disagree under any single rule: with `FR = 0`,
+    /// `SQRT.S $13, $31` yields `sqrt(16)` — so `fs = 31` read FGR30 — while
+    /// `ADD.S $2, $28, $31` yields `-10 + -16` — so `ft = 31` read FGR31. One
+    /// shared mapping cannot satisfy both.
+    #[must_use]
+    pub const fn read_s_ft(&self, n: u8, _fr: bool) -> u32 {
+        self.fgr[(n & 31) as usize] as u32
+    }
+
+    /// Read the `fs` operand of a **double**-precision arithmetic instruction.
+    #[must_use]
+    pub const fn read_d_fs(&self, n: u8, fr: bool) -> u64 {
+        let i = (n & 31) as usize;
+        self.fgr[if fr { i } else { i & !1 }]
+    }
+
+    /// Read the `ft` operand of a double-precision arithmetic instruction.
+    #[must_use]
+    pub const fn read_d_ft(&self, n: u8, _fr: bool) -> u64 {
+        self.fgr[(n & 31) as usize]
+    }
+
+    /// Write a **double**-precision arithmetic result.
+    ///
+    /// Like [`Fpr::write_s_arith`], the destination index is used as-is in both
+    /// modes. `ADD.D $1` under `FR = 0` leaves the result in FGR1, which
+    /// n64-systemtest checks by observing that FGR1 does *not* keep its
+    /// preloaded value.
+    pub const fn write_d_arith(&mut self, n: u8, _fr: bool, v: u64) {
+        self.fgr[(n & 31) as usize] = v;
     }
 
     /// Read a 64-bit value from FPR `n` under the current `FR` view.
@@ -260,11 +317,18 @@ mod tests {
         f.write_s_arith(4, true, 0x1234_5678);
         assert_eq!(f.read_raw(4), 0x0000_0000_1234_5678, "arithmetic clears");
 
-        // Half mode, odd destination: the arithmetic result still goes to the
-        // high half, and it is the LOW half that gets cleared.
+        // Half mode, odd destination: the arithmetic result goes to the ODD
+        // FGR itself, upper half cleared, and the even partner is untouched.
+        //
+        // This is where an arithmetic write parts company with `MTC1`, which
+        // *would* reach FGR4's high half. `ADD.S $1` in half mode leaves its
+        // result in FGR1 -- n64-systemtest sees FGR1 lose its preloaded value,
+        // which cannot happen if the write is folded into the even partner.
         f.write_raw(4, 0xAAAA_BBBB_CCCC_DDDD);
+        f.write_raw(5, 0x1111_2222_3333_4444);
         f.write_s_arith(5, false, 0x1234_5678);
-        assert_eq!(f.read_raw(4), 0x1234_5678_0000_0000);
+        assert_eq!(f.read_raw(5), 0x0000_0000_1234_5678, "odd destination");
+        assert_eq!(f.read_raw(4), 0xAAAA_BBBB_CCCC_DDDD, "partner untouched");
     }
 
     /// `FR = 0` addresses only even FGRs, so the odd ones are unreachable

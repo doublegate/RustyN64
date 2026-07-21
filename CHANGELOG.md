@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — under `FR = 0`, `fs` and `ft` resolve differently
+
+A floating-point arithmetic instruction ignores the low bit of `fs` and does **not** ignore the low
+bit of `ft`. The destination `fd` is used as-is in both modes.
+
+The manual declines to specify this — an odd register with `FR = 0` is "undefined" — so the rule is
+measured against n64-systemtest and recorded as ledger **C-21**. Two rows settle it, and no single
+mapping satisfies both: `SQRT.S $13, $31` yields `sqrt(16)`, so `fs = 31` read FGR30; `ADD.S $2,
+$28, $31` yields `-10 + -16`, so `ft = 31` read FGR31. The suite then says it outright in its own
+assertion messages.
+
+This does **not** revise C-14, which governs `MTC1`/`LWC1` and the doubleword coprocessor moves —
+those do reach an odd register's high half. Separate accessors keep the two classes apart.
+
+**Phase 1's categories: 23 → 19.**
+
 ### Added — the 64-bit operations are Reserved in 32-bit User and Supervisor mode
 
 `DADD`, `DSLL`, `LD`, `SD` and the rest of the MIPS III doubleword set raise Reserved Instruction

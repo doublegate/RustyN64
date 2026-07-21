@@ -2007,8 +2007,8 @@ impl Pipeline {
             // SOURCE's upper half there, not the destination's previous
             // contents -- so this is a whole-register transfer that happens to
             // be spelled `.S`.
-            let v = self.fpr.read_d(fs, fr);
-            self.fpr.write_d(fd, fr, v);
+            let v = self.fpr.read_d_fs(fs, fr);
+            self.fpr.write_d_arith(fd, fr, v);
             // **`FCSR` is left completely alone**, `Cause` included.
             //
             // Clearing `Cause` here was written first, on no evidence, and was
@@ -2078,7 +2078,7 @@ impl Pipeline {
             // REVERTED: it moved the oracle by nothing and it bypasses the `FR`
             // view, which is exactly the mistake ledger U-7 records (C-10).
             FpCommit::Single(v) => self.fpr.write_s_arith(fd, fr, v),
-            FpCommit::Double(v) => self.fpr.write_d(fd, fr, v),
+            FpCommit::Double(v) => self.fpr.write_d_arith(fd, fr, v),
             // `FCSR.C` is bit 23, and it is NOT part of the `Cause`/`Flags`
             // bookkeeping — a compare writes it and no other operation touches
             // it. Confirmed against n64-systemtest's own `FCSR` bitfield rather
@@ -2109,7 +2109,7 @@ impl Pipeline {
 
         let fcsr = self.cop1.fcsr();
         let (commit, flags, unimplemented) = if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 (0u64, fpu::Flags::NONE, true)
             } else if fpu::is_snan_f32(a) {
@@ -2127,7 +2127,7 @@ impl Pipeline {
                 (u64::from(v.to_bits()), fpu::Flags::NONE, false)
             }
         } else {
-            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            let a = f64::from_bits(self.fpr.read_d_fs(fs, fr));
             if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                 (0u64, fpu::Flags::NONE, true)
             } else if fpu::is_snan_f64(a) {
@@ -2167,7 +2167,7 @@ impl Pipeline {
         if fmt == 0o20 {
             self.fpr.write_s_arith(fd, fr, commit as u32);
         } else {
-            self.fpr.write_d(fd, fr, commit);
+            self.fpr.write_d_arith(fd, fr, commit);
         }
         self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
         false
@@ -2191,7 +2191,7 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let bits = u64::from(self.fpr.read_s(fs, fr));
+            let bits = u64::from(self.fpr.read_s_fs(fs, fr));
             let a = f32::from_bits(bits as u32);
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
@@ -2199,7 +2199,7 @@ impl Pipeline {
             let r = softfloat::sqrt(bits, softfloat::F32, mode);
             (FpCommit::Single(r.bits as u32), r.flags, false)
         } else {
-            let bits = self.fpr.read_d(fs, fr);
+            let bits = self.fpr.read_d_fs(fs, fr);
             let a = f64::from_bits(bits);
             if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                 return (FpCommit::Double(0), fpu::Flags::NONE, true);
@@ -2338,8 +2338,8 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs, fr));
-            let b = f32::from_bits(self.fpr.read_s(ft, fr));
+            let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
+            let b = f32::from_bits(self.fpr.read_s_ft(ft, fr));
             if fpu::arith_unimplemented_s(a, b) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
             }
@@ -2351,8 +2351,8 @@ impl Pipeline {
             };
             self.subnormal_policy_s(out, mode)
         } else {
-            let a = f64::from_bits(self.fpr.read_d(fs, fr));
-            let b = f64::from_bits(self.fpr.read_d(ft, fr));
+            let a = f64::from_bits(self.fpr.read_d_fs(fs, fr));
+            let b = f64::from_bits(self.fpr.read_d_ft(ft, fr));
             if fpu::arith_unimplemented_d(a, b) {
                 return (FpCommit::Double(0), fpu::Flags::NONE, true);
             }
@@ -2443,13 +2443,13 @@ impl Pipeline {
         const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
 
         let v = if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
             if fpu::is_subnormal_f32(a) {
                 return true;
             }
             f64::from(a)
         } else {
-            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            let a = f64::from_bits(self.fpr.read_d_fs(fs, fr));
             if fpu::is_subnormal_f64(a) {
                 return true;
             }
@@ -2472,7 +2472,7 @@ impl Pipeline {
             // To single.
             0o40 => match fmt {
                 0o21 => {
-                    let bits = self.fpr.read_d(fs, fr);
+                    let bits = self.fpr.read_d_fs(fs, fr);
                     let a = f64::from_bits(bits);
                     if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                         return (FpCommit::Single(0), fpu::Flags::NONE, true);
@@ -2495,7 +2495,7 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
-                    let out = fpu::cvt_s_w(self.fpr.read_s(fs, fr) as i32);
+                    let out = fpu::cvt_s_w(self.fpr.read_s_fs(fs, fr) as i32);
                     (FpCommit::Single(out.value.to_bits()), out.flags, false)
                 }
                 // From `.L`, which the VR4300 restricts: bits 63:55 must be all
@@ -2504,7 +2504,7 @@ impl Pipeline {
                 // result -- so the commit value is a placeholder the trap path
                 // discards.
                 #[allow(clippy::cast_possible_wrap)]
-                _ => fpu::cvt_s_l(self.fpr.read_d(fs, fr) as i64).map_or(
+                _ => fpu::cvt_s_l(self.fpr.read_d_fs(fs, fr) as i64).map_or(
                     // No defined result when the restriction is violated, so
                     // the value is a placeholder the trap path discards.
                     (FpCommit::Single(0), fpu::Flags::NONE, true),
@@ -2514,7 +2514,7 @@ impl Pipeline {
             // To double.
             0o41 => match fmt {
                 0o20 => {
-                    let bits = u64::from(self.fpr.read_s(fs, fr));
+                    let bits = u64::from(self.fpr.read_s_fs(fs, fr));
                     let a = f32::from_bits(bits as u32);
                     if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                         return (FpCommit::Double(0), fpu::Flags::NONE, true);
@@ -2527,11 +2527,11 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)]
                 0o24 => {
-                    let out = fpu::cvt_d_w(self.fpr.read_s(fs, fr) as i32);
+                    let out = fpu::cvt_d_w(self.fpr.read_s_fs(fs, fr) as i32);
                     (FpCommit::Double(out.value.to_bits()), out.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
-                _ => fpu::cvt_d_l(self.fpr.read_d(fs, fr) as i64).map_or(
+                _ => fpu::cvt_d_l(self.fpr.read_d_fs(fs, fr) as i64).map_or(
                     // No defined result when the restriction is violated, so
                     // the value is a placeholder the trap path discards.
                     (FpCommit::Double(0), fpu::Flags::NONE, true),
@@ -2577,14 +2577,14 @@ impl Pipeline {
         use crate::fpu;
         let out = if fmt == 0o20 {
             fpu::compare_s(
-                f32::from_bits(self.fpr.read_s(fs, fr)),
-                f32::from_bits(self.fpr.read_s(ft, fr)),
+                f32::from_bits(self.fpr.read_s_fs(fs, fr)),
+                f32::from_bits(self.fpr.read_s_ft(ft, fr)),
                 cond,
             )
         } else {
             fpu::compare_d(
-                f64::from_bits(self.fpr.read_d(fs, fr)),
-                f64::from_bits(self.fpr.read_d(ft, fr)),
+                f64::from_bits(self.fpr.read_d_fs(fs, fr)),
+                f64::from_bits(self.fpr.read_d_ft(ft, fr)),
                 cond,
             )
         };
@@ -2597,9 +2597,9 @@ impl Pipeline {
     /// the only rounding is the one the instruction performs.
     fn fp_source_as_f64(&self, fmt: u8, fs: u8, fr: bool) -> f64 {
         if fmt == 0o20 {
-            f64::from(f32::from_bits(self.fpr.read_s(fs, fr)))
+            f64::from(f32::from_bits(self.fpr.read_s_fs(fs, fr)))
         } else {
-            f64::from_bits(self.fpr.read_d(fs, fr))
+            f64::from_bits(self.fpr.read_d_fs(fs, fr))
         }
     }
 }

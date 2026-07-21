@@ -175,7 +175,8 @@ labelled as one until something reads the register on hardware.
 
 | # | Symptom | Suspected mechanism | Classification | Status |
 | --- | --- | --- | --- | --- |
-| R-1 | `Upper bits of 32 bit operation (half mode)` reports `result[0] = 0x4180_0000_0000_0000` where `6f32` is expected | **The failing instruction is `ADD.S $1, $29, $30`, not the `ADD.S $0` the assertion names.** A correlated capture armed on the ROM's own `Running ...` marker settles it: `ADD.S $0, $28, $30` executes at capture row 705 and leaves `FGR0 = 0x40C0_0000`, which is **correct**; `ADD.S $1, $29, $30` executes at row 706 and leaves `FGR0 = 0x4180_0000_0000_0000`. Five rows separate cause from visible effect, which is the pipeline depth — so the assertion index and the guilty instruction are one apart, and reading the assertion's name as the instruction's name is what sent two earlier attempts to the wrong place. Under `FR = 0` we write an odd single-precision destination to the **high half of the even pair**; hardware evidently does not | absolute | **Open, and NOT a simple index remap.** The expected table is self-contradictory under every one-line rule tried: `result[1] = 6` requires source `$29` to read as `$28` (−10), while `result[2] = −26` requires `$31` to read as **itself** (−16) rather than as `$30` (+16). A companion failure pins the destination side — `64 bit with odd indices (half mode)` reports `0x4444_5555_6666_7777`, which is `FGR1`'s *untouched preload*, so hardware **does** write an odd destination where we fold it into the even one. Sources and destinations therefore need separate rules, and the next step is the UM's `FR` description (§5.3 / §6.3), not more arithmetic on the expected values |
+| R-1 | **RESOLVED** — see C-21. The failing instruction was `ADD.S $1, $29, $30`, not the `ADD.S $0` the assertion names; a correlated capture separated cause from visible effect by exactly the pipeline depth | — | absolute | Closed |
+| R-2 | `Comparisons in half mode with odd register indices` reports `different02 = 1` where 0 is expected | **A pipeline hazard, not an addressing bug.** The ROM emits `C.EQ.S $0, $2` immediately followed by `BC1T`, with no separating instruction. `FCSR.C` commits at the single commit-or-trap point in **WB** (ADR 0007), while `BC1T` resolves in **EX** — so the branch reads the *previous* condition, which is false, falls through, and sets the flag the test reads. Hardware interlocks instead. Note the operand rule is already right here: the test's other three cases pass, and its own comments confirm `fs` masks while `ft` does not | absolute | **Open.** Needs an interlock, not a bypass, to stay inside ADR 0007's one-commit-point design — and the stall length must be derived from which latch actually holds the compare when the branch reaches EX. That is the reverse-cascade trap that has produced a silent no-op twice (`docs/engineering-lessons.md`); trace it, do not reason about it |
 
 Every entry must carry a **classification** of the failing measurement as **absolute** or
 **differential** before any mechanism is proposed (ADR 0005, `engineering-lessons.md` §1.3). A
@@ -971,6 +972,40 @@ dropped four bits on every write-back.
 A reminder that a *field* table and a *writable-bits* mask are different
 documents: the first says what the hardware interprets, the second what it
 stores.
+
+### C-21 — `FR = 0` maps `fs` and `ft` differently, and the manual declines to say so
+
+**Claim.** Under `Status.FR = 0`, a floating-point *arithmetic* instruction resolves its two
+operand register fields by **different rules**: the low bit of `fs` is ignored, and the low bit of
+`ft` is not. The destination `fd` is used as-is in both modes.
+
+**Why it is measured, not documented.** The manual is explicit that it will not say: *"If the FR
+bit is 0, an odd-numbered register cannot be specified"* (UM §7.5.3), and per-instruction, *"If an
+odd number is specified, the operation is undefined"* (UM §16). Undefined in the manual is still
+deterministic in silicon, so the oracle here is n64-systemtest's measured table, and this entry
+records it as a measurement rather than as documentation.
+
+**Evidence.** Two rows of `Upper bits of 32 bit operation (half mode)` cannot be satisfied by any
+single mapping:
+
+- `SQRT.S $13, $31` yields `sqrt(16) = 4`, so `fs = 31` read **FGR30**.
+- `ADD.S $2, $28, $31` yields `-10 + -16 = -26`, so `ft = 31` read **FGR31**.
+
+`Comparisons in half mode with odd register indices` then states it outright in its own assertion
+messages: *"Lowest bit of fs should be ignored"* and *"Lowest bit of ft should not be ignored"*.
+
+**What this supersedes.** C-14 established that `FR = 0` addresses whole even registers and that a
+32-bit access reaches an odd register's **high** half. That remains correct for `MTC1`/`LWC1` and
+the doubleword coprocessor moves — the instruction classes it was derived from. It does **not**
+extend to the arithmetic operand ports, which is the assumption this entry corrects. Two mappings
+for two instruction classes is surprising; separate accessors (`read_s_fs`/`read_s_ft`) exist so a
+call site cannot silently pick the wrong one.
+
+**Cost of getting it wrong.** Folding an odd arithmetic destination into its even partner leaves the
+odd FGR holding its previous value, which the suite detects directly by observing that FGR1 keeps
+its preload after `ADD.D $1`.
+
+---
 
 ## 5. Deliberate deviations from hardware
 

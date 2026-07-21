@@ -622,6 +622,17 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   unconditionally raises spurious refills on exactly the code that matters —
   cache-init walks every index with an arbitrary base, before any mapping
   exists.
+- **Under `FR = 0`, `fs` and `ft` resolve differently.** A floating-point
+  arithmetic instruction ignores the low bit of `fs` and does **not** ignore the
+  low bit of `ft`; the destination `fd` is used as-is in both modes. The manual
+  declines to specify this — an odd register with `FR = 0` is "undefined" (UM
+  §7.5.3, §16) — so the rule is **measured** against n64-systemtest and recorded
+  in the accuracy ledger as **C-21**, not cited as documentation.
+
+  This does not extend C-14, which governs `MTC1`/`LWC1` and the doubleword
+  coprocessor moves: those really do reach an odd register's high half. Separate
+  accessors (`read_s_fs` / `read_s_ft`) keep the two apart so a call site cannot
+  silently pick the wrong one.
 - **The MIPS III 64-bit operations are Reserved in 32-bit User and Supervisor
   mode.** `DADD`, `DSLL`, `LD`, `SD` and the rest raise Reserved Instruction when
   the current mode's `UX`/`SX` bit is clear and the mode is not Kernel. Kernel may
