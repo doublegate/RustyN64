@@ -175,7 +175,7 @@ labelled as one until something reads the register on hardware.
 
 | # | Symptom | Suspected mechanism | Classification | Status |
 | --- | --- | --- | --- | --- |
-| — | none yet | — | — | — |
+| R-1 | `Upper bits of 32 bit operation (half mode)` reports `result[0] = 0x4180_0000_0000_0000` where `6f32` (`0x40C0_0000`) is expected | **Not `ADD.S`.** Running the identical instruction in isolation — `ADD.S $0, $28, $30`, `FR = 0`, the ROM's own operands — produces `0x0000_0000_40C0_0000`, which is correct, and it is correct in `FR = 1` too. So the defect is upstream of the arithmetic: something earlier in the ROM's block leaves the register file or the mode in a state the isolated run does not reproduce. The observed value is `16f32` in the **high** half with the low half cleared, which is the signature of a single-precision write to an **odd** register under `FR = 0` — `NEG.S $17, $31` is the only instruction in the block that produces exactly that, and it targets `fgr[16]`, not `fgr[0]` | absolute | **Open.** Next step is a correlated capture at the ROM's own `Running ...` marker (ledger C-10's method), dumping the instruction stream and `Status` across the whole block — *not* more reasoning about which register ought to hold what. Two rounds of that reasoning have already produced two wrong answers |
 
 Every entry must carry a **classification** of the failing measurement as **absolute** or
 **differential** before any mechanism is proposed (ADR 0005, `engineering-lessons.md` §1.3). A
