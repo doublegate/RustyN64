@@ -25,7 +25,10 @@ Alongside it, C-13's subnormal-result policy gained its missing half: a result t
 **past** the subnormal grid to zero is refused too. `is_subnormal` and `flags.underflow` are both
 needed — neither implies the other, since IEEE signals underflow only when tiny *and inexact*.
 
-**Phase 1's categories: 99 → 67.** The entire odd-index cluster reached zero. Accuracy ledger
+A float-to-`.L` conversion also refuses a magnitude of **`2^53`** or more — far narrower than
+`i64`, and bracketed by the suite rather than assumed.
+
+**Phase 1's categories: 99 → 60.** The entire odd-index cluster reached zero. Accuracy ledger
 **C-14**.
 
 ### Added — `SQRT` and a correctly-rounded `CVT.S.D`

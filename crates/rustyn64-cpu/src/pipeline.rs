@@ -1925,11 +1925,12 @@ impl Pipeline {
         // The source is widened to `f64` first, which is EXACT for an `f32`, so
         // no rounding happens before the one the instruction asks for.
         let v = self.fp_source_as_f64(fmt, fs, fr);
+        // funct 8..=11 target `.L`, 12..=15 target `.W`.
+        let wide = funct < 0o14;
         if self.integer_conversion_unimplemented(fmt, fs, fr) {
             return (FpCommit::Single(0), fpu::Flags::NONE, true);
         }
-        // funct 8..=11 target `.L`, 12..=15 target `.W`.
-        if funct < 0o14 {
+        if wide {
             let out = fpu::to_i64(v, mode);
             // `to_i64` reports NaN and out-of-range as Invalid, which is the
             // IEEE answer and NOT this processor's: the VR4300 declines with
@@ -1952,16 +1953,44 @@ impl Pipeline {
 
     /// Is the source of a float-to-integer conversion one the VR4300 refuses?
     ///
-    /// Only subnormality is checked here; NaN and out-of-range are detected
-    /// from the conversion's own result, because "out of range" depends on the
-    /// target width.
+    /// Subnormality, plus a magnitude of `2^53` or more. NaN and infinity are
+    /// detected from the conversion's own result, because "out of range"
+    /// depends on the target width.
+    ///
+    /// The limit applies to `.W` targets as well, where it is **unobservable**:
+    /// `2^53` is far outside `i32`, so such a value is refused either way. It
+    /// was originally guarded on the target width, and the guard was removed
+    /// because no test could distinguish the two — an undistinguishable branch
+    /// is one that rots.
+    ///
+    /// # The `2^53` limit is narrower than `i64`
+    ///
+    /// `9007198717870080` converts; `9007199254740992` (`2^53`) raises
+    /// unimplemented — both far inside `i64`'s range. n64-systemtest brackets
+    /// the threshold with adjacent values on either side, which is what
+    /// identifies it as `2^53` rather than some larger bound. `2^53` is the
+    /// last integer a `double` represents exactly, so the natural reading is
+    /// that the conversion runs through double precision internally and
+    /// declines whatever it cannot hold exactly.
     fn integer_conversion_unimplemented(&self, fmt: u8, fs: u8, fr: bool) -> bool {
         use crate::fpu;
-        if fmt == 0o20 {
-            fpu::is_subnormal_f32(f32::from_bits(self.fpr.read_s(fs, fr)))
+        /// The last integer a `double` represents exactly.
+        const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
+
+        let v = if fmt == 0o20 {
+            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            if fpu::is_subnormal_f32(a) {
+                return true;
+            }
+            f64::from(a)
         } else {
-            fpu::is_subnormal_f64(f64::from_bits(self.fpr.read_d(fs, fr)))
-        }
+            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            if fpu::is_subnormal_f64(a) {
+                return true;
+            }
+            a
+        };
+        v.abs() >= TWO_POW_53
     }
 
     /// `CVT.S`/`CVT.D`/`CVT.W`/`CVT.L`, from any source format.
@@ -4924,6 +4953,49 @@ mod tests {
             "MOV.S moves the subnormal"
         );
         assert_eq!(p.cop1.fcsr(), 0, "and raises nothing");
+    }
+
+    /// **A `.L` conversion refuses a magnitude of `2^53` or more**, which is
+    /// far narrower than `i64`.
+    ///
+    /// The threshold is bracketed rather than assumed: `9007198717870080`
+    /// converts and `9007199254740992` (`2^53`) does not, and both are
+    /// comfortably inside `i64`. A test using only a huge value would pass with
+    /// the limit set anywhere between `2^53` and `i64::MAX`.
+    ///
+    /// The same limit applies to `.W`, where it is **unobservable**: `2^53` is
+    /// far outside `i32`, so both paths end in unimplemented. Guarding it on
+    /// the target width was tried and removed — a branch no test can
+    /// distinguish is a branch that will rot.
+    #[test]
+    fn a_long_conversion_refuses_two_to_the_fifty_three_but_not_just_below() {
+        use crate::cop0::reg;
+        /// `CVT.L.D $f4, $f0` — fmt 17 (`.D`), `fs` 0, `fd` 4, funct 0o45.
+        const CVT_L_D: u32 = (0o21 << 26) | (0o21 << 21) | (4 << 6) | 0o45;
+
+        for (src, want_unimplemented) in [
+            (9_007_198_717_870_080.0f64, false),
+            (9_007_199_254_740_992.0f64, true), // 2^53
+            (-9_007_199_254_740_992.0f64, true),
+            (-9_007_198_717_870_080.0f64, false),
+        ] {
+            let mut bus = Ram::new(alloc::vec![CVT_L_D]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_d(0, true, src.to_bits());
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            let raised = p.cop1.fcsr() & CAUSE_E != 0;
+            assert_eq!(raised, want_unimplemented, "{src:e}");
+            if !want_unimplemented {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let want = src as i64 as u64;
+                assert_eq!(p.fpr.read_d(4, true), want, "{src:e} must convert");
+            }
+        }
     }
 
     /// An out-of-range float-to-integer conversion is **unimplemented**, not

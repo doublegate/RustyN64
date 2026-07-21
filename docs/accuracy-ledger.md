@@ -802,7 +802,20 @@ inexact**. Replacing the first test with the second rather than adding to it was
 tried and regressed the oracle from 89 to **131**, caught immediately by the
 existing tests. Worth 22 assertions once correct.
 
-**Effect:** Phase 1's categories 99 → **67**; the whole odd-index cluster
+**A third fix, in the same area.** A float-to-`.L` conversion refuses a
+magnitude of **`2^53`** or more — far narrower than `i64`, and bracketed by the
+suite rather than assumed: `9007198717870080` converts and `9007199254740992`
+does not, both comfortably inside `i64`. `2^53` is the last integer a `double`
+represents exactly, so the natural reading is that the conversion runs through
+double precision internally and declines whatever it cannot hold. Worth 7
+assertions.
+
+The limit is applied to `.W` targets too, where it is **unobservable** — `2^53`
+is far outside `i32`, so such a value is refused either way. It was first
+guarded on the target width; the guard was removed when a mutation test could
+not distinguish the two. An undistinguishable branch is one that rots.
+
+**Effect:** Phase 1's categories 99 → **60**; the whole odd-index cluster
 (`MTC1`/`MFC1`/`DMTC1`/`DMFC1`/`LWC1`/`SWC1`/`LDC1`/`SDC1` "with odd index in
 32 bit mode", plus the half-mode comparison and 64-bit-index tests) reached
 zero.
