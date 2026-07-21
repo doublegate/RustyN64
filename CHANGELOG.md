@@ -9,6 +9,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — the doubleword control moves now trap, and differently per coprocessor
+
+`DCFC1`/`DCTC1` raise a floating-point exception with `FCSR.Cause` set to unimplemented-operation
+only; `DCFC2`/`DCTC2` raise Reserved Instruction with `Cause.CE = 2`. All four previously fell into
+the catch-all unimplemented arm and retired silently.
+
+`Cause.CE` is not only for Coprocessor Unusable — it names the coprocessor for a reserved encoding
+inside a *usable* one too, which needed a distinct `Exception::CoprocessorReserved`. Ledger
+**C-18**.
+
+**Phase 1's categories: 49 → 45.**
+
 ### Fixed — `FCR0.Imp` is `0x0A`, and `CTC1` can raise on its own
 
 `FCR0` reports implementation `0x0A`, not the `0x0B` this implementation used. `0x0B` is correct

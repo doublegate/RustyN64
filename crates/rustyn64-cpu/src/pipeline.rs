@@ -97,6 +97,17 @@ pub enum Exception {
     Trap,
     /// A reserved / unimplemented opcode.
     ReservedInstruction,
+    /// A reserved encoding **within a coprocessor's** instruction space.
+    ///
+    /// Reports the same `ExcCode` as [`Exception::ReservedInstruction`] but
+    /// also sets `Cause.CE` to the coprocessor number. A plain
+    /// `ReservedInstruction` leaves `CE` at zero, so the two are not
+    /// interchangeable — n64-systemtest checks the whole `Cause` register, and
+    /// `DCFC2` with `CU2` set expects `CE = 2`.
+    CoprocessorReserved {
+        /// Which coprocessor, for `Cause.CE`.
+        unit: u8,
+    },
     /// A coprocessor instruction with that unit disabled in `Status.CU`.
     CoprocessorUnusable {
         /// Which coprocessor, for `Cause.CE`.
@@ -975,13 +986,14 @@ impl Pipeline {
             | Op::Swc1
             | Op::Sdc1
             | Op::Cop1Unimplemented
+            | Op::Cop1ReservedControl
             // FP arithmetic is a COP1 instruction like any other and must raise
             // Coprocessor Unusable with `CU1` clear. It was omitted when
             // `FpArith` was introduced, which left the arithmetic executing
             // unconditionally -- a program that had not enabled COP1 would get
             // results instead of an exception.
             | Op::FpArith => 1,
-            Op::Cop2 => 2,
+            Op::Cop2 | Op::Cop2ReservedControl => 2,
             _ => return None,
         };
         let status = self.cop0.read(crate::cop0::reg::STATUS);
@@ -1242,6 +1254,31 @@ impl Pipeline {
             // exception handlers before any `Status` setup has happened.
             if let Some(unit) = self.unusable_coprocessor(out.decoded) {
                 self.abort_from(Stage::Ex, Exception::CoprocessorUnusable { unit });
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
+            // `DCFC1`/`DCTC1` are usable-but-unimplemented: the `CU1` check
+            // above has already passed, so this is the *other* outcome. The
+            // whole `Cause` field is replaced, leaving only bit 17 -- the suite
+            // pre-loads unrelated cause bits specifically to check they clear.
+            // COP2's equivalent declines differently: Reserved Instruction,
+            // and `FCSR` is not involved at all.
+            if out.decoded.op == crate::decode::Op::Cop2ReservedControl {
+                self.abort_from(Stage::Ex, Exception::CoprocessorReserved { unit: 2 });
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
+            if out.decoded.op == crate::decode::Op::Cop1ReservedControl {
+                /// `FCSR.Cause`, bits 17:12.
+                const CAUSE_MASK: u32 = 0x3F << 12;
+                let fcsr = self.cop1.fcsr();
+                self.cop1
+                    .ctc1(31, (fcsr & !CAUSE_MASK) | crate::fpu::CAUSE_UNIMPLEMENTED);
+                self.abort_from(Stage::Ex, Exception::FloatingPoint);
                 out = self.rf_ex;
                 self.rf_ex.occupied = false;
                 self.ex_dc = out;
@@ -4795,6 +4832,68 @@ mod tests {
             (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
             0,
             "a Cause bit whose Enable is clear must not trap"
+        );
+    }
+
+    /// **`DCFC1`/`DCTC1` and `DCFC2`/`DCTC2` decline in DIFFERENT ways.**
+    ///
+    /// The encodings are structurally identical — the doubleword control moves
+    /// of their respective coprocessors — and it is tempting to give them one
+    /// behaviour. COP1's raise a *floating-point* exception with `FCSR.Cause`
+    /// set to unimplemented-operation; COP2's raise *Reserved Instruction* with
+    /// `Cause.CE = 2` and do not touch `FCSR` at all.
+    ///
+    /// Both are tested here together precisely because treating them uniformly
+    /// is the natural mistake.
+    #[test]
+    fn the_doubleword_control_moves_decline_differently_per_coprocessor() {
+        use crate::cop0::reg;
+        /// `DCFC1 $1, $f0` — COP1, rs 0o03.
+        const DCFC1: u32 = (0o21 << 26) | (0o03 << 21) | (1 << 16);
+        /// `DCFC2 $1, $0` — COP2, rs 0o03.
+        const DCFC2: u32 = (0o22 << 26) | (0o03 << 21) | (1 << 16);
+
+        // COP1: floating-point exception, FCSR.Cause = unimplemented ONLY.
+        let mut bus = Ram::new(alloc::vec![DCFC1]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set
+        // Pre-load unrelated cause bits: they must be cleared, not merged.
+        p.cop1.ctc1(31, 0x0001_F000);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::FPE,
+            "DCFC1 raises FPE"
+        );
+        assert_eq!(
+            p.cop1.fcsr() & (0x3F << 12),
+            crate::fpu::CAUSE_UNIMPLEMENTED,
+            "and Cause is ONLY the unimplemented bit"
+        );
+
+        // COP2: Reserved Instruction, and Cause.CE names the coprocessor.
+        let mut bus = Ram::new(alloc::vec![DCFC2]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // CU2 set (bit 30) as well as CU1, so this is not an unusable fault.
+        p.cop0.set_hardware(reg::STATUS, 0x7400_0000);
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+            crate::exception::exc_code::RI,
+            "DCFC2 raises Reserved Instruction, not FPE"
+        );
+        assert_eq!(
+            (p.cop0.read(reg::CAUSE) >> 28) & 0b11,
+            2,
+            "and Cause.CE names COP2 -- a plain RI would leave it zero"
         );
     }
 

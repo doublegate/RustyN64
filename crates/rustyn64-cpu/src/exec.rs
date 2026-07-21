@@ -723,7 +723,15 @@ pub const fn execute(
             })),
             ..NOTHING
         }),
-        Op::Cop1Unimplemented | Op::Cop0Extension | Op::Cop2 => Ok(NOTHING),
+        // `Cop1ReservedControl` reaches here only when the pipeline has already
+        // decided not to trap it, which today cannot happen — the EX stage
+        // raises before `execute` runs. It is listed rather than left to a
+        // catch-all so that adding a COP1 op forces a decision here.
+        Op::Cop1Unimplemented
+        | Op::Cop0Extension
+        | Op::Cop2
+        | Op::Cop1ReservedControl
+        | Op::Cop2ReservedControl => Ok(NOTHING),
         Op::Tlbr => Ok(Executed {
             cop0: Some(Cop0Access::Tlb(TlbOp::Read)),
             ..NOTHING

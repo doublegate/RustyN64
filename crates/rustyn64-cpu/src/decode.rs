@@ -339,6 +339,29 @@ pub enum Op {
     /// **Coprocessor Unusable** when `Status.CU1` is clear rather than Reserved
     /// Instruction. Conflating the two sends the handler the wrong `ExcCode`.
     Cop1Unimplemented,
+    /// `DCFC1` / `DCTC1` — the 64-bit forms of `CFC1`/`CTC1`, which the VR4300
+    /// **does not implement**.
+    ///
+    /// They are not a silent no-op and not Reserved Instruction: with `CU1`
+    /// set they raise a floating-point exception whose `FCSR.Cause` is
+    /// *only* the unimplemented-operation bit, every other cause bit cleared.
+    /// With `CU1` clear they raise Coprocessor Unusable like any COP1
+    /// instruction, and `FCSR` is left untouched.
+    ///
+    /// Distinct from [`Op::Cop1Unimplemented`] on purpose: that one really does
+    /// retire silently, and folding these into it hides a trap behind a no-op.
+    Cop1ReservedControl,
+    /// `DCFC2` / `DCTC2` — the 64-bit COP2 control moves.
+    ///
+    /// COP2 exists on the VR4300 only as a stub, and these two encodings are
+    /// not implemented at all: with `CU2` set they raise **Reserved
+    /// Instruction**, and with `CU2` clear, Coprocessor Unusable.
+    ///
+    /// Note the asymmetry with [`Op::Cop1ReservedControl`], which raises a
+    /// *floating-point* exception in the equivalent position. The two
+    /// coprocessors decline in different ways and the encodings are otherwise
+    /// identical, so this is easy to get uniformly wrong.
+    Cop2ReservedControl,
     /// Any **COP2** encoding.
     ///
     /// The VR4300 has a COP2 unit, so these are architecturally *valid*
@@ -850,10 +873,22 @@ pub const fn decode(word: u32) -> Decoded {
         // COP2. Every encoding is valid on the VR4300, so the usability check
         // in EX decides between executing and Coprocessor Unusable. No COP2
         // operation is implemented, which is why one arm covers the opcode.
-        OP_COP2 => Decoded {
-            op: Op::Cop2,
-            ..base
-        },
+        OP_COP2 => {
+            // `DCFC2` (3) and `DCTC2` (7) are not implemented; every other COP2
+            // encoding retires silently. See `Op::Cop2ReservedControl`.
+            let rs = (word >> 21) & 31;
+            if rs == 0o03 || rs == 0o07 {
+                Decoded {
+                    op: Op::Cop2ReservedControl,
+                    ..base
+                }
+            } else {
+                Decoded {
+                    op: Op::Cop2,
+                    ..base
+                }
+            }
+        }
         // COP1. The CONTROL moves (T-12-006), the DATA moves (T-13-001) and the
         // S/D arithmetic below are implemented; the remaining formats and the
         // conversions are not, and the FP load/store forms have their own
@@ -937,6 +972,13 @@ pub const fn decode(word: u32) -> Decoded {
                 },
                 0o06 => Decoded {
                     op: Op::Ctc1,
+                    ..base
+                },
+                // `DCFC1` (3) and `DCTC1` (7): the doubleword control moves,
+                // which this processor does not implement. See
+                // `Op::Cop1ReservedControl` -- they trap rather than no-op.
+                0o03 | 0o07 => Decoded {
+                    op: Op::Cop1ReservedControl,
                     ..base
                 },
                 _ => Decoded {

@@ -178,7 +178,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (**CPU/COP0/TLB** — Phase 1's criterion) | **yes** — ROM committed | **runs; 49 failing in those categories** (462 suite-wide). The RSP's 291 are **Phase 2's** criterion, not this one |
+| n64-systemtest `Failed: 0` (**CPU/COP0/TLB** — Phase 1's criterion) | **yes** — ROM committed | **runs; 45 failing in those categories** (458 suite-wide). The RSP's 291 are **Phase 2's** criterion, not this one |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

@@ -869,6 +869,33 @@ per-register and echoes the first value cannot pass. Our replacement test does
 the same in miniature: the second assertion is the one that distinguishes a
 latch from storage.
 
+### C-18 — the doubleword control moves decline differently per coprocessor
+
+**Claim.** `DCFC1`/`DCTC1` and `DCFC2`/`DCTC2` are structurally identical — the
+64-bit control moves of their respective coprocessors — and the VR4300 refuses
+them in **different ways**:
+
+| Encoding | Unit usable | Result |
+| --- | --- | --- |
+| `DCFC1` / `DCTC1` | `CU1` set | **Floating-point exception**, `FCSR.Cause` = unimplemented **only** |
+| `DCFC1` / `DCTC1` | `CU1` clear | Coprocessor Unusable, `FCSR` untouched |
+| `DCFC2` / `DCTC2` | `CU2` set | **Reserved Instruction**, with `Cause.CE = 2` |
+| `DCFC2` / `DCTC2` | `CU2` clear | Coprocessor Unusable |
+
+Giving all four one behaviour is the natural mistake, which is why the test
+covers both in a single case.
+
+**`Cause.CE` is not only for Coprocessor Unusable.** It names the coprocessor
+for a reserved encoding *inside a usable one* too. Only the first use is
+obvious, and n64-systemtest compares the whole `Cause` register — so a missing
+`CE` reads as an entirely wrong exception rather than a detail. That needed a
+distinct `Exception::CoprocessorReserved { unit }`, since a plain
+`ReservedInstruction` leaves `CE` at zero by design.
+
+**Note what these are not:** a silent no-op. They previously fell into the
+catch-all `Cop1Unimplemented` arm, which retires without effect — the
+decoded-but-no-op shape this project has been bitten by twice.
+
 ### C-17 — `CTC1` can raise an FP exception on its own
 
 **Claim.** Writing `FCSR` with a Cause bit whose corresponding Enable is also
