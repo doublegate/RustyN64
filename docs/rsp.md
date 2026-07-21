@@ -208,6 +208,20 @@ accumulating forms, `VSAR` and the six bitwise operations execute, as do
 `VCL`/`VCH`/`VCR` do not yet, and they report so rather than writing a wrong
 result — `vu_compute` returns `false` and the instruction retires inertly.
 
+**Two findings for whoever implements `VCL`/`VCH`/`VCR`** (a full attempt was
+made and reverted because it produced wrong results on broadcast-element cases —
+better none than subtly wrong):
+
+- **Derive from n64-systemtest's reference, not ares — they differ.** In `VCH`'s
+  *else* branch, the suite sets `VCOH = (diff != 0)` with **no** second term,
+  while ares has `result != 0 && vs != ~vt`. The suite is the oracle.
+- **A model-based unit test of a coupled instruction is circular.** Validating a
+  hand-transcribed `VCL`/`VCH`/`VCR` against a hand-transcribed *model* of the
+  same source passes even when both share a bug; the systemtest caught what the
+  unit test could not. Pin these against the suite's published output (the
+  failing case was `V6,V6,V7[Q0]` — a quarter-broadcast with `vd == vs`), not
+  against a re-derivation.
+
 **`VMACF` adds no rounding constant**, where `VMULF` adds `0x8000`. It is the
 most confusable difference in the family and the accumulator is the only place
 it shows: the oracle's lane 3 moves from `0xC000` to `0x1_0000`, a delta of
