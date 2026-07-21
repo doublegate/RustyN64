@@ -1219,6 +1219,32 @@ are currently *unfalsified* rather than *verified*.
 
 ---
 
+### C-30 — the SP memory window mirrors its 8 KiB up to `0x0404_0000`
+
+**Claim.** DMEM and IMEM are 4 KiB each at `0x0400_0000` and `0x0400_1000`, and that 8 KiB of real
+storage **repeats** for the whole range up to `0x0404_0000`, where the SP registers begin.
+
+**Basis: the oracle, and only the oracle.** The N64brew wiki's *RSP Interface* documents the first
+8 KiB and stops — it gives the DMEM and IMEM ranges and says nothing about what lies between
+`0x0400_2000` and `0x0404_0000`. The mirroring comes from n64-systemtest, in two independent
+forms: its own source comment (`src/tests/sp_memory/mod.rs`) states *"Going out of bounds wraps the
+memory around (until the real end of 0x04040000)"* and *"SPMEM DMEM and IMEM repeat from 0x04000000
+to 0x04040000"*, and its `spmem: SW (out of bounds)` test **executes** the claim: it writes
+`0x7654_3210` at offset `0x3E000`, then reads it back at offset 0 and at `0x3E000`, and separately
+checks that offset `0x1000` (IMEM) was untouched. `0x3E000 & 0x1FFF == 0`, i.e. the 31st repetition.
+
+**Why this is recorded rather than treated as obvious.** Masking an address is the natural
+implementation of *both* "it mirrors" and "we do not bounds-check", and those are different claims
+about hardware. This entry exists so the folding in `Rsp::mem_read` is understood as modelled
+behaviour with a source, not as a missing guard — and so that if the range is ever found to fault
+or to alias differently, there is a claim to retract rather than an accident to rediscover.
+
+**Bounded.** Only the CPU-visible window is covered. The *upper* bound is asserted by the same
+test's IMEM check plus the SP registers starting at `0x0404_0000`; what the RSP's own DMA sees is
+separate and is the per-bank 4 KiB wrap the wiki does document.
+
+---
+
 ---
 
 ## 5. Deliberate deviations from hardware

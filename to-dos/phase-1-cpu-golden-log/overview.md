@@ -24,7 +24,11 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
 - [x] The documented VR4300 errata are reproduced: the multiplication bug, the 32-bit
       shift-right-arithmetic bug, and the sign-extension bugs (`n64brew_wiki/markdown/VR4300.md`).
 - [x] The load-delay interlock is modelled, since it is observable through the pipeline.
-- [x] `n64-systemtest` reports `Failed: 0` for the CPU, COP0, and TLB categories.
+- [x] `n64-systemtest` reports `Failed: 0` for the **CPU, COP0, TLB and COP1** categories.
+      COP1 is named explicitly because `to-dos/VERSION-PLAN.md` §v0.2.0 — which is authoritative
+      for the cut — includes it, and an earlier wording here listed only the first three. That is
+      the same conflation `docs/STATUS.md` once carried; the scope is the four categories, and
+      the suite reports 0 across all of them.
       **Confirmed by reading the suite's source, not assumed**: `entrypoint()` calls
       `set_fcsr` — i.e. `ctc1::<31>` — as its fourth statement, so COP1 *control* access is
       required before any COP0 test runs; `main()` then immediately installs handlers at all
@@ -74,9 +78,12 @@ Out-of-scope:
   the datapath to first-pass completeness against the simplest test ROMs.
 - [Sprint 2 — COP0, the TLB, and the exception model](sprint-2-cop0-tlb-exceptions.md) —
   gets n64-systemtest to report a genuine number, which is the first oracle this project did not
-  write itself. **Status:** planned; tickets T-12-001…T-12-007 minted.
+  write itself. **Status:** COMPLETE.
 - Sprint 3 — COP1 (FPU), the errata, and the golden-log 0-diff.
-  **Status:** stub — refine when Sprint 2 is close to complete.
+  **Status:** COMPLETE. The FPU runs on a soft-float core (ledger C-11), the errata are
+  reproduced (deviation D-2), and the golden log 0-diffs against ares over 50,027 retired
+  records (C-26). Sprint 3 never got its own plan file: it was executed against the ledger and
+  the two oracles rather than a ticket list, which is why this line is the record of it.
 
 ## Dependencies
 

@@ -200,6 +200,11 @@ front of it, and the full 32-/64-bit segment map.
       contents are not modelled at all, so `CACHE` is a translating no-op. Sound only because no
       cache state exists to become stale. Recorded as ledger **D-5**, with the point it stops
       being sound (Phase 5 DMA coherency) stated rather than left to be discovered.
+      **SUPERSEDED by T-11-003 (ledger D-6).** The caches are modelled now, with real contents;
+      the boundary this box named came due earlier than it predicted, at n64-systemtest's
+      `DCACHE:`/`ICACHE:` groups rather than at DMA coherency. Left standing rather than
+      rewritten, because the reasoning was sound while it held and the ledger records the
+      supersession the same way.
 - [ ] **Deferred with the cache model.** Cache-miss costs need a cache to miss in; with zero
       modelled depth there is no miss to charge. The formulas and `M` (ledger C-1) stay recorded
       and unimplemented rather than being applied to a cache that does not exist.
@@ -262,9 +267,14 @@ rather than quietly drop. Get the suite to start, run, and report a real pass/fa
       cached and KSEG1 uncached translation, and a working store path into KSEG0.
 - [x] `install_exception_handlers()` succeeds: handler code is copied to all three of
       `0x8000_0000`, `0x8000_0080`, `0x8000_0180` and is subsequently *executed* from there.
-- [x] The harness reads the result count. **Which channel to read is not yet determined** — the
-      suite has `isviewer.rs`, `sc64.rs` and a `FramebufferConsole`, and more than one may be
-      live. Establish which before building the reader; do not assume.
+- [x] The harness reads the result count. **Resolved: both `ISViewer` and EMUX `xlog`, with
+      EMUX preferred.** The question this box left open ("which channel?") was answered by
+      building both and reading whichever produced output — the suite picks its console at
+      runtime from what the emulator advertises, so a single hardcoded choice would have been a
+      guess either way. `ISViewer` is the hardware-plausible path; EMUX is opt-in, ~9x faster,
+      and gives a definite end-of-run via `xioctl(EXIT)` (ledger C-27). The reader is
+      `crates/rustyn64-test-harness/tests/systemtest.rs`, which also witnesses execution before
+      trusting a zero.
 - [x] `docs/STATUS.md`'s accuracy table records the genuine number, whatever it is. **A low
       number is a result, not a failure** — the honest count is the point, and tuning anything to
       raise it violates the ledger's central rule.

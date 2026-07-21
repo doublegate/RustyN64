@@ -281,7 +281,8 @@ impl Bus {
     /// End of the SP memory window — where the SP *registers* begin.
     ///
     /// The 8 KiB of real storage repeats for this whole range rather than
-    /// ending at `0x0400_2000`; see [`rustyn64_rsp::Rsp::mem_read`].
+    /// ending at `0x0400_2000`; see [`rustyn64_rsp::Rsp::mem_read`] and
+    /// accuracy ledger **C-30**, which records the provenance of the mirroring.
     pub const SPMEM_WINDOW_END: u32 = 0x0404_0000;
 
     /// Is this address in the RSP DMEM/IMEM window?
@@ -648,6 +649,15 @@ impl CpuBus for Bus {
     /// access size on to the RDRAM devices, which build a real byte mask from
     /// them; only the RCP's internal path throws that information away.
     fn write_sized(&mut self, addr: u32, width: u64, value: u64) {
+        // Unsupported widths do nothing, matching the default `write_sized`.
+        // `StoreKind::width` only ever yields 1/2/4/8 so nothing reaches this
+        // today, but without the guard the internal-bus arm below would accept
+        // any width and *store* -- so the two paths would disagree about what a
+        // width of 3 means, which is exactly the kind of divergence that is
+        // discovered years later through a corrupted byte lane.
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return;
+        }
         if !Self::is_rcp_internal(addr) {
             // RDRAM, the PI/SI external buses and the ISViewer keep byte-exact
             // semantics -- see `is_rcp_internal` for why the external buses are

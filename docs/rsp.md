@@ -60,7 +60,9 @@ diverge the moment either side writes, and nothing detects it.
 8 KiB **repeats** for the whole range up to `0x0404_0000`, where the SP registers
 begin (n64-systemtest `sp_memory::SW (out of bounds)` writes at `0x3E000` and
 reads the result back at offset 0). Folding the offset is therefore the
-behaviour, not a bounds-check standing in for one. Each bank wraps within its own
+behaviour, not a bounds-check standing in for one — recorded with its provenance
+as accuracy ledger **C-30**, since the N64brew wiki documents only the first
+8 KiB and the mirroring rests on the oracle. Each bank wraps within its own
 4 KiB; nothing ever spills from one into the other.
 
 Accesses to this window go through the RCP's internal bus, which **ignores the

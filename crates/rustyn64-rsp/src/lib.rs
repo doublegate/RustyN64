@@ -103,7 +103,9 @@ impl Rsp {
     /// back at offset 0 (`sp_memory::SW (out of bounds)`), which is the same
     /// 8 KiB seen for the 31st time. Masking is therefore the behaviour, not a
     /// bounds-check standing in for one: there is no out-of-range access to
-    /// reject inside the window.
+    /// reject inside the window. Provenance is recorded in accuracy ledger
+    /// **C-30** — the wiki documents only the first 8 KiB, so the mirroring
+    /// rests on the oracle.
     const fn fold(off: u32) -> usize {
         (off & 0x1FFF) as usize
     }
