@@ -116,6 +116,39 @@ pub trait Bus {
         self.write_u8(addr.wrapping_add(3), b[3]);
     }
 
+    /// Does this host offer the **EMUX** emulator extensions?
+    ///
+    /// Default: **no**, and that default is the load-bearing part. Real hardware
+    /// has no EMUX — COP0 CO `funct` 0x20-0x3F retires inertly (ledger C-8), so
+    /// `xdetect` leaves its destination register untouched and the guest
+    /// concludes no extensions exist. Advertising them changes which console
+    /// path n64-systemtest takes -- it changes the instruction stream.
+    ///
+    /// ares takes exactly this position: every EMUX handler in its `emux.cpp`
+    /// opens with `if(!system.homebrewMode) return;`, off by default. A default
+    /// build of `RustyN64` must behave like hardware; a harness that wants the
+    /// faster console opts in deliberately.
+    fn emux_enabled(&self) -> bool {
+        false
+    }
+
+    /// `EMUX xlog`: the guest has asked the *emulator* to print `bytes`.
+    ///
+    /// Default: discard. `rustyn64-core` collects it. This is n64-systemtest's
+    /// out-of-band console channel — it reaches the host without any PI, SI or
+    /// `ISViewer` emulation, which is why it is worth implementing well before the
+    /// cartridge subsystem exists.
+    fn emux_log(&mut self, bytes: &[u8]) {
+        let _ = bytes;
+    }
+
+    /// `EMUX xioctl(EXIT)`: the guest has asked the emulator to terminate.
+    ///
+    /// Default: ignore. A harness that honours it gets a definite end-of-run
+    /// signal instead of a tick budget, which is the difference between "the
+    /// suite finished" and "we stopped watching".
+    fn emux_exit(&mut self) {}
+
     /// Sample the pending-interrupt level: the MI lines masked by `MI_MASK`.
     ///
     /// Default: no interrupt pending. `rustyn64-core` overrides it.

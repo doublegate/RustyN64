@@ -960,6 +960,21 @@ pub const fn decode(word: u32) -> Decoded {
                     // hardware. See `Op::Cop0Extension`.
                     0o40..=0o77 => Decoded {
                         op: Op::Cop0Extension,
+                        // EMUX uses its OWN field positions, not the MIPS ones:
+                        // `rd` at 24:20, `rt` at 19:15, `code` at 14:6 (see
+                        // n64-systemtest `src/emux.rs::encode_*`). They are
+                        // unpacked into the standard slots here so `execute`
+                        // stays a pure function of `Decoded`:
+                        //   rs   <- the EMUX `rd` register (xlog's pointer)
+                        //   rt   <- the EMUX `rt` register (xlog's length)
+                        //   dest <- the EMUX `rd` register (xdetect's result)
+                        //   imm  <- the 9-bit `code`
+                        rs: ((word >> 20) & 0x1F) as u8,
+                        rt: ((word >> 15) & 0x1F) as u8,
+                        dest: ((word >> 20) & 0x1F) as u8,
+                        imm: ((word >> 6) & 0x1FF) as u16,
+                        //   sa   <- the CO `funct`, so `execute` can dispatch
+                        sa: word & 0o77,
                         ..base
                     },
                     _ => base,

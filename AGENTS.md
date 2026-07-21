@@ -59,7 +59,7 @@ Architecture (the load-bearing facts — read `docs/architecture.md`):
 
 ## Current state (read `docs/STATUS.md` first)
 
-**Phase 1's cut criterion is MET; tagged release still v0.1.0.** The criterion is `Failed: 0` on
+**Phase 1 is COMPLETE and tagged v0.2.0.** Both exit criteria are met — the n64-systemtest cut criterion and the CPU golden-log 0-diff against ares. The criterion is `Failed: 0` on
 the **CPU/COP0/TLB/COP1 categories** (`to-dos/VERSION-PLAN.md` §v0.2.0) — *not* suite-wide — and
 n64-systemtest now reports **0** there. The ~413 suite-wide failures that remain are RSP/RCP, which
 is explicitly **Phase 2's** criterion (§v0.3.0); cart/PIF/RDP belong to later phases still.
@@ -361,7 +361,7 @@ in this repo, which is worth fixing even when the suggested wording is not.
   state the template; the phase overviews instantiate it. Code TODOs use a separate
   subsystem-scoped form (`T-CPU-01`, `T-HARNESS-02`) for pre-ticket scaffolding.
 - Never commit commercial ROMs.
-- Versioning starts clean at v0.1.0 — RustyNES "v2.0 / engine-lineage" anchors are NOT this
+- Versioning starts clean at v0.1.0 (now at v0.2.0) — RustyNES "v2.0 / engine-lineage" anchors are NOT this
   project's releases.
 
 <<< MC-PROJECT-END >>>

@@ -1,6 +1,6 @@
 [package]
 name = "rustyn64-test-harness"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ test-roms = []          # compiles the committed CC0/public-domain suites + inte
 commercial-roms = []    # the local-dump oracle (ROMs gitignored; commit only screenshots/.snap)
 
 [dependencies]
-rustyn64-core = { path = "../rustyn64-core", version = "0.1.0" }
+rustyn64-core = { path = "../rustyn64-core", version = "0.2.0" }
 
 [dev-dependencies]
 insta = "1"

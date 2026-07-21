@@ -82,6 +82,22 @@ pub enum MemOp {
         /// Destination register for the success flag.
         dest: u8,
     },
+    /// An **EMUX** emulator-extension operation (COP0 CO `funct` 0x20-0x3F).
+    ///
+    /// Carried to `DC` because it needs the bus: `xlog` reads a string out of
+    /// guest memory and hands it to the host. `execute` is pure and cannot.
+    Emux {
+        /// The CO `funct`: `0x20` xdetect, `0x25` xlog, `0x2C` xioctl.
+        funct: u8,
+        /// The 9-bit `code` field (bits 14:6).
+        code: u16,
+        /// `GPR[rd]` — `xlog`'s string pointer.
+        ptr: u64,
+        /// `GPR[rt]` — `xlog`'s length.
+        len: u64,
+        /// `rd`, where `xdetect` returns its capability mask.
+        dest: u8,
+    },
     /// A `CACHE` maintenance operation.
     ///
     /// Carries the effective address so `DC` translates it — the instruction can
@@ -771,8 +787,20 @@ pub const fn execute(
         // need the latch, which `EX` owns. They are listed individually rather
         // than left to a catch-all so that adding a coprocessor op forces a
         // decision at this site.
+        // EMUX needs the bus, so it becomes a `MemOp` handled in `DC`. The
+        // `funct` is recovered from `sa`, which decode left holding it.
+        Op::Cop0Extension => Ok(Executed {
+            link: None,
+            mem: Some(MemOp::Emux {
+                funct: d.sa as u8,
+                code: d.imm,
+                ptr: rs_val,
+                len: rt_val,
+                dest: d.dest,
+            }),
+            ..NOTHING
+        }),
         Op::Cop1Unimplemented
-        | Op::Cop0Extension
         | Op::Cop2
         | Op::Cop1ReservedControl
         | Op::Cop2ReservedControl

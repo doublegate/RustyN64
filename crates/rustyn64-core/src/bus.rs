@@ -88,6 +88,17 @@ pub struct Bus {
     isviewer: alloc::boxed::Box<[u8]>,
     /// Text the guest has flushed through the `ISViewer` channel.
     isviewer_out: alloc::vec::Vec<u8>,
+    /// Text the guest has pushed through the **EMUX** `xlog` channel.
+    ///
+    /// Kept separate from [`Bus::isviewer_output`] deliberately: they are two
+    /// independent console paths and n64-systemtest picks whichever the
+    /// emulator advertises, so merging them would hide which one is live.
+    emux_out: alloc::vec::Vec<u8>,
+    /// Set once the guest has issued `EMUX xioctl(EXIT)`.
+    emux_exited: bool,
+    /// Whether this host advertises the EMUX extensions. **Off by default**:
+    /// hardware has none, and offering them changes the guest's control flow.
+    emux_enabled: bool,
     /// The value a PI direct-I/O write latched, visible to every PI-bus read
     /// until the write finalises. See [`Bus::pi_tick`].
     pi_write_latch: u32,
@@ -135,6 +146,9 @@ impl Default for Bus {
             spmem: alloc::vec![0u8; Self::SPMEM_LEN].into_boxed_slice(),
             isviewer: alloc::vec![0u8; 0x20 + Self::ISVIEWER_LEN].into_boxed_slice(),
             isviewer_out: alloc::vec::Vec::new(),
+            emux_out: alloc::vec::Vec::new(),
+            emux_exited: false,
+            emux_enabled: false,
             pi_write_latch: 0,
             pi_write_countdown: 0,
             sp_mem_addr: 0,
@@ -305,6 +319,29 @@ impl Bus {
     #[must_use]
     pub fn isviewer_output(&self) -> &[u8] {
         &self.isviewer_out
+    }
+
+    /// Text the guest has pushed through the EMUX `xlog` channel.
+    #[must_use]
+    pub fn emux_output(&self) -> &[u8] {
+        &self.emux_out
+    }
+
+    /// Offer the EMUX extensions to the guest.
+    ///
+    /// Opt-in, because hardware has none: enabling this changes which console
+    /// backend n64-systemtest selects and therefore the instructions it
+    /// executes. Worth it for a test harness (the `xlog` console needs no PI or
+    /// `ISViewer` emulation and runs ~9x faster); wrong for anything claiming to
+    /// reproduce a real console.
+    pub const fn enable_emux(&mut self) {
+        self.emux_enabled = true;
+    }
+
+    /// Has the guest requested termination via `EMUX xioctl(EXIT)`?
+    #[must_use]
+    pub const fn emux_exited(&self) -> bool {
+        self.emux_exited
     }
 
     /// Is this address on the **PI external bus** — the memory-mapped window
@@ -657,6 +694,18 @@ impl CpuBus for Bus {
         for (i, byte) in b.iter().enumerate() {
             self.write_u8(addr.wrapping_add(i as u32), *byte);
         }
+    }
+
+    fn emux_enabled(&self) -> bool {
+        self.emux_enabled
+    }
+
+    fn emux_log(&mut self, bytes: &[u8]) {
+        self.emux_out.extend_from_slice(bytes);
+    }
+
+    fn emux_exit(&mut self) {
+        self.emux_exited = true;
     }
 
     fn poll_irq(&mut self) -> bool {

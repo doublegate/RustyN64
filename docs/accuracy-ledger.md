@@ -176,7 +176,7 @@ labelled as one until something reads the register on hardware.
 | # | Symptom | Suspected mechanism | Classification | Status |
 | --- | --- | --- | --- | --- |
 | R-1 | **RESOLVED** — see C-21. The failing instruction was `ADD.S $1, $29, $30`, not the `ADD.S $0` the assertion names; a correlated capture separated cause from visible effect by exactly the pipeline depth | — | absolute | Closed |
-| R-2 | `Comparisons in half mode with odd register indices` reported `different02 = 1` where 0 was expected | **RESOLVED**, two causes. (1) `BC1F`/`BC1T` were not implemented — the branch decoded to `Cop1Unimplemented` and retired as a no-op. (2) `BC1` resolves in `EX` while `C.cond.fmt` commits `FCSR.C` in `WB`, so an adjacent pair sampled the previous condition. Fixed by a **forwarding path**, not a stall: `stall_for` freezes the whole pipeline, so holding the branch delays the compare's `WB` equally and it never catches up — an interlock was written, fired once, and changed nothing. The load interlock works only because its consumer reads through the bypass network; the FP condition had no such path | absolute | Closed |
+| R-2 | **RESOLVED** — `BC1` implemented, and the compare forwarded to it (C-25) | — | absolute | Closed |
 
 Every entry must carry a **classification** of the failing measurement as **absolute** or
 **differential** before any mechanism is proposed (ADR 0005, `engineering-lessons.md` §1.3). A
@@ -1089,6 +1089,61 @@ path, and raising from it would make the branch report the *compare's* trap.
 
 `ex_dc` is consulted before `dc_wb` because it holds the younger instruction, and the most recent
 compare is the one whose value stands.
+
+---
+
+### C-26 — the golden log is a TANDEM-VERIFICATION claim, not a claim about boot
+
+**Claim.** `tests/golden/n64-systemtest.log` records the retired-instruction PC stream captured from
+**ares** starting at the ELF entry `0xFFFF_FFFF_800A_15E8`, and `RustyN64` reproduces it exactly.
+
+**What that does and does not prove.** It proves: *given identical initial state, `RustyN64` retires
+the same instructions in the same order as an independent, mature reference.* It proves nothing
+about boot, about timing, or about anything before the sync point. This is the discipline hardware
+verification calls **tandem verification** / step-and-compare co-simulation (RISC-V's RVVI/RVFI
+harnesses are the same shape): align two models at a boundary, and treat only deltas from that
+boundary as the claim.
+
+**Why the boundary is the ELF entry.** Everything earlier is PIF ROM and libdragon's IPL3 —
+copyrighted Nintendo code plus a bootloader — which must not enter the repository. It is also where
+`RustyN64` begins executing, so the streams are directly comparable without a cartridge subsystem.
+
+**Why `Count`, `Random` and `Compare` are excluded.** Not convenience — there is no correct value.
+libdragon's IPL3 (`boot/ipl3.c`) zeroes `Count` mid-boot and then accumulates PI/SI busy-waits whose
+length is a property of the host's timing model; libdragon's own `pi_wait()` passes the result to
+`entropy_add()`, i.e. upstream treats a boot-relative `Count` as a source of **entropy**.
+n64-systemtest's startup test declines to assert `Count` at all and will not even pin `Wired` or
+`Index` ("Usually 0, but also seen 33"). Comparing one would encode the reference's timing model as
+though it were hardware. Safe only because those registers have dedicated tests in the COP0
+category — a separate gate.
+
+**Corroboration obtained along the way.** cen64, booting the real PIF ROM, reaches the sync point
+with `Status = 0x3400_0000` — exactly what `seed_ipl3_handoff` synthesises. The handoff model was
+independently confirmed rather than merely assumed.
+
+### C-27 — EMUX is implemented and DEFAULT-OFF, because hardware has none
+
+**Claim.** COP0 CO `funct` 0x20-0x3F is n64-systemtest's EMUX emulator-extension space
+(`xdetect 0x20`, `xlog 0x25`, `xioctl 0x2C`), implemented behind `Bus::emux_enabled`, **off by
+default**.
+
+**Why the default is load-bearing, and how we learned it.** Implementing EMUX and advertising it
+unconditionally broke the golden-log 0-diff at record 304 — immediately after the `xdetect` probe.
+The cause: `ares`'s every EMUX handler opens with `if(!system.homebrewMode) return;`, and homebrew
+mode is **off by default**, so ares's `xdetect` is a no-op that leaves its destination register
+untouched. Real hardware behaves the same way — the range is inert (ledger **C-8**), which is
+precisely why emux could claim it. Advertising capabilities makes n64-systemtest switch console
+backends, which changes the retired-instruction stream.
+
+So EMUX is opt-in, matching ares exactly. A default build behaves like hardware; the systemtest
+harness opts in and gets a console needing no PI/SI/`ISViewer` emulation (~9x faster) plus
+`xioctl(EXIT)` as a definite end-of-run signal instead of a tick budget.
+
+**A bug this surfaced.** The first `xlog` read guest memory straight off the bus and printed blanks
+where hex digits belonged (`Heap range:          to`). The string had just been formatted by cached
+stores and was still sitting in dirty D-cache lines. Reading *through* the D-cache fixed it — an
+independent confirmation that the cache model is right, found because the log channel had to obey
+the same rules a guest `LB` does.
 
 ---
 

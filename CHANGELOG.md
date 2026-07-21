@@ -6,8 +6,50 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
+The next rung is `v0.3.0 "Microcode"` — the LLE RSP (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+## [0.2.0] — 2026-07-21 — "Interpreter"
+
+**Phase 1 is complete.** The VR4300 executes MIPS III — including the TLB, COP0, the FPU and the
+documented errata — and both of Phase 1's exit criteria are met as **oracle results with committed
+runners**, not self-assessments:
+
+| Criterion | Result |
+| --- | --- |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 failing of 917 tests started |
+| CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares |
+
+```bash
+cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
+cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored
+```
+
+413 assertions still fail suite-wide; every one is RSP/RCP, which is **v0.3.0's** criterion.
+
+The per-change entries below record how the CPU got from 99 failing assertions to 0. They are kept
+as written — each states what a specific change moved, which is what a changelog is for.
+
+### Added — the CPU golden-log 0-diff, and EMUX
+
+**Phase 1's second exit criterion is met:** `RustyN64` reproduces ares's retired-instruction stream
+exactly. `tests/golden/n64-systemtest.log` is captured from ares at the ELF entry, with a provenance
+header naming the reference build, ROM hash and start PC; `--test golden_log` is the gate.
+
+The claim is deliberately narrow, and stated as such: *given identical initial state, `RustyN64`
+retires the same instructions in the same order as the reference.* That is the **tandem-verification**
+shape used by RISC-V co-simulation harnesses — align at a boundary, compare only deltas. It says
+nothing about boot or timing. Ledger **C-26**.
+
+`Count`, `Random` and `Compare` are excluded from comparison because there is no correct value:
+libdragon's IPL3 zeroes `Count` mid-boot then accumulates timing-dependent PI/SI waits, and its own
+`pi_wait()` feeds the result to `entropy_add()`. Upstream treats a boot-relative `Count` as entropy.
+
+**EMUX** (`xdetect`/`xlog`/`xioctl`) is implemented behind `Bus::emux_enabled`, **off by default**
+because hardware has none — ares gates its own EMUX on `homebrewMode` for the same reason, and
+advertising capabilities changes which console n64-systemtest selects, and therefore the instruction
+stream. The systemtest harness opts in: `xlog` needs no PI/SI/`ISViewer` emulation (~9x faster) and
+`xioctl(EXIT)` replaces a tick budget with a definite end-of-run. Ledger **C-27**.
 
 ### Fixed — an in-flight `C.cond.fmt` is forwarded to `BC1`
 
