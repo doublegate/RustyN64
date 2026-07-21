@@ -259,6 +259,21 @@ Note the manual's first option, writing `Cause.IP7`, is not available on this
 part: `Cause` is read-only to software except `IP1:IP0`. Writing `Compare` is the
 usable path, and the one libdragon takes.
 
+The match is detected as a **crossing**, not as an instantaneous equality: the
+question asked each poll is whether `Compare` lies in the half-open interval
+`(last_count, now]`, in wrapping arithmetic. `Count` runs off the master clock
+and keeps advancing while the pipeline is stalled, so consecutive polls can be
+dozens of cycles apart — a 69-`PCycle` multiply interlock steps clean over the
+one cycle for which `Count == Compare` holds. An equality test loses that
+interrupt outright rather than delaying it. Pinned by
+`the_timer_interrupt_survives_a_multi_cycle_stall` and
+`the_timer_edge_is_detected_even_when_the_poll_steps_over_compare`.
+
+An `MTC0` to `Count` or `Compare` re-bases that interval, because a write moves
+one of its endpoints and would otherwise look like a crossing that never
+happened: the timer fires when `Count` *counts up to* `Compare`, not when
+software rearranges the two.
+
 ### The TLB (implemented, T-12-004)
 
 32 fully-associative joint-TLB entries, each mapping an **even/odd page pair**,

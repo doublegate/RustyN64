@@ -396,9 +396,30 @@ impl Cop0 {
     /// equal. Tracking the previous value is what distinguishes the two, and at
     /// power-on there is no transition into equality — the two simply start
     /// there.
+    ///
+    /// # Why this asks whether `Compare` was *crossed*, not whether it is *hit*
+    ///
+    /// `Count` is derived from the master clock, so it keeps advancing while the
+    /// pipeline is stalled — this poll is not guaranteed to land on every value
+    /// the counter takes. An instantaneous `now == Compare` test therefore misses
+    /// the match whenever the gap between two polls steps over it, and a
+    /// 69-PCycle multiply interlock (UM Table 3-12) steps over it comfortably.
+    /// The failure that produces is not a *late* interrupt but a **lost** one:
+    /// `IP7` never latches, and software waiting on the timer hangs forever.
+    ///
+    /// So the question is whether `Compare` lies in the half-open interval
+    /// `(last_count, now]`, in wrapping arithmetic so a counter wrap is just
+    /// another interval. Excluding `last_count` itself preserves the edge
+    /// semantics above: sitting *on* `Compare` is not a transition into it.
     pub const fn timer_edge(&mut self) -> bool {
         let now = self.count();
-        let edge = now != self.last_count && now == self.regs[reg::COMPARE as usize] as u32;
+        let compare = self.regs[reg::COMPARE as usize] as u32;
+        // Distance travelled since the last poll, and the distance to `Compare`,
+        // both measured forward from `last_count`. `Compare` was crossed iff it
+        // is no further away than we travelled — and is not where we started.
+        let travelled = now.wrapping_sub(self.last_count);
+        let to_compare = compare.wrapping_sub(self.last_count);
+        let edge = travelled != 0 && to_compare != 0 && to_compare <= travelled;
         self.last_count = now;
         edge
     }
@@ -536,6 +557,19 @@ impl Cop0 {
         if n == reg::COUNT {
             self.count_epoch_value = value as u32;
             self.count_epoch_tick = self.now;
+        }
+        // Re-base the edge detector on either write.
+        //
+        // `timer_edge` asks whether `Compare` lies in the interval since the
+        // last poll. Both of these writes move an endpoint of that interval
+        // underneath it: an `MTC0 Count` that jumps *over* `Compare` would
+        // otherwise look like a crossing, and a new `Compare` behind the current
+        // `Count` would look like one that already happened. Neither fires on
+        // hardware — the timer fires when `Count` *counts up to* `Compare`, not
+        // when software rearranges the two. Starting the next interval here is
+        // what stops a write from manufacturing an edge.
+        if n == reg::COUNT || n == reg::COMPARE {
+            self.last_count = self.count();
         }
         // "Random is set to 31 whenever the Wired register is written"
         // (UM §5.4.2, p. 147) -- a side effect, not a rule about Random itself,
@@ -1149,6 +1183,70 @@ mod tests {
         assert!(
             !c.timer_edge(),
             "the equality still holds, but the edge has passed"
+        );
+    }
+
+    /// **A poll that steps over `Compare` still sees the crossing.**
+    ///
+    /// `Count` is derived from the master clock, so the gap between two polls is
+    /// whatever the pipeline did in between — a stall makes it dozens of cycles.
+    /// Asking "is `Count == Compare` now?" loses the match entirely; asking "was
+    /// `Compare` crossed since the last poll?" does not.
+    #[test]
+    fn the_timer_edge_is_detected_even_when_the_poll_steps_over_compare() {
+        let mut c = Cop0::new();
+        c.mtc0(reg::COMPARE, 40);
+        assert!(!c.timer_edge());
+        // One poll, jumping clean over 40.
+        c.set_now(80);
+        assert!(
+            c.timer_edge(),
+            "Compare lies inside the interval the poll skipped"
+        );
+        c.set_now(120);
+        assert!(!c.timer_edge(), "and it does not fire again afterwards");
+    }
+
+    /// **Software cannot manufacture a timer edge by writing `Count`.**
+    ///
+    /// The timer fires when `Count` counts up to `Compare`. An `MTC0 Count` that
+    /// jumps straight over `Compare` moves an endpoint of the detector's
+    /// interval, and looks exactly like a crossing to an implementation that
+    /// does not re-base on the write.
+    #[test]
+    fn writing_count_over_compare_does_not_fire_the_timer() {
+        let mut c = Cop0::new();
+        c.mtc0(reg::COMPARE, 40);
+        assert!(!c.timer_edge());
+        c.mtc0(reg::COUNT, 80); // jumped past Compare without counting to it
+        assert!(
+            !c.timer_edge(),
+            "a write is not a count — no edge was crossed"
+        );
+        // Counting up to the next match still works.
+        c.mtc0(reg::COMPARE, 100);
+        c.set_now(c.count_now() + 20); // Count 80 -> 100
+        assert!(c.timer_edge(), "counting up to Compare still fires");
+    }
+
+    /// The same for `Compare`: setting it *behind* the current `Count` must not
+    /// look like a crossing that already happened.
+    ///
+    /// The gap before the write is deliberate and load-bearing. If `Count` were
+    /// polled immediately beforehand the detector's interval would already be
+    /// empty, and the test would pass whether or not the write re-bases —
+    /// converging success and failure paths onto the same behaviour and proving
+    /// nothing.
+    #[test]
+    fn writing_compare_behind_count_does_not_fire_the_timer() {
+        let mut c = Cop0::new();
+        // Count advances to 100 with NO intervening poll, so the pending
+        // interval is (0, 100] when the write lands.
+        c.set_now(100);
+        c.mtc0(reg::COMPARE, 50);
+        assert!(
+            !c.timer_edge(),
+            "Compare was placed behind Count; nothing ever counted up to it"
         );
     }
 }

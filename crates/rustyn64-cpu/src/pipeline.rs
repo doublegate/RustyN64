@@ -585,6 +585,12 @@ impl Pipeline {
             s.cycles = s.cycles.saturating_sub(1);
             self.stall = if s.cycles == 0 { None } else { Some(s) };
             self.prev_was_run = false;
+            // The timer belongs to the clock, not to the pipeline. `Count` keeps
+            // advancing through the stall, so `Compare` can be reached -- and
+            // passed -- entirely inside one. Latching `IP7` here does not accept
+            // the interrupt (that still needs a run cycle, guarded by
+            // `prev_was_run` below); it only records in `Cause` what the hardware
+            // records, so the handler can run once the pipeline resumes.
             return;
         }
 
@@ -4354,6 +4360,44 @@ mod tests {
             "IP2 is asserted even though it is masked"
         );
         assert!(!p.cop0.interrupt_pending(), "but not recognised");
+    }
+
+    /// **A stall must not swallow the timer interrupt.**
+    ///
+    /// `Count` keeps advancing while the pipeline is stalled — it is derived
+    /// from the master clock, not from retired instructions — so `Compare` can
+    /// be passed entirely inside a multi-cycle interlock. An `MCI` stall for a
+    /// 64-bit multiply is 69 `PCycles` (UM Table 3-12), far longer than the
+    /// single cycle for which the equality holds.
+    ///
+    /// The failure this pins is not a *late* interrupt but a **lost** one: an
+    /// edge test that only asks "is `Count == Compare` right now?" and is polled
+    /// only from `DC` never sees the match at all, and `IP7` stays clear
+    /// forever. Software waiting on the timer then hangs.
+    #[test]
+    fn the_timer_interrupt_survives_a_multi_cycle_stall() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut pc = KSEG0_PROG;
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        // Compare sits in the middle of the stall window, never at its edges.
+        p.cop0.mtc0(reg::COMPARE, 40);
+
+        p.advance_at(&mut bus, &mut regs, &mut pc, 0);
+        // A 64-bit multiply's interlock, long enough to step over the match.
+        p.stall_for(69, Interlock::Mci);
+        for now in 1..=80 {
+            p.advance_at(&mut bus, &mut regs, &mut pc, now);
+        }
+
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 15),
+            0,
+            "Count passed Compare during the stall -- IP7 must still latch, \
+             because the timer is tied to the clock and not to the pipeline"
+        );
     }
 
     /// `Count` reaching `Compare` raises `IP7`, and writing `Compare` clears it
