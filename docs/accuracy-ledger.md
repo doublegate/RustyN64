@@ -1224,7 +1224,9 @@ are currently *unfalsified* rather than *verified*.
 **Claim.** DMEM and IMEM are 4 KiB each at `0x0400_0000` and `0x0400_1000`, and that 8 KiB of real
 storage **repeats** for the whole range up to `0x0404_0000`, where the SP registers begin.
 
-**Basis: the oracle, and only the oracle.** The N64brew wiki's *RSP Interface* documents the first
+**Basis: the oracle for the repetition, the address map for where it ends.** The two halves of this
+claim do not share a source, and the *Bounded* note below keeps them apart. For the repetition
+itself the oracle is the only source: the N64brew wiki's *RSP Interface* documents the first
 8 KiB and stops — it gives the DMEM and IMEM ranges and says nothing about what lies between
 `0x0400_2000` and `0x0404_0000`. The mirroring comes from n64-systemtest, in two independent
 forms: its own source comment (`src/tests/sp_memory/mod.rs`) states *"Going out of bounds wraps the
