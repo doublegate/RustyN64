@@ -22,7 +22,7 @@ use rustyn64_audio::{Audio, AudioBus};
 use rustyn64_cart::{Cart, Cartridge, RdramBus};
 use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
-use rustyn64_rsp::{Rsp, RspBus};
+use rustyn64_rsp::Rsp;
 
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
@@ -45,6 +45,18 @@ pub struct MiInterrupt {
     pub dp: bool,
 }
 
+/// Pack the six interrupt lines into their register bit order.
+///
+/// `MI_INTERRUPT` and `MI_MASK` share it, which is why one packer serves both.
+const fn pack_mi(l: MiInterrupt) -> u32 {
+    (l.sp as u32)
+        | ((l.si as u32) << 1)
+        | ((l.ai as u32) << 2)
+        | ((l.vi as u32) << 3)
+        | ((l.pi as u32) << 4)
+        | ((l.dp as u32) << 5)
+}
+
 impl MiInterrupt {
     /// `true` if any interrupt line is asserted.
     #[must_use]
@@ -64,6 +76,8 @@ pub struct RcpRegs {
     pub mi_intr: MiInterrupt,
     /// MI interrupt mask (a line drives IP2 only when masked-in).
     pub mi_mask: MiInterrupt,
+    /// `MI_MODE`'s storage bits (the repeat count and flags).
+    pub mi_mode: u32,
     // TODO(T-CORE-02): SP_STATUS/DMA regs, DPC regs, VI_* scanout regs,
     // AI_* regs, PI_* DMA regs, SI_* joybus regs, RI_* RDRAM-controller regs.
 }
@@ -100,10 +114,6 @@ pub struct Bus {
     pi_write_latch: u32,
     /// RCP cycles remaining before the latched PI write finalises. Zero is idle.
     pi_write_countdown: u32,
-    /// SP DMA: the SPMEM-side address (bit 12 selects IMEM over DMEM).
-    sp_mem_addr: u32,
-    /// SP DMA: the RDRAM-side address.
-    sp_dram_addr: u32,
     /// The RSP coprocessor.
     pub rsp: Rsp,
     /// The RDP rasterizer.
@@ -146,8 +156,6 @@ impl Default for Bus {
             emux_enabled: false,
             pi_write_latch: 0,
             pi_write_countdown: 0,
-            sp_mem_addr: 0,
-            sp_dram_addr: 0,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
@@ -202,16 +210,22 @@ impl Bus {
         self.pi_write_countdown > 0
     }
 
-    /// Step the RSP against this bus's narrow [`RspBus`] view.
+    /// Step the RSP.
     ///
-    /// The RSP is owned by the bus and `Rsp::tick` borrows `&mut impl RspBus`
-    /// (which is the bus itself), so we move the chip out for the duration of
-    /// the tick to satisfy the borrow checker, then move it back — the same
-    /// split-borrow pattern used to step each chip against the Bus. No allocation.
+    /// The chip stays **in place**. It used to be moved out with
+    /// `core::mem::take` so that `Rsp::tick` could borrow the Bus, under a
+    /// comment asserting "No allocation" — which was false: `take` needs
+    /// `Default`, and constructing an `Rsp` allocates DMEM and IMEM, so every
+    /// RCP step allocated and freed 8 KiB. `Rsp::tick` now *returns* what it
+    /// wants done instead of borrowing its owner, so there is nothing to move.
     pub fn rsp_tick(&mut self) {
-        let mut rsp = core::mem::take(&mut self.rsp);
-        rsp.tick(self);
-        self.rsp = rsp;
+        let out = self.rsp.tick();
+        if let Some(raise) = out.interrupt_change {
+            self.rcp.mi_intr.sp = raise;
+        }
+        if let Some(dma) = out.dma {
+            self.sp_dma(dma);
+        }
         self.rcp_steps = self.rcp_steps.wrapping_add(1);
     }
 
@@ -256,25 +270,115 @@ impl Bus {
     /// is the actual fix. Accuracy ledger C-9.
     pub const PI_WRITE_CYCLES: u32 = 100;
 
-    /// `SP_MEM_ADDR` (`0x0404_0000`) — the SPMEM side of an SP DMA.
-    pub const SP_MEM_ADDR: u32 = 0x0404_0000;
-    /// `SP_DRAM_ADDR` (`0x0404_0004`) — the RDRAM side.
-    pub const SP_DRAM_ADDR: u32 = 0x0404_0004;
-    /// `SP_RD_LEN` (`0x0404_0008`) — **write triggers** RDRAM to SPMEM.
-    pub const SP_RD_LEN: u32 = 0x0404_0008;
-    /// `SP_WR_LEN` (`0x0404_000C`) — **write triggers** SPMEM to RDRAM.
-    pub const SP_WR_LEN: u32 = 0x0404_000C;
+    /// Base of the **MI** register block (`0x0430_0000`).
+    pub const MI_BASE: u32 = 0x0430_0000;
 
-    /// `SP_STATUS` (`0x0404_0010`).
-    pub const SP_STATUS: u32 = 0x0404_0010;
-
-    /// `SP_STATUS.halt` (bit 0).
+    /// `MI_VERSION`, the value *"most consoles report"*.
     ///
-    /// **Set at power-on.** The RSP comes out of reset halted and idles until
-    /// the CPU clears this bit; software reads `SP_STATUS` expecting to find it
-    /// already halted rather than racing a running RSP. n64-systemtest's
-    /// `StartupTest` checks exactly this and reads `0x1`.
-    pub const SP_STATUS_HALT: u32 = 1 << 0;
+    /// Packed `RSP:RDP:RAC:IO`. Other values exist in the wild — `0x0101_0101`
+    /// and `0x0201_0202` appear in emulators and docs, iQue reports
+    /// `0x0202_b0b0` — so this is a **choice among documented observations**,
+    /// not a derived constant. Retail NTSC hardware is what this emulator
+    /// models, so it reports what retail hardware reports.
+    pub const MI_VERSION_VALUE: u32 = 0x0202_0102;
+
+    /// Is this address in the MI register block?
+    ///
+    /// The block is four registers, and *"accesses beyond `0x0430 0010` are
+    /// mirrored, so only the least significant four bits are taken into account
+    /// for address decoding"*. The window itself runs to `0x0440_0000`, where
+    /// the VI begins.
+    const fn is_mi_register(addr: u32) -> bool {
+        addr >= Self::MI_BASE && addr < 0x0440_0000
+    }
+
+    /// Read an MI register, after the 4-bit mirroring.
+    const fn mi_read(&self, addr: u32) -> u32 {
+        let i = self.rcp.mi_intr;
+        let m = self.rcp.mi_mask;
+        match (addr >> 2) & 3 {
+            0 => self.rcp.mi_mode,
+            1 => Self::MI_VERSION_VALUE,
+            2 => pack_mi(i),
+            _ => pack_mi(m),
+        }
+    }
+
+    /// Write an MI register, after the 4-bit mirroring.
+    fn mi_write(&mut self, addr: u32, val: u32) {
+        match (addr >> 2) & 3 {
+            0 => {
+                // Only the bits that are storage are kept. `ClearDP` (bit 11)
+                // is an action rather than a mode, and the repeat/EBus/Upper
+                // modes are RDRAM-transfer behaviour this emulator does not
+                // model -- see the note in `docs/rsp.md`.
+                self.rcp.mi_mode = (self.rcp.mi_mode & !0x7F) | (val & 0x7F);
+                if val & (1 << 11) != 0 {
+                    self.rcp.mi_intr.dp = false;
+                }
+            }
+            // MI_VERSION is read-only, and MI_INTERRUPT is driven by the
+            // devices -- a write to either does nothing.
+            1 | 2 => {}
+            _ => {
+                // The mask uses clear/set pairs at `2n` / `2n + 1`, in the same
+                // device order as the read layout. Unlike `SP_STATUS`, the wiki
+                // does not state what both-bits-at-once does here, so this
+                // applies clear before set rather than inventing a rule; if a
+                // test ever pins it, it belongs in the ledger.
+                let mut m = self.rcp.mi_mask;
+                for (bit, line) in [(0u32, 0u32), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)] {
+                    let clear = val & (1 << (bit * 2)) != 0;
+                    let set = val & (1 << (bit * 2 + 1)) != 0;
+                    let slot = match line {
+                        0 => &mut m.sp,
+                        1 => &mut m.si,
+                        2 => &mut m.ai,
+                        3 => &mut m.vi,
+                        4 => &mut m.pi,
+                        _ => &mut m.dp,
+                    };
+                    if clear {
+                        *slot = false;
+                    }
+                    if set {
+                        *slot = true;
+                    }
+                }
+                self.rcp.mi_mask = m;
+            }
+        }
+    }
+
+    /// Base of the eight SP interface registers (`0x0404_0000`).
+    pub const SP_REGS_BASE: u32 = 0x0404_0000;
+    /// `SP_STATUS` (`0x0404_0010`), named because tests reach for it directly.
+    pub const SP_STATUS: u32 = 0x0404_0010;
+    /// `SP_PC` (`0x0408_0000`) — in its own window, not with the other eight.
+    pub const SP_PC: u32 = 0x0408_0000;
+
+    /// Is this one of the eight SP interface registers?
+    const fn is_sp_register(addr: u32) -> bool {
+        addr >= Self::SP_REGS_BASE && addr < Self::SP_REGS_BASE + 0x20
+    }
+
+    /// Apply a write to the SP register block, performing whatever it starts.
+    ///
+    /// Two effects can come from one write and they are collected separately:
+    /// a length write starts a DMA, and a `SP_STATUS` write can raise or
+    /// acknowledge the MI's SP line. Folding them into one return value would
+    /// imply they are alternatives, and `SP_STATUS` is reachable by both.
+    fn sp_register_write(&mut self, addr: u32, val: u32) {
+        let index = (addr >> 2) & 7;
+        if index == rustyn64_rsp::sp::reg::STATUS
+            && let Some(raise) = rustyn64_rsp::sp::SpRegs::interrupt_change(val)
+        {
+            self.rcp.mi_intr.sp = raise;
+        }
+        if let Some(dma) = self.rsp.sp.write(index, val) {
+            self.sp_dma(dma);
+        }
+    }
     /// DMEM + IMEM, 4 KiB each.
     pub const SPMEM_LEN: usize = 0x2000;
 
@@ -401,63 +505,48 @@ impl Bus {
         addr >= rustyn64_cart::pi::PI_BASE && addr < rustyn64_cart::pi::PI_BASE + 0x34
     }
 
-    /// Perform an SP DMA between RDRAM and SPMEM.
+    /// Carry out an SP DMA the register file has programmed.
     ///
-    /// # The length encoding
+    /// The engine lives in `rustyn64-rsp` and returns a description; the copy
+    /// happens **here**, because the RSP does not own RDRAM and a chip reaching
+    /// back into its owner is the dependency cycle `docs/architecture.md` exists
+    /// to prevent. The PI works the same way.
     ///
-    /// `SP_RD_LEN`/`SP_WR_LEN` are **not** a plain byte count. The word packs
-    /// three fields (N64brew, *RSP Interface*):
-    ///
-    /// | Bits | Field | Meaning |
-    /// | --- | --- | --- |
-    /// | 11:0 | `length` | bytes per row, minus one |
-    /// | 19:12 | `count` | number of rows, minus one |
-    /// | 31:20 | `skip` | bytes skipped in **RDRAM** between rows |
-    ///
-    /// Treating the whole word as a byte count transfers megabytes for a
-    /// routine 8-byte copy, and reading only bits 11:0 silently drops every row
-    /// after the first — which is the failure mode for anything that DMAs a 2D
-    /// block, i.e. most microcode.
-    ///
-    /// `skip` applies to the RDRAM side only; the SPMEM side is contiguous and
-    /// **wraps within its 4 KiB half**, since `SP_MEM_ADDR` bit 12 selects IMEM
-    /// and the address field is only 12 bits wide.
-    pub fn sp_dma(&mut self, len_word: u32, to_dram: bool) {
-        // Both counts are stored minus one, so a zero field means one unit.
-        // Rows are a multiple of 8 bytes on hardware.
-        let row = ((len_word & 0xFFF) + 1) & !7;
-        let rows = ((len_word >> 12) & 0xFF) + 1;
-        let skip = (len_word >> 20) & 0xFFF;
+    /// `skip` applies to the RDRAM side only. The SP side is contiguous and
+    /// **wraps within its own 4 KiB bank** — a single transfer never spans DMEM
+    /// and IMEM (N64brew *RSP Interface*: *"if the transfer hits the end of
+    /// either memory area, it wraps around to the beginning of it"*).
+    pub fn sp_dma(&mut self, dma: rustyn64_rsp::sp::Dma) {
+        // Bit 12 selects the bank and is held fixed for the whole transfer;
+        // only the 12-bit offset advances, so it wraps inside that bank.
+        let bank = dma.sp_addr & 0x1000;
+        let mut mem = dma.sp_addr & 0xFFF;
+        let mut dram = dma.ram_addr;
 
-        // Bit 12 picks IMEM; the offset itself is 12 bits and wraps within
-        // whichever half was selected.
-        let half = (self.sp_mem_addr & 0x1000) as usize;
-        let mut mem = (self.sp_mem_addr & 0xFFF) as usize;
-        let mut dram = self.sp_dram_addr & 0x00FF_FFF8;
-
-        for _ in 0..rows {
-            for _ in 0..row {
-                let Some(off) = Self::rdram_offset(dram) else {
-                    continue;
-                };
-                // Wrap within the selected 4 KiB half, never across it.
-                let m = (half | (mem & 0xFFF)) as u32;
-                if to_dram {
-                    self.rdram[off] = self.rsp.mem_read(m);
-                } else {
-                    self.rsp.mem_write(m, self.rdram[off]);
+        for _ in 0..dma.rows {
+            for _ in 0..dma.row_len {
+                let m = bank | (mem & 0xFFF);
+                if let Some(off) = Self::rdram_offset(dram) {
+                    if dma.to_dram {
+                        self.rdram[off] = self.rsp.mem_read(m);
+                    } else {
+                        self.rsp.mem_write(m, self.rdram[off]);
+                    }
                 }
-                mem += 1;
+                mem = mem.wrapping_add(1);
                 dram = dram.wrapping_add(1);
             }
-            // `skip` advances the RDRAM pointer between rows; SPMEM stays
-            // contiguous.
-            dram = dram.wrapping_add(skip);
+            // The RDRAM pointer steps over the gap between rows; the SP side
+            // does not.
+            dram = dram.wrapping_add(dma.skip);
         }
 
-        // Hardware leaves the registers past the transfer, as the PI does.
-        self.sp_mem_addr = (self.sp_mem_addr & 0x1000) | ((mem & 0xFFF) as u32);
-        self.sp_dram_addr = dram;
+        // Hardware leaves the pointers past the data, and the length field at
+        // `0xFF8`. Instantaneous for now: the transfer is a value, so charging
+        // it real time later is a scheduling change rather than a rewrite.
+        self.rsp
+            .sp
+            .complete_dma(bank | (mem & 0xFFF), dram & 0x00FF_FFFF);
     }
 
     /// Write a PI register and perform any transfer it starts.
@@ -524,12 +613,18 @@ impl CpuBus for Bus {
         if Self::is_spmem(addr) {
             return self.rsp.mem_read(addr - Self::SPMEM_BASE);
         }
-        // SP_STATUS. The RSP is an LLE-shaped stub (see `docs/STATUS.md`), so
-        // only the power-on `halt` bit is modelled -- enough for software to see
-        // a halted RSP, which is the true state here, rather than a zero that
-        // claims it is running.
-        if addr & !3 == Self::SP_STATUS {
-            return (Self::SP_STATUS_HALT >> (8 * (3 - (addr & 3)))) as u8;
+        // The SP interface registers. Word-granular behind a byte read: the
+        // whole block lives on the RCP's internal bus, which returns the
+        // aligned word and lets the CPU select within it.
+        if Self::is_sp_register(addr) {
+            let w = self.rsp.sp.read((addr >> 2) & 7);
+            return (w >> (8 * (3 - (addr & 3)))) as u8;
+        }
+        if Self::is_mi_register(addr) {
+            return (self.mi_read(addr) >> (8 * (3 - (addr & 3)))) as u8;
+        }
+        if addr & !3 == Self::SP_PC {
+            return (self.rsp.sp.pc() >> (8 * (3 - (addr & 3)))) as u8;
         }
         if Self::is_isviewer(addr) {
             // Readable as ordinary memory, which is what makes the suite's
@@ -577,6 +672,20 @@ impl CpuBus for Bus {
                 self.cart.pi_read(addr.wrapping_add(2)),
                 self.cart.pi_read(addr.wrapping_add(3)),
             ]);
+        }
+        // Registers with a **side effect on read** must be read exactly once.
+        //
+        // `SP_SEMAPHORE` takes the mutex when read, so composing a word out of
+        // four byte reads took it four times: the first byte saw 0 and the rest
+        // saw 1, and the assembled word came back as 1 where hardware returns 0.
+        // n64-systemtest's `SP Semaphore Register (CPU only)` catches exactly
+        // that. On hardware the RCP returns the whole aligned word for one
+        // access regardless of size, so one access is the correct model.
+        if Self::is_sp_register(addr) {
+            return self.rsp.sp.read((addr >> 2) & 7);
+        }
+        if Self::is_mi_register(addr) {
+            return self.mi_read(addr);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -715,24 +824,17 @@ impl CpuBus for Bus {
             }
             return;
         }
-        match addr {
-            Self::SP_MEM_ADDR => {
-                self.sp_mem_addr = val & 0x1FF8;
-                return;
-            }
-            Self::SP_DRAM_ADDR => {
-                self.sp_dram_addr = val & 0x00FF_FFF8;
-                return;
-            }
-            Self::SP_RD_LEN => {
-                self.sp_dma(val, false);
-                return;
-            }
-            Self::SP_WR_LEN => {
-                self.sp_dma(val, true);
-                return;
-            }
-            _ => {}
+        if Self::is_sp_register(addr) {
+            self.sp_register_write(addr, val);
+            return;
+        }
+        if Self::is_mi_register(addr) {
+            self.mi_write(addr, val);
+            return;
+        }
+        if addr & !3 == Self::SP_PC {
+            self.rsp.sp.set_pc(val);
+            return;
         }
         if addr == Self::ISVIEWER_WRITE_LEN {
             // Flushing is triggered by the LENGTH write, not by the buffer
@@ -829,18 +931,6 @@ impl VideoBus for Bus {
 }
 
 // --- The RSP's narrow view. ---
-impl RspBus for Bus {
-    fn rdram_read(&self, addr: u32) -> u8 {
-        <Self as RdramBus>::rdram_read(self, addr)
-    }
-    fn rdram_write(&mut self, addr: u32, val: u8) {
-        <Self as RdramBus>::rdram_write(self, addr, val);
-    }
-    fn raise_sp_interrupt(&mut self) {
-        self.rcp.mi_intr.sp = true;
-    }
-}
-
 // --- The AI's narrow view. ---
 impl AudioBus for Bus {
     fn ai_dma_read_u32(&self, addr: u32) -> u32 {
@@ -1111,8 +1201,8 @@ mod pi_tests {
     fn sp_status_reports_the_rsp_halted_at_power_on() {
         let mut bus = Bus::new();
         assert_eq!(
-            bus.read_u32(Bus::SP_STATUS) & Bus::SP_STATUS_HALT,
-            Bus::SP_STATUS_HALT,
+            bus.read_u32(Bus::SP_STATUS) & rustyn64_rsp::sp::STATUS_HALTED,
+            rustyn64_rsp::sp::STATUS_HALTED,
             "the RSP idles halted until the CPU clears it"
         );
     }
@@ -1125,9 +1215,9 @@ mod pi_tests {
         for (i, b) in bus.rdram[0x100..0x108].iter_mut().enumerate() {
             *b = 0xA0 + i as u8;
         }
-        bus.write_u32(Bus::SP_DRAM_ADDR, 0x100);
-        bus.write_u32(Bus::SP_MEM_ADDR, 0);
-        bus.write_u32(Bus::SP_RD_LEN, 7); // 8 bytes, one row
+        bus.write_u32(Bus::SP_REGS_BASE + 4, 0x100);
+        bus.write_u32(Bus::SP_REGS_BASE, 0);
+        bus.write_u32(Bus::SP_REGS_BASE + 8, 7); // 8 bytes, one row
         assert_eq!(
             core::array::from_fn::<u8, 8, _>(|i| bus.rsp.mem_read(i as u32)),
             [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7]
@@ -1141,9 +1231,9 @@ mod pi_tests {
         for i in 0..8u32 {
             bus.rsp.mem_write(i, 0x50 + i as u8);
         }
-        bus.write_u32(Bus::SP_DRAM_ADDR, 0x200);
-        bus.write_u32(Bus::SP_MEM_ADDR, 0);
-        bus.write_u32(Bus::SP_WR_LEN, 7);
+        bus.write_u32(Bus::SP_REGS_BASE + 4, 0x200);
+        bus.write_u32(Bus::SP_REGS_BASE, 0);
+        bus.write_u32(Bus::SP_REGS_BASE + 12, 7);
         assert_eq!(
             &bus.rdram[0x200..0x208],
             &[0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57]
@@ -1162,10 +1252,10 @@ mod pi_tests {
             bus.rdram[0x300 + i] = 0x10 + i as u8;
             bus.rdram[0x310 + i] = 0x20 + i as u8;
         }
-        bus.write_u32(Bus::SP_DRAM_ADDR, 0x300);
-        bus.write_u32(Bus::SP_MEM_ADDR, 0);
+        bus.write_u32(Bus::SP_REGS_BASE + 4, 0x300);
+        bus.write_u32(Bus::SP_REGS_BASE, 0);
         // length = 7 (8 bytes), count = 1 (two rows), skip = 8.
-        bus.write_u32(Bus::SP_RD_LEN, 7 | (1 << 12) | (8 << 20));
+        bus.write_u32(Bus::SP_REGS_BASE + 8, 7 | (1 << 12) | (8 << 20));
         assert_eq!(
             core::array::from_fn::<u8, 8, _>(|i| bus.rsp.mem_read(i as u32)),
             [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17]
@@ -1183,9 +1273,9 @@ mod pi_tests {
     fn sp_mem_addr_bit_12_selects_imem() {
         let mut bus = Bus::new();
         bus.rdram[0x400] = 0x99;
-        bus.write_u32(Bus::SP_DRAM_ADDR, 0x400);
-        bus.write_u32(Bus::SP_MEM_ADDR, 0x1000); // IMEM
-        bus.write_u32(Bus::SP_RD_LEN, 7);
+        bus.write_u32(Bus::SP_REGS_BASE + 4, 0x400);
+        bus.write_u32(Bus::SP_REGS_BASE, 0x1000); // IMEM
+        bus.write_u32(Bus::SP_REGS_BASE + 8, 7);
         assert_eq!(bus.rsp.mem_read(0x1000), 0x99, "landed in IMEM");
         assert_eq!(bus.rsp.mem_read(0), 0, "and NOT in DMEM");
     }
@@ -1280,6 +1370,77 @@ mod pi_tests {
         );
         assert_eq!(spmem_word(&mut bus, 0x1000), 0x89AB_CDEF, "IMEM untouched");
         assert_eq!(spmem_word(&mut bus, 0x3E000), 0x7654_3210);
+    }
+
+    /// **`SP_SEMAPHORE` is taken once per access, not once per byte.**
+    ///
+    /// The register has a side effect on read, so composing a word from four
+    /// byte reads took the mutex four times and returned 1 where hardware
+    /// returns 0 — n64-systemtest's `SP Semaphore Register (CPU only)` fails on
+    /// exactly that. The suite also checks that the value written is irrelevant.
+    #[test]
+    fn reading_the_semaphore_as_a_word_takes_it_exactly_once() {
+        const SEMAPHORE: u32 = Bus::SP_REGS_BASE + 0x1C;
+        for written in [0u32, 1, 0xFFFF_FFFF] {
+            let mut bus = Bus::new();
+            bus.write_u32(SEMAPHORE, written);
+            assert_eq!(bus.read_u32(SEMAPHORE), 0, "the first word read acquires");
+            assert_eq!(bus.read_u32(SEMAPHORE), 1, "and it stays taken");
+        }
+    }
+
+    /// A `SP_STATUS` write raises and acknowledges the **MI's SP line**, and the
+    /// guest can see it in `MI_INTERRUPT`.
+    #[test]
+    fn sp_status_drives_the_mi_interrupt_line() {
+        const SET_INTR: u32 = 1 << 4;
+        const CLR_INTR: u32 = 1 << 3;
+        const MI_INTERRUPT: u32 = Bus::MI_BASE + 0x08;
+        let mut bus = Bus::new();
+
+        bus.write_u32(Bus::SP_STATUS, SET_INTR);
+        assert_eq!(bus.read_u32(MI_INTERRUPT) & 1, 1, "SP line raised");
+        bus.write_u32(Bus::SP_STATUS, CLR_INTR);
+        assert_eq!(bus.read_u32(MI_INTERRUPT) & 1, 0, "and acknowledged");
+
+        // Set and clear together leaves it alone, as for every other flag.
+        bus.write_u32(Bus::SP_STATUS, SET_INTR);
+        bus.write_u32(Bus::SP_STATUS, SET_INTR | CLR_INTR);
+        assert_eq!(bus.read_u32(MI_INTERRUPT) & 1, 1, "unchanged");
+    }
+
+    /// `MI_MASK` writes as clear/set pairs and reads back as a flag word, and
+    /// only a masked-in line reaches `IP2`.
+    #[test]
+    fn the_mi_mask_gates_the_interrupt_line() {
+        const MI_MASK: u32 = Bus::MI_BASE + 0x0C;
+        const SET_SP: u32 = 1 << 1;
+        const CLR_SP: u32 = 1 << 0;
+        let mut bus = Bus::new();
+
+        bus.write_u32(Bus::SP_STATUS, 1 << 4); // raise SP
+        assert!(!bus.poll_irq(), "an unmasked line must not reach IP2");
+
+        bus.write_u32(MI_MASK, SET_SP);
+        assert_eq!(bus.read_u32(MI_MASK) & 1, 1, "the mask reads back");
+        assert!(bus.poll_irq(), "masked in, so IP2 asserts");
+
+        bus.write_u32(MI_MASK, CLR_SP);
+        assert!(!bus.poll_irq(), "masked out again");
+    }
+
+    /// The MI block is four registers **mirrored** on the low four address bits,
+    /// so `MI_VERSION` is readable at every `+0x10` step.
+    #[test]
+    fn the_mi_registers_mirror_every_sixteen_bytes() {
+        let mut bus = Bus::new();
+        assert_eq!(bus.read_u32(Bus::MI_BASE + 0x04), Bus::MI_VERSION_VALUE);
+        assert_eq!(
+            bus.read_u32(Bus::MI_BASE + 0x14),
+            Bus::MI_VERSION_VALUE,
+            "mirrored one block up"
+        );
+        assert_eq!(bus.read_u32(Bus::MI_BASE + 0x1004), Bus::MI_VERSION_VALUE);
     }
 
     /// **The PI external bus is 16 bits wide and the RCP ignores access size**,

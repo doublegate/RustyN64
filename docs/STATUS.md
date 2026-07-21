@@ -10,7 +10,7 @@ runners rather than self-assessments:
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 413 fail suite-wide, all RSP/RCP (Phase 2's criterion) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 250 fail suite-wide, all RSP/RCP and cart (Phase 2 and later) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
 | CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares from the ELF entry | `cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored` |
 
 The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR
@@ -104,7 +104,8 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
 | CPU golden-log 0-diff | **done** (T-HARNESS-01) — `tests/golden/n64-systemtest.log`, captured from ares at the ELF entry; gate is `--test golden_log` | Phase 1 |
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
-| RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
+| RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts, DMA and the register file work | Phase 2 |
+| RSP vector unit (COP2, accumulator, `VRCP`/`VRSQ`) | stub — COP2 retires inertly | Phase 2, Sprint 2 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
 registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the
@@ -182,8 +183,8 @@ entropy, threads and unordered collections anywhere in the core.
 | --- | --- | --- |
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
-| CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. 413 assertions still fail suite-wide; all are RSP/RCP, which is **Phase 2's** criterion (VERSION-PLAN §v0.3.0), not this one |
+| CPU/RSP golden-log (reference trace) | **yes** — `tests/golden/n64-systemtest.log`, captured from a patched ares | **MET: 0 diff** over 50,027 retired records |
+| n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. 250 assertions still fail suite-wide, down from 413 once the RSP scalar unit landed; the remainder are the RSP **vector** unit (Sprint 2), the cart/PIF (Phase 5), the RDP (Phase 3) and the MI's RDRAM repeat mode |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

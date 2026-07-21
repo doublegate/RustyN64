@@ -7,11 +7,16 @@
 //! — interpret the microcode instruction-by-instruction, the cen64 / ares model)
 //! rather than HLE microcode recognition.
 //!
-//! This is a **skeleton**: the SU instruction interpreter and the VU (the
-//! 48-element accumulator, the reciprocal/`VRCP`/`VRSQ` tables, clamping) are
-//! the major roadmap phases and are left behind no-op step methods with TODO
-//! markers. The RSP talks to the rest of the machine through the [`RspBus`]
-//! trait, so it stays independent of the other chip crates.
+//! The **scalar unit runs** ([`su`]) and the SP interface registers are
+//! modelled ([`sp`]). The **vector unit does not yet exist** — the 48-bit
+//! accumulator, the `VRCP`/`VRSQ` tables and the clamping rules are Sprint 2,
+//! so a COP2 instruction currently retires inertly.
+//!
+//! The RSP never borrows the rest of the machine. [`Rsp::tick`] *returns* what
+//! it wants done — a DMA to perform, an interrupt to raise — and
+//! `rustyn64-core::Bus` carries it out, because the RSP owns neither RDRAM nor
+//! the MI. That keeps this crate independent of the other chip crates and lets
+//! the RSP be stepped in isolation.
 //!
 //! Part of the one-directional chip-crate graph (see `docs/architecture.md`):
 //! this crate does NOT depend on any other chip crate. `#![no_std]` + `alloc`;
@@ -32,22 +37,11 @@
 
 extern crate alloc;
 
+pub mod sp;
+pub mod su;
+
 /// Size of RSP DMEM / IMEM (each 4 KiB).
 pub const SP_MEM_SIZE: usize = 4 * 1024;
-
-/// The bus the RSP sees.
-///
-/// DMA between DMEM/IMEM and RDRAM, plus the SP/DP status-register handshake.
-/// `rustyn64-core` implements this; keeping it a trait lets the RSP be stepped
-/// in isolation by the golden-log differ.
-pub trait RspBus {
-    /// Read a byte from RDRAM (the source/target of an SP DMA).
-    fn rdram_read(&self, addr: u32) -> u8;
-    /// Write a byte to RDRAM.
-    fn rdram_write(&mut self, addr: u32, val: u8);
-    /// Raise the SP interrupt (microcode signalled completion via `$MI`).
-    fn raise_sp_interrupt(&mut self) {}
-}
 
 /// RSP architectural state (skeleton).
 ///
@@ -70,6 +64,12 @@ pub struct Rsp {
     pub dmem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
     /// 4 KiB instruction memory.
     pub imem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
+    /// The SP interface registers, shared by the CPU's memory-mapped window and
+    /// the RSP's own COP0 -- one set of physical registers, so one field.
+    pub sp: sp::SpRegs,
+    /// A branch target latched by the previous instruction, taken after the
+    /// delay slot retires. `None` means the next PC is sequential.
+    branch: Option<u32>,
     // TODO(T-RSP-01): VCO/VCC/VCE flag registers, the divide-in/out latches for
     // VRCP/VRSQ, the DMA length/skip latches — see `docs/rsp.md`.
 }
@@ -92,6 +92,8 @@ impl Rsp {
             halted: true,
             dmem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
             imem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
+            sp: sp::SpRegs::new(),
+            branch: None,
         }
     }
 
@@ -137,33 +139,22 @@ impl Rsp {
         bank[off & 0xFFF] = val;
     }
 
-    /// Advance the RSP by one microcode instruction when running.
+    /// Advance the RSP by one instruction when running.
     ///
-    /// Hot path: keep allocation-free. No-op while halted.
-    pub fn tick<B: RspBus>(&mut self, bus: &mut B) {
-        if self.halted {
-            return;
-        }
-        // TODO(v0.x): LLE RSP scalar+vector execution — fetch the IMEM word at
-        // `pc`, decode the SU op (LWC2/SWC2 vector loads, branches, the COP2
-        // escape) and the VU op, run `step_su`/`step_vu`, advance `pc`.
-        let _ = bus;
-        self.step_su();
-        self.step_vu();
-    }
-
-    /// LLE scalar-unit step (skeleton).
-    fn step_su(&mut self) {
-        // TODO(v0.x): LLE RSP scalar execution — MIPS-subset interpreter over
-        // DMEM/IMEM with the vector load/store ops (LQV/SQV/LPV/...).
-        self.su_regs[0] = 0; // $zero stays pinned.
-    }
-
-    /// LLE vector-unit step (skeleton).
-    fn step_vu(&mut self) {
-        // TODO(v0.x): LLE RSP vector execution — the 8-lane SIMD ALU, the
-        // 48-bit accumulator, signed/unsigned clamping, and the
-        // VRCP/VRSQ/VRCPH reciprocal table lookups.
+    /// Returns what the step asked of the rest of the machine — see
+    /// [`su::StepResult`]. It **reports** rather than acting because the RSP
+    /// owns neither RDRAM nor the MI, and a chip reaching back into its owner is
+    /// the dependency cycle `docs/architecture.md` exists to prevent.
+    ///
+    /// This is also why it no longer borrows a bus: the caller needed to move
+    /// the whole chip out of the Bus to satisfy the borrow checker, and moving
+    /// it out meant `Default`-constructing a replacement — **two 4 KiB
+    /// allocations on every RCP step**, behind a comment that claimed there were
+    /// none.
+    pub fn tick(&mut self) -> su::StepResult {
+        // The vector unit is Sprint 2; the scalar unit runs today, which is
+        // enough to execute a microcode that sets up, DMAs and breaks.
+        self.su_step()
     }
 }
 
@@ -177,26 +168,19 @@ pub const fn version() -> &'static str {
 mod tests {
     use super::*;
 
-    struct NullBus;
-    impl RspBus for NullBus {
-        fn rdram_read(&self, _addr: u32) -> u8 {
-            0
-        }
-        fn rdram_write(&mut self, _addr: u32, _val: u8) {}
-    }
-
     #[test]
     fn constructs_halted() {
         let rsp = Rsp::new();
         assert!(rsp.halted);
     }
 
+    /// A halted RSP fetches nothing and asks nothing of the machine.
     #[test]
     fn halted_tick_is_noop() {
         let mut rsp = Rsp::new();
-        let mut bus = NullBus;
-        rsp.tick(&mut bus);
-        assert_eq!(rsp.pc, 0);
+        let out = rsp.tick();
+        assert_eq!(out, su::StepResult::default());
+        assert_eq!(rsp.sp.pc(), 0);
     }
 
     #[test]
