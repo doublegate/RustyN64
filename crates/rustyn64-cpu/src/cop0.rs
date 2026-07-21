@@ -313,11 +313,22 @@ impl Cop0 {
         // BE (15) set: the N64 is big-endian. K0 defaults to 0 (uncached); IPL3
         // writes 3 during boot, which is where 0x0006E463 comes from.
         regs[reg::CONFIG as usize] = 1 << 15;
-        // Imp = 0x0B for the VR4300 series (UM §5.4.5, p. 151). The Rev field is
-        // NOT documented for any specific part, and the manual explicitly warns
-        // against depending on it -- so it stays 0 rather than becoming a
-        // plausible-looking invention. Accuracy ledger U-3.
-        regs[reg::PRID as usize] = 0x0B << 8;
+        // Imp = 0x0B for the VR4300 series (UM §5.4.5, p. 151), Rev = 0x22.
+        //
+        // This comment previously said the Rev field was "NOT documented for any
+        // specific part" and left it zero. That was true of the User's Manual and
+        // false of the N64brew wiki, which this project mirrors and treats as a
+        // primary hardware reference: *"retail N64 units have so far been found
+        // to report either 0x10 (1.0, early units) or 0x22 (2.2, later units),
+        // and the iQue Player reports 0x40"* (`n64brew_wiki/markdown/VR4300.md`).
+        // Ledger U-3 is superseded by C-22 -- "undocumented" is a claim about a
+        // document, and it decays.
+        //
+        // 0x22 is the later stepping, which is what `fpu::Stepping::Fixed` (the
+        // default) denotes. The two want to be selected together by a future
+        // console-revision constructor; wiring that now, with nothing able to
+        // choose `Early`, would be inert API.
+        regs[reg::PRID as usize] = 0x0B22;
         Self {
             regs,
             now: 0,
@@ -591,17 +602,28 @@ impl Cop0 {
 
     /// Advance `Random` by one instruction (UM §5.4.2, p. 147).
     ///
-    /// *"decrements as each instruction executes"*, wrapping to 31 at the
-    /// `Wired` floor. When `Wired` is 31 the range is a single value and the
-    /// register is effectively constant — that is the documented behaviour, not
-    /// a degenerate case to guard against.
+    /// *"decrements as each instruction executes"*, reloading 31 when it reaches
+    /// the `Wired` floor.
+    ///
+    /// # It is a plain 6-bit down-counter, and that matters when `Wired > 31`
+    ///
+    /// The reload fires on `cur == wired`, **not** `cur <= wired`, and the
+    /// decrement wraps 0 → 63. For the ordinary case (`Wired <= 31`) the two
+    /// readings agree: the counter walks 31 down to `Wired` either way.
+    ///
+    /// They diverge once `Wired` exceeds 31, which software can arrange because
+    /// `Wired` is six bits wide. Under `<=` the counter is immediately at or
+    /// below the floor and pins at 31 forever; under `==` it walks 31 → 0 → 63 →
+    /// `Wired`, covering the **whole** range. n64-systemtest checks exactly that,
+    /// and sampling a pinned register cannot be distinguished from sampling a
+    /// slow one without it.
     pub const fn tick_random(&mut self) {
         let wired = (self.regs[reg::WIRED as usize] & 0x3F) as u32;
         let cur = (self.regs[reg::RANDOM as usize] & 0x3F) as u32;
-        self.regs[reg::RANDOM as usize] = if cur <= wired || cur == 0 {
+        self.regs[reg::RANDOM as usize] = if cur == wired {
             31
         } else {
-            (cur - 1) as u64
+            cur.wrapping_sub(1) as u64 & 0x3F
         };
     }
 }

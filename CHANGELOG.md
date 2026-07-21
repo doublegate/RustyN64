@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — `PRId.Rev`, the `Random` counter, and `BadVAddr` on an unaligned fault
+
+Three unrelated one-line rules, each with a reason it stayed wrong:
+
+- **`PRId` now reads `0x0B22`.** The Rev field was recorded as undocumented and left zero — true of
+  the User's Manual, false of the N64brew wiki this project mirrors, which names `0x10`/`0x22`/`0x40`
+  for early, later and iQue parts. Ledger **U-3** is superseded by **C-22**; this is the third time
+  a decayed "undocumented" claim has been cited as if it described the hardware.
+- **`Random` is a plain 6-bit down-counter** whose reload fires on `== Wired`, not `<= Wired`, and
+  whose decrement wraps 0 → 63. The two readings agree for `Wired <= 31` and diverge above it, where
+  the old one pinned the register at 31 forever. Ledger **C-23**.
+- **`BadVAddr` reports the address the instruction named**, not the container address translated on
+  its behalf. A fault on `SWL 0x12345001` reported `0x12345000`.
+
+**Phase 1's categories: 19 → 16.**
+
 ### Fixed — under `FR = 0`, `fs` and `ft` resolve differently
 
 A floating-point arithmetic instruction ignores the low bit of `fs` and does **not** ignore the low

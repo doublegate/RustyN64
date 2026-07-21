@@ -929,8 +929,20 @@ impl Pipeline {
         // The unaligned family splits into loads and stores, and the
         // TLB check differs: a store must find the `D` bit set.
         let is_store = matches!(op, Op::Swl | Op::Swr | Op::Sdl | Op::Sdr);
-        let word_addr = self.translate_data(addr & !3, is_store)?;
-        let dword_addr = self.translate_data(addr & !7, is_store)?;
+        // On a fault, `BadVAddr` reports the address the INSTRUCTION named, not
+        // the container address translated on its behalf. `translate_data`
+        // records whatever it was handed, so the aligned-down value has to be
+        // corrected back -- otherwise a fault on `SWL 0x12345001` reports
+        // `0x12345000`, and n64-systemtest checks that exact case.
+        let translate = |p: &mut Self, a: u64| match p.translate_data(a, is_store) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                p.fault_vaddr = addr;
+                Err(e)
+            }
+        };
+        let word_addr = translate(self, addr & !3)?;
+        let dword_addr = translate(self, addr & !7)?;
         let byte4 = addr & 3;
         let byte8 = addr & 7;
         Ok(match op {

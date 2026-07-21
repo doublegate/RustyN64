@@ -1007,6 +1007,42 @@ its preload after `ADD.D $1`.
 
 ---
 
+### C-22 — `PRId.Rev` is documented after all, and U-3 had decayed
+
+**Claim.** `PRId` reads `0x0B22`: implementation `0x0B` for the VR4300 series, revision `0x22`.
+
+**What this supersedes.** Ledger **U-3** recorded the Rev field as undocumented and left it zero.
+That was a true statement about the *User's Manual* and a false one about the N64brew wiki, which
+this project mirrors and treats as a primary hardware reference: *"retail N64 units have so far been
+found to report either 0x10 (1.0, early units) or 0x22 (2.2, later units), and the iQue Player
+reports 0x40"* (`n64brew_wiki/markdown/VR4300.md`).
+
+This is the third instance of the same failure mode in this project, and the reason
+`docs/engineering-lessons.md` §3.3b exists: **"undocumented" is a claim about a document, and it
+decays.** Nothing fails when it goes stale, so it survives review and gets cited as if it were a
+claim about the hardware. Re-open the source before relying on such a record.
+
+`0x22` is the later stepping, which is what `fpu::Stepping::Fixed` (the default) denotes. The two
+want to be selected together by a console-revision constructor; wiring that before anything can
+choose `Early` would be inert API.
+
+### C-23 — `Random` is a plain 6-bit down-counter, and the reload is `==` not `<=`
+
+**Claim.** `Random` decrements each instruction, wrapping 0 → 63, and reloads 31 when it **equals**
+`Wired`.
+
+**Why the distinction is invisible until it isn't.** For `Wired <= 31` the `==` and `<=` readings
+agree — the counter walks 31 down to `Wired` either way. They diverge only once `Wired` exceeds 31,
+which software can arrange because the field is six bits: under `<=` the counter is immediately at
+or below the floor and pins at 31 forever, under `==` it walks 31 → 0 → 63 → `Wired` and covers the
+whole range.
+
+**Evidence.** n64-systemtest sets `Wired` to 32 and above and requires `Random` to span at least
+`[10..54]`; we reported `[31..31]`. Note what makes this checkable at all: the suite samples a
+*range*, because sampling a single value cannot distinguish a pinned counter from a slow one.
+
+---
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.
