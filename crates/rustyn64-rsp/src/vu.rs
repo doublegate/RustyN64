@@ -1129,6 +1129,37 @@ impl Rsp {
                 }
                 true
             }
+            0x06..=0x08 => self.vector_mem_packed(store, op, rs, vt, element, offset),
+            // LTV/STV: the **transpose**. These touch a whole *group* of eight
+            // registers (`vt & ~7`), moving one lane into or out of each with
+            // rotating byte offsets and wraparound inside a 16-byte window. They
+            // do not fit the single-register loop above, so they have their own
+            // handler. LFV/SFV (0x09) and SWV (0x0A) are still not implemented.
+            0x0B => {
+                let addr = Self::base_16(rs, offset);
+                if store {
+                    self.stv(addr, vt, element);
+                } else {
+                    self.ltv(addr, vt, element);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The packed (`LPV`/`LUV`/`SPV`/`SUV`) and strided (`LHV`/`SHV`) memory
+    /// ops, split out of [`Rsp::vector_mem`] to keep its decode under length.
+    fn vector_mem_packed(
+        &mut self,
+        store: bool,
+        op: u32,
+        rs: u32,
+        vt: usize,
+        element: usize,
+        offset: u32,
+    ) -> bool {
+        match op {
             // LPV/LUV (loads) and SPV/SUV (stores): the **packed** family.
             // Eight bytes move, one per lane, each byte occupying a lane's high
             // portion. LPV/SPV place it at bit 15 (`<< 8` / `.byte()`), LUV/SUV
@@ -1188,6 +1219,56 @@ impl Rsp {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Base address for a 16-scaled offset, used by the whole-vector ops.
+    fn base_16(rs: u32, offset: u32) -> u32 {
+        rs.wrapping_add_signed(Self::sext7(offset) * 16)
+    }
+
+    /// `LTV` — load a transposed diagonal into a register group.
+    ///
+    /// Transcribed from ares. The window is the 16 bytes at `rs & ~7`; the read
+    /// pointer starts at an element-and-address-dependent offset and wraps at
+    /// the window's end; each iteration fills one lane of the next register in
+    /// the group, the register index rotating mod 8. Modelled and cross-checked
+    /// in a scratch script before implementation, per the note in
+    /// `docs/rsp.md`.
+    fn ltv(&mut self, address: u32, vt: usize, element: usize) {
+        let begin = address & !7;
+        let mut ptr = begin + ((element as u32 + (address & 8)) & 15);
+        let vtbase = vt & !7;
+        let mut vtoff = element >> 1;
+        for i in 0..8usize {
+            for half in 0..2 {
+                let v = self.dmem_read_pub(ptr);
+                self.set_vu_byte(vtbase + vtoff, i * 2 + half, v);
+                ptr += 1;
+                if ptr == begin + 16 {
+                    ptr = begin;
+                }
+            }
+            vtoff = (vtoff + 1) & 7;
+        }
+    }
+
+    /// `STV` — store a register group as a transposed diagonal. The mirror of
+    /// [`Rsp::ltv`], with its own distinct offset arithmetic (also from ares).
+    fn stv(&mut self, address: u32, vt: usize, element: usize) {
+        let start = vt & !7;
+        let mut elem = 16 - (element & !1);
+        let mut base = (address & 7).wrapping_sub((element & !1) as u32);
+        let addr = address & !7;
+        for offset in start..start + 8 {
+            let b0 = self.vu_byte(offset, elem & 15);
+            self.dmem_write_pub(addr.wrapping_add(base & 15), b0);
+            base = base.wrapping_add(1);
+            elem += 1;
+            let b1 = self.vu_byte(offset, elem & 15);
+            self.dmem_write_pub(addr.wrapping_add(base & 15), b1);
+            base = base.wrapping_add(1);
+            elem += 1;
         }
     }
 
@@ -2341,5 +2422,58 @@ mod strided_tests {
         }
         // The odd bytes between them are untouched.
         assert_eq!(rsp.dmem[0x1], 0, "byte 1 is not written");
+    }
+}
+
+#[cfg(test)]
+mod transpose_tests {
+    use super::*;
+
+    /// **`LTV` loads a transposed *diagonal*** — each of the eight registers in
+    /// the group gets one lane filled, at a rotating position. With `rs = 0`,
+    /// `e = 0` and DMEM `0x10..0x1F`, register `v_r` receives its `r`-th lane.
+    /// The expected diagonal was computed in a scratch script first.
+    #[test]
+    fn ltv_loads_a_transposed_diagonal() {
+        let mut rsp = Rsp::new();
+        for i in 0..16 {
+            rsp.dmem[i] = 0x10 + i as u8;
+        }
+        assert!(rsp.vector_mem(false, 0x0B, 0, 0, 0, 0)); // vt=0 -> group 0..7
+        let diag: [u16; 8] = [
+            0x1011, 0x1213, 0x1415, 0x1617, 0x1819, 0x1A1B, 0x1C1D, 0x1E1F,
+        ];
+        for (r, &want) in diag.iter().enumerate() {
+            assert_eq!(rsp.vu_regs[r][r], want, "register {r}, diagonal lane");
+            // Every other lane in that register stays zero.
+            for l in 0..8 {
+                if l != r {
+                    assert_eq!(rsp.vu_regs[r][l], 0, "reg {r} lane {l} untouched");
+                }
+            }
+        }
+    }
+
+    /// **`STV` stores the transposed diagonal back out.** Register `v_r`, byte
+    /// `b` is seeded to `0x10*r + b` so every byte in the group is distinct;
+    /// the expected DMEM pattern was computed independently.
+    #[test]
+    fn stv_stores_a_transposed_diagonal() {
+        let mut rsp = Rsp::new();
+        for r in 0..8usize {
+            for b in 0..16usize {
+                let byte = (0x10 * r + b) as u8;
+                rsp.set_vu_byte(r, b, byte);
+            }
+        }
+        rsp.set_su(2, 0);
+        assert!(rsp.vector_mem(true, 0x0B, 2, 0, 0, 0)); // vt=0 -> group 0..7
+        let expected: [u8; 16] = [
+            0x00, 0x01, 0x12, 0x13, 0x24, 0x25, 0x36, 0x37, 0x48, 0x49, 0x5A, 0x5B, 0x6C, 0x6D,
+            0x7E, 0x7F,
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(rsp.dmem[i], *want, "DMEM byte {i}");
+        }
     }
 }

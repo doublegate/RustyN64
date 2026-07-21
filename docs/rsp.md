@@ -372,9 +372,14 @@ address is.
 `LHV`/`SHV` access every *other* DMEM byte, one per lane at bit 14; the load's
 DMEM index folds in the element field, the store's does not (ares SHV vs LHV).
 
+`LTV`/`STV` are the **transpose**: they touch a whole group of eight registers
+(`vt & ~7`), moving one lane into or out of each with a rotating byte offset and
+wraparound inside the 16-byte window, forming a diagonal. Modelled in a scratch
+script and cross-checked before implementation.
+
 Not yet implemented, and reported rather than approximated: `LFV`/`SFV` (whose
 lane subsets are element-dependent and which the suite itself calls
-"complicated") and the transposing `LTV`/`STV`/`SWV`. (`LWV` does not
+"complicated") and `SWV`. (`LWV` does not
 exist on hardware — the suite records that it *"does nothing"*.)
 
 ### Vector load/store
