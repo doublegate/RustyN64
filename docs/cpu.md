@@ -492,11 +492,17 @@ Two rules the table alone does not convey:
 
 - **FPU latency for a dependent consumer is the execution rate + 1**, because no
   EX-to-RF bypass is performed for those results (UM §7.5.6). The numbers above
-  are rates.
+  are rates. **Implemented** as an `Mci` stall of the Table 7-14 rate, charged
+  when the operation completes in `WB` (`fpu::stall_cycles`). The `+1` is not
+  added separately — the stall holds every stage, so the consumer spends its own
+  cycle after it drains. A rate of 1 (`ABS`, `MOV`, `NEG`, `C.cond`, `CVT.D.S`)
+  charges nothing, since one cycle is what an ordinary instruction already takes.
 - **FPU ops exit early on trivial operands.** Add/sub terminate on the second
   cycle on a source exception or if an operand is zero or infinity; multiply also
   finishes in two cycles if either operand is a power of two; divide and sqrt
-  exit on the second cycle for zero/infinity results (UM §7.5.6).
+  exit on the second cycle for zero/infinity results (UM §7.5.6). **Not
+  modelled** — those operands are charged the full rate, so the model is slower
+  than hardware there and never faster. Accuracy ledger **C-29**.
 
 **`M` is not documented anywhere.** It is the memory access time in PCycles, and
 both cache-miss formulas are parameterised on it. The only figures available are

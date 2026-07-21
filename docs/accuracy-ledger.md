@@ -1177,6 +1177,40 @@ for it would hang the console.
 
 ---
 
+### C-29 — the FPU rates are charged; the early exit on trivial operands is not
+
+**Claim.** COP1 arithmetic stalls the pipeline for its **UM Table 7-14** rate — `ADD`/`SUB` 3,
+`MUL` 5/8, `DIV`/`SQRT` 29/58, the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family 5, the `CVT` forms 1/2/5
+depending on the *source* format, and 1 (no stall) for `ABS`/`MOV`/`NEG`/`C.cond`. What is **not**
+modelled is the documented early exit.
+
+**Basis: documented, transcribed from the table itself.** Extracted from the manual with
+`mutool draw -F txt` and asserted row by row in `fpu::tests::the_fpu_delay_table_matches_the_manual`.
+The manual's *"latency is the execution rate plus one … an EX-to-RF bypass is not performed"* is not
+added anywhere: the stall holds every stage, so a dependent consumer spends its own cycle after the
+stall drains and reaches rate + 1 without a second rule.
+
+**The deviation.** UM §7.5.6, and Table 7-14's own note 2, say a multicycle operation whose result
+is *obvious* completes in **two** cycles instead of its full rate: add/sub on a zero or infinity
+operand or a source exception, multiply when either operand is a power of two, divide and sqrt when
+the result is zero or infinity, and the convert instructions for trivial cases. None of that is
+modelled, so those operands are charged the full rate and the model runs **slower than hardware**
+on them — never faster, which keeps the error one-directional and bounds it: at worst 27 PCycles
+for a `DIV.S` by infinity, 56 for the double.
+
+**Why it is deferred rather than guessed.** The trigger conditions are documented but the exact
+operand classes are prose rather than a table, and charging two cycles for a case the hardware does
+not consider trivial would be as wrong as charging 29 for one it does. This needs the timing set
+n64-systemtest ships default-off to measure against, which is the same instrument C-1 (`M`) is
+waiting on. Until then the honest position is the documented rate.
+
+**Not observable today.** Both oracles are unchanged by adding these stalls: the golden log holds
+its 0-diff over 50,027 records and n64-systemtest's Phase 1 categories stay at 0. That is expected
+— the golden log compares retired instruction streams, not cycle counts — and it means these rates
+are currently *unfalsified* rather than *verified*.
+
+---
+
 ---
 
 ## 5. Deliberate deviations from hardware

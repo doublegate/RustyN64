@@ -667,14 +667,25 @@ impl Pipeline {
                 fs,
                 fd,
             })) = self.dc_wb.cop0
-                && self.fp_arith(fmt, funct, ft, fs, fd)
             {
-                // Trapped. The instruction does **not** complete, so it must not
-                // reach the retirement tail below: `Random` "decrements as each
-                // instruction executes" (UM §5.4.2), and one that took an
-                // exception did not execute.
-                self.dc_wb.occupied = false;
-                return;
+                if self.fp_arith(fmt, funct, ft, fs, fd) {
+                    // Trapped. The instruction does **not** complete, so it must
+                    // not reach the retirement tail below: `Random` "decrements
+                    // as each instruction executes" (UM §5.4.2), and one that
+                    // took an exception did not execute.
+                    //
+                    // No delay is charged either. A trapped operation abandons
+                    // its result, and the exception's own 2-PCycle epilogue is
+                    // the cost that applies.
+                    self.dc_wb.occupied = false;
+                    return;
+                }
+                // The multi-cycle FPU operations stall the pipeline for their
+                // documented rate (UM Table 7-14). The manual's "latency = rate
+                // + 1 for a dependent consumer" falls out of this rather than
+                // being added: the stall holds every stage, so a consumer spends
+                // its own cycle once the stall drains.
+                self.stall_for(crate::fpu::stall_cycles(funct, fmt), Interlock::Mci);
             }
             if let Some(Cop0Access::Tlb(op)) = self.dc_wb.cop0 {
                 match op {
@@ -5265,6 +5276,52 @@ mod tests {
             0,
             "MOV.S raises nothing"
         );
+    }
+
+    /// **The documented FPU rates are actually charged.**
+    ///
+    /// `fpu::delay_cycles` transcribes UM Table 7-14 and its own test asserts
+    /// the numbers, but a table nothing consults is inert — the failure mode
+    /// here is a correct table that is simply never called. So this drives real
+    /// instructions and reads the interlock back.
+    ///
+    /// The two cases are chosen to differ: `MUL.D` is 8 cycles and `MOV.S` is 1,
+    /// i.e. no stall at all. A blanket stall on every COP1 op would pass a
+    /// `MUL.D`-only test and fail this one.
+    #[test]
+    fn the_documented_fpu_rates_are_charged_as_stalls() {
+        use crate::cop0::reg;
+        /// fmt in bits 25:21, fs 4, ft 2, fd 0.
+        const fn fp(fmt: u32, funct: u32) -> u32 {
+            (0o21 << 26) | (fmt << 21) | (2 << 16) | (4 << 11) | funct
+        }
+        // MUL.D (fmt 17, funct 2) = 8 PCycles; MOV.S (fmt 16, funct 6) = 1, so
+        // it must add nothing.
+        for (word, want) in [(fp(0o21, 2), Some(Interlock::Mci)), (fp(0o20, 6), None)] {
+            let mut bus = Ram::new(alloc::vec![word]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+            p.fpr.write_d(4, true, 2.0f64.to_bits());
+            p.fpr.write_d(2, true, 3.0f64.to_bits());
+            let mut pc = KSEG0_PROG;
+
+            // Run until the instruction reaches WB, where COP1 arithmetic
+            // executes and the delay is charged.
+            let mut seen = None;
+            for _ in 0..8 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+                if p.stalled_by() == Some(Interlock::Mci) {
+                    seen = Some(Interlock::Mci);
+                    break;
+                }
+            }
+            assert_eq!(
+                seen, want,
+                "word {word:#010x}: a multi-cycle FPU op must stall and a \
+                 single-cycle one must not"
+            );
+        }
     }
 
     /// `NEG.S` and `ABS.S` share the arm `MOV.S` was missing from, and are just
