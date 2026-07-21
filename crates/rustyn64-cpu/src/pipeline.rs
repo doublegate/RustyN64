@@ -199,10 +199,20 @@ pub enum Interlock {
     Cop,
     /// CP0 bypass interlock — **1 `PCycle`** (UM §4.6.9, p. 113).
     ///
-    /// Fires when an instruction that caused an exception reaches `WB` while the
-    /// next instruction in `DC` reads any CP0 register. The cost was recorded as
-    /// undocumented in three files while sitting in the very paragraph they
-    /// cited; see `docs/engineering-lessons.md` §3.3b.
+    /// **Named but never raised.** On hardware it fires when an instruction that
+    /// caused an exception reaches `WB` while the next instruction in `DC` reads
+    /// any CP0 register. Here, taking an exception already flushes the pipeline
+    /// and stalls for the 2-`PCycle` epilogue, so the two triggers overlap and
+    /// no case distinguishes them — charging this on top would invent a cycle
+    /// the hardware may not spend. Separating them needs the timing set
+    /// n64-systemtest ships default-off, the same instrument ledger C-1 waits on.
+    ///
+    /// The variant stays because [`Interlock`] enumerates the documented
+    /// taxonomy, and a gap in a taxonomy is worth more than a silently missing
+    /// row. This doc previously said it *fires*, in the present tense, which is
+    /// the comment-is-not-an-implementation hazard `docs/engineering-lessons.md`
+    /// §3.3c describes -- the cost was itself recorded as undocumented in three
+    /// files while sitting in the very paragraph they cited (§3.3b).
     Cp0i,
     /// Taking an exception — **2 `PCycle`s** (UM §4.7, p. 114).
     ///
@@ -2965,6 +2975,62 @@ mod tests {
         assert_eq!(p.retired, 0, "nothing may retire before WB has run on it");
         p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.retired, 1, "retires at WB on the 5th cycle, not sooner");
+    }
+
+    /// **`Cause.BD` and `EPC` still come out right when a stall separates the
+    /// branch from its delay slot.**
+    ///
+    /// The companion test below pins that the flag stays *attached* to its
+    /// instruction across a stall. That is not the same claim: the flag could
+    /// travel correctly and still be read from the wrong place at dispatch,
+    /// which is the reverse-cascade hazard this project has hit twice. So this
+    /// one drives the flagged instruction into a real exception and reads the
+    /// architectural result — `EPC` must name the **branch**, four bytes back,
+    /// not the faulting instruction.
+    #[test]
+    fn a_delay_slot_exception_after_a_stall_still_reports_the_branch() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        // An unaligned `LW` — offset 0x101 — so the delay-slot instruction
+        // faults with AdEL rather than needing a crafted overflow.
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1), ld_st(0o43, 0, 3, 0x101)]);
+        p.cop0.set_hardware(reg::STATUS, 0);
+        let mut pc = KSEG0_PROG;
+
+        // Advance until the FAULTING instruction (the second word) is the one
+        // in `IC/RF`, then mark it as the delay slot. Flagging whatever happens
+        // to be there after one step marks the first instruction instead, which
+        // never faults -- and the test would then be asserting BD for an
+        // exception that never came from a delay slot at all.
+        let slot_pc = KSEG0_PROG.wrapping_add(4);
+        let mut warm = 0;
+        while p.ic_rf.pc != slot_pc || !p.ic_rf.occupied {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            warm += 1;
+            assert!(warm < 16, "the faulting instruction never reached IC/RF");
+        }
+        p.ic_rf.in_delay_slot = true;
+
+        // A `DDIV`-length interlock lands between the branch and its slot.
+        p.stall_for(69, Interlock::Mci);
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 128, "the delay-slot instruction never faulted");
+        }
+
+        assert_ne!(
+            p.cop0.read(reg::CAUSE) & (1 << 31),
+            0,
+            "BD must be set -- the faulting instruction was in a delay slot"
+        );
+        assert_eq!(
+            p.cop0.read(reg::EPC),
+            slot_pc.wrapping_sub(4),
+            "EPC must name the branch, so the handler re-evaluates it"
+        );
     }
 
     /// **The delay-slot invariant** — the Phase 1 exit criterion.

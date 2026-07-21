@@ -23,12 +23,20 @@ it again and say so; do not nudge it.
 
 ## Status
 
-**The CPU executes instructions; nothing has been *measured* yet.** Sprint 1 landed the integer
-core, so residuals can now be observed in principle — none has been. What has changed is that
-three entries (C-2, C-3, S-3) turned out to be **documented all along** and are resolved by
-citation rather than measurement; C-7 is new and likewise documented. The remaining constants are
-still placeholders with known provenance, recorded so the first implementation does not silently
-invent a value and move on.
+**Phase 1 is complete, and still nothing here has been *measured*.** That is the honest headline:
+every entry resolved so far was resolved by **citation** — it turned out to be documented after all
+(C-2, C-3, C-7, C-22, S-1, S-3, U-1, U-3, U-4) — or by implementing behaviour the sources do
+describe. Not one constant has been obtained by measuring this emulator against hardware, because
+the instrument for that is n64-systemtest's default-off `timing` set and it has not been run.
+
+So the file's shape has changed less than the code has. `M` (**C-1**) still has no value; the
+cache-miss costs that depend on it are still uncharged; the RDRAM bank-state costs (**C-4**) are
+untouched. The FPU execution rates (**C-29**) were added as *documented* numbers, and both oracles
+are insensitive to them — they are unfalsified rather than verified, which is a weaker claim and is
+recorded as one.
+
+What the preamble asks of a reader is unchanged: a constant here without a provenance line is a
+bug, and a number that appeared without one is the failure this file exists to prevent.
 
 ---
 
@@ -162,10 +170,10 @@ implementation choice here is treated as correct.
 | U-2 | `TLBP` low `Index` bits on a miss (we leave them **zero**) | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
 | U-3 | The N64's full `PRId` value | **RESOLVED — see C-22.** Recorded verbatim: *"`Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151)"*. That was true of the manual and false of the N64brew wiki this project mirrors, which names `0x10`/`0x22`/`0x40` — the decay this table exists to make visible | resolved |
 | U-4 | ~~Which `Int[4:0]` line the MI drives~~ | **RESOLVED** — `IP2`. Not in the CPU manual (board-level) nor in the N64brew mirror, but stated by libdragon: `#define C0_INTERRUPT_RCP C0_INTERRUPT_2` (`ref-proj/libdragon/include/cop0.h`), which also gives `IP3` = CART, `IP4` = PRENMI, `IP7` = timer. libdragon is public domain, so this is citable rather than merely observed | **closed** |
-| U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | Sprint 2 |
+| U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | **RESOLVED (Phase 1).** Not by defining the undefined case, but by finding that the suite *does* define the surrounding rule: an address in 32-bit mode must be the sign extension of its low word, and one that is not raises AdEL before the TLB is consulted (`addr::is_compat`). n64-systemtest asserts it directly |
 | U-6 | `Config.EC` on the N64 | `0b111` (1:1.5) is allowed *"with the 100 MHz model only"* (UM Appendix A note 1, p. 628), and the N64's ratio is 1:1.5 — so `0b111` is a strong **inference**, but the manual never names the N64 | Sprint 2 |
 | U-7 | The **corrupted output** of the FP multiplication erratum | The *trigger* is documented (`VR4300.md`: a multiply whose preceding multiply had a NaN, zero or infinity operand) and so are the affected steppings (NUS-01/02/03), but **what wrong value is produced has never been characterised** — recorded in `ref-docs/2026-07-20-vr4300-timing-supplement.md` as an undocumented constant. `Stepping::Early` can therefore be *selected* but changes no arithmetic; inventing a plausible wrong value would be the fitted-constant failure this file's preamble forbids | Sprint 3 modelled the switch and the trigger. Needs an affected console, or a hardware capture, before the output can be reproduced |
-| U-8 | FPU rounding modes and the `inexact` / `underflow` flags are **partial** | `FCSR.RM` is honoured by the conversions but **not** by `add`/`sub`/`mul`/`div`, which use Rust's operators and are nearest-even only. Likewise `inexact` is set for overflow and conversions but not for ordinary rounding, and `underflow` only for conversions that flush to zero. Both need the *exact* result before rounding, which the hardware float operators do not expose | Needs soft-float arithmetic or per-operation re-rounding. Recorded so a caller does not trust a bit that never sets — the module's own doc table says which flags are complete |
+| U-8 | FPU rounding modes and the `inexact` / `underflow` flags are **partial** | `FCSR.RM` is honoured by the conversions but **not** by `add`/`sub`/`mul`/`div`, which use Rust's operators and are nearest-even only. Likewise `inexact` is set for overflow and conversions but not for ordinary rounding, and `underflow` only for conversions that flush to zero. Both need the *exact* result before rounding, which the hardware float operators do not expose | Needs soft-float arithmetic or per-operation re-rounding. Recorded so a caller does not trust a bit that never sets — the module's own doc table says which flags are complete. **RESOLVED (Phase 1)** by the soft-float core: `FCSR.RM` is honoured by `add`/`sub`/`mul`/`div`, and `inexact`/`underflow` are detected from the exact pre-rounding result. See **C-11 RESOLVED**, which also records the second bug the fix uncovered |
 
 U-6 is the one to watch: it is consistent with ADR 0006's clock derivation, which makes it
 tempting to promote to a fact. It is an inference from a part-number restriction, and it stays

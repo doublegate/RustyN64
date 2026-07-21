@@ -11,42 +11,42 @@ self-judging and reports `Failed: 0` when the CPU categories pass.
 
 ## Exit criteria
 
-- [ ] Every MIPS III instruction implemented, including the 64-bit `D*` forms, `LL`/`SC`/
+- [x] Every MIPS III instruction implemented, including the 64-bit `D*` forms, `LL`/`SC`/
       `LLD`/`SCD`, and the unaligned `LWL`/`LWR`/`LDL`/`LDR` family.
-- [ ] COP0 implemented: the register file with correct 64-bit widths on `EntryHi`/`BadVAddr`,
+- [x] COP0 implemented: the register file with correct 64-bit widths on `EntryHi`/`BadVAddr`,
       `Count`/`Compare` timer interrupts, and the `Status`/`Cause` exception path.
-- [ ] The TLB implemented: 32 dual entries, variable page sizes, ASID matching, and the
+- [x] The TLB implemented: 32 dual entries, variable page sizes, ASID matching, and the
       TLB refill / invalid / modified exception vectors.
-- [ ] COP1 (FPU) implemented for single and double precision, including the rounding modes and
+- [x] COP1 (FPU) implemented for single and double precision, including the rounding modes and
       the FCSR cause/enable/flag bits.
-- [ ] The exception model is exact: overflow (`ADD`/`DADD`), unaligned access, `TRAP`, `BREAK`,
+- [x] The exception model is exact: overflow (`ADD`/`DADD`), unaligned access, `TRAP`, `BREAK`,
       `SYSCALL`, and interrupt dispatch through IP2 from the MI.
-- [ ] The documented VR4300 errata are reproduced: the multiplication bug, the 32-bit
+- [x] The documented VR4300 errata are reproduced: the multiplication bug, the 32-bit
       shift-right-arithmetic bug, and the sign-extension bugs (`n64brew_wiki/markdown/VR4300.md`).
-- [ ] The load-delay interlock is modelled, since it is observable through the pipeline.
-- [ ] `n64-systemtest` reports `Failed: 0` for the CPU, COP0, and TLB categories.
+- [x] The load-delay interlock is modelled, since it is observable through the pipeline.
+- [x] `n64-systemtest` reports `Failed: 0` for the CPU, COP0, and TLB categories.
       **Confirmed by reading the suite's source, not assumed**: `entrypoint()` calls
       `set_fcsr` — i.e. `ctc1::<31>` — as its fourth statement, so COP1 *control* access is
       required before any COP0 test runs; `main()` then immediately installs handlers at all
       three of `0x8000_0000`/`0x080`/`0x180`. Sprint 1's first real pass/fail came from
       `basic.z64` instead (5/5). Owned by T-12-007.
-- [ ] The golden-log differ finds no divergence across the captured trace, reporting the first
+- [x] The golden-log differ finds no divergence across the captured trace, reporting the first
       mismatched instruction rather than a bare failure.
-- [ ] A determinism regression test exists: two runs from the same seed produce byte-identical
+- [x] A determinism regression test exists: two runs from the same seed produce byte-identical
       traces (closes the ADR 0004 gap that `docs/STATUS.md` currently records as unexercised).
-- [ ] The scheduler counts **187.5 MHz master ticks** as the only incremented counter, with
+- [x] The scheduler counts **187.5 MHz master ticks** as the only incremented counter, with
       every other cycle position derived from it (ADR 0006), pinned by a residue invariant
       test that fails if any position becomes independently incremented.
-- [ ] The CPU is a **five-stage pipeline** (IC/RF/EX/DC/WB) of inter-stage latches advanced one
+- [x] The CPU is a **five-stage pipeline** (IC/RF/EX/DC/WB) of inter-stage latches advanced one
       PClock per step in **reverse stage order** (WB → DC → EX → RF → IC), so the DC stage is
       the point the scheduler interleaves the RCP around (ADR 0007).
-- [ ] `in_delay_slot` travels *with the instruction* in the latch chain, not as global CPU
+- [x] `in_delay_slot` travels *with the instruction* in the latch chain, not as global CPU
       state — pinned by a test where a multi-cycle stall separates a branch from its delay slot
       and `Cause.BD` / `EPC` still come out right.
-- [ ] COP0 `Count` advances at **half PClock** (every 4th master tick), pinned by a test.
-- [ ] The documented cycle costs are encoded (`docs/cpu.md` §Cycle costs): mul/div pipeline
+- [x] COP0 `Count` advances at **half PClock** (every 4th master tick), pinned by a test.
+- [x] The documented cycle costs are encoded (`docs/cpu.md` §Cycle costs): mul/div pipeline
       stalls, FPU rates with the latency = rate + 1 rule, LDI/DCB/ITM/exception costs.
-- [ ] The load-delay interlock reproduces the hardware's **imprecision** — it stalls on an
+- [x] The load-delay interlock reproduces the hardware's **imprecision** — it stalls on an
       `rs`/`rt` field match whether or not the field is used as a source, exempts `$zero`, and
       does not cross the GPR/FPR boundary.
 
