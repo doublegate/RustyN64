@@ -1299,6 +1299,26 @@ impl Pipeline {
                     // one delay slot in between. No wrong-path fetch needs
                     // squashing -- that falls out of the reverse order rather
                     // than being arranged.
+                    // **The link is `next_pc`, read BEFORE this instruction's
+                    // own redirect is applied.**
+                    //
+                    // At `EX` time `next_pc` already holds the address of the
+                    // instruction that will run after this one's delay slot:
+                    // `pc + 8` for an ordinary jump, and the OUTER target `+ 4`
+                    // when this jump is itself in a delay slot, because the
+                    // outer jump redirected a cycle earlier and `IC` has since
+                    // advanced past it.
+                    //
+                    // Computing `pc + 8` in `execute` was right for the
+                    // ordinary case and silently wrong for the nested one; the
+                    // live `next_pc` is that address by construction rather
+                    // than by a second formula that can disagree.
+                    if let Some(dest) = e.link {
+                        out.write_back = WriteBack::Gpr {
+                            dest,
+                            value: *next_pc,
+                        };
+                    }
                     if let Some(r) = e.redirect {
                         *next_pc = r.target;
                         if r.nullify_delay_slot {
@@ -4895,6 +4915,69 @@ mod tests {
             2,
             "and Cause.CE names COP2 -- a plain RI would leave it zero"
         );
+    }
+
+    /// **A `JAL` inside another jump's delay slot links to the OUTER target
+    /// + 4**, not to its own `pc + 8`.
+    ///
+    /// Its own delay slot never runs — the outer jump already redirected — so
+    /// the instruction after it is the outer target. n64-systemtest states the
+    /// rule in its assertion text: *"JAL in delay slot writes target address+4
+    /// of original jump into delay slot"*.
+    ///
+    /// The ordinary case is asserted alongside it, because the two share one
+    /// implementation and a test of only the nested case would pass with the
+    /// link hard-wired to `next_pc` in a way that broke normal jumps.
+    #[test]
+    fn a_jal_in_a_delay_slot_links_past_the_outer_target() {
+        /// `JAL <target>` — the target is a word index within the 256 MB region.
+        const fn jal(target_word: u32) -> u32 {
+            (0o03 << 26) | target_word
+        }
+        /// `J <target>`.
+        const fn j(target_word: u32) -> u32 {
+            (0o02 << 26) | target_word
+        }
+
+        // Ordinary: JAL at KSEG0_PROG, delay slot after it, link = pc + 8.
+        {
+            let outer = u32::try_from(KSEG0_PROG & 0x0FFF_FFFF).unwrap() >> 2;
+            let mut bus = Ram::new(alloc::vec![jal(outer + 8), 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(regs.read(31), KSEG0_PROG + 8, "an ordinary JAL links pc+8");
+        }
+
+        // Nested: J to T, with a JAL in its delay slot. The JAL must link to
+        // T + 4, NOT to its own address + 8.
+        {
+            let base = u32::try_from(KSEG0_PROG & 0x0FFF_FFFF).unwrap() >> 2;
+            // T is eight words along; the JAL sits in the J's delay slot.
+            let t_word = base + 8;
+            let prog = alloc::vec![j(t_word), jal(base + 4), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            let mut bus = Ram::new(prog);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            let mut pc = KSEG0_PROG;
+            for _ in 0..24 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            let outer_target = KSEG0_PROG + 8 * 4;
+            assert_eq!(
+                regs.read(31),
+                outer_target + 4,
+                "the nested JAL links to the OUTER target + 4"
+            );
+            assert_ne!(
+                regs.read(31),
+                KSEG0_PROG + 4 + 8,
+                "and specifically NOT to its own pc + 8"
+            );
+        }
     }
 
     // --- Unimplemented operation on subnormals (T-13-004) -------------------

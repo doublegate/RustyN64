@@ -9,6 +9,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — a jump-and-link inside a delay slot links past the outer target
+
+The link register receives the address of the instruction that runs after the jump's delay slot.
+That is `pc + 8` only when the jump is not *itself* in a delay slot; when it is, its own delay slot
+never runs and the link is the outer jump's `target + 4`.
+
+The fix removes a formula rather than adding one: `EX` now fills the link from the live `next_pc`,
+which is that address by construction in both cases. Ledger **C-19**.
+
+**Phase 1's categories: 45 → 42.**
+
 ### Fixed — the doubleword control moves now trap, and differently per coprocessor
 
 `DCFC1`/`DCTC1` raise a floating-point exception with `FCSR.Cause` set to unimplemented-operation

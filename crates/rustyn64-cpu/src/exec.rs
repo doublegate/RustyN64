@@ -265,6 +265,15 @@ pub struct Executed {
     pub redirect: Option<Redirect>,
     /// A COP0 access for `DC` (read) or `WB` (write) to perform.
     pub cop0: Option<Cop0Access>,
+    /// The GPR a jump-and-link writes its return address to, if any.
+    ///
+    /// Carried separately from `write_back` because the **value** cannot be
+    /// computed here: the link is the address of the instruction that runs
+    /// after this one's delay slot, which is `pc + 8` only when the jump is
+    /// *not itself in a delay slot*. `EX` fills it in from the live `next_pc`,
+    /// which is that address by construction. See the jump/branch helper in this
+    /// module, and accuracy ledger C-19.
+    pub link: Option<u8>,
 }
 
 /// An `Executed` that does nothing: no write-back, no stall, no access, no
@@ -275,6 +284,7 @@ const NOTHING: Executed = Executed {
     mem: None,
     redirect: None,
     cop0: None,
+    link: None,
 };
 
 /// Sign-extend a 16-bit immediate — the arithmetic and `SLT` immediate forms.
@@ -283,18 +293,24 @@ const fn sext_imm(imm: u16) -> u64 {
 }
 
 /// A jump or taken branch: redirect, and link if the form links.
-const fn control(d: Decoded, target: u64, nullify: bool, pc: u64) -> Executed {
+const fn control(d: Decoded, target: u64, nullify: bool) -> Executed {
     Executed {
         // The linking forms save the address *after* the delay slot, so a
         // returning `JR $31` resumes past it rather than re-executing it.
-        write_back: if d.dest == 0 {
-            WriteBack::None
-        } else {
-            WriteBack::Gpr {
-                dest: d.dest,
-                value: pc.wrapping_add(8),
-            }
-        },
+        //
+        // **That address is not always `pc + 8`.** When the jump is itself in
+        // another jump's delay slot, its own delay slot never runs — the outer
+        // jump has already redirected — so the instruction after it is the
+        // outer *target*, and the link is `target + 4`. n64-systemtest states
+        // it directly: "JAL in delay slot writes target address+4 of original
+        // jump into delay slot".
+        //
+        // So the register is named here and the value is filled in by `EX`
+        // from the live `next_pc`, which holds exactly that address in both
+        // cases. Computing `pc + 8` here was right for the ordinary case and
+        // silently wrong for the nested one.
+        write_back: WriteBack::None,
+        link: if d.dest == 0 { None } else { Some(d.dest) },
         stall_cycles: 0,
         mem: None,
         redirect: Some(Redirect {
@@ -312,12 +328,13 @@ const fn branch(d: Decoded, taken: bool, pc: u64) -> Executed {
         let target = pc
             .wrapping_add(4)
             .wrapping_add((sext_imm(d.imm) as i64 as u64) << 2);
-        return control(d, target, false, pc);
+        return control(d, target, false);
     }
     // Not taken. A branch-likely nullifies its delay slot; an ordinary branch
     // lets it run. Either way the linking forms STILL link -- BLTZAL writes $31
     // even when the branch is not taken, which is easy to miss.
     Executed {
+        link: None,
         write_back: if d.dest == 0 {
             WriteBack::None
         } else {
@@ -349,6 +366,7 @@ const fn trap_if(cond: bool) -> Result<Executed, Exception> {
         Err(Exception::Trap)
     } else {
         Ok(Executed {
+            link: None,
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: None,
@@ -396,6 +414,7 @@ pub const fn execute(
     macro_rules! gpr {
         ($v:expr) => {
             Ok(Executed {
+                link: None,
                 write_back: WriteBack::Gpr {
                     dest: d.dest,
                     value: $v,
@@ -412,6 +431,7 @@ pub const fn execute(
     macro_rules! mem_load {
         ($kind:expr) => {
             Ok(Executed {
+                link: None,
                 write_back: WriteBack::None,
                 stall_cycles: 0,
                 mem: Some(MemOp::Load {
@@ -427,6 +447,7 @@ pub const fn execute(
     macro_rules! mem_store {
         ($kind:expr) => {
             Ok(Executed {
+                link: None,
                 write_back: WriteBack::None,
                 stall_cycles: 0,
                 mem: Some(MemOp::Store {
@@ -444,6 +465,7 @@ pub const fn execute(
     macro_rules! muldiv {
         ($res:expr, $kind:expr) => {
             Ok(Executed {
+                link: None,
                 write_back: WriteBack::HiLo($res),
                 stall_cycles: alu::muldiv_stall_cycles($kind),
                 mem: None,
@@ -533,6 +555,7 @@ pub const fn execute(
         Op::Mfhi => gpr!(hilo.hi),
         Op::Mflo => gpr!(hilo.lo),
         Op::Mthi => Ok(Executed {
+            link: None,
             write_back: WriteBack::Hi(rs_val),
             stall_cycles: 0,
             mem: None,
@@ -540,6 +563,7 @@ pub const fn execute(
             cop0: None,
         }),
         Op::Mtlo => Ok(Executed {
+            link: None,
             write_back: WriteBack::Lo(rs_val),
             stall_cycles: 0,
             mem: None,
@@ -564,6 +588,7 @@ pub const fn execute(
         // counterparts; all the link-bit behaviour is in `DC`, because that is
         // where the bus access it is conditional on happens.
         Op::Ll => Ok(Executed {
+            link: None,
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: Some(MemOp::LinkedLoad {
@@ -575,6 +600,7 @@ pub const fn execute(
             cop0: None,
         }),
         Op::Lld => Ok(Executed {
+            link: None,
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: Some(MemOp::LinkedLoad {
@@ -586,6 +612,7 @@ pub const fn execute(
             cop0: None,
         }),
         Op::Sc => Ok(Executed {
+            link: None,
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: Some(MemOp::ConditionalStore {
@@ -598,6 +625,7 @@ pub const fn execute(
             cop0: None,
         }),
         Op::Scd => Ok(Executed {
+            link: None,
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: Some(MemOp::ConditionalStore {
@@ -618,11 +646,11 @@ pub const fn execute(
             // boundary, which is exactly where a naive implementation breaks.
             let region = pc.wrapping_add(4) & 0xFFFF_FFFF_F000_0000;
             let target = region | ((d.target as u64) << 2);
-            Ok(control(d, target, false, pc))
+            Ok(control(d, target, false))
         }
         // JR and JALR differ only in whether decode gave them a destination:
         // `control` links iff `d.dest != 0`, so one arm serves both.
-        Op::Jr | Op::Jalr => Ok(control(d, rs_val, false, pc)),
+        Op::Jr | Op::Jalr => Ok(control(d, rs_val, false)),
 
         Op::Beq | Op::Beql => Ok(branch(d, rs_val == rt_val, pc)),
         Op::Bne | Op::Bnel => Ok(branch(d, rs_val != rt_val, pc)),
@@ -652,6 +680,7 @@ pub const fn execute(
         // retires normally -- what it must NOT do is raise reserved-instruction.
         // COP0 access. `rd` is the COP0 register; `EX` only resolves which.
         Op::Mfc0 | Op::Dmfc0 => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Read {
                 src: d.rd,
                 dest: d.dest,
@@ -661,6 +690,7 @@ pub const fn execute(
         }),
         // `fs` is the COP1 control register, encoded in the `rd` field.
         Op::Mfc1 | Op::Dmfc1 => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Cop1(Cop1Access::ReadFpr {
                 src: d.rd,
                 dest: d.dest,
@@ -669,6 +699,7 @@ pub const fn execute(
             ..NOTHING
         }),
         Op::Mtc1 | Op::Dmtc1 => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Cop1(Cop1Access::WriteFpr {
                 dest: d.rd,
                 value: rt_val,
@@ -679,6 +710,7 @@ pub const fn execute(
         // FP loads and stores resolve their address exactly like the integer
         // forms; only the register file they land in differs.
         Op::Lwc1 | Op::Ldc1 | Op::Swc1 | Op::Sdc1 => Ok(Executed {
+            link: None,
             mem: Some(MemOp::Fp {
                 op: d.op,
                 addr: rs_val.wrapping_add(sext_imm(d.imm)),
@@ -687,6 +719,7 @@ pub const fn execute(
             ..NOTHING
         }),
         Op::Cfc1 => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Cop1(Cop1Access::ReadControl {
                 src: d.rd,
                 dest: d.dest,
@@ -694,6 +727,7 @@ pub const fn execute(
             ..NOTHING
         }),
         Op::Ctc1 => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Cop1(Cop1Access::WriteControl {
                 dest: d.rd,
                 value: rt_val as u32,
@@ -714,6 +748,7 @@ pub const fn execute(
         //   the target GPR is **not** written, so a probe reads back whatever
         //   was already there and concludes emux is absent.
         Op::FpArith => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Cop1(Cop1Access::Arith {
                 fmt: d.rs,
                 funct: (d.imm & 0x3F) as u8,
@@ -733,26 +768,32 @@ pub const fn execute(
         | Op::Cop1ReservedControl
         | Op::Cop2ReservedControl => Ok(NOTHING),
         Op::Tlbr => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Tlb(TlbOp::Read)),
             ..NOTHING
         }),
         Op::Tlbwi => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Tlb(TlbOp::WriteIndexed)),
             ..NOTHING
         }),
         Op::Tlbwr => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Tlb(TlbOp::WriteRandom)),
             ..NOTHING
         }),
         Op::Tlbp => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Tlb(TlbOp::Probe)),
             ..NOTHING
         }),
         Op::Eret => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Eret),
             ..NOTHING
         }),
         Op::Mtc0 | Op::Dmtc0 => Ok(Executed {
+            link: None,
             cop0: Some(Cop0Access::Write {
                 dest: d.rd,
                 value: rt_val,
@@ -764,6 +805,7 @@ pub const fn execute(
         // raise a TLB fault, and DC must perform the translation -- but performs
         // no data transfer. Modelled as a zero-width probe: see `MemOp::Cache`.
         Op::Cache => Ok(Executed {
+            link: None,
             mem: Some(MemOp::Cache {
                 addr: rs_val.wrapping_add(sext_imm(d.imm)),
                 op: d.rt,
@@ -771,6 +813,7 @@ pub const fn execute(
             ..NOTHING
         }),
         Op::Sync => Ok(Executed {
+            link: None,
             write_back: WriteBack::None,
             stall_cycles: 0,
             mem: None,
@@ -782,6 +825,7 @@ pub const fn execute(
 
         Op::Lwl | Op::Lwr | Op::Ldl | Op::Ldr | Op::Swl | Op::Swr | Op::Sdl | Op::Sdr => {
             Ok(Executed {
+                link: None,
                 write_back: WriteBack::None,
                 stall_cycles: 0,
                 mem: Some(MemOp::Unaligned {

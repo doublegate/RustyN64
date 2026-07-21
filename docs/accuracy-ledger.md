@@ -869,6 +869,31 @@ per-register and echoes the first value cannot pass. Our replacement test does
 the same in miniature: the second assertion is the one that distinguishes a
 latch from storage.
 
+### C-19 — a jump-and-link inside a delay slot links past the OUTER target
+
+**Claim.** The link register receives *the address of the instruction that runs
+after this jump's delay slot*. That is `pc + 8` only when the jump is not itself
+in a delay slot. When it is, its own delay slot never executes — the outer jump
+redirected a cycle earlier — so the next instruction is the outer **target**,
+and the link is `target + 4`.
+
+n64-systemtest states it in the assertion text rather than leaving it to be
+inferred: *"JAL in delay slot writes target address+4 of original jump into
+delay slot"*. It covers `JAL` in `J`, `JAL` in `JALR`, `JALR` in `JALR`, and a
+**not-taken** `BGEZAL` in a `J` — the last mattering because the linking forms
+link whether or not they branch.
+
+**The fix is a deletion, not a formula.** `execute` computed `pc + 8`; `EX` now
+fills the value from the live `next_pc`, which *is* that address by
+construction in both cases. A second formula for the nested case would be a
+second thing to keep in agreement; reading the pipeline's own pointer cannot
+disagree with it.
+
+**Order matters and is pinned.** `next_pc` must be read **before** this
+instruction's own redirect is applied — reading it after gives the jump's own
+target, which is wrong for every jump including ordinary ones. Both orderings
+are mutation-tested.
+
 ### C-18 — the doubleword control moves decline differently per coprocessor
 
 **Claim.** `DCFC1`/`DCTC1` and `DCFC2`/`DCTC2` are structurally identical — the
