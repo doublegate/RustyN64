@@ -113,6 +113,15 @@ pub enum Exception {
         /// Which coprocessor, for `Cause.CE`.
         unit: u8,
     },
+    /// **Non-maskable interrupt** (UM §6.4.6).
+    ///
+    /// Not one of the `Cause.ExcCode` exceptions: it writes no `Cause`, saves to
+    /// `ErrorEPC` rather than `EPC`, sets `ERL` rather than `EXL`, and is taken
+    /// *"regardless of the settings of the EXL, ERL, and the IE bits"*. It rides
+    /// in this enum anyway so it can reuse the pipeline-flush machinery every
+    /// other exception uses; [`crate::exception::dispatch`] intercepts it before
+    /// any of the general path runs.
+    Nmi,
     /// A TLB refill — no entry matched. Takes the **refill** vector.
     TlbRefill {
         /// The faulting access was a store (`TLBS` rather than `TLBL`).
@@ -311,6 +320,12 @@ struct Pending {
 
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default)]
+// The bools are independent hardware lines and latches -- `prev_was_run`,
+// `flush_pending`, `nmi_pending`, `ll_bit`. Clippy suggests folding them into a
+// state machine; they do not form one, because any combination is reachable and
+// each is set and cleared by a different part of the machine. Naming them is
+// what makes the exception and interrupt rules readable.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Pipeline {
     /// The **whole** of COP2: one 64-bit latch.
     ///
@@ -334,6 +349,14 @@ pub struct Pipeline {
     /// previous `PCycle` was a run cycle."* This is the gate, and it is the
     /// reason the flag exists at all.
     prev_was_run: bool,
+    /// The NMI line, latched until an instruction boundary lets it be taken.
+    ///
+    /// A level rather than an edge here: the hardware signal is the falling edge
+    /// of the NMI pin (or bit 6 of the internal interrupt register written over
+    /// `SysAD`), and the edge is what `signal_nmi` represents. Holding it means
+    /// an NMI raised during a stall is taken when the stall drains rather than
+    /// being dropped -- the same reason the timer latches `IP7`.
+    nmi_pending: bool,
     /// An abort was raised this cycle, so `IC` must fetch a bubble rather than a
     /// live instruction — the wrong-path fetch would otherwise escape the flush.
     ///
@@ -425,6 +448,7 @@ impl Pipeline {
             dc_wb: EMPTY,
             stall: None,
             prev_was_run: false,
+            nmi_pending: false,
             flush_pending: false,
             retired: 0,
             pending: None,
@@ -485,6 +509,18 @@ impl Pipeline {
             return;
         }
         self.stall = Some(Stall { cycles, cause });
+    }
+
+    /// Assert the **NMI** line.
+    ///
+    /// Latched, then taken at the next instruction boundary. Nothing in the core
+    /// calls this yet: on hardware the source is the console's reset button,
+    /// which reaches the CPU as PRENMI followed by NMI, and the frontend owns
+    /// that button (Phase 6). It exists now because the exception itself is
+    /// Phase 1 work and belongs with the rest of the exception model — the wire
+    /// from the button is a separate, later concern.
+    pub const fn signal_nmi(&mut self) {
+        self.nmi_pending = true;
     }
 
     /// Stamp an abort into `at` **and every latch upstream of it** — the
@@ -781,7 +817,16 @@ impl Pipeline {
             self.cop0.set_ip(7, true);
         }
 
-        if self.prev_was_run && self.cop0.interrupt_pending() {
+        // NMI is checked FIRST and without consulting `interrupt_pending`.
+        // *"Unlike all other interrupts, this interrupt is not maskable; it
+        // occurs regardless of the settings of the EXL, ERL, and the IE bits"*
+        // (UM SS6.4.6). Only the run-cycle gate applies, because NMI is still
+        // *"taken only at instruction boundaries"* -- which is exactly what
+        // `prev_was_run` expresses (UM SS4.7.1).
+        if self.prev_was_run && self.nmi_pending {
+            self.nmi_pending = false;
+            self.abort_from(Stage::Dc, Exception::Nmi);
+        } else if self.prev_was_run && self.cop0.interrupt_pending() {
             self.abort_from(Stage::Dc, Exception::Interrupt);
         }
         // The memory access. This is the point the scheduler interleaves the RCP
@@ -4386,6 +4431,87 @@ mod tests {
             "IP2 is asserted even though it is masked"
         );
         assert!(!p.cop0.interrupt_pending(), "but not recognised");
+    }
+
+    /// **NMI ignores every mask, and saves to `ErrorEPC` rather than `EPC`.**
+    ///
+    /// The interesting part is what it is *not*: `Status` here has `IE` clear,
+    /// `EXL` set and `ERL` set, which is the state in which an ordinary
+    /// interrupt is unconditionally ignored. The companion assertion below
+    /// checks exactly that, so the two differ only in which line was raised.
+    #[test]
+    fn an_nmi_is_taken_regardless_of_ie_exl_and_erl() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1); 8]);
+        // IE clear, EXL set, ERL set -- every reason to refuse an interrupt.
+        // EXL (bit 1) and ERL (bit 2).
+        p.cop0.set_hardware(reg::STATUS, (1 << 1) | (1 << 2));
+        p.cop0.set_hardware(reg::CAUSE, 0);
+        let mut pc = KSEG0_PROG;
+
+        // Warm the pipeline first: the NMI is attributed to the instruction at
+        // the boundary, and an empty `DC` latch has no PC to record.
+        for _ in 0..5 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        p.signal_nmi();
+        // Stop at the redirect itself: past it, `pc` is the next fetch address
+        // and has already walked on from the vector.
+        let mut cycles = 0;
+        while p.stalled_by() != Some(Interlock::Exception) {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            cycles += 1;
+            assert!(cycles < 16, "the NMI was never taken");
+        }
+
+        assert_eq!(
+            pc, 0xFFFF_FFFF_BFC0_0000,
+            "NMI vectors to the Cold Reset location (UM §6.4.6)"
+        );
+        let status = p.cop0.read(reg::STATUS);
+        assert_ne!(status & (1 << 20), 0, "SR set, to tell NMI from a reset");
+        assert_ne!(status & (1 << 22), 0, "BEV set");
+        assert_ne!(status & (1 << 2), 0, "ERL set");
+        assert_eq!(status & (1 << 21), 0, "TS cleared");
+        assert_eq!(
+            p.cop0.read(reg::CAUSE),
+            0,
+            "NMI writes no Cause -- all registers are preserved but ErrorEPC \
+             and those four Status bits"
+        );
+        assert_ne!(
+            p.cop0.read(reg::ERROR_EPC),
+            0,
+            "the boundary PC is saved to ErrorEPC, not EPC"
+        );
+        assert_eq!(p.cop0.read(reg::EPC), 0, "and EPC is left alone");
+    }
+
+    /// The control for the test above: in that same `Status`, an ordinary
+    /// interrupt is refused. Without this, "NMI was taken" would be equally
+    /// consistent with the masks simply not working.
+    #[test]
+    fn an_ordinary_interrupt_in_the_same_state_is_refused() {
+        use crate::cop0::reg;
+        let mut p = Pipeline::new();
+        let mut regs = Regs::new();
+        let mut bus = Ram::new(alloc::vec![addiu_zero(1, 1); 8]);
+        // EXL (bit 1) and ERL (bit 2).
+        p.cop0.set_hardware(reg::STATUS, (1 << 1) | (1 << 2));
+        // Raise the timer line, the strongest ordinary interrupt available.
+        p.cop0.set_ip(7, true);
+        let mut pc = KSEG0_PROG;
+
+        for _ in 0..16 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+            assert_ne!(
+                p.stalled_by(),
+                Some(Interlock::Exception),
+                "a maskable interrupt must NOT be taken with EXL and ERL set"
+            );
+        }
     }
 
     /// **A stall must not swallow the timer interrupt.**

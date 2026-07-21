@@ -274,6 +274,27 @@ one of its endpoints and would otherwise look like a crossing that never
 happened: the timer fires when `Count` *counts up to* `Compare`, not when
 software rearranges the two.
 
+#### NMI (implemented)
+
+The non-maskable interrupt (UM §6.4.6, p. 185) is deliberately **not** routed
+through the general dispatch path, because almost none of it applies: NMI writes
+`ErrorEPC` rather than `EPC`, sets `ERL` rather than `EXL`, and writes **no
+`Cause` at all** — *"the contents of all registers are preserved except for"*
+`ErrorEPC` and four `Status` bits (`ERL`, `SR`, `BEV` set; `TS` cleared). `SR` is
+what later distinguishes it from a reset; the manual notes there is otherwise
+*"no indication from the processor to differentiate between NMI & Soft Reset"*.
+
+It ignores `IE`, `EXL` and `ERL` entirely, and the only condition it respects is
+the instruction boundary — *"unlike Cold Reset and Soft Reset, but like other
+exceptions, NMI is taken only at instruction boundaries"*, which is the same
+run-cycle gate every interrupt passes. It vectors to `0xFFFF_FFFF_BFC0_0000`,
+unmapped and uncached so neither the cache nor the TLB need be valid.
+
+Nothing in the core asserts it yet: on hardware the source is the console's reset
+button, which arrives as PRENMI and then NMI, and the frontend owns that button
+(Phase 6). `Pipeline::signal_nmi` is the entry point waiting for it. The
+exception itself is Phase 1 work and lives with the rest of the exception model.
+
 ### The TLB (implemented, T-12-004)
 
 A refill miss takes one of **two** vectors, chosen by the addressing width of
