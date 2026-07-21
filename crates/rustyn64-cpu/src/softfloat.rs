@@ -588,6 +588,104 @@ pub fn div(a_bits: u64, b_bits: u64, f: Format, mode: Rounding) -> Rounded {
     round_pack(sign, q, nae - nbe - 64, r != 0, f, mode)
 }
 
+/// `SQRT.fmt` — correctly rounded, with exact flags.
+///
+/// # How
+///
+/// `value = m x 2^e`. Force `e` even (shifting `m` left compensates), then
+/// scale `m` up by `2^62` so the integer square root has ~64 significant bits
+/// — comfortably more than the `p + 2` correct rounding needs:
+///
+/// ```text
+/// sqrt(m x 2^e) = sqrt(m x 2^62) x 2^(e/2 - 31)
+/// ```
+///
+/// `u128::isqrt` gives the floor of that root, and the root is exact precisely
+/// when `q * q == n` — so that comparison **is** the sticky bit, with no
+/// tolerance and no second rounding. `q < 2^64`, so the square cannot overflow
+/// `u128`.
+///
+/// # Signs
+///
+/// `sqrt(-0)` is `-0`, not a NaN: the sign is preserved and nothing is raised.
+/// Any *other* negative operand is Invalid. Collapsing the two is a common
+/// error and IEEE is explicit about the exception.
+#[must_use]
+pub fn sqrt(bits: u64, f: Format, mode: Rounding) -> Rounded {
+    let a = unpack(bits, f);
+    match a.class {
+        Class::Nan => {
+            let mut flags = Flags::NONE;
+            flags.invalid = a.snan;
+            Rounded {
+                bits: f.default_nan(),
+                flags,
+            }
+        }
+        // Both zeros come back unchanged, sign included.
+        Class::Zero => zero(a.sign, f),
+        // Every negative operand except `-0` is Invalid, infinity included;
+        // `-0` was already returned above with its sign intact.
+        Class::Inf | Class::Finite if a.sign => invalid(f),
+        Class::Inf => inf(false, f),
+        Class::Finite => {
+            let (mut m, mut e) = norm_to_63(a.sig, a.exp);
+            if e & 1 != 0 {
+                // `e` must be even to halve it exactly. Shifting `m` left one
+                // and decrementing `e` is the same value.
+                m <<= 1;
+                e -= 1;
+            }
+            // `m < 2^65`, so `m << 62 < 2^127` and the shift cannot overflow.
+            let n = m << 62;
+            let q = n.isqrt();
+            round_pack(false, q, e / 2 - 31, q * q != n, f, mode)
+        }
+    }
+}
+
+/// Convert between formats — `CVT.S.D` narrowing, `CVT.D.S` widening.
+///
+/// # Why a conversion belongs here and not in `fpu`
+///
+/// **Narrowing is an arithmetic operation.** `CVT.S.D` has to round a 53-bit
+/// significand into 24, so it can be inexact, can overflow to infinity, and can
+/// underflow into the subnormal range — and each of those depends on
+/// `FCSR.RM`. A `v as f32` cast reports none of it and rounds to nearest only,
+/// which is where accuracy ledger C-11 found this operation still sitting after
+/// the arithmetic had been fixed.
+///
+/// Widening cannot lose anything, but goes through the same path so there is
+/// one conversion rather than two that can disagree.
+///
+/// # NaN handling
+///
+/// A NaN operand yields the **target format's** default NaN, flagged Invalid
+/// when the operand signals. The VR4300's *other* NaN class — significand MSB
+/// clear, quiet by its convention (ledger C-12) — raises unimplemented
+/// operation instead and is rejected by the caller before reaching here, so it
+/// is deliberately not a case below.
+#[must_use]
+pub fn convert(bits: u64, from: Format, to: Format, mode: Rounding) -> Rounded {
+    let a = unpack(bits, from);
+    match a.class {
+        Class::Nan => {
+            let mut flags = Flags::NONE;
+            flags.invalid = a.snan;
+            Rounded {
+                bits: to.default_nan(),
+                flags,
+            }
+        }
+        Class::Inf => inf(a.sign, to),
+        Class::Zero => zero(a.sign, to),
+        // The significand and exponent are format-independent here: `unpack`
+        // has already turned them into a plain `sig * 2^exp`, so the only work
+        // is rounding that into the target's precision and range.
+        Class::Finite => round_pack(a.sign, a.sig, a.exp, false, to, mode),
+    }
+}
+
 /// Shift `sig` left until its most significant bit sits at bit 63, adjusting
 /// the exponent to match. Exact — it is a change of scale, not of value.
 fn norm_to_63(sig: u128, exp: i32) -> (u128, i32) {
@@ -1023,6 +1121,184 @@ mod tests {
         assert_eq!(r.bits, 0x8000_0000, "−0 toward −∞");
         let r = add(b32(-0.0), b32(-0.0), F32, Rounding::Nearest);
         assert_eq!(r.bits, 0x8000_0000, "(−0) + (−0) is −0 in every mode");
+    }
+
+    /// Narrowing must match the native `as f32` in round-to-nearest, across the
+    /// same three corpora the arithmetic uses — including the subnormal
+    /// boundary, where a naive implementation double-rounds.
+    #[test]
+    fn narrowing_matches_the_native_cast_in_round_to_nearest() {
+        let mut rng = SplitMix(0xC0DE_1234);
+        for _ in 0..40_000 {
+            let bits = rng.next();
+            let v = f64::from_bits(bits);
+            let got = convert(bits, F64, F32, Rounding::Nearest);
+            let want = v as f32;
+            if want.is_nan() {
+                assert!(f32::from_bits(got.bits as u32).is_nan(), "{v:e}");
+            } else {
+                assert_eq!(got.bits as u32, want.to_bits(), "narrowing {v:e}");
+            }
+        }
+        // Widening is exact for every f32, so it must round-trip.
+        for _ in 0..20_000 {
+            let b = rng.next() as u32;
+            let v = f32::from_bits(b);
+            let got = convert(u64::from(b), F32, F64, Rounding::Nearest);
+            if v.is_nan() {
+                assert!(f64::from_bits(got.bits).is_nan());
+            } else {
+                assert_eq!(got.bits, f64::from(v).to_bits(), "widening {v:e}");
+                assert_eq!(got.flags, Flags::NONE, "widening is always exact");
+            }
+        }
+    }
+
+    /// The n64-systemtest `CVT.S.D` vectors: a value that needs rounding must
+    /// differ between the modes, and one past `f32::MAX` must overflow the way
+    /// the mode directs.
+    #[test]
+    fn narrowing_honours_the_rounding_mode_and_overflows_per_mode() {
+        let v = 4.123_456_789_123_456_f64.to_bits();
+        let down = convert(v, F64, F32, Rounding::TowardMinusInf);
+        let near = convert(v, F64, F32, Rounding::Nearest);
+        let up = convert(v, F64, F32, Rounding::TowardPlusInf);
+        assert!(down.flags.inexact && near.flags.inexact && up.flags.inexact);
+        assert_ne!(
+            down.bits, up.bits,
+            "the modes must disagree on an inexact value"
+        );
+        assert_eq!(
+            convert(v, F64, F32, Rounding::TowardZero).bits,
+            down.bits,
+            "toward zero == toward -inf for a positive value"
+        );
+
+        // Just past f32::MAX.
+        let big = 3.402_823_48e38_f64.to_bits();
+        let r = convert(big, F64, F32, Rounding::TowardPlusInf);
+        assert!(r.flags.overflow && r.flags.inexact);
+        assert_eq!(f32::from_bits(r.bits as u32), f32::INFINITY);
+        let r = convert(big, F64, F32, Rounding::TowardZero);
+        assert_eq!(
+            f32::from_bits(r.bits as u32),
+            f32::MAX,
+            "toward zero saturates"
+        );
+    }
+
+    /// A double inside `f32`'s **subnormal** range must narrow to an actual
+    /// subnormal and report underflow — the case the VR4300 then refuses
+    /// outright (ledger C-13), which it can only do if this reports it.
+    ///
+    /// The first draft used `f64::MIN_POSITIVE`, which is ~2.2e-308 and narrows
+    /// to plain **zero** — far below `f32`'s entire range, so it never produced
+    /// a subnormal and did not test what its name claimed. `1e-40` sits between
+    /// `f32`'s smallest subnormal (~1.4e-45) and its smallest normal
+    /// (~1.18e-38), which is the band that matters.
+    #[test]
+    fn narrowing_into_the_subnormal_range_reports_underflow() {
+        let r = convert(1e-40_f64.to_bits(), F64, F32, Rounding::Nearest);
+        let got = f32::from_bits(r.bits as u32);
+        assert!(got != 0.0, "must not flush to zero: {got:e}");
+        assert!(
+            got.to_bits() & 0x7F80_0000 == 0,
+            "and must be an actual subnormal: {got:e}"
+        );
+        assert!(
+            r.flags.underflow && r.flags.inexact,
+            "flags = {:?}",
+            r.flags
+        );
+
+        // Below the whole range it does reach zero, still underflowing.
+        let r = convert(f64::MIN_POSITIVE.to_bits(), F64, F32, Rounding::Nearest);
+        assert_eq!(f32::from_bits(r.bits as u32), 0.0, "far below f32's range");
+        assert!(r.flags.underflow && r.flags.inexact);
+    }
+
+    /// `SQRT` must be bit-identical to the native square root across the same
+    /// corpora as the arithmetic, in both formats.
+    ///
+    /// `f32::sqrt` lives in `std` and this crate is `#![no_std]`, so the
+    /// reference is pulled in for the test only.
+    #[test]
+    fn sqrt_matches_the_native_square_root_in_round_to_nearest() {
+        extern crate std;
+        let mut rng = SplitMix(0x5017_5017);
+        for _ in 0..40_000 {
+            let ab = rng.next() as u32;
+            let x = f32::from_bits(ab);
+            let got = as32(sqrt(u64::from(ab), F32, Rounding::Nearest));
+            let want = std::primitive::f32::sqrt(x);
+            if want.is_nan() {
+                assert!(got.is_nan(), "sqrt({x:e}) want NaN, got {got:e}");
+            } else {
+                assert_eq!(got.to_bits(), want.to_bits(), "sqrt({x:e})");
+            }
+
+            let bb = rng.next();
+            let y = f64::from_bits(bb);
+            let got = as64(sqrt(bb, F64, Rounding::Nearest));
+            let want = std::primitive::f64::sqrt(y);
+            if want.is_nan() {
+                assert!(got.is_nan(), "sqrt({y:e})");
+            } else {
+                assert_eq!(got.to_bits(), want.to_bits(), "sqrt({y:e})");
+            }
+        }
+        // Small positive integers, where exact results and ties actually occur.
+        for i in 0..20_000u32 {
+            let x = f32::from(i as u16) + 0.25;
+            let got = as32(sqrt(b32(x), F32, Rounding::Nearest));
+            assert_eq!(
+                got.to_bits(),
+                std::primitive::f32::sqrt(x).to_bits(),
+                "sqrt({x})"
+            );
+        }
+    }
+
+    /// The n64-systemtest `SQRT.S` vectors, including the signs IEEE is
+    /// explicit about and the directed-rounding split on `f32::MAX`.
+    #[test]
+    fn the_n64_systemtest_sqrt_vectors_hold() {
+        // Exact results raise nothing.
+        let r = sqrt(b32(4.0), F32, Rounding::Nearest);
+        assert_eq!(as32(r), 2.0);
+        assert_eq!(r.flags, Flags::NONE, "sqrt(4) is exact");
+
+        // sqrt(2) is inexact.
+        assert!(sqrt(b32(2.0), F32, Rounding::Nearest).flags.inexact);
+
+        // **sqrt(-0) is -0**, not a NaN, and raises nothing.
+        let r = sqrt(b32(-0.0), F32, Rounding::Nearest);
+        assert_eq!(r.bits, 0x8000_0000, "sqrt(-0) = -0");
+        assert_eq!(r.flags, Flags::NONE);
+        // Every other negative is Invalid.
+        for v in [-4.0f32, f32::MIN, -f32::MIN_POSITIVE, f32::NEG_INFINITY] {
+            let r = sqrt(b32(v), F32, Rounding::Nearest);
+            assert!(r.flags.invalid, "sqrt({v:e}) must be Invalid");
+            assert_eq!(r.bits, 0x7FBF_FFFF, "and give the VR4300 default NaN");
+        }
+
+        assert_eq!(
+            as32(sqrt(b32(f32::INFINITY), F32, Rounding::Nearest)),
+            f32::INFINITY
+        );
+
+        // The rounding mode splits sqrt(f32::MAX) between two neighbours.
+        let near = as32(sqrt(b32(f32::MAX), F32, Rounding::Nearest));
+        let up = as32(sqrt(b32(f32::MAX), F32, Rounding::TowardPlusInf));
+        let down = as32(sqrt(b32(f32::MAX), F32, Rounding::TowardMinusInf));
+        assert_eq!(near.to_bits(), 1.8446743e19f32.to_bits());
+        assert_eq!(up.to_bits(), 1.8446744e19f32.to_bits());
+        assert_eq!(down.to_bits(), 1.8446743e19f32.to_bits());
+
+        // A normal operand whose root is exact raises nothing.
+        let r = sqrt(b32(f32::MIN_POSITIVE), F32, Rounding::Nearest);
+        assert_eq!(as32(r).to_bits(), 1.0842022e-19f32.to_bits());
+        assert_eq!(r.flags, Flags::NONE);
     }
 
     /// Format constants, asserted rather than assumed — every derived quantity

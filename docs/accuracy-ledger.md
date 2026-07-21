@@ -744,11 +744,16 @@ away from zero, because zero is on the wrong side of the true result.
    declines instead. The translation happens at the call site, so the IEEE
    answer stays available to anything that wants it.
 
-**Still open in this area:** `CVT.S.D` does not honour `FCSR.RM` and computes
-its flags by hand rather than through `softfloat`, so the directed-rounding and
-overflow cases still fail (21 assertions). That is the conversions' version of
-C-11 and wants the same fix: a narrowing `softfloat::convert` that rounds once.
-`SQRT` (funct 4) remains neither decoded nor implemented (58 assertions).
+**Both follow-ups from this entry are now CLOSED.** `CVT.S.D` routes through a
+narrowing `softfloat::convert` that rounds once and honours `FCSR.RM`, and
+`SQRT` is implemented in `softfloat::sqrt` and decoded. n64-systemtest 584 →
+**508**; `SQRT.S`/`SQRT.D` reached zero and `CVT.S.fmt` fell 21 → 10.
+
+`sqrt`'s sticky bit is exact rather than estimated: `u128::isqrt` returns the
+floor of the root, and the root is exact precisely when `q * q == n`, so that
+comparison **is** the sticky bit. (An earlier version of this sentence claimed
+it avoided re-squaring, which the code never did — the same wrong claim reached
+three files before review caught it.)
 
 ## 5. Deliberate deviations from hardware
 

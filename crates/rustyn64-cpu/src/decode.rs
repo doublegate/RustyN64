@@ -894,13 +894,12 @@ pub const fn decode(word: u32) -> Decoded {
                 // result never left the callee. That accounted for the whole
                 // `Result after <op>` failure block, which had been read as an
                 // FPU arithmetic fault for nine rounds (ledger C-10).
-                // `funct` 4 is `SQRT`, which has no implementation yet and so
-                // stays `Cop1Unimplemented` rather than becoming a wrong
-                // result. Everything else in the S/D formats is wired:
+                // The whole S/D funct space that exists is now wired:
                 //
                 // | `funct` | Operation |
                 // | --- | --- |
                 // | `0..=3` | `ADD` / `SUB` / `MUL` / `DIV` |
+                // | `4` | `SQRT` |
                 // | `5..=7` | `ABS` / `MOV` / `NEG` |
                 // | `0o10..=0o17` | `ROUND`/`TRUNC`/`CEIL`/`FLOOR` to `.L` then `.W` |
                 // | `0o40`/`0o41`/`0o44`/`0o45` | `CVT.S` / `CVT.D` / `CVT.W` / `CVT.L` |
@@ -908,7 +907,7 @@ pub const fn decode(word: u32) -> Decoded {
                 0o20 | 0o21
                     if matches!(
                         word & 0o77,
-                        0..=3 | 5..=7 | 0o10..=0o17 | 0o40 | 0o41 | 0o44 | 0o45 | 0o60..=0o77
+                        0..=7 | 0o10..=0o17 | 0o40 | 0o41 | 0o44 | 0o45 | 0o60..=0o77
                     ) =>
                 {
                     Decoded {
@@ -1276,9 +1275,9 @@ mod tests {
                 assert_eq!(d.sa, 4, "sa = fd");
             }
         }
-        // funct 4 (SQRT) is not wired yet and must stay unimplemented, NOT
-        // become a wrong ADD.
-        assert_eq!(decode(enc(0o20, 4)).op, Op::Cop1Unimplemented);
+        // funct 4 is `SQRT`, a different operation -- it must not be swept
+        // into the arithmetic range as a wrong ADD.
+        assert_eq!(decode(enc(0o20, 4)).op, Op::FpArith);
     }
 
     /// **The compares and conversions must decode.** They are implemented in
@@ -1331,13 +1330,12 @@ mod tests {
                 );
             }
         }
-        // `SQRT` has no implementation, so it must stay unimplemented rather
-        // than being swept in by a too-wide range.
-        assert_eq!(
-            decode(enc(0o20, 4)).op,
-            Op::Cop1Unimplemented,
-            "SQRT is still unwired"
-        );
+        // `SQRT` (funct 4) is wired too, as of T-13-005 — it is a distinct
+        // operation, so this also guards against it being swept into the
+        // arithmetic range and silently becoming an `ADD`.
+        let d = decode(enc(0o20, 4));
+        assert_eq!(d.op, Op::FpArith, "SQRT decodes");
+        assert_eq!(d.rd, 3, "and carries fs");
     }
 
     /// **`MOV.fmt` (funct 6) must decode.** With the arm admitting only

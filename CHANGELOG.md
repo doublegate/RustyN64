@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — `SQRT` and a correctly-rounded `CVT.S.D`
+
+`softfloat` gains `convert` (format narrowing/widening) and `sqrt`, both correctly rounded with
+exact IEEE flags under all four `FCSR.RM` modes, and both verified bit-for-bit against the native
+operators across 100,000 cases.
+
+`CVT.S.D` is arithmetic — it rounds 53 significand bits into 24, so it can be inexact, overflow, or
+land in the subnormal range, and each depends on the rounding mode. It previously used `v as f32`,
+which reports none of that. `SQRT` (COP1 funct 4) is now decoded and executed; it was the last
+implemented-but-unreachable operation.
+
+`sqrt`'s sticky bit is exact rather than estimated: `u128::isqrt` returns the floor of the root,
+and the root is exact precisely when `q * q == n`, so that comparison **is** the sticky bit.
+
+**n64-systemtest: 584 → 508.** `SQRT.S`/`SQRT.D` reached zero; `CVT.S.fmt` fell 21 → 10.
+
 ### Added — the unmaskable unimplemented-operation cause for subnormals
 
 The VR4300 has no subnormal datapath: rather than producing a subnormal it raises `FCSR.Cause.E`
