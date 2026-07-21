@@ -463,7 +463,9 @@ mod compute_tests {
     #[test]
     fn vmulu_matches_the_oracle_vectors() {
         let mut rsp = Rsp::new();
-        rsp.vu_regs[0] = [0x0000, 0x0000, 0x0010, 0xE000, 0x8001, 0x8000, 0x7FFF, 0x8000];
+        rsp.vu_regs[0] = [
+            0x0000, 0x0000, 0x0010, 0xE000, 0x8001, 0x8000, 0x7FFF, 0x8000,
+        ];
         rsp.vu_regs[1] = VT;
         assert!(rsp.vu_compute(0x01, 0, 0, 1, 2));
         assert_eq!(
