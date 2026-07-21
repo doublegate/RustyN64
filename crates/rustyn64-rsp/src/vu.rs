@@ -282,6 +282,30 @@ impl Rsp {
         }
     }
 
+    /// The extraction `VMADL` and `VMADN` use, which is **not** either clamp.
+    ///
+    /// When `acc >> 16` fits in a signed 16-bit value the result is the
+    /// accumulator's *low* slice, untouched. When it does not, the result
+    /// saturates to `0x0000` or `0xFFFF` by the sign. So the low bits are
+    /// returned or discarded wholesale depending on a test applied to a
+    /// different part of the accumulator -- which is why neither
+    /// `clamp_signed` nor `clamp_unsigned` expresses it, and why reusing one of
+    /// them looks right for small values and fails at the boundary.
+    ///
+    /// Derived from n64-systemtest's vectors: `VMADL` lane 4 leaves
+    /// `acc = 0x0000_7FFF_C000` and yields `0xC000` (the low slice), while lane
+    /// 7 leaves `0x0000_8000_C000` -- one step further -- and yields `0xFFFF`.
+    const fn extract_low(acc: i64) -> u16 {
+        let mid = acc >> 16;
+        if mid > 32767 {
+            0xFFFF
+        } else if mid < -32768 {
+            0
+        } else {
+            (acc.cast_unsigned() & 0xFFFF) as u16
+        }
+    }
+
     /// Sign-extend the 48-bit accumulator lane to a signed 64-bit value.
     const fn acc_signed(&self, lane: usize) -> i64 {
         let v = self.vu_acc[lane] & 0xFFFF_FFFF_FFFF;
@@ -348,6 +372,47 @@ impl Rsp {
                     self.set_acc(lane, acc);
                     Self::clamp_signed(self.acc_signed(lane) >> 16)
                 }
+                // The accumulating forms. Each adds the same product its
+                // VMUL/VMUD counterpart *sets* -- with one difference that is
+                // easy to miss: VMACF adds `2 * vs * vt` with **no rounding
+                // constant**, where VMULF adds `+ 0x8000`. The oracle shows it
+                // directly: lane 3 moves the accumulator from 0xC000 to
+                // 0x1_0000, a delta of exactly 0x4000 = 2*8192.
+                0x08 | 0x09 => {
+                    let acc = self.acc_signed(lane) + ss * ts * 2;
+                    self.set_acc(lane, acc);
+                    let extracted = self.acc_signed(lane) >> 16;
+                    if op == 0x08 {
+                        Self::clamp_signed(extracted)
+                    } else {
+                        Self::clamp_unsigned(extracted)
+                    }
+                }
+                // VMADL: accumulate VMUDL's product, extract the low slice.
+                0x0C => {
+                    let acc = self.acc_signed(lane) + ((su * tu) >> 16);
+                    self.set_acc(lane, acc);
+                    Self::extract_low(self.acc_signed(lane))
+                }
+                // VMADM: accumulate VMUDM's product. Unlike VMUDM this one
+                // CLAMPS the extracted middle rather than truncating it.
+                0x0D => {
+                    let acc = self.acc_signed(lane) + ss * tu;
+                    self.set_acc(lane, acc);
+                    Self::clamp_signed(self.acc_signed(lane) >> 16)
+                }
+                // VMADN: accumulate VMUDN's product, extract the low slice.
+                0x0E => {
+                    let acc = self.acc_signed(lane) + su * ts;
+                    self.set_acc(lane, acc);
+                    Self::extract_low(self.acc_signed(lane))
+                }
+                // VMADH: accumulate VMUDH's product.
+                0x0F => {
+                    let acc = self.acc_signed(lane) + ((ss * ts) << 16);
+                    self.set_acc(lane, acc);
+                    Self::clamp_signed(self.acc_signed(lane) >> 16)
+                }
                 // VSAR: read a 16-bit slice of the accumulator. The slice is
                 // chosen by the *element* field, not by an operand.
                 0x1D => {
@@ -385,18 +450,32 @@ impl Rsp {
 mod compute_tests {
     use super::*;
 
-    /// The oracle's own input pair, from `op_vmulf.rs`.
-    const VS: [u16; 8] = [
+    /// The oracle's own input pair, named as **it** names them.
+    ///
+    /// n64-systemtest loads these into `$v0` and `$v1` and then assembles e.g.
+    /// `write_vmulf(V2, V0, V1)` — whose signature is **`(vd, vt, vs)`**, not
+    /// the `(vd, vs, vt)` it reads like. So `$v1` is the instruction's `vs` and
+    /// `$v0` is its `vt`.
+    ///
+    /// Getting that backwards is invisible for every *symmetric* multiply —
+    /// `VMULF`, `VMACF`, `VMUDH`, `VMUDL` all commute — and shows up only on
+    /// `VMUDM`/`VMADM` and `VMUDN`/`VMADN`, where one operand is read signed
+    /// and the other unsigned. Naming the constants after the registers rather
+    /// than after the operand roles is what keeps the distinction visible here.
+    const V0: [u16; 8] = [
         0x0000, 0x0000, 0x0000, 0xE000, 0x8001, 0x8000, 0x7FFF, 0x8000,
     ];
-    const VT: [u16; 8] = [
+    const V1: [u16; 8] = [
         0x0000, 0x0001, 0xFFFF, 0xFFFF, 0x8000, 0x7FFF, 0x7FFF, 0x8000,
     ];
+    /// `vs` is `$v1` and `vt` is `$v0`; see [`V0`].
+    const VS_REG: usize = 1;
+    const VT_REG: usize = 0;
 
     fn seeded() -> Rsp {
         let mut rsp = Rsp::new();
-        rsp.vu_regs[0] = VS;
-        rsp.vu_regs[1] = VT;
+        rsp.vu_regs[0] = V0;
+        rsp.vu_regs[1] = V1;
         rsp
     }
 
@@ -413,7 +492,7 @@ mod compute_tests {
     #[test]
     fn vmulf_matches_the_oracle_vectors() {
         let mut rsp = seeded();
-        assert!(rsp.vu_compute(0x00, 0, 0, 1, 2));
+        assert!(rsp.vu_compute(0x00, 0, VS_REG, VT_REG, 2));
         assert_eq!(
             rsp.vu_regs[2],
             [0, 0, 0, 0, 0x7fff, 0x8001, 0x7ffe, 0x7fff],
@@ -440,7 +519,7 @@ mod compute_tests {
     #[test]
     fn vmulf_saturates_where_the_accumulator_overflows_the_result() {
         let mut rsp = seeded();
-        rsp.vu_compute(0x00, 0, 0, 1, 2);
+        rsp.vu_compute(0x00, 0, VS_REG, VT_REG, 2);
         assert_eq!(rsp.vu_acc[7] >> 16, 0x8000, "the accumulator holds 32768");
         assert_eq!(rsp.vu_regs[2][7], 0x7FFF, "and the result saturates");
     }
@@ -466,8 +545,8 @@ mod compute_tests {
         rsp.vu_regs[0] = [
             0x0000, 0x0000, 0x0010, 0xE000, 0x8001, 0x8000, 0x7FFF, 0x8000,
         ];
-        rsp.vu_regs[1] = VT;
-        assert!(rsp.vu_compute(0x01, 0, 0, 1, 2));
+        rsp.vu_regs[1] = V1;
+        assert!(rsp.vu_compute(0x01, 0, VS_REG, VT_REG, 2));
         assert_eq!(
             rsp.vu_regs[2],
             [0, 0, 0, 0, 0x7fff, 0, 0x7ffe, 0xffff],
@@ -493,7 +572,7 @@ mod compute_tests {
     #[test]
     fn vmudl_matches_the_oracle_vectors() {
         let mut rsp = seeded();
-        assert!(rsp.vu_compute(0x04, 0, 0, 1, 2));
+        assert!(rsp.vu_compute(0x04, 0, VS_REG, VT_REG, 2));
         assert_eq!(
             rsp.vu_regs[2],
             [0, 0, 0, 0xdfff, 0x4000, 0x3fff, 0x3fff, 0x4000],
@@ -501,6 +580,143 @@ mod compute_tests {
         );
         assert_eq!(acc_slice(&rsp, 32), [0; 8], "ACC_HI stays clear");
         assert_eq!(acc_slice(&rsp, 16), [0; 8], "ACC_MD too");
+    }
+
+    /// **The six accumulating forms, against n64-systemtest's vectors.**
+    ///
+    /// The suite primes the accumulator with a `VMULF` and *then* runs the
+    /// accumulating instruction, so these reproduce that exactly — the whole
+    /// point of the family is what it adds to an existing accumulator, and a
+    /// test starting from zero would pass for an implementation that ignored
+    /// the previous contents entirely.
+    #[test]
+    fn the_accumulating_forms_match_the_oracle_vectors() {
+        /// `VMADN`'s test uses a **different** `$v0` from the other five —
+        /// checked against each file rather than assumed, after taking the
+        /// shared vector on faith produced a mismatch that looked like a bug in
+        /// the instruction.
+        const VMADN_V0: [u16; 8] = [
+            0x0000, 0x8000, 0xFFFF, 0x8000, 0x8001, 0x8000, 0x7FFF, 0x8000,
+        ];
+
+        /// One accumulating case, transcribed from the matching `op_*.rs`.
+        struct Case {
+            op: u32,
+            name: &'static str,
+            v0: [u16; 8],
+            result: [u16; 8],
+            hi: [u16; 8],
+            md: [u16; 8],
+            lo: [u16; 8],
+        }
+
+        let cases = [
+            Case {
+                op: 0x08,
+                name: "VMACF",
+                v0: V0,
+                result: [0, 0, 0, 0x1, 0x7fff, 0x8000, 0x7fff, 0x7fff],
+                hi: [0, 0, 0, 0, 0, 0xffff, 0, 1],
+                md: [0, 0, 0, 1, 0xfffe, 2, 0xfffc, 0],
+                lo: [0x8000, 0x8000, 0x8000, 0, 0x8000, 0x8000, 0x8004, 0x8000],
+            },
+            Case {
+                op: 0x09,
+                name: "VMACU",
+                v0: V0,
+                result: [0, 0, 0, 1, 0xffff, 0, 0xffff, 0xffff],
+                hi: [0, 0, 0, 0, 0, 0xffff, 0, 1],
+                md: [0, 0, 0, 1, 0xfffe, 2, 0xfffc, 0],
+                lo: [0x8000, 0x8000, 0x8000, 0, 0x8000, 0x8000, 0x8004, 0x8000],
+            },
+            Case {
+                op: 0x0C,
+                name: "VMADL",
+                v0: V0,
+                result: [
+                    0x8000, 0x8000, 0x8000, 0x9fff, 0xc000, 0xbfff, 0xc001, 0xffff,
+                ],
+                hi: [0, 0, 0, 0, 0, 0xffff, 0, 0],
+                md: [0, 0, 0, 1, 0x7fff, 0x8001, 0x7ffe, 0x8000],
+                lo: [
+                    0x8000, 0x8000, 0x8000, 0x9fff, 0xc000, 0xbfff, 0xc001, 0xc000,
+                ],
+            },
+            Case {
+                op: 0x0D,
+                name: "VMADM",
+                v0: V0,
+                result: [0, 0, 0, 0xffff, 0x3fff, 0xc001, 0x7fff, 0x4000],
+                hi: [0, 0, 0, 0xffff, 0, 0xffff, 0, 0],
+                md: [0, 0, 0, 0xffff, 0x3fff, 0xc001, 0xbffd, 0x4000],
+                lo: [0x8000, 0x8000, 0x8000, 0xe000, 0, 0, 0x8003, 0x8000],
+            },
+            Case {
+                op: 0x0E,
+                name: "VMADN",
+                v0: VMADN_V0,
+                result: [0x8000, 0, 0x8003, 0, 0, 0, 0xffff, 0x8000],
+                hi: [0, 0xffff, 0xffff, 0xffff, 0, 0xffff, 0, 0],
+                md: [0, 0xffff, 0xffff, 0x8002, 0x4000, 0x4002, 0xbffd, 0x4000],
+                lo: [0x8000, 0, 0x8003, 0, 0, 0, 0x8003, 0x8000],
+            },
+            Case {
+                op: 0x0F,
+                name: "VMADH",
+                v0: V0,
+                result: [0, 0, 0, 0x2000, 0x7fff, 0x8000, 0x7fff, 0x7fff],
+                hi: [0, 0, 0, 0, 0x3fff, 0xc000, 0x3fff, 0x4000],
+                md: [0, 0, 0, 0x2000, 0xffff, 1, 0x7fff, 0x8000],
+                lo: [
+                    0x8000, 0x8000, 0x8000, 0xc000, 0x8000, 0x8000, 0x8002, 0x8000,
+                ],
+            },
+        ];
+
+        for Case {
+            op,
+            name,
+            v0,
+            result,
+            hi,
+            md,
+            lo,
+        } in cases
+        {
+            let mut rsp = seeded();
+            rsp.vu_regs[0] = v0;
+            // Prime the accumulator exactly as the suite does.
+            assert!(
+                rsp.vu_compute(0x00, 0, VS_REG, VT_REG, 2),
+                "{name}: priming VMULF"
+            );
+            assert!(
+                rsp.vu_compute(op, 0, VS_REG, VT_REG, 2),
+                "{name} is implemented"
+            );
+            assert_eq!(rsp.vu_regs[2], result, "{name} result");
+            assert_eq!(acc_slice(&rsp, 32), hi, "{name} ACC_HI");
+            assert_eq!(acc_slice(&rsp, 16), md, "{name} ACC_MD");
+            assert_eq!(acc_slice(&rsp, 0), lo, "{name} ACC_LO");
+        }
+    }
+
+    /// **`VMACF` adds no rounding constant, where `VMULF` adds `0x8000`.**
+    ///
+    /// The single most confusable difference in the family, and the accumulator
+    /// is the only place it shows: lane 3 moves from `0xC000` to `0x1_0000`, a
+    /// delta of exactly `0x4000` = 2 x 8192. An implementation that reused
+    /// `VMULF`'s expression would land on `0x1_8000`.
+    #[test]
+    fn vmacf_adds_no_rounding_constant() {
+        let mut rsp = seeded();
+        rsp.vu_compute(0x00, 0, VS_REG, VT_REG, 2);
+        assert_eq!(rsp.vu_acc[3], 0xC000, "after the priming VMULF");
+        rsp.vu_compute(0x08, 0, VS_REG, VT_REG, 2);
+        assert_eq!(
+            rsp.vu_acc[3], 0x1_0000,
+            "delta is 2*vs*vt exactly, with no 0x8000 added"
+        );
     }
 
     /// The broadcast modifier selects which `vt` lane each lane reads.
@@ -511,23 +727,23 @@ mod compute_tests {
         for e in [0, 1] {
             assert_eq!(
                 core::array::from_fn::<u16, 8, _>(|i| rsp.vt_lane(1, e, i)),
-                VT
+                V1
             );
         }
         // e(0q): pairs take the even lane.
         assert_eq!(
             core::array::from_fn::<u16, 8, _>(|i| rsp.vt_lane(1, 2, i)),
-            [VT[0], VT[0], VT[2], VT[2], VT[4], VT[4], VT[6], VT[6]]
+            [V1[0], V1[0], V1[2], V1[2], V1[4], V1[4], V1[6], V1[6]]
         );
         // e(2h): each group of four takes lane 2 or 6.
         assert_eq!(
             core::array::from_fn::<u16, 8, _>(|i| rsp.vt_lane(1, 6, i)),
-            [VT[2], VT[2], VT[2], VT[2], VT[6], VT[6], VT[6], VT[6]]
+            [V1[2], V1[2], V1[2], V1[2], V1[6], V1[6], V1[6], V1[6]]
         );
         // e(5): lane 5 everywhere.
         assert_eq!(
             core::array::from_fn::<u16, 8, _>(|i| rsp.vt_lane(1, 13, i)),
-            [VT[5]; 8]
+            [V1[5]; 8]
         );
     }
 
@@ -535,7 +751,7 @@ mod compute_tests {
     #[test]
     fn vsar_reads_the_accumulator_slices() {
         let mut rsp = seeded();
-        rsp.vu_compute(0x00, 0, 0, 1, 2);
+        rsp.vu_compute(0x00, 0, VS_REG, VT_REG, 2);
         let hi = acc_slice(&rsp, 32);
         let md = acc_slice(&rsp, 16);
         let lo = acc_slice(&rsp, 0);
@@ -564,19 +780,26 @@ mod compute_tests {
     #[test]
     fn the_bitwise_group_writes_the_accumulator_low_slice() {
         let mut rsp = seeded();
-        assert!(rsp.vu_compute(0x28, 0, 0, 1, 2)); // VAND
-        assert_eq!(rsp.vu_regs[2][3], VS[3] & VT[3]);
-        assert_eq!(acc_slice(&rsp, 0)[3], VS[3] & VT[3], "ACC_LO follows");
+        assert!(rsp.vu_compute(0x28, 0, VS_REG, VT_REG, 2)); // VAND
+        assert_eq!(rsp.vu_regs[2][3], V1[3] & V0[3]);
+        assert_eq!(acc_slice(&rsp, 0)[3], V1[3] & V0[3], "ACC_LO follows");
 
-        assert!(rsp.vu_compute(0x29, 0, 0, 1, 3)); // VNAND
-        assert_eq!(rsp.vu_regs[3][3], !(VS[3] & VT[3]));
+        assert!(rsp.vu_compute(0x29, 0, VS_REG, VT_REG, 3)); // VNAND
+        assert_eq!(rsp.vu_regs[3][3], !(V1[3] & V0[3]));
     }
 
     /// An unimplemented opcode reports so, rather than writing a wrong result.
+    ///
+    /// `0x3F` is chosen because it is genuinely unassigned — an opcode from the
+    /// not-yet-implemented list would silently turn this test into a no-op the
+    /// day it lands, which is what happened when it named `VMACF`.
     #[test]
     fn an_unimplemented_opcode_is_reported_not_guessed() {
         let mut rsp = seeded();
-        assert!(!rsp.vu_compute(0x08, 0, 0, 1, 2), "VMACF is not in yet");
+        assert!(
+            !rsp.vu_compute(0x3F, 0, VS_REG, VT_REG, 2),
+            "an opcode with no implementation reports rather than guessing"
+        );
         assert_eq!(rsp.vu_regs[2], [0; 8], "and it wrote nothing");
     }
 }

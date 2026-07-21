@@ -201,10 +201,23 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 
 ### The accumulator and the multiply family (partly implemented, Sprint 2)
 
-`VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, `VSAR` and the six bitwise
-operations execute. The `VMAC*`/`VMAD*` accumulating forms, the compares, the
-selects and `VRCP`/`VRSQ` do not yet, and report so rather than writing a wrong
-result — `vu_compute` returns `false` and the instruction retires inertly.
+`VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
+accumulating forms, `VSAR` and the six bitwise operations execute. The compares,
+the selects, `VRNDN`/`VRNDP`, `VMULQ` and `VRCP`/`VRSQ` do not yet, and report
+so rather than writing a wrong result — `vu_compute` returns `false` and the
+instruction retires inertly.
+
+**`VMACF` adds no rounding constant**, where `VMULF` adds `0x8000`. It is the
+most confusable difference in the family and the accumulator is the only place
+it shows: the oracle's lane 3 moves from `0xC000` to `0x1_0000`, a delta of
+exactly `2 × 8192`. Reusing `VMULF`'s expression lands on `0x1_8000`.
+
+`VMADL` and `VMADN` extract differently from `VMADM`/`VMADH`: when `acc >> 16`
+fits in a signed 16-bit value the result is the accumulator's **low** slice
+untouched, and otherwise it saturates to `0x0000`/`0xFFFF` by sign. So the low
+bits are returned or discarded wholesale on a test applied to a *different* part
+of the accumulator — neither clamp expresses it, and reusing one looks right for
+small values and fails at the boundary.
 
 The accumulator is **one 48-bit register per lane**, not three 16-bit ones.
 `VSAR` slicing it into `ACC_HI`/`ACC_MD`/`ACC_LO` invites the latter, but the
