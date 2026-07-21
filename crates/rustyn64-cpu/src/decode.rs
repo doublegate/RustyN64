@@ -427,6 +427,56 @@ pub enum Op {
 }
 
 impl Op {
+    /// Is this one of the MIPS III **64-bit operations**?
+    ///
+    /// They raise a Reserved Instruction exception when executed in 32-bit User
+    /// or Supervisor mode — that is, whenever the current mode's `KX`/`SX`/`UX`
+    /// bit is clear and the mode is not Kernel (UM §16, per-instruction
+    /// "Exceptions" notes). Kernel mode may use them at any width.
+    ///
+    /// The `*32` shift forms are included on the same rule rather than by
+    /// extrapolation: `DSLL32`/`DSRL32`/`DSRA32` carry the identical exception
+    /// note in the manual, being 64-bit operations by the same definition.
+    ///
+    /// **Not** included: `DMFC0`/`DMTC0` and `DMFC1`/`DMTC1`. Doubleword moves to
+    /// and from a coprocessor are governed by that coprocessor's own usability
+    /// and reserved-encoding rules (ledger C-18), which raise different
+    /// exceptions from this one. Folding them in here would make an already
+    /// unusable COP0 report the wrong cause.
+    #[must_use]
+    pub const fn is_64_bit(self) -> bool {
+        matches!(
+            self,
+            Self::Dadd
+                | Self::Daddi
+                | Self::Daddiu
+                | Self::Daddu
+                | Self::Ddiv
+                | Self::Ddivu
+                | Self::Dmult
+                | Self::Dmultu
+                | Self::Dsll
+                | Self::Dsll32
+                | Self::Dsllv
+                | Self::Dsra
+                | Self::Dsra32
+                | Self::Dsrav
+                | Self::Dsrl
+                | Self::Dsrl32
+                | Self::Dsrlv
+                | Self::Dsub
+                | Self::Dsubu
+                | Self::Ld
+                | Self::Ldl
+                | Self::Ldr
+                | Self::Lld
+                | Self::Scd
+                | Self::Sd
+                | Self::Sdl
+                | Self::Sdr
+        )
+    }
+
     /// Does this instruction have a branch delay slot?
     ///
     /// Every jump and branch on MIPS does. The instruction *after* it executes

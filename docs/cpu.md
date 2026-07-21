@@ -622,6 +622,14 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   unconditionally raises spurious refills on exactly the code that matters —
   cache-init walks every index with an arbitrary base, before any mapping
   exists.
+- **The MIPS III 64-bit operations are Reserved in 32-bit User and Supervisor
+  mode.** `DADD`, `DSLL`, `LD`, `SD` and the rest raise Reserved Instruction when
+  the current mode's `UX`/`SX` bit is clear and the mode is not Kernel. Kernel may
+  use them at any width, so this is **not** a property of `Status.KX` alone.
+
+  Coprocessor doubleword moves (`DMFC0`/`DMTC0`, `DMFC1`/`DMTC1`) are excluded:
+  they follow that coprocessor's own usability and reserved-encoding rules
+  (ledger C-18) and raise different exceptions.
 - **`Status.RE` reverses endianness, and only in User mode** (UM §5.2). Kernel
   and Supervisor are unaffected, and so is any access taken while `EXL`/`ERL`
   forces kernel mode — which is what lets an exception handler read memory the

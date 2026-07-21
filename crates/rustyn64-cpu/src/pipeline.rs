@@ -1138,6 +1138,17 @@ impl Pipeline {
         }
     }
 
+    /// Are the MIPS III 64-bit operations reserved right now?
+    ///
+    /// Yes in User or Supervisor mode with that mode's `UX`/`SX` bit clear; never
+    /// in Kernel mode, whatever `KX` says. Both halves are load-bearing: gating
+    /// on the width bit alone would reserve them for a 32-bit kernel, and gating
+    /// on the mode alone would reserve them for a 64-bit user program.
+    fn sixty_four_bit_is_reserved(&self) -> bool {
+        let a = self.access_mode();
+        !matches!(a.mode, crate::addr::Mode::Kernel) && !a.wide
+    }
+
     /// `Status.ERL` — the error level, which makes KUSEG unmapped (UM §5.2.2).
     fn erl(&self) -> bool {
         self.cop0.read(crate::cop0::reg::STATUS) & (1 << 2) != 0
@@ -1540,6 +1551,20 @@ impl Pipeline {
             // exception handlers before any `Status` setup has happened.
             if let Some(unit) = self.unusable_coprocessor(out.decoded) {
                 self.abort_from(Stage::Ex, Exception::CoprocessorUnusable { unit });
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
+            // A 64-bit operation is RESERVED in 32-bit User or Supervisor mode.
+            // Kernel may use them at any width, which is why this cannot be a
+            // property of `Status.KX` alone.
+            //
+            // Checked after coprocessor usability, not before: an unusable
+            // coprocessor is reported as such even when the encoding is also a
+            // 64-bit one, and the suite distinguishes the two causes.
+            if out.decoded.op.is_64_bit() && self.sixty_four_bit_is_reserved() {
+                self.abort_from(Stage::Ex, Exception::ReservedInstruction);
                 out = self.rf_ex;
                 self.rf_ex.occupied = false;
                 self.ex_dc = out;
@@ -4734,6 +4759,58 @@ mod tests {
             crate::exception::exc_code::CPU
         );
         assert_eq!((p.cop0.read(reg::CAUSE) >> 28) & 0b11, 0, "unit 0");
+    }
+
+    /// A 64-bit operation is Reserved in 32-bit User or Supervisor mode, and
+    /// usable everywhere else.
+    ///
+    /// All four rows are needed. Gating on the width bit alone reserves them for
+    /// a 32-bit *kernel* — which is the mode every N64 boots into, so that
+    /// mistake breaks everything and would be caught. Gating on the mode alone
+    /// reserves them for a 64-bit *user* program, which nothing common does, so
+    /// that mistake would sit unnoticed behind the rows that do pass.
+    #[test]
+    fn a_64_bit_operation_is_reserved_only_in_32_bit_non_kernel_mode() {
+        use crate::cop0::reg;
+        /// `DADD $2, $1, $1` — SPECIAL funct 0o54.
+        const DADD: u32 = (1 << 21) | (1 << 16) | (2 << 11) | 0o54;
+        /// `Status.KSU` = user, and `Status.UX`.
+        const USER: u64 = 0b10 << 3;
+        const UX: u64 = 1 << 5;
+
+        for (status, want_reserved, why) in [
+            (0, false, "32-bit kernel: usable"),
+            (1 << 7, false, "64-bit kernel: usable"),
+            (USER, true, "32-bit user: reserved"),
+            (USER | UX, false, "64-bit user: usable"),
+        ] {
+            let mut bus = Ram::new(alloc::vec![DADD]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, status);
+            // User mode cannot fetch from KSEG0, so the program runs from USEG
+            // through an identity mapping in both cases -- keeping the only
+            // difference between the rows the one under test.
+            map(&mut p, 0, 0, 0);
+            let mut pc = KSEG0_PROG & 0x1FFF_FFFF;
+
+            let mut raised = false;
+            for _ in 0..16 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+                if p.stalled_by() == Some(Interlock::Exception) {
+                    raised = true;
+                    break;
+                }
+            }
+            assert_eq!(raised, want_reserved, "{why}");
+            if raised {
+                assert_eq!(
+                    (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+                    crate::exception::exc_code::RI,
+                    "{why}: and it is Reserved Instruction, not something else"
+                );
+            }
+        }
     }
 
     /// An unimplemented COP1 encoding with `CU1` **set** must not raise. Sprint 3

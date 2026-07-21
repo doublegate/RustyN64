@@ -9,6 +9,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the 64-bit operations are Reserved in 32-bit User and Supervisor mode
+
+`DADD`, `DSLL`, `LD`, `SD` and the rest of the MIPS III doubleword set raise Reserved Instruction
+when the current mode's `UX`/`SX` bit is clear and the mode is not Kernel. Kernel may use them at
+any width, which is why this cannot be a property of `Status.KX` alone.
+
+Both halves of that condition are load-bearing, and each is mutation-checked: gating on the width
+bit alone reserves them for a 32-bit *kernel*, and gating on the mode alone reserves them for a
+64-bit *user* program — the second of which nothing common does, so it would sit unnoticed behind
+the rows that pass.
+
+Deliberately excluded: `DMFC0`/`DMTC0` and `DMFC1`/`DMTC1`. Doubleword moves to and from a
+coprocessor follow that coprocessor's own usability and reserved-encoding rules (ledger **C-18**)
+and raise different exceptions; folding them in would make an unusable COP0 report the wrong cause.
+
+**Phase 1's categories: 24 → 23.**
+
 ### Fixed — the segment map depends on the privilege mode, and on the addressing width
 
 `KSEG0` does not exist in User mode. Until now the map was a function of the address alone, so a
