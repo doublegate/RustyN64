@@ -1256,6 +1256,59 @@ document.
 
 ---
 
+### C-31 — the `VRCP`/`VRSQ` ROM tables are **generated exactly**, not stored as literals
+
+**Claim.** The RSP's 512-entry reciprocal and inverse-square-root ROMs are produced at
+construction by exact integer arithmetic, and are bit-identical to the hardware tables.
+
+**This contradicts a rule written in `docs/rsp.md`**, which says *"the recip ROM is data, not a
+formula. Table-drive it from the documented values; do not approximate."* The contradiction is
+deliberate and is recorded here rather than resolved silently in either direction.
+
+**Why the rule exists, and why it does not bite here.** The rule guards against *approximation* —
+computing a reciprocal in floating point, or with a truncated series, gets the low bits subtly
+wrong and transformed vertices land in the wrong place. What ares does (`ares/n64/rsp/rsp.cpp`,
+ISC, on the vendorable list in `ref-proj/README.md`) is not an approximation: for the reciprocal
+it is `(1 << 34) / (index + 512)`, rounded by `+ 1 >> 8`, in 64-bit integers; for the inverse
+square root it is the **smallest** `b ≥ 2¹⁷` with `a·(b+1)² ≥ 2⁴⁴` — one *past* the last value
+satisfying the strict inequality, which is what the loop actually computes and is not what its
+comment claims (see the off-by-one note below). Both are exact integer
+constructions with no rounding freedom, so they reproduce the ROM rather than estimating it.
+
+**Built at compile time.** The generators are `const fn`s producing `static` arrays, so the
+artifact in the binary *is* a table and nothing computes a reciprocal at run time. An earlier
+revision of this entry described per-call generation; that was a performance bug (the
+inverse-square-root search ran ~131,000 iterations of two 64-bit multiplications **per `VRSQ`**,
+software-emulated on `thumbv7em`), and moving it to const evaluation also brings the
+implementation much closer to what `docs/rsp.md`'s rule asks for.
+
+**Why generate rather than paste.** A 512-entry literal table is 512 opportunities for a
+transcription error, and a wrong entry is invisible until some specific divisor is used — the
+worst failure profile available. The generator is eight lines that can be read against the source
+they came from. The trade is real and goes the other way too: a bug in the generator is *also*
+invisible until exercised, and it applies to every entry at once rather than to one.
+
+**An off-by-one this caught.** ares's comment above its search reads *"find the largest b where
+b < 1.0 / sqrt(a)"* — but the loop is `while cond { b += 1 }`, which walks *through* the last
+satisfying value and stops one past it, so the table holds one **more** than the comment says.
+Reimplementing the comment's predicate as a bisection produced `26964` where the scan gives
+`26965`. It was caught only because the bisection was pinned against values captured from the
+original scan: every *property* the other tests check — monotonicity, the odd/even interleave, the
+16-bit range — holds just as well one step to the left. A reference implementation's comment is a
+claim about its code, and decays the same way ours do.
+
+**What makes it falsifiable.** The tables are pinned by tests against values n64-systemtest
+expects, so an error in the generator shows up as a failing oracle assertion rather than as a
+quietly wrong vertex. Until those assertions exist for both tables across their range, this entry
+is a claim about bit-exactness that has been **spot-checked, not proven** — and it should be read
+that way.
+
+**Attribution.** The construction is ares's, used under ISC. `ref-proj/README.md` records that
+ares is among the projects permissive enough to draw from; simple64, gopher64, n64-tests and
+angrylion-rdp-plus are not, and were not consulted.
+
+---
+
 ---
 
 ## 5. Deliberate deviations from hardware

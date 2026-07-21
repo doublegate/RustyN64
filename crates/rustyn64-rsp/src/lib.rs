@@ -70,6 +70,11 @@ pub struct Rsp {
     pub sp: sp::SpRegs,
     /// The VU's three control registers (`VCO`, `VCC`, `VCE`).
     pub vu_ctrl: vu::Control,
+    /// The reciprocal unit's staging latches (`DIVIN`/`DIVOUT`/`DIVDP`).
+    pub div: vu::Divide,
+    /// The destination lane a single-lane VU instruction computed, applied
+    /// after the accumulator write so the two cannot alias.
+    pending_vd_lane: Option<(usize, u16)>,
     /// A branch target latched by the previous instruction, taken after the
     /// delay slot retires. `None` means the next PC is sequential.
     branch: Option<u32>,
@@ -101,6 +106,12 @@ impl Rsp {
                 vcc: 0,
                 vce: 0,
             },
+            div: vu::Divide {
+                input: 0,
+                output: 0,
+                pending: false,
+            },
+            pending_vd_lane: None,
             branch: None,
         }
     }
