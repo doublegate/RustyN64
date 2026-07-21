@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — tininess is detected before rounding, not after
+
+Underflow was decided from the *packed* result: subnormal or zero raised it, normal did not. IEEE 754
+permits tininess to be judged before or after rounding, and the VR4300 judges it **before**.
+
+The two differ exactly when a directed rounding mode lifts a tiny result back into the normal range.
+`FLT_MIN / (1 + 1ulp)` under round-toward-+∞ yields `FLT_MIN` — a perfectly normal number — and
+hardware still raises underflow, because the value it rounded *from* was tiny. n64-systemtest's
+`DIV.S` set contains that case in both signs; the result value was already right, only the flag was
+missing.
+
+Mutation-checked, and the mutation takes down three tests rather than one, which is the useful
+signal: the flag is now decided in one place instead of being re-derived per exit path.
+
+**Phase 1's categories: 5 → 3.**
+
 ### Fixed — a TLB tag is masked by `PageMask`, not divided by the page size
 
 `EntryHi`'s tag keeps every bit `PageMask` does **not** cover. It was stored as `VA / pair_size`,

@@ -312,6 +312,17 @@ fn round_pack(sign: bool, sig: u128, exp: i32, sticky: bool, f: Format, mode: Ro
     // out-of-range result into a subnormal instead of a wrong normal.
     let to_min = f.min_lsb_exp() - exp;
     let shift = if to_p > to_min { to_p } else { to_min };
+    // **Tininess is detected BEFORE rounding.** IEEE 754 permits either, and the
+    // VR4300 picks "before": `to_min` winning means the exact result sits below
+    // the smallest normal, whatever rounding then does to it.
+    //
+    // This matters exactly when a directed rounding mode pushes a tiny result
+    // back up to a normal one. `FLT_MIN / 1.0000001` under round-toward-+inf
+    // yields `FLT_MIN` again — a perfectly normal number — and hardware still
+    // raises underflow, because the value it rounded *from* was tiny. Deciding
+    // underflow from the packed result instead loses precisely this case, and
+    // n64-systemtest's `DIV.S` set contains it in both signs.
+    let tiny = to_min > to_p;
 
     let (mut kept, mut exp_f, inexact) = if shift <= 0 {
         // Room to spare: shifting LEFT is exact.
@@ -364,9 +375,11 @@ fn round_pack(sign: bool, sig: u128, exp: i32, sticky: bool, f: Format, mode: Ro
     let mut flags = Flags::NONE;
     flags.inexact = inexact;
 
+    flags.underflow = tiny && inexact;
+
     if kept == 0 {
-        // Rounded all the way to zero: tiny and inexact.
-        flags.underflow = inexact;
+        // Rounded all the way to zero, which is as tiny as it gets.
+        debug_assert!(tiny || !inexact);
         return Rounded {
             bits: (sign as u64) << (f.width - 1),
             flags,
@@ -392,7 +405,6 @@ fn round_pack(sign: bool, sig: u128, exp: i32, sticky: bool, f: Format, mode: Ro
     // Subnormal. `to_min` won the shift, so `exp_f` is the minimum LSB exponent
     // and `kept` is the stored mantissa verbatim.
     debug_assert_eq!(exp_f, f.min_lsb_exp());
-    flags.underflow = inexact;
     Rounded {
         bits: sign_bit | (kept as u64),
         flags,
@@ -959,6 +971,33 @@ mod tests {
 
     /// Underflow is signalled when the result is tiny **and** inexact — an
     /// exact subnormal result raises neither.
+    #[test]
+    fn a_directed_rounding_out_of_the_subnormal_range_still_underflows() {
+        // FLT_MIN / (1 + 1ulp) is tiny and inexact; rounding toward +inf pushes
+        // it back up to FLT_MIN, a perfectly NORMAL number.
+        //
+        // Deciding underflow from the packed result therefore misses it — the
+        // result is normal — while the hardware raises it, because the value it
+        // rounded *from* was tiny. IEEE 754 permits either convention and the
+        // VR4300 detects tininess BEFORE rounding.
+        let r = div(
+            f32::MIN_POSITIVE.to_bits().into(),
+            1.000_000_1f32.to_bits().into(),
+            F32,
+            Rounding::TowardPlusInf,
+        );
+        assert_eq!(
+            r.bits as u32,
+            f32::MIN_POSITIVE.to_bits(),
+            "rounds back up to the smallest normal"
+        );
+        assert!(r.flags.inexact);
+        assert!(
+            r.flags.underflow,
+            "tiny before rounding, so underflow stands even though the result is normal"
+        );
+    }
+
     #[test]
     fn underflow_needs_both_tininess_and_inexactness() {
         // Two subnormals whose sum is exactly representable: tiny, exact.
