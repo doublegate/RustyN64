@@ -170,6 +170,25 @@ peak "one SU + one VU opcode per clock" (`ref-docs/research-report.md` §3). The
 LLE step fetches the IMEM word at `pc`, decodes the SU op and (for the COP2
 escape / `LWC2`/`SWC2`) the VU op, runs `step_su` then `step_vu`, advances `pc`.
 
+### The VU register file and SU/VU moves (implemented, Sprint 2)
+
+The four COP2 moves — `MFC2` (0), `CFC2` (2), `MTC2` (4), `CTC2` (6) — are
+selected by the `rs` field, whose top bit (word bit 25) is what separates them
+from the computational instructions. That one bit also changes what the element
+field *means*: a **byte offset** for a move, a **broadcast modifier** for a
+computation. Conflating the two is the first thing to get wrong here.
+
+Because the offset is in bytes, three edge cases exist that a lane-oriented
+implementation cannot express, and all agree with a lane model at even offsets —
+so a test using only aligned offsets cannot tell them apart:
+
+- An **odd** offset straddles two lanes.
+- `MTC2` at byte 15 writes **one** byte, from `rt[15..8]`, and does not wrap.
+- `MFC2` at byte 15 **wraps** its second byte to byte 0 of the same register.
+
+`CFC2`/`CTC2` name `VCO` (0), `VCC` (1) or `VCE` (2) and ignore the element
+field. `VCE` is 8 bits; the other two are 16, and `CFC2` sign-extends from 16.
+
 ### Vector unit fixed-point math
 
 The VU operates on 8 lanes of signed 1.15 fixed-point. The multiply family
@@ -180,12 +199,62 @@ write-back: **signed** clamp to `[-32768, 32767]`; **unsigned** clamps negatives
 to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.md`
 §3). Getting saturation or accumulator slicing wrong drifts geometry and audio.
 
+### The accumulator and the multiply family (partly implemented, Sprint 2)
+
+`VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, `VSAR` and the six bitwise
+operations execute. The `VMAC*`/`VMAD*` accumulating forms, the compares, the
+selects and `VRCP`/`VRSQ` do not yet, and report so rather than writing a wrong
+result — `vu_compute` returns `false` and the instruction retires inertly.
+
+The accumulator is **one 48-bit register per lane**, not three 16-bit ones.
+`VSAR` slicing it into `ACC_HI`/`ACC_MD`/`ACC_LO` invites the latter, but the
+multiplies write across the full 48 bits and the extraction that produces `vd`
+reads a 32-bit window *spanning* two slices — split storage loses the carries
+between them.
+
+`VMULF`'s rule was derived from n64-systemtest's own expected vectors rather
+than recalled: **acc = 2·vs·vt + 0x8000**, with `vd` a signed clamp of
+`acc >> 16`. The rounding constant lands in the *accumulator*, which is only
+visible because the suite reads `ACC_LO` back as `0x8000` for a zero product.
+The last lane of its vector is what pins the clamp: the 48-bit accumulator is
+positive there, `acc >> 16` is `0x8000` = 32768, one past the signed maximum,
+and the result saturates to `0x7FFF`.
+
+**These became observable only once `LQV`/`SQV` landed**, which is why they are
+in the same sprint. Every VU test in n64-systemtest loads its operands with
+`LQV` and reads results back with `SQV`, so the computational group moved the
+suite count by *zero* until the vector load/store group existed — at which point
+the count fell from 247 to 224 in one step. Until then these instructions were
+pinned only by unit tests written against the oracle's published vectors, which
+is weaker evidence than a passing suite; that gap is now closed for the
+implemented opcodes and remains open for the rest.
+
 ### Reciprocal / rsqrt via ROM
 
 `VRCP`/`VRSQ` (and the H/L two-part variants) are **table lookups**, not
 arithmetic; the tables must be bit-exact or transformed vertices land wrong
 (`ref-docs/research-report.md` §3). The H/L pairs stage a 32-bit operand/result
 through `DIV_IN`/`DIV_OUT`.
+
+### Vector load/store (partly implemented)
+
+Encoding: `LWC2`/`SWC2` | `base` (25..21) | `vt` (20..16) | `opcode` (15..11) |
+`element` (10..7) | `offset` (6..0). The offset is a **signed 7-bit** field
+scaled by the access size, not the 16-bit immediate an ordinary load carries —
+reading `imm` whole gives a wildly wrong address.
+
+`element` is a **byte** index naming the first byte the operation touches, so a
+non-zero element moves *fewer* bytes rather than shifting a full-width window.
+
+Implemented: the scalar group (`LBV`/`LSV`/`LLV`/`LDV` and their stores, sizes
+1/2/4/8 with the offset scaled to match) and `LQV`/`SQV`. A misaligned `LQV`
+runs only up to the next 16-byte boundary rather than crossing it — which is
+precisely why `LRV` exists, and an implementation that simply reads 16 bytes
+from the address passes an aligned test and fails a misaligned one.
+
+Not yet implemented, and reported rather than approximated: `LRV`/`SRV`, the
+packed `LPV`/`LUV`/`SPV`/`SUV`, the strided `LHV`/`LFV`/`SHV`/`SFV`, and the
+transposing `LTV`/`STV`/`LWV`/`SWV`.
 
 ### Vector load/store
 

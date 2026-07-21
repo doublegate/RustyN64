@@ -39,6 +39,7 @@ extern crate alloc;
 
 pub mod sp;
 pub mod su;
+pub mod vu;
 
 /// Size of RSP DMEM / IMEM (each 4 KiB).
 pub const SP_MEM_SIZE: usize = 4 * 1024;
@@ -67,6 +68,8 @@ pub struct Rsp {
     /// The SP interface registers, shared by the CPU's memory-mapped window and
     /// the RSP's own COP0 -- one set of physical registers, so one field.
     pub sp: sp::SpRegs,
+    /// The VU's three control registers (`VCO`, `VCC`, `VCE`).
+    pub vu_ctrl: vu::Control,
     /// A branch target latched by the previous instruction, taken after the
     /// delay slot retires. `None` means the next PC is sequential.
     branch: Option<u32>,
@@ -93,6 +96,11 @@ impl Rsp {
             dmem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
             imem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
             sp: sp::SpRegs::new(),
+            vu_ctrl: vu::Control {
+                vco: 0,
+                vcc: 0,
+                vce: 0,
+            },
             branch: None,
         }
     }

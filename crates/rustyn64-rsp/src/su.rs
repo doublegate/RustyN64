@@ -83,9 +83,21 @@ const fn sext(imm: u32) -> u32 {
 }
 
 impl Rsp {
-    /// Read one register, with `r0` pinned to zero.
-    const fn r(&self, i: usize) -> u32 {
+    /// Read one scalar register, with `r0` pinned to zero.
+    ///
+    /// Public so the vector load/store family can compute its base address —
+    /// those instructions live in [`crate::vu`] but address DMEM through a GPR.
+    #[must_use]
+    pub const fn r(&self, i: usize) -> u32 {
         if i == 0 { 0 } else { self.su_regs[i] }
+    }
+
+    /// Write one scalar register; writes to `r0` are discarded.
+    ///
+    /// Public under this name so the VU's move instructions can reach it —
+    /// `MFC2` and `CFC2` write a GPR, and they live in [`crate::vu`].
+    pub const fn set_su(&mut self, i: usize, v: u32) {
+        self.set_r(i, v);
     }
 
     /// Write one register; writes to `r0` are discarded.
@@ -241,9 +253,15 @@ impl Rsp {
             0o50 => self.store(&d, 1),
             0o51 => self.store(&d, 2),
             0o53 => self.store(&d, 4),
-            // COP2 and the vector load/store family are Sprint 2 and 3. They
-            // retire inertly for now rather than trapping, which is what the
-            // hardware does with anything it does not implement.
+            // COP2. The moves are implemented; the computational instructions
+            // (bit 25 set) are the rest of Sprint 2 and retire inertly, which is
+            // what hardware does with anything it does not implement -- there is
+            // no exception mechanism to report it with.
+            0o22 => self.cop2(&d),
+            // The vector load/store family. `opcode` is at 15..11 where `rd`
+            // sits, `element` at 10..7, and the offset is a **signed 7-bit**
+            // field -- not the 16-bit immediate an ordinary load carries.
+            0o62 | 0o72 => self.vector_memory(&d),
             _ => {}
         }
 
@@ -309,6 +327,51 @@ impl Rsp {
             _ => {}
         }
         halt_at
+    }
+
+    /// `LWC2`/`SWC2` — the vector load/store family.
+    ///
+    /// `opcode` sits at 15..11 where `rd` is, `element` at 10..7, and the offset
+    /// is a **signed 7-bit** field rather than the 16-bit immediate an ordinary
+    /// load carries -- so reading `imm` as a whole would give a wildly wrong
+    /// address.
+    fn vector_memory(&mut self, d: &Fields) {
+        let element = ((d.sa >> 1) & 0xF) as usize;
+        self.vector_mem(d.op == 0o72, d.rd as u32, d.rs, d.rt, element, d.imm & 0x7F);
+    }
+
+    /// The COP2 escape: SU/VU moves today, computational instructions to come.
+    ///
+    /// Bit 25 separates the two groups. When it is set the instruction is a
+    /// computational one, whose `element` field is a *broadcast modifier*; when
+    /// clear it is a move, whose element field is a **byte offset**. Conflating
+    /// them is the first thing to get wrong here.
+    fn cop2(&mut self, d: &Fields) {
+        // Bit 25 of the word is the top bit of the `rs` field, which is how the
+        // two groups share one opcode. The four moves are `rs` 0/2/4/6, all
+        // with it clear.
+        if d.rs & 0x10 != 0 {
+            // Computational. Note the operand fields are NOT in the usual MIPS
+            // positions: `vt` is at 20..16 (where `rt` normally sits), `vs` at
+            // 15..11 and `vd` at 10..6 -- so the natural reading of a MIPS
+            // R-type would swap the source and destination.
+            let element = d.rs as u32 & 0xF;
+            self.vu_compute(d.funct, element, d.rd, d.rt, d.sa as usize);
+            return;
+        }
+        // `vs_elem` is bits 10..=7 of the word, a byte offset into the register.
+        let elem = ((d.sa >> 1) & 0xF) as usize;
+        match d.rs {
+            0o00 => {
+                self.mfc2(d.rt, d.rd, elem);
+            }
+            0o02 => {
+                self.cfc2(d.rt, d.rd as u32);
+            }
+            0o04 => self.mtc2(self.r(d.rt), d.rd, elem),
+            0o06 => self.ctc2(self.r(d.rt), d.rd as u32),
+            _ => {}
+        }
     }
 
     /// Address for a load or store: `base + sign-extended offset`, 12 bits.
