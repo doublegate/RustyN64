@@ -350,6 +350,14 @@ impl Rsp {
             self.vrnd(op == 0x02, element, vs, vt, vd);
             return true;
         }
+        // VMACQ (0x0B): re-round the accumulator's magnitude toward a multiple
+        // of 0x20_0000, no operands. Transcribed from n64-systemtest's
+        // `simulate`; ares agrees once `should_change` gates out the range where
+        // a naive reading of the two looked to differ.
+        if op == 0x0B {
+            self.vmacq(vd);
+            return true;
+        }
         let mut clear_vco = false;
         let mut set_vco = false;
         let mut new_vco = 0u16;
@@ -619,6 +627,43 @@ impl Rsp {
             }
             self.set_acc(lane, acc);
             self.vu_regs[vd & 31][lane] = Self::clamp_signed(acc >> 16);
+        }
+    }
+
+    /// `VMACQ` — nudge the accumulator toward a multiple of `0x20_0000`, in
+    /// place, no operands.
+    ///
+    /// Transcribed from n64-systemtest's `simulate`: when bit 21 is clear the
+    /// 48-bit accumulator is moved by `±0x20_0000` toward zero-mod-that (only
+    /// away from the `[0x20_0000, 0x3F_FFFF]` band, which bit 21 being set
+    /// excludes), and the result is `acc >> 17`, saturated past 32 bits and
+    /// masked to clear its low 4 bits. `ACC_LO` survives because the delta sits
+    /// at bit 21, above it.
+    fn vmacq(&mut self, vd: usize) {
+        for lane in 0..8 {
+            let acc = self.acc_signed(lane);
+            let out = if acc & 0x20_0000 == 0 {
+                match (acc >> 22).cmp(&0) {
+                    core::cmp::Ordering::Less => acc + 0x20_0000,
+                    core::cmp::Ordering::Greater => acc - 0x20_0000,
+                    core::cmp::Ordering::Equal => acc,
+                }
+            } else {
+                acc
+            };
+            self.set_acc(lane, out);
+            let clamped: u16 = if out < 0 {
+                if (!out) >> 32 != 0 {
+                    0x8000
+                } else {
+                    (out >> 17).cast_unsigned() as u16
+                }
+            } else if out >> 32 != 0 {
+                0x7FFF
+            } else {
+                (out >> 17).cast_unsigned() as u16
+            };
+            self.vu_regs[vd & 31][lane] = clamped & 0xFFF0;
         }
     }
 
@@ -2644,5 +2689,58 @@ mod sfv_tests {
             "undefined e writes real zeros"
         );
         assert_eq!(rsp.dmem[1], 0xEE, "untouched bytes stay");
+    }
+}
+
+#[cfg(test)]
+mod vmacq_tests {
+    use super::*;
+
+    /// Seed one lane's accumulator from its three 16-bit slices.
+    fn set_acc_slices(rsp: &mut Rsp, lane: usize, top: u16, mid: u16, low: u16) {
+        rsp.vu_acc[lane] = (u64::from(top) << 32) | (u64::from(mid) << 16) | u64::from(low);
+    }
+
+    /// **`VMACQ` against n64-systemtest's `simulate`.** Each case is
+    /// `(top, mid, low) -> (vd, ACC_HI, ACC_MD, ACC_LO)`, computed by running
+    /// the suite's reference in a scratch script.
+    #[test]
+    fn vmacq_matches_the_suite_simulate() {
+        // (top, mid, low, vd, ACC_HI, ACC_MD, ACC_LO)
+        let cases: [[u16; 7]; 5] = [
+            [0, 0, 0, 0, 0, 0, 0],
+            [0, 0x40, 0, 0x10, 0, 0x20, 0],
+            [0, 0x10, 0, 0, 0, 0x10, 0],
+            [0xFFFF, 0xFF00, 0, 0xFF90, 0xFFFF, 0xFF20, 0],
+            [0, 0x80, 0x1234, 0x30, 0, 0x60, 0x1234],
+        ];
+        for [top, mid, low, vd, ah, am, al] in cases {
+            let mut rsp = Rsp::new();
+            set_acc_slices(&mut rsp, 0, top, mid, low);
+            assert!(rsp.vu_compute(0x0B, 0, 0, 0, 2));
+            assert_eq!(rsp.vu_regs[2][0], vd, "vd for ({top:#x},{mid:#x},{low:#x})");
+            assert_eq!((rsp.vu_acc[0] >> 32) as u16, ah, "ACC_HI");
+            assert_eq!((rsp.vu_acc[0] >> 16) as u16, am, "ACC_MD");
+            assert_eq!(rsp.vu_acc[0] as u16, al, "ACC_LO preserved");
+        }
+    }
+
+    /// **`ACC_LO` is preserved** — the nudge is at bit 21, above it. A whole-
+    /// accumulator rewrite that recomputed the low slice would corrupt it.
+    #[test]
+    fn vmacq_preserves_the_low_slice() {
+        let mut rsp = Rsp::new();
+        set_acc_slices(&mut rsp, 0, 0, 0x40, 0xBEEF);
+        rsp.vu_compute(0x0B, 0, 0, 0, 2);
+        assert_eq!(rsp.vu_acc[0] as u16, 0xBEEF, "the low slice is untouched");
+    }
+
+    /// **The result's low nibble is always clear** (`& 0xFFF0`).
+    #[test]
+    fn vmacq_masks_the_low_nibble() {
+        let mut rsp = Rsp::new();
+        set_acc_slices(&mut rsp, 0, 0, 0x7F, 0xFFFF);
+        rsp.vu_compute(0x0B, 0, 0, 0, 2);
+        assert_eq!(rsp.vu_regs[2][0] & 0xF, 0);
     }
 }

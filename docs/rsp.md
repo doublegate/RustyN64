@@ -204,9 +204,9 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
 accumulating forms, `VSAR` and the six bitwise operations execute, as do
 `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS`, the `VLT`/`VEQ`/`VNE`/`VGE` compares,
-`VMRG`, and `VRNDN`/`VRNDP`. `VMULQ` too. the packed `LPV`/`LUV`/`SPV`/`SUV` too. `VCL`/`VCH`/`VCR`, `VMACQ`, and the strided/transposing loads do not yet, and report
-so rather than writing a wrong result — `vu_compute` returns `false` and the
-instruction retires inertly.
+`VMRG`, `VRNDN`/`VRNDP`, `VMULQ` and `VMACQ`. Only the three clip compares
+`VCL`/`VCH`/`VCR` do not yet, and they report so rather than writing a wrong
+result — `vu_compute` returns `false` and the instruction retires inertly.
 
 **`VMACF` adds no rounding constant**, where `VMULF` adds `0x8000`. It is the
 most confusable difference in the family and the accumulator is the only place
@@ -320,13 +320,13 @@ low 16 zeroed, rounds only *negative* products by `+31`, and produces a result
 that is `>>1`, signed-clamped, then **masked to clear its low 4 bits**. Pinned
 against the oracle's full vectors.
 
-`VMACQ` is **deliberately not implemented yet**: the suite's own reference and
-ares disagree on its rounding condition — ares nudges when the 32-bit value is
-`>= 32`, the suite's `op_vmacq.rs` when `acc >> 22 > 0` (effectively `>= 64`),
-and those differ across `[32, 63]`. Resolving that needs the suite's vectors
-read carefully rather than either source trusted, so it reports unimplemented
-rather than shipping a guess. Recorded here so the divergence is not
-rediscovered.
+`VMACQ` re-rounds the accumulator's magnitude toward a multiple of `0x20_0000`
+with no operands, then produces `acc >> 17` saturated and masked to clear its
+low 4 bits. It was derived from n64-systemtest's own `simulate`; that reference
+and ares **agree** once `should_change` (bit 21 clear) is seen to exclude the
+`[0x20_0000, 0x3F_FFFF]` band where the two *looked* to differ — an earlier note
+here recorded them as conflicting, which a careful read disproved. `ACC_LO`
+survives because the nudge sits at bit 21, above it.
 
 `VABS` applies the **sign of `vs` to `vt`** — it is not the absolute value of
 either operand, and a zero in `vs` yields zero regardless of `vt`.
@@ -389,9 +389,8 @@ leaving the rest untouched.
 table it writes a real **zero**, not a wrapped lane — the "even 0 for some E"
 case the suite warns about.
 
-Not yet implemented, and reported rather than approximated: `SWV` and `LWV`
-(the latter does nothing on hardware). (`LWV` does not
-exist on hardware — the suite records that it *"does nothing"*.)
+Not yet implemented, and reported rather than approximated: `SWV`. `LWV` does
+not exist on hardware — the suite records that it *"does nothing"*.
 
 ### Vector load/store
 
