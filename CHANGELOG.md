@@ -9,6 +9,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — the unaligned family takes the byte swap under `Status.RE`
+
+`LWL`/`LWR`/`SWL`/`SWR` and their doubleword siblings address **individual bytes**, so `RE` moves
+them by `addr ^ 7` rather than by their container's width. One XOR relocates the container and
+complements the byte index at once: `LWL 0` becomes container 4 with byte index 3, since `0 ^ 7 == 7`,
+`7 & !3 == 4` and `7 & 3 == 3`.
+
+Derived from the ROM's own expected tables rather than guessed — `SWL` at offset 0 writes a single
+byte, `rt`'s most significant, into the doubleword's *last* byte, which no width-based swap produces.
+This was left deliberately open in the earlier `RE` change for exactly that reason.
+
+**Phase 1's categories: 3 → 1.**
+
 ### Fixed — tininess is detected before rounding, not after
 
 Underflow was decided from the *packed* result: subnormal or zero raised it, normal did not. IEEE 754

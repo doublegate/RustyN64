@@ -941,10 +941,27 @@ impl Pipeline {
                 Err(e)
             }
         };
-        let word_addr = translate(self, addr & !3)?;
-        let dword_addr = translate(self, addr & !7)?;
-        let byte4 = addr & 3;
-        let byte8 = addr & 7;
+        // `Status.RE` applies the **byte** swap here, `addr ^ 7`, not the swap for
+        // the container's width. These instructions address individual bytes, so
+        // the byte lane is what moves — and one XOR relocates the container and
+        // complements the byte index together, which is why the two do not need
+        // separate treatment:
+        //
+        //   `LWL 0` becomes container 4 with byte index 3, because
+        //   `0 ^ 7 == 7`, `7 & !3 == 4` and `7 & 3 == 3`.
+        //
+        // Derived from n64-systemtest's own expected tables rather than guessed:
+        // `SWL` at offset 0 writes a single byte, `rt`'s most significant, into
+        // the doubleword's LAST byte, which no width-based swap produces.
+        let eaddr = if self.reverse_endian() {
+            addr ^ 7
+        } else {
+            addr
+        };
+        let word_addr = translate(self, eaddr & !3)?;
+        let dword_addr = translate(self, eaddr & !7)?;
+        let byte4 = eaddr & 3;
+        let byte8 = eaddr & 7;
         Ok(match op {
             Op::Lwl | Op::Lwr => {
                 let w = self.read_width(bus, word_addr, 4) as u32;

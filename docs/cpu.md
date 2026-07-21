@@ -671,9 +671,11 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   equivalent to swapping the virtual address first — and it keeps `BadVAddr` raw
   on a fault, which the suite asserts directly.
 
-  Still outstanding: the `LWL`/`LWR`/`SWL`/`SWR` family under `RE`, which
-  addresses individual bytes and so needs the byte-granular rule rather than the
-  container's width.
+  **The `LWL`/`LWR`/`SWL`/`SWR` family takes the BYTE swap**, `addr ^ 7`, not the
+  swap for its container's width — these instructions address individual bytes,
+  so the byte lane is what moves. One XOR relocates the container and complements
+  the byte index together: `LWL 0` becomes container 4 with byte index 3, because
+  `0 ^ 7 == 7`, `7 & !3 == 4` and `7 & 3 == 3`.
 - **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
   detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
   entry rather than a special case.
