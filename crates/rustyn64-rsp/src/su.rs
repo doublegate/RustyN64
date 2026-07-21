@@ -42,8 +42,14 @@ use crate::sp::{self, STATUS_INTBREAK};
 pub struct StepResult {
     /// A transfer an `MTC0` to a length register started.
     pub dma: Option<sp::Dma>,
-    /// Raise the MI's SP interrupt line.
-    pub raise_interrupt: bool,
+    /// A change to the MI's SP interrupt line: `Some(true)` raises it,
+    /// `Some(false)` acknowledges it, `None` leaves it alone.
+    ///
+    /// Three states rather than two, because the RSP acknowledges its **own**
+    /// interrupt by writing `CLR_INTR` through `MTC0` — with a plain `bool`,
+    /// "clear the line" and "this step said nothing about the line" are the
+    /// same value, and the acknowledgement is silently dropped.
+    pub interrupt_change: Option<bool>,
 }
 
 /// Decoded fields, named as the MIPS encoding names them.
@@ -248,7 +254,9 @@ impl Rsp {
             self.sp.set_pc(next);
             self.sp.set_halted(true);
             self.sp.set_broke(true);
-            out.raise_interrupt |= self.sp.status() & STATUS_INTBREAK != 0;
+            if self.sp.status() & STATUS_INTBREAK != 0 {
+                out.interrupt_change = Some(true);
+            }
             return out;
         }
 
@@ -332,12 +340,10 @@ impl Rsp {
         if index >= 8 {
             return out;
         }
-        if index == sp::reg::STATUS
-            && let Some(raise) = sp::SpRegs::interrupt_change(value)
-        {
-            // Only a *raise* is reported: acknowledging is a clear, and the
-            // caller distinguishes them by the flag being false.
-            out.raise_interrupt = raise;
+        if index == sp::reg::STATUS {
+            // Both directions propagate. The RSP acknowledging its own
+            // interrupt is a `CLR_INTR` write, and it must reach the MI.
+            out.interrupt_change = sp::SpRegs::interrupt_change(value);
         }
         out.dma = self.sp.write(index, value);
         out
@@ -493,6 +499,51 @@ mod tests {
             0x55,
             "the delay slot ran and the skipped instruction did not"
         );
+    }
+
+    /// **The RSP can acknowledge its own interrupt.**
+    ///
+    /// `MTC0 SP_STATUS` with `CLR_INTR` must reach the MI as a *clear*. With a
+    /// plain `bool` on [`StepResult`], "clear the line" and "this step said
+    /// nothing about the line" are the same value, so the acknowledgement is
+    /// dropped and the CPU's `IP2` stays asserted for ever. The three cases are
+    /// asserted separately because that is exactly what a two-state flag cannot
+    /// express.
+    #[test]
+    fn the_rsp_can_raise_and_clear_its_own_interrupt() {
+        const SET_INTR: u32 = 1 << 4;
+        const CLR_INTR: u32 = 1 << 3;
+        let mut rsp = Rsp::new();
+
+        let out = rsp.cop0_write(sp::reg::STATUS, SET_INTR);
+        assert_eq!(out.interrupt_change, Some(true), "raise");
+
+        let out = rsp.cop0_write(sp::reg::STATUS, CLR_INTR);
+        assert_eq!(out.interrupt_change, Some(false), "acknowledge");
+
+        let out = rsp.cop0_write(sp::reg::STATUS, SET_INTR | CLR_INTR);
+        assert_eq!(out.interrupt_change, None, "both together: no change");
+
+        // A write that mentions neither must not disturb the line.
+        let out = rsp.cop0_write(sp::reg::STATUS, 1 << 10);
+        assert_eq!(out.interrupt_change, None, "unrelated flag write");
+    }
+
+    /// `BREAK` raises the line only when `INTBREAK` is set, and never clears it.
+    #[test]
+    fn break_raises_the_interrupt_only_when_enabled() {
+        let rsp = run(&[BREAK], 0);
+        assert!(rsp.sp.halted());
+
+        let mut rsp = Rsp::new();
+        rsp.sp.write(sp::reg::STATUS, 1 << 8); // SET_INTBREAK
+        for (b, byte) in BREAK.to_be_bytes().iter().enumerate() {
+            rsp.imem[b] = *byte;
+        }
+        rsp.sp.set_pc(0);
+        rsp.sp.set_halted(false);
+        let out = rsp.su_step();
+        assert_eq!(out.interrupt_change, Some(true), "INTBREAK set");
     }
 
     /// `MFC0` reads the SP registers the CPU shares, and `MTC0` writes them.

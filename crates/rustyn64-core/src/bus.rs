@@ -220,8 +220,8 @@ impl Bus {
     /// wants done instead of borrowing its owner, so there is nothing to move.
     pub fn rsp_tick(&mut self) {
         let out = self.rsp.tick();
-        if out.raise_interrupt {
-            self.rcp.mi_intr.sp = true;
+        if let Some(raise) = out.interrupt_change {
+            self.rcp.mi_intr.sp = raise;
         }
         if let Some(dma) = out.dma {
             self.sp_dma(dma);

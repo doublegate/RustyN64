@@ -76,6 +76,10 @@ pub struct Dma {
     /// Number of rows.
     pub rows: u32,
     /// Bytes skipped in RDRAM between rows. The SP side stays contiguous.
+    ///
+    /// 8-byte aligned: the field's low three bits *"are always 0"*, so an
+    /// unaligned value written by guest code cannot drag the RDRAM pointer off
+    /// alignment mid-transfer.
     pub skip: u32,
     /// `true` for DMEM/IMEM to RDRAM (`SP_DMA_WRLEN`).
     pub to_dram: bool,
@@ -327,12 +331,18 @@ impl SpRegs {
         // the tail.
         let row_len = ((len_word & 0xFFF) | 7) + 1;
         let rows = ((len_word >> 12) & 0xFF) + 1;
-        let skip = (len_word >> 20) & 0xFFF;
+        // SKIP's low three bits "are always 0" (N64brew *RSP Interface*), like
+        // every other address and length field here -- the DMA engine works in
+        // 64-bit words, so an unaligned stride is not expressible.
+        let skip = (len_word >> 20) & 0xFF8;
 
         // The pending address latches become the visible ones as the transfer
         // starts; until now, reads returned the previous transfer's values.
         self.sp_addr = self.pending_sp_addr;
         self.ram_addr = self.pending_ram_addr;
+        // SKIP survives the transfer ("COUNT is reset to 0, and SKIP is
+        // unchanged"), so it is captured here and preserved by `complete_dma`.
+        self.len = skip << 20;
 
         Dma {
             sp_addr: self.sp_addr,
@@ -530,6 +540,28 @@ mod tests {
             sp.read(reg::DMA_WRLEN),
             0xFF8,
             "both registers report the same transfer"
+        );
+    }
+
+    /// **`SKIP` is 8-byte aligned and survives the transfer.**
+    ///
+    /// Its low three bits *"are always 0"*, so an unaligned stride is not
+    /// expressible and cannot drag the RDRAM pointer off alignment mid-copy.
+    /// After completion *"COUNT is reset to 0, and SKIP is unchanged"*, so it
+    /// must still be there to read back.
+    #[test]
+    fn the_dma_skip_is_eight_byte_aligned_and_survives() {
+        let mut sp = SpRegs::new();
+        let dma = sp
+            .write(reg::DMA_RDLEN, 7 | (1 << 12) | (0xF << 20))
+            .expect("a length write");
+        assert_eq!(dma.skip, 8, "0xF masks down to 8, not 15");
+
+        sp.complete_dma(0x40, 0x80);
+        assert_eq!(
+            sp.read(reg::DMA_RDLEN),
+            (8 << 20) | 0xFF8,
+            "SKIP preserved, COUNT cleared, length reading back as -8"
         );
     }
 
