@@ -9,6 +9,28 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — the segment map depends on the privilege mode, and on the addressing width
+
+`KSEG0` does not exist in User mode. Until now the map was a function of the address alone, so a
+user program reached `0x8000_1000` exactly as the kernel does; the address-space check, not the TLB,
+is what is supposed to stop it. The map is now a function of `(address, mode, width)`:
+
+- **User** sees `USEG` alone; **Supervisor** sees `SUSEG` and `SSEG`; **Kernel** sees the whole map.
+  Anything else is an address error, raised **before** the TLB is consulted. That distinction
+  matters: folding it into a TLB refill would send the offending program to the refill handler,
+  where a well-behaved kernel maps the page and grants the access it was never allowed to make.
+- With `Status.KX`/`SX`/`UX` set, each mapped segment widens to 2^40 and the space grows holes — an
+  address inside a segment's region but past its size faults. Kernel additionally gains **XKPHYS**,
+  eight 2^32 direct windows differing only in cacheability.
+
+**Under 32-bit addressing an address must be the sign extension of its low word.**
+`0x0000_0000_8000_1000` is not a shorthand for `KSEG0`; it is an address error, and n64-systemtest
+asserts that directly. The old code truncated to `u32`, which accepted it silently — and the
+project's own reset vector and ROM entry point were stored in the truncated form, so both are
+corrected here too.
+
+**Phase 1's categories: 27 → 24.**
+
 ### Added — `Status.RE`, reverse endian in User mode
 
 Reversing endianness on a 64-bit datapath is a permutation of byte lanes within the doubleword,

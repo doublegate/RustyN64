@@ -172,7 +172,12 @@ impl Cpu {
     pub const fn new() -> Self {
         Self {
             regs: Regs::new(),
-            pc: 0xBFC0_0000,
+            // The reset vector, as a SIGN-EXTENDED 64-bit address. In 32-bit
+            // addressing mode every valid address is one, and `0x0000_0000_BFC0_0000`
+            // is not the same address -- it is an address error. n64-systemtest
+            // asserts exactly that distinction ("LW with address not sign
+            // extended"), so the truncated form is not a harmless shorthand.
+            pc: 0xFFFF_FFFF_BFC0_0000,
             pipeline: Pipeline::new(),
             retired: 0,
         }
@@ -238,7 +243,7 @@ mod tests {
     fn constructs_with_zero_register() {
         let cpu = Cpu::new();
         assert_eq!(cpu.regs.read(0), 0);
-        assert_eq!(cpu.pc, 0xBFC0_0000);
+        assert_eq!(cpu.pc, 0xFFFF_FFFF_BFC0_0000);
     }
 
     /// A tick is one `PClock`, not one instruction. The pipeline is 5 stages

@@ -894,13 +894,16 @@ impl Pipeline {
         store: bool,
     ) -> Result<crate::addr::Physical, Exception> {
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let erl = self.erl();
-        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store, erl) {
+        let access = self.access_mode();
+        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store, access) {
             Ok(p) => Ok(p),
-            Err(f) => {
+            Err(e) => {
                 self.fault_vaddr = vaddr;
                 self.note_shutdown();
-                Err(Self::tlb_exception(f, store))
+                Err(match e {
+                    crate::addr::TranslateError::Address => Exception::AddressError { store },
+                    crate::addr::TranslateError::Tlb(f) => Self::tlb_exception(f, store),
+                })
             }
         }
     }
@@ -1093,6 +1096,46 @@ impl Pipeline {
             p.addr ^= Self::re_swap(width);
         }
         Ok(p)
+    }
+
+    /// The privilege mode and addressing width the next access runs under.
+    ///
+    /// `EXL`/`ERL` force Kernel regardless of `KSU` — the same rule the
+    /// coprocessor-usability check applies, and what makes an exception
+    /// handler's first instructions safe.
+    ///
+    /// The addressing-width bit is picked **for the resolved mode**, not for
+    /// `KSU`: a User-mode program that takes an exception runs the handler in
+    /// Kernel mode, and the handler's addresses are governed by `KX`.
+    fn access_mode(&self) -> crate::addr::Access {
+        /// `Status.KSU`, bits 4:3.
+        const KSU: u64 = 0b11 << 3;
+        /// `Status.EXL` (1) or `Status.ERL` (2).
+        const EXL_OR_ERL: u64 = 0b110;
+        let status = self.cop0.read(crate::cop0::reg::STATUS);
+        let mode = if status & EXL_OR_ERL != 0 {
+            crate::addr::Mode::Kernel
+        } else {
+            match (status & KSU) >> 3 {
+                1 => crate::addr::Mode::Supervisor,
+                2 => crate::addr::Mode::User,
+                // 0 is Kernel; 3 is not a defined encoding and the manual gives
+                // it no behaviour, so it takes the most restrictive-to-reach
+                // reading rather than an invented one.
+                _ => crate::addr::Mode::Kernel,
+            }
+        };
+        // `Status.UX` (5), `SX` (6), `KX` (7).
+        let wide = match mode {
+            crate::addr::Mode::User => status & (1 << 5) != 0,
+            crate::addr::Mode::Supervisor => status & (1 << 6) != 0,
+            crate::addr::Mode::Kernel => status & (1 << 7) != 0,
+        };
+        crate::addr::Access {
+            mode,
+            wide,
+            erl: self.erl(),
+        }
     }
 
     /// `Status.ERL` — the error level, which makes KUSEG unmapped (UM §5.2.2).
@@ -1743,8 +1786,23 @@ impl Pipeline {
         // JTLB miss is an exception. Only the mapped segments involve either --
         // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let (phys, cached) = match crate::addr::segment(pc, self.erl()) {
+        let (phys, cached) = match crate::addr::segment(pc, self.access_mode()) {
             crate::addr::Segment::Direct { addr, cached } => (addr, cached),
+            // Not a valid address in this mode: an address error, raised without
+            // consulting the TLB at all.
+            crate::addr::Segment::Invalid => {
+                let exc = Exception::AddressError { store: false };
+                self.ic_rf = Latch {
+                    cop0: None,
+                    occupied: true,
+                    pc,
+                    in_delay_slot,
+                    abort: Some(exc),
+                    ..Latch::default()
+                };
+                self.abort_with(Stage::Ic, exc, pc);
+                return;
+            }
             crate::addr::Segment::Mapped => {
                 // The 3-PCycle penalty is "incurred when the micro-TLB is
                 // updated from the JTLB" (UM §4.6.2) -- so it is charged only
@@ -2547,7 +2605,7 @@ mod tests {
     #[test]
     fn a_value_advances_exactly_one_stage_per_cycle() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
 
@@ -2555,7 +2613,7 @@ mod tests {
         p.advance(&mut bus, &mut regs, &mut pc);
         let sentinel = p.ic_rf.pc;
         assert!(p.ic_rf.occupied);
-        assert_eq!(sentinel, 0x8000_0000);
+        assert_eq!(sentinel, 0xFFFF_FFFF_8000_0000);
 
         // Each subsequent cycle moves it exactly one boundary along.
         p.advance(&mut bus, &mut regs, &mut pc);
@@ -2582,7 +2640,7 @@ mod tests {
     #[test]
     fn delay_slot_flag_survives_a_multi_cycle_stall() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
 
@@ -2620,7 +2678,7 @@ mod tests {
     #[test]
     fn a_stall_freezes_the_pipeline() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2658,7 +2716,7 @@ mod tests {
 
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, IRQ_READY);
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = NullBus { irq: true };
 
@@ -2675,7 +2733,7 @@ mod tests {
         // Now stall, and check the very next cycle refuses it.
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, IRQ_READY);
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         p.advance(&mut bus, &mut regs, &mut pc);
         p.stall_for(1, Interlock::Dcb);
@@ -2702,7 +2760,7 @@ mod tests {
     #[test]
     fn an_abort_survives_the_cascade() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2749,7 +2807,7 @@ mod tests {
     #[test]
     fn a_zero_cycle_stall_is_not_a_stall() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         p.advance(&mut bus, &mut regs, &mut pc);
@@ -2771,7 +2829,7 @@ mod tests {
     #[test]
     fn abort_kills_younger_instructions_only() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2788,7 +2846,7 @@ mod tests {
     #[test]
     fn an_aborted_instruction_does_not_retire() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2842,7 +2900,7 @@ mod tests {
         let mut bus = Rom(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000u64;
+        let mut pc = 0xFFFF_FFFF_8000_0000u64;
 
         // Generous budget: 6 instructions, 5 stages deep, plus the MULT stall.
         for _ in 0..64 {
@@ -2878,7 +2936,7 @@ mod tests {
         let mut bus = Ones;
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000u64;
+        let mut pc = 0xFFFF_FFFF_8000_0000u64;
         for _ in 0..32 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2912,7 +2970,7 @@ mod tests {
         let mut bus = Overflowing;
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000u64;
+        let mut pc = 0xFFFF_FFFF_8000_0000u64;
         for _ in 0..48 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2941,7 +2999,7 @@ mod tests {
         let mut bus = Watch { fetched: false };
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0002; // deliberately unaligned
+        let mut pc = 0xFFFF_FFFF_8000_0002; // deliberately unaligned
 
         p.advance(&mut bus, &mut regs, &mut pc);
 
@@ -2965,7 +3023,7 @@ mod tests {
         );
         assert_eq!(
             p.cop0.read(crate::cop0::reg::BAD_VADDR),
-            0x8000_0002,
+            0xFFFF_FFFF_8000_0002,
             "and BadVAddr holds the unaligned address, un-realigned"
         );
         assert_eq!(
@@ -2979,7 +3037,7 @@ mod tests {
         // did until review caught it.
         assert_eq!(
             p.cop0.read(crate::cop0::reg::EPC),
-            0x8000_0002,
+            0xFFFF_FFFF_8000_0002,
             "EPC names the faulting fetch, not the previous one"
         );
 
@@ -3410,7 +3468,7 @@ mod tests {
     /// which is how real code runs and, since T-12-004, the only way a test can
     /// fetch at all without installing a mapping. Fetching from a bare `0x800`
     /// is a KUSEG address and now correctly raises a TLB refill.
-    const KSEG0_PROG: u64 = 0x8000_0800;
+    const KSEG0_PROG: u64 = 0xFFFF_FFFF_8000_0800;
 
     /// A bus that fetches `NOP`s and holds its interrupt line asserted.
     ///
@@ -3466,7 +3524,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0000 | 0x40,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                     value: 0xDEAD_BEEF,
                     dest: 9,
                 },
@@ -3493,7 +3551,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::SignedWord,
-                    addr: 0x8000_0040,
+                    addr: 0xFFFF_FFFF_8000_0040,
                     dest: 8,
                 },
             )
@@ -3517,14 +3575,14 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0040,
+                    addr: 0xFFFF_FFFF_8000_0040,
                     value: 0xA5A5_A5A5,
                     dest: 9,
                 },
             )
             .expect("aligned");
         assert_eq!(wb, WriteBack::Gpr { dest: 9, value: 1 });
-        writeback(&mut p, &mut bus, 0x8000_0040);
+        writeback(&mut p, &mut bus, 0xFFFF_FFFF_8000_0040);
         assert_eq!(bus.read_u32(0x40), 0xA5A5_A5A5, "the store happened");
     }
 
@@ -3543,7 +3601,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -3555,7 +3613,7 @@ mod tests {
                     &mut bus,
                     MemOp::ConditionalStore {
                         kind: StoreKind::Word,
-                        addr: 0x8000_0000 | 0x40,
+                        addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                         value: 1,
                         dest: 9,
                     },
@@ -3582,7 +3640,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0000 | 0x42,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x42,
                     value: 1,
                     dest: 9,
                 },
@@ -3606,7 +3664,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::SignedWord,
-                    addr: 0x8000_0000 | 0x42,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x42,
                     dest: 8,
                 },
             )
@@ -3631,7 +3689,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::Double,
-                    addr: 0x8000_0000 | 0x40,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                     dest: 8,
                 },
             )
@@ -3648,13 +3706,13 @@ mod tests {
             &mut bus,
             MemOp::ConditionalStore {
                 kind: StoreKind::Double,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 value: u64::MAX,
                 dest: 9,
             },
         )
         .expect("aligned");
-        writeback(&mut p, &mut bus, 0x8000_0040);
+        writeback(&mut p, &mut bus, 0xFFFF_FFFF_8000_0040);
         assert_eq!(bus.read_u32(0x40), u32::MAX);
         assert_eq!(bus.read_u32(0x44), u32::MAX, "all eight bytes, not four");
     }
@@ -3772,7 +3830,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -3817,17 +3875,17 @@ mod tests {
         );
 
         // Now fetch an unaligned address.
-        pc = 0x8000_0006;
+        pc = 0xFFFF_FFFF_8000_0006;
         p.advance(&mut bus, &mut regs, &mut pc);
 
         assert_eq!(
             p.cop0.read(crate::cop0::reg::EPC),
-            0x8000_0006,
+            0xFFFF_FFFF_8000_0006,
             "EPC must be the unaligned fetch, not the last good one"
         );
         assert_eq!(
             p.cop0.read(crate::cop0::reg::BAD_VADDR),
-            0x8000_0006,
+            0xFFFF_FFFF_8000_0006,
             "and BadVAddr likewise"
         );
     }
@@ -3843,7 +3901,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -3856,7 +3914,8 @@ mod tests {
 
         p.cop0
             .set_hardware(crate::cop0::reg::STATUS, 1 << 1 /* EXL */);
-        p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
+        p.cop0
+            .set_hardware(crate::cop0::reg::EPC, 0xFFFF_FFFF_8000_5000);
 
         let mut regs = Regs::new();
         let mut prog = Ram::new(alloc::vec![word]);
@@ -3871,7 +3930,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0000 | 0x40,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                     value: 0xFFFF,
                     dest: 9,
                 },
@@ -3897,7 +3956,8 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 1 << 1);
-        p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
+        p.cop0
+            .set_hardware(crate::cop0::reg::EPC, 0xFFFF_FFFF_8000_5000);
         let mut pc = KSEG0_PROG;
 
         for _ in 0..12 {
@@ -4656,7 +4716,12 @@ mod tests {
         let mut p = Pipeline::new();
         // KSU = 2 (user), CU0 clear, EXL/ERL clear.
         p.cop0.set_hardware(reg::STATUS, 0b10 << 3);
-        let mut pc = KSEG0_PROG;
+        // The program cannot live in KSEG0 here: that segment does not exist in
+        // User mode, so the FETCH would raise AdEL and the test would pass on
+        // the wrong exception. Map page-pair 0 identically instead and run from
+        // USEG, which is the only place a user program can be.
+        map(&mut p, 0, 0, 0);
+        let mut pc = KSEG0_PROG & 0x1FFF_FFFF;
 
         let mut cycles = 0;
         while p.stalled_by() != Some(Interlock::Exception) {
@@ -5861,7 +5926,7 @@ mod tests {
             0x0123_4567_89AB_CDEF,
             "the double survived memory in the FR = 0 paired view"
         );
-        writeback(&mut p, &mut bus, 0x8000_0100);
+        writeback(&mut p, &mut bus, 0xFFFF_FFFF_8000_0100);
         assert_eq!(
             bus.read_u32(0x100),
             0x0123_4567,

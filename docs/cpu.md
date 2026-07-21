@@ -491,7 +491,8 @@ system interface and the TLB) — UM §4.7.3.
 
 ### Virtual address space
 
-Standard MIPS segment layout (`ref-docs/research-report.md` §1):
+Standard MIPS segment layout (`ref-docs/research-report.md` §1), **as seen from
+Kernel mode under 32-bit addressing**:
 
 | Segment | Range | Mapping |
 | --- | --- | --- |
@@ -500,9 +501,31 @@ Standard MIPS segment layout (`ref-docs/research-report.md` §1):
 | KSEG1 | `0xA000_0000`–`0xBFFF_FFFF` | direct, **uncached** |
 | KSSEG/KSEG3 | `0xC000_0000`–`0xFFFF_FFFF` | TLB-mapped |
 
-Hardware registers are reached through KSEG1 (uncached). The skeleton bus strips
-`addr & 0x1FFF_FFFF` to the physical RDRAM window; the full TLB path replaces that
-for mapped segments.
+Hardware registers are reached through KSEG1 (uncached).
+
+**The map is not a function of the address alone.** It depends on the privilege
+mode and on whether that mode is using 64-bit addressing:
+
+- **User** sees `USEG` alone. **Supervisor** sees `SUSEG` and `SSEG`
+  (`0xC000_0000`–`0xDFFF_FFFF`). **Kernel** sees the table above.
+- Everything else is an **address error, raised before the TLB is consulted**.
+  That is what stops a user program reaching `KSEG0` — not the TLB. Folding the
+  case into a TLB refill instead would send the program to the refill handler,
+  where a well-behaved kernel maps the page and grants the access it was never
+  allowed to make.
+- With `Status.KX`/`SX`/`UX` set for the current mode, each mapped segment widens
+  to 2^40 and the space grows holes: an address inside a segment's *region* but
+  past its size faults. Kernel additionally gains **XKPHYS**
+  (`0x8000_..`–`0xBFFF_..`), eight 2^32 direct windows chosen by bits 61:59 and
+  differing only in cacheability — and by the same rule as a TLB entry's `C`
+  field, only `C == 2` is uncached.
+
+**Under 32-bit addressing an address must be the sign extension of its low word.**
+`0x0000_0000_8000_1000` is not a shorthand for `KSEG0`; it is an address error,
+which n64-systemtest asserts directly ("LW with address not sign extended").
+Truncating to 32 bits is the natural shortcut and accepts it silently. The reset
+vector and any ROM entry point are therefore stored sign-extended
+(`0xFFFF_FFFF_BFC0_0000`), not as bare 32-bit values.
 
 ### Interrupts
 
