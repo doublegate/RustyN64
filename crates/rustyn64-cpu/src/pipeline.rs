@@ -374,6 +374,13 @@ pub struct Pipeline {
     ll_bit: bool,
 }
 
+/// `FCSR.C`, the compare condition — bit 23, above the `Cause` field.
+///
+/// Written only by `C.cond.fmt` and read only by the `BC1` family, so it is
+/// deliberately outside the `Cause`/`Flags` bookkeeping that every other FP
+/// operation touches.
+const FCSR_C: u32 = 1 << 23;
+
 impl Pipeline {
     /// A fresh, empty pipeline.
     #[must_use]
@@ -894,13 +901,16 @@ impl Pipeline {
         store: bool,
     ) -> Result<crate::addr::Physical, Exception> {
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let erl = self.erl();
-        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store, erl) {
+        let access = self.access_mode();
+        match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store, access) {
             Ok(p) => Ok(p),
-            Err(f) => {
+            Err(e) => {
                 self.fault_vaddr = vaddr;
                 self.note_shutdown();
-                Err(Self::tlb_exception(f, store))
+                Err(match e {
+                    crate::addr::TranslateError::Address => Exception::AddressError { store },
+                    crate::addr::TranslateError::Tlb(f) => Self::tlb_exception(f, store),
+                })
             }
         }
     }
@@ -926,10 +936,39 @@ impl Pipeline {
         // The unaligned family splits into loads and stores, and the
         // TLB check differs: a store must find the `D` bit set.
         let is_store = matches!(op, Op::Swl | Op::Swr | Op::Sdl | Op::Sdr);
-        let word_addr = self.translate_data(addr & !3, is_store)?;
-        let dword_addr = self.translate_data(addr & !7, is_store)?;
-        let byte4 = addr & 3;
-        let byte8 = addr & 7;
+        // On a fault, `BadVAddr` reports the address the INSTRUCTION named, not
+        // the container address translated on its behalf. `translate_data`
+        // records whatever it was handed, so the aligned-down value has to be
+        // corrected back -- otherwise a fault on `SWL 0x12345001` reports
+        // `0x12345000`, and n64-systemtest checks that exact case.
+        let translate = |p: &mut Self, a: u64| match p.translate_data(a, is_store) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                p.fault_vaddr = addr;
+                Err(e)
+            }
+        };
+        // `Status.RE` applies the **byte** swap here, `addr ^ 7`, not the swap for
+        // the container's width. These instructions address individual bytes, so
+        // the byte lane is what moves — and one XOR relocates the container and
+        // complements the byte index together, which is why the two do not need
+        // separate treatment:
+        //
+        //   `LWL 0` becomes container 4 with byte index 3, because
+        //   `0 ^ 7 == 7`, `7 & !3 == 4` and `7 & 3 == 3`.
+        //
+        // Derived from n64-systemtest's own expected tables rather than guessed:
+        // `SWL` at offset 0 writes a single byte, `rt`'s most significant, into
+        // the doubleword's LAST byte, which no width-based swap produces.
+        let eaddr = if self.reverse_endian() {
+            addr ^ 7
+        } else {
+            addr
+        };
+        let word_addr = translate(self, eaddr & !3)?;
+        let dword_addr = translate(self, eaddr & !7)?;
+        let byte4 = eaddr & 3;
+        let byte8 = eaddr & 7;
         Ok(match op {
             Op::Lwl | Op::Lwr => {
                 let w = self.read_width(bus, word_addr, 4) as u32;
@@ -1038,6 +1077,119 @@ impl Pipeline {
         None
     }
 
+    /// `Status.RE` — reverse endian, and **only in User mode** (UM §5.2).
+    ///
+    /// `EXL`/`ERL` force kernel mode regardless of `KSU`, so an exception
+    /// handler reads memory the way it wrote it even with `RE` set. That is the
+    /// same rule the coprocessor-usability check applies, for the same reason.
+    fn reverse_endian(&self) -> bool {
+        /// `Status.RE`, bit 25.
+        const RE: u64 = 1 << 25;
+        /// `Status.KSU` (4:3) — 2 is user.
+        const KSU_USER: u64 = 0b10 << 3;
+        /// `Status.KSU` (4:3).
+        const KSU: u64 = 0b11 << 3;
+        /// `Status.EXL` (1) or `Status.ERL` (2).
+        const EXL_OR_ERL: u64 = 0b110;
+        let status = self.cop0.read(crate::cop0::reg::STATUS);
+        status & RE != 0 && status & KSU == KSU_USER && status & EXL_OR_ERL == 0
+    }
+
+    /// The reverse-endian byte-lane swap for an access of `width` bytes.
+    ///
+    /// Reversing endianness on a 64-bit datapath is a permutation of byte lanes
+    /// within the doubleword, expressed as an XOR of the low address bits: a
+    /// doubleword access covers the whole lane set and does not move, a word
+    /// moves by 4, a halfword by 6 and a byte by 7.
+    const fn re_swap(width: u64) -> u32 {
+        match width {
+            1 => 7,
+            2 => 6,
+            4 => 4,
+            _ => 0,
+        }
+    }
+
+    /// Translate a data address and apply the reverse-endian swap, if any.
+    ///
+    /// The swap is applied to the **physical** address, after translation. It
+    /// touches only bits 2:0, which every translation maps identically, so this
+    /// is exactly equivalent to swapping the virtual address first — and it
+    /// keeps `BadVAddr` raw on a fault, which n64-systemtest asserts directly
+    /// ("RE unmapped access keeps raw `BadVAddr`").
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Pipeline::translate_data`] raises on the untransformed
+    /// address: a TLB fault, **or** [`Exception::AddressError`] when the address
+    /// is not valid in the current privilege mode.
+    fn translate_re(
+        &mut self,
+        vaddr: u64,
+        store: bool,
+        width: u64,
+    ) -> Result<crate::addr::Physical, Exception> {
+        let mut p = self.translate_data(vaddr, store)?;
+        if self.reverse_endian() {
+            p.addr ^= Self::re_swap(width);
+        }
+        Ok(p)
+    }
+
+    /// The privilege mode and addressing width the next access runs under.
+    ///
+    /// `EXL`/`ERL` force Kernel regardless of `KSU` — the same rule the
+    /// coprocessor-usability check applies, and what makes an exception
+    /// handler's first instructions safe.
+    ///
+    /// The addressing-width bit is picked **for the resolved mode**, not for
+    /// `KSU`: a User-mode program that takes an exception runs the handler in
+    /// Kernel mode, and the handler's addresses are governed by `KX`.
+    fn access_mode(&self) -> crate::addr::Access {
+        /// `Status.KSU`, bits 4:3.
+        const KSU: u64 = 0b11 << 3;
+        /// `Status.EXL` (1) or `Status.ERL` (2).
+        const EXL_OR_ERL: u64 = 0b110;
+        let status = self.cop0.read(crate::cop0::reg::STATUS);
+        let mode = if status & EXL_OR_ERL != 0 {
+            crate::addr::Mode::Kernel
+        } else {
+            match (status & KSU) >> 3 {
+                1 => crate::addr::Mode::Supervisor,
+                2 => crate::addr::Mode::User,
+                // 0 is Kernel. 3 is not a defined encoding and the manual
+                // gives it no behaviour; it falls in with Kernel because that is
+                // what `KSU == 0` already does and it keeps the match total
+                // without inventing a fourth mode. Note this is the most
+                // PERMISSIVE choice, not the safest one -- if a test ever pins
+                // `KSU == 3`, it belongs in the accuracy ledger, not here.
+                _ => crate::addr::Mode::Kernel,
+            }
+        };
+        // `Status.UX` (5), `SX` (6), `KX` (7).
+        let wide = match mode {
+            crate::addr::Mode::User => status & (1 << 5) != 0,
+            crate::addr::Mode::Supervisor => status & (1 << 6) != 0,
+            crate::addr::Mode::Kernel => status & (1 << 7) != 0,
+        };
+        crate::addr::Access {
+            mode,
+            wide,
+            erl: self.erl(),
+        }
+    }
+
+    /// Are the MIPS III 64-bit operations reserved right now?
+    ///
+    /// Yes in User or Supervisor mode with that mode's `UX`/`SX` bit clear; never
+    /// in Kernel mode, whatever `KX` says. Both halves are load-bearing: gating
+    /// on the width bit alone would reserve them for a 32-bit kernel, and gating
+    /// on the mode alone would reserve them for a 64-bit user program.
+    fn sixty_four_bit_is_reserved(&self) -> bool {
+        let a = self.access_mode();
+        !matches!(a.mode, crate::addr::Mode::Kernel) && !a.wide
+    }
+
     /// `Status.ERL` — the error level, which makes KUSEG unmapped (UM §5.2.2).
     fn erl(&self) -> bool {
         self.cop0.read(crate::cop0::reg::STATUS) & (1 << 2) != 0
@@ -1073,7 +1225,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: false });
                 }
-                let phys = self.translate_data(addr, false)?;
+                let phys = self.translate_re(addr, false, kind.width())?;
                 let raw = self.read_width(bus, phys, kind.width());
                 Ok(WriteBack::Gpr {
                     dest,
@@ -1085,7 +1237,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: true });
                 }
-                let phys = self.translate_data(addr, true)?;
+                let phys = self.translate_re(addr, true, kind.width())?;
                 self.write_width(bus, phys, kind.width(), value);
                 Ok(WriteBack::None)
             }
@@ -1099,7 +1251,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store: false });
                 }
-                let phys = self.translate_data(addr, false)?;
+                let phys = self.translate_re(addr, false, kind.width())?;
                 let raw = self.read_width(bus, phys, kind.width());
                 self.ll_bit = true;
                 // "the value with the high-order four bits of the physical
@@ -1130,7 +1282,7 @@ impl Pipeline {
                 }
                 let stored = self.ll_bit;
                 if stored {
-                    let phys = self.translate_data(addr, true)?;
+                    let phys = self.translate_re(addr, true, kind.width())?;
                     self.write_width(bus, phys, kind.width(), value);
                 }
                 // Written whether or not the store happened. Note the link bit
@@ -1151,7 +1303,7 @@ impl Pipeline {
                     self.fault_vaddr = addr;
                     return Err(Exception::AddressError { store });
                 }
-                let phys = self.translate_data(addr, store)?;
+                let phys = self.translate_re(addr, store, if double { 8 } else { 4 })?;
                 // `Status.FR` selects the register-file view; a double under
                 // FR = 0 occupies an FGR pair.
                 let fr = fr_of(&self.cop0);
@@ -1211,10 +1363,16 @@ impl Pipeline {
             let p = self.translate_data(addr, false)?;
             self.cache_hit_op(bus, op, p.addr);
         } else {
-            // An `Index_*` op indexes on the raw VIRTUAL address. That is not a
-            // shortcut around the untranslated case: the index lives in bits
-            // 13:5 (I) / 12:4 (D), and every segment's translation leaves those
-            // bits alone.
+            // An `Index_*` op indexes on the raw VIRTUAL address, which is what
+            // the hardware does: both primary caches are VIRTUALLY indexed.
+            //
+            // This model indexes by physical address (ledger D-6), so on a
+            // TLB-mapped page the two can select different lines -- translation
+            // preserves only the low 12 bits, while the D-cache index reaches
+            // bit 12 and the I-cache bit 13. That divergence is exactly what D-6
+            // records. It is NOT the claim an earlier revision of this comment
+            // made -- that translation leaves the index bits alone -- which is
+            // false for every mapped segment.
             self.cache_index_op(bus, op, addr as u32);
         }
         Ok(WriteBack::None)
@@ -1445,6 +1603,20 @@ impl Pipeline {
                 self.ex_dc = out;
                 return;
             }
+            // A 64-bit operation is RESERVED in 32-bit User or Supervisor mode.
+            // Kernel may use them at any width, which is why this cannot be a
+            // property of `Status.KX` alone.
+            //
+            // Checked after coprocessor usability, not before: an unusable
+            // coprocessor is reported as such even when the encoding is also a
+            // 64-bit one, and the suite distinguishes the two causes.
+            if out.decoded.op.is_64_bit() && self.sixty_four_bit_is_reserved() {
+                self.abort_from(Stage::Ex, Exception::ReservedInstruction);
+                out = self.rf_ex;
+                self.rf_ex.occupied = false;
+                self.ex_dc = out;
+                return;
+            }
             // `DCFC1`/`DCTC1` are usable-but-unimplemented: the `CU1` check
             // above has already passed, so this is the *other* outcome. The
             // whole `Cause` field is replaced, leaving only bit 17 -- the suite
@@ -1470,7 +1642,20 @@ impl Pipeline {
                 self.ex_dc = out;
                 return;
             }
-            match execute(out.decoded, out.rs_val, out.rt_val, hilo, out.pc) {
+            // `FCSR.C` — read here, in EX, where the branch resolves, THROUGH A
+            // BYPASS. See `pending_fp_condition`.
+            let fp_condition = self.pending_fp_condition().unwrap_or_else(|| {
+                let p: &Self = self;
+                p.cop1.fcsr() & FCSR_C != 0
+            });
+            match execute(
+                out.decoded,
+                out.rs_val,
+                out.rt_val,
+                hilo,
+                out.pc,
+                fp_condition,
+            ) {
                 Ok(e) => {
                     out.write_back = e.write_back;
                     out.mem = e.mem;
@@ -1617,6 +1802,56 @@ impl Pipeline {
         self.ic_rf.occupied = false;
     }
 
+    /// The FP condition an in-flight `C.cond.fmt` is about to commit, if any.
+    ///
+    /// `BC1` resolves in `EX`; `C.cond.fmt` computes *and* commits `FCSR.C` in
+    /// `WB` (ADR 0007's single commit-or-trap point). An adjacent pair therefore
+    /// has the branch sampling the previous condition, and the ROM emits exactly
+    /// that pair with no separating instruction.
+    ///
+    /// # Why this is a bypass and not a stall
+    ///
+    /// Stalling cannot work here. `stall_for` freezes the whole pipeline, so
+    /// holding the branch delays the compare's `WB` by the same amount and the
+    /// branch never catches up — an interlock on `ex_dc`/`dc_wb` was written,
+    /// fired once, and changed nothing. This is the same shape as the **load**
+    /// interlock, which works only because its consumer reads through the
+    /// bypass network; the one-cycle stall buys `DC` time, and forwarding does
+    /// the rest. The FP condition had no such path, so this is it.
+    ///
+    /// # Why recomputing is sound
+    ///
+    /// A compare reads two FP registers and writes only `FCSR.C`. Nothing
+    /// between it and the branch can change those registers — the branch has no
+    /// destination — so evaluating it early yields the value `WB` will commit.
+    /// The flags are deliberately discarded: this is a forwarding path, and
+    /// raising an exception from it would make the branch report the *compare's*
+    /// trap.
+    ///
+    /// `ex_dc` is checked before `dc_wb` because it holds the **younger**
+    /// instruction, and the most recent compare is the one whose value stands.
+    fn pending_fp_condition(&self) -> Option<bool> {
+        let fr = fr_of(&self.cop0);
+        for latch in [&self.ex_dc, &self.dc_wb] {
+            if !latch.occupied {
+                continue;
+            }
+            if let Some(Cop0Access::Cop1(Cop1Access::Arith {
+                fmt, funct, ft, fs, ..
+            })) = latch.cop0
+                && funct >= 0o60
+            {
+                if let (FpCommit::Condition(c), _, false) =
+                    self.fp_compare(fmt, funct & 0xF, ft, fs, fr)
+                {
+                    return Some(c);
+                }
+                return None;
+            }
+        }
+        None
+    }
+
     /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
     fn ic_stage<B: Bus>(&mut self, bus: &mut B, next_pc: &mut u64) {
         // An abort raised earlier this cycle flushes younger instructions. The
@@ -1686,8 +1921,23 @@ impl Pipeline {
         // JTLB miss is an exception. Only the mapped segments involve either --
         // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let (phys, cached) = match crate::addr::segment(pc, self.erl()) {
+        let (phys, cached) = match crate::addr::segment(pc, self.access_mode()) {
             crate::addr::Segment::Direct { addr, cached } => (addr, cached),
+            // Not a valid address in this mode: an address error, raised without
+            // consulting the TLB at all.
+            crate::addr::Segment::Invalid => {
+                let exc = Exception::AddressError { store: false };
+                self.ic_rf = Latch {
+                    cop0: None,
+                    occupied: true,
+                    pc,
+                    in_delay_slot,
+                    abort: Some(exc),
+                    ..Latch::default()
+                };
+                self.abort_with(Stage::Ic, exc, pc);
+                return;
+            }
             crate::addr::Segment::Mapped => {
                 // The 3-PCycle penalty is "incurred when the micro-TLB is
                 // updated from the JTLB" (UM §4.6.2) -- so it is charged only
@@ -1723,6 +1973,15 @@ impl Pipeline {
                     }
                 }
             }
+        };
+        // Instruction fetch is a 4-byte access, so `Status.RE` swaps it within
+        // its doubleword exactly as it swaps a `LW` -- which is why the test ROM
+        // has to emit its reverse-endian programs with each instruction PAIR
+        // exchanged for them to execute in order.
+        let phys = if self.reverse_endian() {
+            phys ^ Self::re_swap(4)
+        } else {
+            phys
         };
         // Fetch through the I-cache when the segment is cached. This is what
         // makes an uncached patch to already-fetched code invisible until a
@@ -1824,9 +2083,6 @@ impl Pipeline {
         /// reading `FCSR` after a successful conversion would then still see
         /// the previous unimplemented operation.
         const CAUSE_MASK: u32 = 0x3F << 12;
-        /// `FCSR.C`, the compare condition — bit 23, above the Cause field and
-        /// written only by `C.cond.fmt`.
-        const FCSR_C: u32 = 1 << 23;
 
         let fr = fr_of(&self.cop0);
         // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
@@ -1858,8 +2114,8 @@ impl Pipeline {
             // SOURCE's upper half there, not the destination's previous
             // contents -- so this is a whole-register transfer that happens to
             // be spelled `.S`.
-            let v = self.fpr.read_d(fs, fr);
-            self.fpr.write_d(fd, fr, v);
+            let v = self.fpr.read_d_fs(fs, fr);
+            self.fpr.write_d_arith(fd, fr, v);
             // **`FCSR` is left completely alone**, `Cause` included.
             //
             // Clearing `Cause` here was written first, on no evidence, and was
@@ -1924,12 +2180,13 @@ impl Pipeline {
         }
 
         match commit {
-            // Preserves the upper half, as `MTC1` does. Writing the full
-            // register (`write_raw`, zeroing the upper half) was tried and
-            // REVERTED: it moved the oracle by nothing and it bypasses the `FR`
-            // view, which is exactly the mistake ledger U-7 records (C-10).
+            // CLEARS the upper half -- `write_s_arith`, not `write_s`. An
+            // arithmetic `.S` result is not an `MTC1`: the suite reads the
+            // destination back with `DMFC1` and expects zero above (C-10).
+            // Going through the `Fpr` accessor rather than `write_raw` is what
+            // keeps the `FR` view applied, which is the part ledger U-7 records.
             FpCommit::Single(v) => self.fpr.write_s_arith(fd, fr, v),
-            FpCommit::Double(v) => self.fpr.write_d(fd, fr, v),
+            FpCommit::Double(v) => self.fpr.write_d_arith(fd, fr, v),
             // `FCSR.C` is bit 23, and it is NOT part of the `Cause`/`Flags`
             // bookkeeping — a compare writes it and no other operation touches
             // it. Confirmed against n64-systemtest's own `FCSR` bitfield rather
@@ -1960,7 +2217,7 @@ impl Pipeline {
 
         let fcsr = self.cop1.fcsr();
         let (commit, flags, unimplemented) = if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 (0u64, fpu::Flags::NONE, true)
             } else if fpu::is_snan_f32(a) {
@@ -1978,7 +2235,7 @@ impl Pipeline {
                 (u64::from(v.to_bits()), fpu::Flags::NONE, false)
             }
         } else {
-            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            let a = f64::from_bits(self.fpr.read_d_fs(fs, fr));
             if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                 (0u64, fpu::Flags::NONE, true)
             } else if fpu::is_snan_f64(a) {
@@ -2018,7 +2275,7 @@ impl Pipeline {
         if fmt == 0o20 {
             self.fpr.write_s_arith(fd, fr, commit as u32);
         } else {
-            self.fpr.write_d(fd, fr, commit);
+            self.fpr.write_d_arith(fd, fr, commit);
         }
         self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
         false
@@ -2042,7 +2299,7 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let bits = u64::from(self.fpr.read_s(fs, fr));
+            let bits = u64::from(self.fpr.read_s_fs(fs, fr));
             let a = f32::from_bits(bits as u32);
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
@@ -2050,7 +2307,7 @@ impl Pipeline {
             let r = softfloat::sqrt(bits, softfloat::F32, mode);
             (FpCommit::Single(r.bits as u32), r.flags, false)
         } else {
-            let bits = self.fpr.read_d(fs, fr);
+            let bits = self.fpr.read_d_fs(fs, fr);
             let a = f64::from_bits(bits);
             if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                 return (FpCommit::Double(0), fpu::Flags::NONE, true);
@@ -2189,8 +2446,8 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs, fr));
-            let b = f32::from_bits(self.fpr.read_s(ft, fr));
+            let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
+            let b = f32::from_bits(self.fpr.read_s_ft(ft, fr));
             if fpu::arith_unimplemented_s(a, b) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
             }
@@ -2202,8 +2459,8 @@ impl Pipeline {
             };
             self.subnormal_policy_s(out, mode)
         } else {
-            let a = f64::from_bits(self.fpr.read_d(fs, fr));
-            let b = f64::from_bits(self.fpr.read_d(ft, fr));
+            let a = f64::from_bits(self.fpr.read_d_fs(fs, fr));
+            let b = f64::from_bits(self.fpr.read_d_ft(ft, fr));
             if fpu::arith_unimplemented_d(a, b) {
                 return (FpCommit::Double(0), fpu::Flags::NONE, true);
             }
@@ -2238,14 +2495,17 @@ impl Pipeline {
             2 => Rounding::TowardPlusInf,
             _ => Rounding::TowardMinusInf,
         };
+        // Refusal is decided BEFORE the source is read as a float: an integer
+        // source format has no float to widen, and reading one anyway produces a
+        // plausible number for an instruction that does not exist.
+        if self.integer_conversion_unimplemented(fmt, fs, fr) {
+            return (FpCommit::Single(0), fpu::Flags::NONE, true);
+        }
         // The source is widened to `f64` first, which is EXACT for an `f32`, so
         // no rounding happens before the one the instruction asks for.
         let v = self.fp_source_as_f64(fmt, fs, fr);
         // funct 8..=11 target `.L`, 12..=15 target `.W`.
         let wide = funct < 0o14;
-        if self.integer_conversion_unimplemented(fmt, fs, fr) {
-            return (FpCommit::Single(0), fpu::Flags::NONE, true);
-        }
         if wide {
             let out = fpu::to_i64(v, mode);
             // `to_i64` reports NaN and out-of-range as Invalid, which is the
@@ -2293,14 +2553,23 @@ impl Pipeline {
         /// The last integer a `double` represents exactly.
         const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
 
+        // An INTEGER source format is not a conversion this processor has:
+        // `CVT.W.W`, `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the whole
+        // `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family from `.W`/`.L` do not exist, and
+        // the VR4300 declines them with Unimplemented Operation rather than
+        // reinterpreting the source. Checked first, because every branch below
+        // would happily read the register as a float and return a number.
+        if fmt != 0o20 && fmt != 0o21 {
+            return true;
+        }
         let v = if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
             if fpu::is_subnormal_f32(a) {
                 return true;
             }
             f64::from(a)
         } else {
-            let a = f64::from_bits(self.fpr.read_d(fs, fr));
+            let a = f64::from_bits(self.fpr.read_d_fs(fs, fr));
             if fpu::is_subnormal_f64(a) {
                 return true;
             }
@@ -2323,7 +2592,7 @@ impl Pipeline {
             // To single.
             0o40 => match fmt {
                 0o21 => {
-                    let bits = self.fpr.read_d(fs, fr);
+                    let bits = self.fpr.read_d_fs(fs, fr);
                     let a = f64::from_bits(bits);
                     if fpu::is_subnormal_f64(a) || fpu::is_unimplemented_nan_f64(a) {
                         return (FpCommit::Single(0), fpu::Flags::NONE, true);
@@ -2346,8 +2615,12 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
-                    let out = fpu::cvt_s_w(self.fpr.read_s(fs, fr) as i32);
-                    (FpCommit::Single(out.value.to_bits()), out.flags, false)
+                    // Through `softfloat`, not a Rust `as` cast: an i32 can need
+                    // more than 24 significand bits, so this rounds -- and must
+                    // round the way `FCSR.RM` says.
+                    let v = i64::from(self.fpr.read_s_fs(fs, fr) as i32);
+                    let r = softfloat::from_int(v, softfloat::F32, mode);
+                    (FpCommit::Single(r.bits as u32), r.flags, false)
                 }
                 // From `.L`, which the VR4300 restricts: bits 63:55 must be all
                 // zeroes or all ones (UM §7.5.2). Outside that it raises
@@ -2355,17 +2628,22 @@ impl Pipeline {
                 // result -- so the commit value is a placeholder the trap path
                 // discards.
                 #[allow(clippy::cast_possible_wrap)]
-                _ => fpu::cvt_s_l(self.fpr.read_d(fs, fr) as i64).map_or(
-                    // No defined result when the restriction is violated, so
-                    // the value is a placeholder the trap path discards.
-                    (FpCommit::Single(0), fpu::Flags::NONE, true),
-                    |out| (FpCommit::Single(out.value.to_bits()), out.flags, false),
-                ),
+                _ => {
+                    let v = self.fpr.read_d_fs(fs, fr) as i64;
+                    if fpu::long_convertible(v) {
+                        let r = softfloat::from_int(v, softfloat::F32, mode);
+                        (FpCommit::Single(r.bits as u32), r.flags, false)
+                    } else {
+                        // No defined result when the restriction is violated, so
+                        // the value is a placeholder the trap path discards.
+                        (FpCommit::Single(0), fpu::Flags::NONE, true)
+                    }
+                }
             },
             // To double.
             0o41 => match fmt {
                 0o20 => {
-                    let bits = u64::from(self.fpr.read_s(fs, fr));
+                    let bits = u64::from(self.fpr.read_s_fs(fs, fr));
                     let a = f32::from_bits(bits as u32);
                     if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                         return (FpCommit::Double(0), fpu::Flags::NONE, true);
@@ -2378,16 +2656,25 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)]
                 0o24 => {
-                    let out = fpu::cvt_d_w(self.fpr.read_s(fs, fr) as i32);
-                    (FpCommit::Double(out.value.to_bits()), out.flags, false)
+                    // Exact for every i32 -- 53 bits hold 32 -- but routed the
+                    // same way as the others so there is one conversion rather
+                    // than two that can disagree.
+                    let v = i64::from(self.fpr.read_s_fs(fs, fr) as i32);
+                    let r = softfloat::from_int(v, softfloat::F64, mode);
+                    (FpCommit::Double(r.bits), r.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
-                _ => fpu::cvt_d_l(self.fpr.read_d(fs, fr) as i64).map_or(
-                    // No defined result when the restriction is violated, so
-                    // the value is a placeholder the trap path discards.
-                    (FpCommit::Double(0), fpu::Flags::NONE, true),
-                    |out| (FpCommit::Double(out.value.to_bits()), out.flags, false),
-                ),
+                _ => {
+                    let v = self.fpr.read_d_fs(fs, fr) as i64;
+                    if fpu::long_convertible(v) {
+                        let r = softfloat::from_int(v, softfloat::F64, mode);
+                        (FpCommit::Double(r.bits), r.flags, false)
+                    } else {
+                        // No defined result when the restriction is violated, so
+                        // the value is a placeholder the trap path discards.
+                        (FpCommit::Double(0), fpu::Flags::NONE, true)
+                    }
+                }
             },
             // To word / to long, both honouring `FCSR.RM` -- which is what
             // separates them from the fixed-mode family above.
@@ -2428,14 +2715,14 @@ impl Pipeline {
         use crate::fpu;
         let out = if fmt == 0o20 {
             fpu::compare_s(
-                f32::from_bits(self.fpr.read_s(fs, fr)),
-                f32::from_bits(self.fpr.read_s(ft, fr)),
+                f32::from_bits(self.fpr.read_s_fs(fs, fr)),
+                f32::from_bits(self.fpr.read_s_ft(ft, fr)),
                 cond,
             )
         } else {
             fpu::compare_d(
-                f64::from_bits(self.fpr.read_d(fs, fr)),
-                f64::from_bits(self.fpr.read_d(ft, fr)),
+                f64::from_bits(self.fpr.read_d_fs(fs, fr)),
+                f64::from_bits(self.fpr.read_d_ft(ft, fr)),
                 cond,
             )
         };
@@ -2448,9 +2735,9 @@ impl Pipeline {
     /// the only rounding is the one the instruction performs.
     fn fp_source_as_f64(&self, fmt: u8, fs: u8, fr: bool) -> f64 {
         if fmt == 0o20 {
-            f64::from(f32::from_bits(self.fpr.read_s(fs, fr)))
+            f64::from(f32::from_bits(self.fpr.read_s_fs(fs, fr)))
         } else {
-            f64::from_bits(self.fpr.read_d(fs, fr))
+            f64::from_bits(self.fpr.read_d_fs(fs, fr))
         }
     }
 }
@@ -2481,7 +2768,7 @@ mod tests {
     #[test]
     fn a_value_advances_exactly_one_stage_per_cycle() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
 
@@ -2489,7 +2776,7 @@ mod tests {
         p.advance(&mut bus, &mut regs, &mut pc);
         let sentinel = p.ic_rf.pc;
         assert!(p.ic_rf.occupied);
-        assert_eq!(sentinel, 0x8000_0000);
+        assert_eq!(sentinel, 0xFFFF_FFFF_8000_0000);
 
         // Each subsequent cycle moves it exactly one boundary along.
         p.advance(&mut bus, &mut regs, &mut pc);
@@ -2516,7 +2803,7 @@ mod tests {
     #[test]
     fn delay_slot_flag_survives_a_multi_cycle_stall() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
 
@@ -2554,7 +2841,7 @@ mod tests {
     #[test]
     fn a_stall_freezes_the_pipeline() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2592,7 +2879,7 @@ mod tests {
 
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, IRQ_READY);
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = NullBus { irq: true };
 
@@ -2609,7 +2896,7 @@ mod tests {
         // Now stall, and check the very next cycle refuses it.
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, IRQ_READY);
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         p.advance(&mut bus, &mut regs, &mut pc);
         p.stall_for(1, Interlock::Dcb);
@@ -2636,7 +2923,7 @@ mod tests {
     #[test]
     fn an_abort_survives_the_cascade() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2683,7 +2970,7 @@ mod tests {
     #[test]
     fn a_zero_cycle_stall_is_not_a_stall() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         p.advance(&mut bus, &mut regs, &mut pc);
@@ -2705,7 +2992,7 @@ mod tests {
     #[test]
     fn abort_kills_younger_instructions_only() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2722,7 +3009,7 @@ mod tests {
     #[test]
     fn an_aborted_instruction_does_not_retire() {
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000;
+        let mut pc = 0xFFFF_FFFF_8000_0000;
         let mut regs = Regs::new();
         let mut bus = quiet();
         for _ in 0..4 {
@@ -2776,7 +3063,7 @@ mod tests {
         let mut bus = Rom(program);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000u64;
+        let mut pc = 0xFFFF_FFFF_8000_0000u64;
 
         // Generous budget: 6 instructions, 5 stages deep, plus the MULT stall.
         for _ in 0..64 {
@@ -2812,7 +3099,7 @@ mod tests {
         let mut bus = Ones;
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000u64;
+        let mut pc = 0xFFFF_FFFF_8000_0000u64;
         for _ in 0..32 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2846,7 +3133,7 @@ mod tests {
         let mut bus = Overflowing;
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0000u64;
+        let mut pc = 0xFFFF_FFFF_8000_0000u64;
         for _ in 0..48 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
@@ -2875,7 +3162,7 @@ mod tests {
         let mut bus = Watch { fetched: false };
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
-        let mut pc = 0x8000_0002; // deliberately unaligned
+        let mut pc = 0xFFFF_FFFF_8000_0002; // deliberately unaligned
 
         p.advance(&mut bus, &mut regs, &mut pc);
 
@@ -2899,7 +3186,7 @@ mod tests {
         );
         assert_eq!(
             p.cop0.read(crate::cop0::reg::BAD_VADDR),
-            0x8000_0002,
+            0xFFFF_FFFF_8000_0002,
             "and BadVAddr holds the unaligned address, un-realigned"
         );
         assert_eq!(
@@ -2913,7 +3200,7 @@ mod tests {
         // did until review caught it.
         assert_eq!(
             p.cop0.read(crate::cop0::reg::EPC),
-            0x8000_0002,
+            0xFFFF_FFFF_8000_0002,
             "EPC names the faulting fetch, not the previous one"
         );
 
@@ -3344,7 +3631,7 @@ mod tests {
     /// which is how real code runs and, since T-12-004, the only way a test can
     /// fetch at all without installing a mapping. Fetching from a bare `0x800`
     /// is a KUSEG address and now correctly raises a TLB refill.
-    const KSEG0_PROG: u64 = 0x8000_0800;
+    const KSEG0_PROG: u64 = 0xFFFF_FFFF_8000_0800;
 
     /// A bus that fetches `NOP`s and holds its interrupt line asserted.
     ///
@@ -3400,7 +3687,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0000 | 0x40,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                     value: 0xDEAD_BEEF,
                     dest: 9,
                 },
@@ -3427,7 +3714,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::SignedWord,
-                    addr: 0x8000_0040,
+                    addr: 0xFFFF_FFFF_8000_0040,
                     dest: 8,
                 },
             )
@@ -3451,14 +3738,14 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0040,
+                    addr: 0xFFFF_FFFF_8000_0040,
                     value: 0xA5A5_A5A5,
                     dest: 9,
                 },
             )
             .expect("aligned");
         assert_eq!(wb, WriteBack::Gpr { dest: 9, value: 1 });
-        writeback(&mut p, &mut bus, 0x8000_0040);
+        writeback(&mut p, &mut bus, 0xFFFF_FFFF_8000_0040);
         assert_eq!(bus.read_u32(0x40), 0xA5A5_A5A5, "the store happened");
     }
 
@@ -3477,7 +3764,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -3489,7 +3776,7 @@ mod tests {
                     &mut bus,
                     MemOp::ConditionalStore {
                         kind: StoreKind::Word,
-                        addr: 0x8000_0000 | 0x40,
+                        addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                         value: 1,
                         dest: 9,
                     },
@@ -3516,7 +3803,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0000 | 0x42,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x42,
                     value: 1,
                     dest: 9,
                 },
@@ -3540,7 +3827,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::SignedWord,
-                    addr: 0x8000_0000 | 0x42,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x42,
                     dest: 8,
                 },
             )
@@ -3565,7 +3852,7 @@ mod tests {
                 &mut bus,
                 MemOp::LinkedLoad {
                     kind: LoadKind::Double,
-                    addr: 0x8000_0000 | 0x40,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                     dest: 8,
                 },
             )
@@ -3582,13 +3869,13 @@ mod tests {
             &mut bus,
             MemOp::ConditionalStore {
                 kind: StoreKind::Double,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 value: u64::MAX,
                 dest: 9,
             },
         )
         .expect("aligned");
-        writeback(&mut p, &mut bus, 0x8000_0040);
+        writeback(&mut p, &mut bus, 0xFFFF_FFFF_8000_0040);
         assert_eq!(bus.read_u32(0x40), u32::MAX);
         assert_eq!(bus.read_u32(0x44), u32::MAX, "all eight bytes, not four");
     }
@@ -3706,7 +3993,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -3751,17 +4038,17 @@ mod tests {
         );
 
         // Now fetch an unaligned address.
-        pc = 0x8000_0006;
+        pc = 0xFFFF_FFFF_8000_0006;
         p.advance(&mut bus, &mut regs, &mut pc);
 
         assert_eq!(
             p.cop0.read(crate::cop0::reg::EPC),
-            0x8000_0006,
+            0xFFFF_FFFF_8000_0006,
             "EPC must be the unaligned fetch, not the last good one"
         );
         assert_eq!(
             p.cop0.read(crate::cop0::reg::BAD_VADDR),
-            0x8000_0006,
+            0xFFFF_FFFF_8000_0006,
             "and BadVAddr likewise"
         );
     }
@@ -3777,7 +4064,7 @@ mod tests {
             &mut bus,
             MemOp::LinkedLoad {
                 kind: LoadKind::SignedWord,
-                addr: 0x8000_0000 | 0x40,
+                addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                 dest: 8,
             },
         )
@@ -3790,7 +4077,8 @@ mod tests {
 
         p.cop0
             .set_hardware(crate::cop0::reg::STATUS, 1 << 1 /* EXL */);
-        p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
+        p.cop0
+            .set_hardware(crate::cop0::reg::EPC, 0xFFFF_FFFF_8000_5000);
 
         let mut regs = Regs::new();
         let mut prog = Ram::new(alloc::vec![word]);
@@ -3805,7 +4093,7 @@ mod tests {
                 &mut bus,
                 MemOp::ConditionalStore {
                     kind: StoreKind::Word,
-                    addr: 0x8000_0000 | 0x40,
+                    addr: 0xFFFF_FFFF_8000_0000 | 0x40,
                     value: 0xFFFF,
                     dest: 9,
                 },
@@ -3831,7 +4119,8 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 1 << 1);
-        p.cop0.set_hardware(crate::cop0::reg::EPC, 0x8000_5000);
+        p.cop0
+            .set_hardware(crate::cop0::reg::EPC, 0xFFFF_FFFF_8000_5000);
         let mut pc = KSEG0_PROG;
 
         for _ in 0..12 {
@@ -4590,7 +4879,12 @@ mod tests {
         let mut p = Pipeline::new();
         // KSU = 2 (user), CU0 clear, EXL/ERL clear.
         p.cop0.set_hardware(reg::STATUS, 0b10 << 3);
-        let mut pc = KSEG0_PROG;
+        // The program cannot live in KSEG0 here: that segment does not exist in
+        // User mode, so the FETCH would raise AdEL and the test would pass on
+        // the wrong exception. Map page-pair 0 identically instead and run from
+        // USEG, which is the only place a user program can be.
+        map(&mut p, 0, 0, 0);
+        let mut pc = KSEG0_PROG & 0x1FFF_FFFF;
 
         let mut cycles = 0;
         while p.stalled_by() != Some(Interlock::Exception) {
@@ -4605,26 +4899,122 @@ mod tests {
         assert_eq!((p.cop0.read(reg::CAUSE) >> 28) & 0b11, 0, "unit 0");
     }
 
+    /// A 64-bit operation is Reserved in 32-bit User or Supervisor mode, and
+    /// usable everywhere else.
+    ///
+    /// All four rows are needed. Gating on the width bit alone reserves them for
+    /// a 32-bit *kernel* — which is the mode every N64 boots into, so that
+    /// mistake breaks everything and would be caught. Gating on the mode alone
+    /// reserves them for a 64-bit *user* program, which nothing common does, so
+    /// that mistake would sit unnoticed behind the rows that do pass.
+    #[test]
+    fn a_64_bit_operation_is_reserved_only_in_32_bit_non_kernel_mode() {
+        use crate::cop0::reg;
+        /// `DADD $2, $1, $1` — SPECIAL funct 0o54.
+        const DADD: u32 = (1 << 21) | (1 << 16) | (2 << 11) | 0o54;
+        /// `Status.KSU` = user, and `Status.UX`.
+        const USER: u64 = 0b10 << 3;
+        const UX: u64 = 1 << 5;
+
+        for (status, want_reserved, why) in [
+            (0, false, "32-bit kernel: usable"),
+            (1 << 7, false, "64-bit kernel: usable"),
+            (USER, true, "32-bit user: reserved"),
+            (USER | UX, false, "64-bit user: usable"),
+        ] {
+            let mut bus = Ram::new(alloc::vec![DADD]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, status);
+            // User mode cannot fetch from KSEG0, so the program runs from USEG
+            // through an identity mapping in both cases -- keeping the only
+            // difference between the rows the one under test.
+            map(&mut p, 0, 0, 0);
+            let mut pc = KSEG0_PROG & 0x1FFF_FFFF;
+
+            let mut raised = false;
+            for _ in 0..16 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+                if p.stalled_by() == Some(Interlock::Exception) {
+                    raised = true;
+                    break;
+                }
+            }
+            assert_eq!(raised, want_reserved, "{why}");
+            if raised {
+                assert_eq!(
+                    (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
+                    crate::exception::exc_code::RI,
+                    "{why}: and it is Reserved Instruction, not something else"
+                );
+            }
+        }
+    }
+
+    /// A `BC1` immediately after a `C.cond.fmt` sees that compare's result.
+    ///
+    /// `BC1` resolves in `EX`; the compare commits `FCSR.C` in `WB`. Without a
+    /// forwarding path the branch samples the **previous** condition, falls
+    /// through, and nothing anywhere reports an error — the ROM emits exactly
+    /// this pair with no separating instruction.
+    ///
+    /// Both directions are asserted. Testing only the taken case would pass
+    /// against a bypass that returned `true` unconditionally.
+    #[test]
+    fn a_bc1_immediately_after_a_compare_sees_its_result() {
+        use crate::cop0::reg;
+        /// `C.EQ.S $f0, $f2` — fmt S, ft = 2, fs = 0, cond = EQ.
+        const C_EQ: u32 = (0o21 << 26) | (0o20 << 21) | (2 << 16) | 0o62;
+        /// `BC1T +2` — skips the `ORI` two instructions ahead.
+        const BC1T: u32 = (0o21 << 26) | (0o10 << 21) | (1 << 16) | 2;
+        /// `ORI $8, $0, 1` — runs only if the branch was NOT taken.
+        const ORI: u32 = (0o15 << 26) | (8 << 16) | 1;
+
+        for (lo0, equal) in [(0x2222_3333u64, true), (0x4444_5555, false)] {
+            let mut bus = Ram::new(alloc::vec![C_EQ, BC1T, 0, ORI, 0, 0, 0, 0, 0, 0]);
+            let mut regs = Regs::new();
+            let mut p = Pipeline::new();
+            p.cop0.set_hardware(reg::STATUS, 1 << 29); // CU1
+            // Upper halves differ deliberately: a single-precision compare must
+            // ignore them, so a 64-bit comparison would report "not equal" for
+            // the row that is supposed to match.
+            p.fpr.write_d(0, true, lo0);
+            p.fpr.write_d(2, true, 0x1111_1111_2222_3333);
+            let mut pc = KSEG0_PROG;
+            for _ in 0..14 {
+                p.advance(&mut bus, &mut regs, &mut pc);
+            }
+            assert_eq!(
+                regs.read(8) == 0,
+                equal,
+                "operands equal = {equal}: the branch must {} the ORI",
+                if equal { "skip" } else { "run" }
+            );
+        }
+    }
+
     /// An unimplemented COP1 encoding with `CU1` **set** must not raise. Sprint 3
     /// then *adds* behaviour rather than changing it — and an emulator that
     /// raised here would look correct until the FPU landed.
     #[test]
     fn an_unimplemented_cop1_encoding_does_not_raise_when_cu1_is_set() {
         use crate::cop0::reg;
-        // `BC1F` -- a real, valid COP1 branch that is genuinely not wired yet.
+        // COP1 `rs = 0o11` -- an unassigned encoding in the coprocessor's own
+        // opcode space, so it is valid to *fetch* and does nothing.
         //
-        // This test has now outlived two subjects: it was `ADD.S` until the S/D
-        // arithmetic landed, then `SQRT.S` until T-13-005. Each move is the
-        // test doing its job -- the point is the *unimplemented* path, so the
-        // subject follows whatever is still on it. When `BC1` lands, move it
-        // again rather than deleting it.
-        const BC1F: u32 = (0o21 << 26) | (0o10 << 21);
+        // This test has now outlived three subjects: `ADD.S` until the S/D
+        // arithmetic landed, `SQRT.S` until T-13-005, then `BC1F` until the
+        // branch was wired. Each move is the test doing its job -- the point is
+        // the *unimplemented* path, so the subject follows whatever is still on
+        // it. When `rs = 0o11` acquires a meaning, move it again rather than
+        // deleting it.
+        const UNASSIGNED: u32 = (0o21 << 26) | (0o11 << 21);
         assert_eq!(
-            decode(BC1F).op,
+            decode(UNASSIGNED).op,
             crate::decode::Op::Cop1Unimplemented,
             "valid encoding, not Reserved"
         );
-        let mut bus = Ram::new(alloc::vec![BC1F]);
+        let mut bus = Ram::new(alloc::vec![UNASSIGNED]);
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 set
@@ -4669,10 +5059,14 @@ mod tests {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
 
+        // The WHOLE register, not just the low word. `MOV.S` is a 64-bit bit
+        // move (C-10), so checking only the low half passes against a formatted
+        // half-copy -- which is what the destination's junk upper word is here
+        // to catch.
         assert_eq!(
-            p.fpr.read_s(0, true),
-            0x4000_0000,
-            "MOV.S must copy fs's low word into fd"
+            p.fpr.read_raw(0),
+            0x0011_0011_4000_0000,
+            "MOV.S copies fs entire, upper half included"
         );
         assert_eq!(
             (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
@@ -5795,7 +6189,7 @@ mod tests {
             0x0123_4567_89AB_CDEF,
             "the double survived memory in the FR = 0 paired view"
         );
-        writeback(&mut p, &mut bus, 0x8000_0100);
+        writeback(&mut p, &mut bus, 0xFFFF_FFFF_8000_0100);
         assert_eq!(
             bus.read_u32(0x100),
             0x0123_4567,

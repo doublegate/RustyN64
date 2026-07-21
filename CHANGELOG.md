@@ -9,6 +9,222 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — an in-flight `C.cond.fmt` is forwarded to `BC1`
+
+**This clears Phase 1's cut criterion: n64-systemtest's CPU/COP0/TLB/COP1 categories are at
+`Failed: 0`**, across 917 tests started — reproducible with
+`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`, which is committed
+alongside it.
+
+`BC1` resolves in `EX` while `C.cond.fmt` commits `FCSR.C` in `WB`, so an adjacent pair sampled the
+previous condition — and the ROM emits exactly that pair with no separating instruction.
+
+Fixed by a forwarding path, not a stall. `stall_for` freezes every stage, so holding the branch
+delays the compare's `WB` by the same amount and the gap never closes; an interlock was written,
+traced, and shown to fire once and change nothing. The load interlock is not a counter-example — it
+works because its consumer reads through the bypass network, and the FP condition had no such path.
+
+Re-evaluating the pending compare is sound because it reads two FP registers and writes only
+`FCSR.C`; nothing between it and the branch can change those registers. Flags are discarded, since a
+forwarding path must not raise the compare's trap on the branch's behalf. Ledger **C-25**.
+
+**Phase 1's categories: 1 → 0.**
+
+### Added — `BC1F`/`BC1T`/`BC1FL`/`BC1TL`, branch on the FP condition
+
+They were not implemented: the branch decoded to `Cop1Unimplemented` and retired as a no-op, so a
+program branching on a compare simply fell through. COP1 `rs = 0o10`, bits 17:16 as `nd:tf` — the
+four encodings are true/false crossed with likely/not. Target arithmetic and branch-likely
+nullification are shared with every other branch.
+
+`FCSR.C` is passed into `execute` as a parameter rather than reached for: that function is pure and
+has no view of coprocessor state, and a parameter makes every call site a compile error until it
+supplies one.
+
+**Still outstanding**, and now the sole Phase 1 failure: `BC1` reads the condition in `EX` while
+`C.cond.fmt` writes it in `WB`, so an adjacent pair samples the previous condition. Hardware
+interlocks; we do not yet. A first attempt is documented in ledger **R-2** along with why it is not
+sufficient — the fix must come from tracing where the compare actually is, not from choosing a stall
+count that makes the ROM pass.
+
+**Phase 1's categories: 1 remaining.**
+
+### Fixed — the unaligned family takes the byte swap under `Status.RE`
+
+`LWL`/`LWR`/`SWL`/`SWR` and their doubleword siblings address **individual bytes**, so `RE` moves
+them by `addr ^ 7` rather than by their container's width. One XOR relocates the container and
+complements the byte index at once: `LWL 0` becomes container 4 with byte index 3, since `0 ^ 7 == 7`,
+`7 & !3 == 4` and `7 & 3 == 3`.
+
+Derived from the ROM's own expected tables rather than guessed — `SWL` at offset 0 writes a single
+byte, `rt`'s most significant, into the doubleword's *last* byte, which no width-based swap produces.
+This was left deliberately open in the earlier `RE` change for exactly that reason.
+
+**Phase 1's categories: 3 → 1.**
+
+### Fixed — tininess is detected before rounding, not after
+
+Underflow was decided from the *packed* result: subnormal or zero raised it, normal did not. IEEE 754
+permits tininess to be judged before or after rounding, and the VR4300 judges it **before**.
+
+The two differ exactly when a directed rounding mode lifts a tiny result back into the normal range.
+`FLT_MIN / (1 + 1ulp)` under round-toward-+∞ yields `FLT_MIN` — a perfectly normal number — and
+hardware still raises underflow, because the value it rounded *from* was tiny. n64-systemtest's
+`DIV.S` set contains that case in both signs; the result value was already right, only the flag was
+missing.
+
+Mutation-checked, and the mutation takes down three tests rather than one, which is the useful
+signal: the flag is now decided in one place instead of being re-derived per exit path.
+
+**Phase 1's categories: 5 → 3.**
+
+### Fixed — a TLB tag is masked by `PageMask`, not divided by the page size
+
+`EntryHi`'s tag keeps every bit `PageMask` does **not** cover. It was stored as `VA / pair_size`,
+which clears the tag's *low* bits — right for all six legal page sizes, since those are contiguous
+runs from bit 13, and wrong once a canonicalised mask has a hole. `0b11_11_11_11_00` covers bits
+22:15 and leaves 14:13 alone; division cannot express that.
+
+The tag is now held **in place**, masked rather than divided, so `vpn2_of` and the read-back agree by
+construction. Mutation-checked: restoring the divide turns the new test red on exactly the
+holed-mask row and no other.
+
+**Phase 1's categories: 6 → 5.** All TLB items pass.
+
+### Fixed — a `PageMask` pair stores only its higher bit
+
+`PageMask` bits 24:13 are six 2-bit pairs, and an entry does not store twelve independent bits: a
+pair reads back as `11` exactly when its **higher** bit was written, and `00` otherwise. So `0b10`
+becomes `0b11` and `0b01` is discarded.
+
+The natural implementation — keep the value, mask to 24:13 — is wrong in both directions and
+silently so: it accepts page sizes the hardware has no encoding for, and reports back a mask that
+was never stored. Canonicalisation happens on **write**, which is where the information is actually
+lost. Mutation-checked: replacing it with the plain mask turns the new test red.
+
+**Phase 1's categories: 7 → 6.**
+
+### Fixed — a to-integer conversion refuses an integer source format
+
+`CVT.W.W`, `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the whole `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family from
+`.W`/`.L` are **not instructions**. They were reaching the `Cop1Unimplemented` fallthrough, which
+deliberately does not raise, so they retired silently — n64-systemtest saw no exception where it
+expects Unimplemented Operation.
+
+They now decode into the arithmetic path and are refused there, alongside the subnormal and 2^53
+cases. The refusal is checked **before** the source is read as a float: an integer source format has
+no float to widen, and reading one anyway produces a plausible number for an instruction that does
+not exist.
+
+**Phase 1's categories: 11 → 7.**
+
+### Fixed — integer-to-float conversion honours `FCSR.RM`
+
+`CVT.S.W`, `CVT.S.L`, `CVT.D.W` and `CVT.D.L` were each a Rust `as` cast plus a round-trip inexact
+check. `as` rounds to nearest-even *unconditionally*, so the mode was ignored — while the round-trip
+check still reported `inexact` correctly, which made the flags right and the value wrong. Flags
+agreeing is not evidence that the value does.
+
+All four are now `softfloat::from_int`, which is the shared rounding point with a zero exponent and
+no sticky bit — an integer is just `sign × |v| × 2^0`. Routing it through the same `round_pack` as
+every other operation is what makes the mode impossible to forget.
+
+The four old converters were **deleted**, not left unused: an unused function that quietly gets an
+operation wrong is the inert-API hazard `docs/engineering-lessons.md` §3.2 describes.
+`long_convertible` stays, since the VR4300 range restriction is a separate rule. Ledger **C-24**.
+
+**Phase 1's categories: 16 → 11.**
+
+### Fixed — `PRId.Rev`, the `Random` counter, and `BadVAddr` on an unaligned fault
+
+Three unrelated one-line rules, each with a reason it stayed wrong:
+
+- **`PRId` now reads `0x0B22`.** The Rev field was recorded as undocumented and left zero — true of
+  the User's Manual, false of the N64brew wiki this project mirrors, which names `0x10`/`0x22`/`0x40`
+  for early, later and iQue parts. Ledger **U-3** is superseded by **C-22**; this is the third time
+  a decayed "undocumented" claim has been cited as if it described the hardware.
+- **`Random` is a plain 6-bit down-counter** whose reload fires on `== Wired`, not `<= Wired`, and
+  whose decrement wraps 0 → 63. The two readings agree for `Wired <= 31` and diverge above it, where
+  the old one pinned the register at 31 forever. Ledger **C-23**.
+- **`BadVAddr` reports the address the instruction named**, not the container address translated on
+  its behalf. A fault on `SWL 0x12345001` reported `0x12345000`.
+
+**Phase 1's categories: 19 → 16.**
+
+### Fixed — under `FR = 0`, `fs` and `ft` resolve differently
+
+A floating-point arithmetic instruction ignores the low bit of `fs` and does **not** ignore the low
+bit of `ft`. The destination `fd` is used as-is in both modes.
+
+The manual declines to specify this — an odd register with `FR = 0` is "undefined" — so the rule is
+measured against n64-systemtest and recorded as ledger **C-21**. Two rows settle it, and no single
+mapping satisfies both: `SQRT.S $13, $31` yields `sqrt(16)`, so `fs = 31` read FGR30; `ADD.S $2,
+$28, $31` yields `-10 + -16`, so `ft = 31` read FGR31. The suite then says it outright in its own
+assertion messages.
+
+This does **not** revise C-14, which governs `MTC1`/`LWC1` and the doubleword coprocessor moves —
+those do reach an odd register's high half. Separate accessors keep the two classes apart.
+
+**Phase 1's categories: 23 → 19.**
+
+### Added — the 64-bit operations are Reserved in 32-bit User and Supervisor mode
+
+`DADD`, `DSLL`, `LD`, `SD` and the rest of the MIPS III doubleword set raise Reserved Instruction
+when the current mode's `UX`/`SX` bit is clear and the mode is not Kernel. Kernel may use them at
+any width, which is why this cannot be a property of `Status.KX` alone.
+
+Both halves of that condition are load-bearing, and each is mutation-checked: gating on the width
+bit alone reserves them for a 32-bit *kernel*, and gating on the mode alone reserves them for a
+64-bit *user* program — the second of which nothing common does, so it would sit unnoticed behind
+the rows that pass.
+
+Deliberately excluded: `DMFC0`/`DMTC0` and `DMFC1`/`DMTC1`. Doubleword moves to and from a
+coprocessor follow that coprocessor's own usability and reserved-encoding rules (ledger **C-18**)
+and raise different exceptions; folding them in would make an unusable COP0 report the wrong cause.
+
+**Phase 1's categories: 24 → 23.**
+
+### Fixed — the segment map depends on the privilege mode, and on the addressing width
+
+`KSEG0` does not exist in User mode. Until now the map was a function of the address alone, so a
+user program reached `0x8000_1000` exactly as the kernel does; the address-space check, not the TLB,
+is what is supposed to stop it. The map is now a function of `(address, mode, width)`:
+
+- **User** sees `USEG` alone; **Supervisor** sees `SUSEG` and `SSEG`; **Kernel** sees the whole map.
+  Anything else is an address error, raised **before** the TLB is consulted. That distinction
+  matters: folding it into a TLB refill would send the offending program to the refill handler,
+  where a well-behaved kernel maps the page and grants the access it was never allowed to make.
+- With `Status.KX`/`SX`/`UX` set, each mapped segment widens to 2^40 and the space grows holes — an
+  address inside a segment's region but past its size faults. Kernel additionally gains **XKPHYS**,
+  eight 2^32 direct windows differing only in cacheability.
+
+**Under 32-bit addressing an address must be the sign extension of its low word.**
+`0x0000_0000_8000_1000` is not a shorthand for `KSEG0`; it is an address error, and n64-systemtest
+asserts that directly. The old code truncated to `u32`, which accepted it silently — and the
+project's own reset vector and ROM entry point were stored in the truncated form, so both are
+corrected here too.
+
+**Phase 1's categories: 27 → 24.**
+
+### Added — `Status.RE`, reverse endian in User mode
+
+Reversing endianness on a 64-bit datapath is a permutation of byte lanes within the doubleword,
+expressed as an XOR of the low address bits: a doubleword does not move, a word moves by 4, a
+halfword by 6, a byte by 7. Kernel and Supervisor are unaffected, and so is any access taken while
+`EXL`/`ERL` forces kernel mode.
+
+**Instruction fetch is swapped too** — it is a 4-byte access like any other. That is why the test
+ROM emits its reverse-endian programs with each instruction *pair* exchanged.
+
+The swap is applied to the **physical** address, after translation, which touches only bits 2:0 and
+is therefore exactly equivalent to swapping the virtual address first — and it keeps `BadVAddr` raw
+on a fault, which the suite asserts directly.
+
+The `LWL`/`LWR`/`SWL`/`SWR` family under `RE` is **not** done: it addresses individual bytes, so it
+needs the byte-granular rule rather than its container's width. Two assertions still fail there.
+
+**Phase 1's categories: 31 → 27.**
+
 ### Added — the primary caches, and `CACHE` now has state to operate on
 
 A 16 KiB instruction cache (32-byte lines) and an 8 KiB write-back data cache (16-byte lines),

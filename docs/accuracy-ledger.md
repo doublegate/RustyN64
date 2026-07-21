@@ -160,7 +160,7 @@ implementation choice here is treated as correct.
 | --- | --- | --- | --- |
 | U-1 | Reserved COP0 registers 7, 21..=25, 31 | **RESOLVED — measured** — they are a shared write latch, see C-15 | resolved |
 | U-2 | `TLBP` low `Index` bits on a miss (we leave them **zero**) | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
-| U-3 | The N64's full `PRId` value | `Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151) | Sprint 2 |
+| U-3 | The N64's full `PRId` value | **RESOLVED — see C-22.** Recorded verbatim: *"`Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151)"*. That was true of the manual and false of the N64brew wiki this project mirrors, which names `0x10`/`0x22`/`0x40` — the decay this table exists to make visible | resolved |
 | U-4 | ~~Which `Int[4:0]` line the MI drives~~ | **RESOLVED** — `IP2`. Not in the CPU manual (board-level) nor in the N64brew mirror, but stated by libdragon: `#define C0_INTERRUPT_RCP C0_INTERRUPT_2` (`ref-proj/libdragon/include/cop0.h`), which also gives `IP3` = CART, `IP4` = PRENMI, `IP7` = timer. libdragon is public domain, so this is citable rather than merely observed | **closed** |
 | U-5 | 32-bit address calculation that overflows the sign-extended range | *"The address calculated at this time is invalid, and the result is undefined"* (UM §5.2.3 p. 130, §5.2.4 p. 134) — an explicit refusal to define | Sprint 2 |
 | U-6 | `Config.EC` on the N64 | `0b111` (1:1.5) is allowed *"with the 100 MHz model only"* (UM Appendix A note 1, p. 628), and the N64's ratio is 1:1.5 — so `0b111` is a strong **inference**, but the manual never names the N64 | Sprint 2 |
@@ -175,7 +175,8 @@ labelled as one until something reads the register on hardware.
 
 | # | Symptom | Suspected mechanism | Classification | Status |
 | --- | --- | --- | --- | --- |
-| — | none yet | — | — | — |
+| R-1 | **RESOLVED** — see C-21. The failing instruction was `ADD.S $1, $29, $30`, not the `ADD.S $0` the assertion names; a correlated capture separated cause from visible effect by exactly the pipeline depth | — | absolute | Closed |
+| R-2 | `Comparisons in half mode with odd register indices` reported `different02 = 1` where 0 was expected | **RESOLVED**, two causes. (1) `BC1F`/`BC1T` were not implemented — the branch decoded to `Cop1Unimplemented` and retired as a no-op. (2) `BC1` resolves in `EX` while `C.cond.fmt` commits `FCSR.C` in `WB`, so an adjacent pair sampled the previous condition. Fixed by a **forwarding path**, not a stall: `stall_for` freezes the whole pipeline, so holding the branch delays the compare's `WB` equally and it never catches up — an interlock was written, fired once, and changed nothing. The load interlock works only because its consumer reads through the bypass network; the FP condition had no such path | absolute | Closed |
 
 Every entry must carry a **classification** of the failing measurement as **absolute** or
 **differential** before any mechanism is proposed (ADR 0005, `engineering-lessons.md` §1.3). A
@@ -972,6 +973,125 @@ A reminder that a *field* table and a *writable-bits* mask are different
 documents: the first says what the hardware interprets, the second what it
 stores.
 
+### C-21 — `FR = 0` maps `fs` and `ft` differently, and the manual declines to say so
+
+**Claim.** Under `Status.FR = 0`, a floating-point *arithmetic* instruction resolves its two
+operand register fields by **different rules**: the low bit of `fs` is ignored, and the low bit of
+`ft` is not. The destination `fd` is used as-is in both modes.
+
+**Why it is measured, not documented.** The manual is explicit that it will not say: *"If the FR
+bit is 0, an odd-numbered register cannot be specified"* (UM §7.5.3), and per-instruction, *"If an
+odd number is specified, the operation is undefined"* (UM §16). Undefined in the manual is still
+deterministic in silicon, so the oracle here is n64-systemtest's measured table, and this entry
+records it as a measurement rather than as documentation.
+
+**Evidence.** Two rows of `Upper bits of 32 bit operation (half mode)` cannot be satisfied by any
+single mapping:
+
+- `SQRT.S $13, $31` yields `sqrt(16) = 4`, so `fs = 31` read **FGR30**.
+- `ADD.S $2, $28, $31` yields `-10 + -16 = -26`, so `ft = 31` read **FGR31**.
+
+`Comparisons in half mode with odd register indices` then states it outright in its own assertion
+messages: *"Lowest bit of fs should be ignored"* and *"Lowest bit of ft should not be ignored"*.
+
+**What this supersedes.** C-14 established that `FR = 0` addresses whole even registers and that a
+32-bit access reaches an odd register's **high** half. That remains correct for `MTC1`/`LWC1` and
+the doubleword coprocessor moves — the instruction classes it was derived from. It does **not**
+extend to the arithmetic operand ports, which is the assumption this entry corrects. Two mappings
+for two instruction classes is surprising; separate accessors (`read_s_fs`/`read_s_ft`) exist so a
+call site cannot silently pick the wrong one.
+
+**Cost of getting it wrong.** Folding an odd arithmetic destination into its even partner leaves the
+odd FGR holding its previous value, which the suite detects directly by observing that FGR1 keeps
+its preload after `ADD.D $1`.
+
+---
+
+### C-22 — `PRId.Rev` is documented after all, and U-3 had decayed
+
+**Claim.** `PRId` reads `0x0B22`: implementation `0x0B` for the VR4300 series, revision `0x22`.
+
+**What this supersedes.** Ledger **U-3** recorded the Rev field as undocumented and left it zero.
+That was a true statement about the *User's Manual* and a false one about the N64brew wiki, which
+this project mirrors and treats as a primary hardware reference: *"retail N64 units have so far been
+found to report either 0x10 (1.0, early units) or 0x22 (2.2, later units), and the iQue Player
+reports 0x40"* (`n64brew_wiki/markdown/VR4300.md`).
+
+This is the third instance of the same failure mode in this project, and the reason
+`docs/engineering-lessons.md` §3.3b exists: **"undocumented" is a claim about a document, and it
+decays.** Nothing fails when it goes stale, so it survives review and gets cited as if it were a
+claim about the hardware. Re-open the source before relying on such a record.
+
+`0x22` is the later stepping, which is what `fpu::Stepping::Fixed` (the default) denotes. The two
+want to be selected together by a console-revision constructor; wiring that before anything can
+choose `Early` would be inert API.
+
+### C-23 — `Random` is a plain 6-bit down-counter, and the reload is `==` not `<=`
+
+**Claim.** `Random` decrements each instruction, wrapping 0 → 63, and reloads 31 when it **equals**
+`Wired`.
+
+**Why the distinction is invisible until it isn't.** For `Wired <= 31` the `==` and `<=` readings
+agree — the counter walks 31 down to `Wired` either way. They diverge only once `Wired` exceeds 31,
+which software can arrange because the field is six bits: under `<=` the counter is immediately at
+or below the floor and pins at 31 forever, under `==` it walks 31 → 0 → 63 → `Wired` and covers the
+whole range.
+
+**Evidence.** n64-systemtest sets `Wired` to 32 and above and requires `Random` to span at least
+`[10..54]`; we reported `[31..31]`. Note what makes this checkable at all: the suite samples a
+*range*, because sampling a single value cannot distinguish a pinned counter from a slow one.
+
+---
+
+### C-24 — integer-to-float conversion honours `FCSR.RM`, and a Rust `as` cast does not
+
+**Claim.** `CVT.S.W`, `CVT.S.L`, `CVT.D.W` and `CVT.D.L` round according to `FCSR.RM`.
+
+**Evidence.** n64-systemtest converts `0x4996_02D3` (1234567891) under round-toward-zero and
+expects `0x4E93_2C05`; nearest-even gives `0x4E93_2C06`. Likewise `CVT.D.L` of
+`0x007F_FFFF_FFFF_FFFE` toward zero expects `0x435F_FFFF_FFFF_FFFF`, not `0x4360_0000_0000_0000`.
+
+**Why it was wrong.** Each converter was a Rust `as` cast plus a round-trip inexact check. `as`
+rounds to nearest-even *unconditionally*, so the mode was ignored — and the round-trip check
+correctly reported `inexact`, which made the flags right and the value wrong. Flags agreeing is not
+evidence the value does.
+
+**What the fix removed.** All four converters were **deleted** rather than left unused once the
+pipeline moved to `softfloat::from_int`. An unused function that quietly gets an operation wrong is
+the inert-API hazard `docs/engineering-lessons.md` §3.2 describes; `addr.rs` deleted a stale
+`translate` for the same reason, and that precedent is why this was not simply left in place.
+`long_convertible` stays — the VR4300 range restriction is a separate rule and is still consulted.
+
+The conversion is now one line: an integer is `sign × |v| × 2^0`, so it is the shared rounding
+point with a zero exponent and no sticky bit. Routing it through the same `round_pack` as every
+other operation is what makes the mode impossible to forget.
+
+---
+
+### C-25 — an in-flight `C.cond.fmt` is forwarded to `BC1`, not stalled for
+
+**Claim.** `BC1` reads the condition an in-flight compare is about to commit, by re-evaluating that
+compare from its latched operands, rather than waiting for `WB`.
+
+**Why a stall cannot do it.** `stall_for` freezes every stage. Holding the branch therefore delays
+the compare's `WB` by exactly the same number of cycles, and the gap never closes. This was not
+deduced — an interlock on `ex_dc`/`dc_wb` was implemented and traced: it fires once, is then
+satisfied while the commit still has not happened, and the branch runs early anyway.
+
+**Why the load interlock is not a counter-example.** It stalls one cycle *and* its consumer reads
+through the bypass network. The stall buys `DC` time; forwarding delivers the value. The FP
+condition had no forwarding path at all, which is what this adds.
+
+**Why re-evaluating is sound.** A compare reads two FP registers and writes only `FCSR.C`. Nothing
+between it and the branch can change those registers — a branch has no destination — so the early
+evaluation yields precisely the value `WB` will commit. Flags are discarded: this is a forwarding
+path, and raising from it would make the branch report the *compare's* trap.
+
+`ex_dc` is consulted before `dc_wb` because it holds the younger instruction, and the most recent
+compare is the one whose value stands.
+
+---
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.
@@ -982,5 +1102,5 @@ Behaviour we model differently *on purpose*, so it is never mistaken for a bug.
 | D-5 | **SUPERSEDED by D-6** (the caches are modelled as of T-11-003). Recorded verbatim because the reasoning was sound while it held, and because the boundary it named — "stops being sound the moment something can observe staleness" — is exactly what came due. `CACHE` was an **address-translating no-op**: it decodes, translates (so it can raise a TLB fault) and does nothing else | The cache *contents* are not modelled, so invalidate and write-back have nothing to act on. This is observationally sound **only** because no cache state exists to become stale — the depth decision the Phase 1 open question asked for. What matters now is that `CACHE` does not *raise*: IPL3 and libdragon both issue it, so a `Reserved` decode blocks every real ROM | Was bounded by Phase 5 DMA coherency; that is **not** what retired it. It came due earlier, at n64-systemtest's `DCACHE:`/`ICACHE:` groups, which observe staleness without any DMA — a reminder that a bound named in a ledger entry is the *earliest case thought of*, not the earliest that exists. DMA coherency remains open under D-6/T-11-003, as does `M` (C-1) |
 | D-4 | TLB entries reset to **distinct** `VPN2` tags, not to zero | All-zero is not a usable state: with 32 entries at `VPN2 = 0` and `V` not participating in matching, the first access to virtual page-pair 0 matches all 32 and triggers **TLB shutdown**. Reset contents are undefined (UM §6.4.4) and ADR 0004 forbids entropy, so a fixed non-coinciding set is chosen — which is what real hardware's arbitrary power-on contents almost always are | Pinned by `a_fresh_tlb_does_not_shut_down_on_the_first_low_access`; revisit if n64-systemtest probes uninitialised entries |
 | D-3 | `Count` and `Compare` both reset to a deterministic **0**, so the timer matches at power-on and latches `IP7` | Both reset values are **undefined** (UM §6.4.4, p. 183) and ADR 0004 forbids entropy, so *some* fixed pair must be chosen; 0/0 is the least surprising. The consequence is a timer interrupt pending before software writes `Compare` — masked in practice, since cold reset also leaves `IE` clear and `ERL` set | ADR 0004; IPL3 writes `Compare` during boot, so no real ROM observes it. Revisit if n64-systemtest's startup set disagrees |
-| D-6 | The primary caches are indexed by **physical** address; the hardware indexes them virtually | A virtually-indexed, physically-tagged cache lets two virtual addresses for one physical address occupy two lines — a cache alias, which software must then flush around. Physical indexing makes aliases impossible, so the model is *more* coherent than the hardware, never less. Choosing it avoids carrying a virtual address into a structure that only ever needs a physical one | Invisible unless a program deliberately constructs an alias. Every test that motivated the cache model works through KSEG0, where the two indexings coincide. Revisit if a ROM flushes around an alias and observes the difference |
+| D-6 | The primary caches are indexed by **physical** address; the hardware indexes them virtually | A virtually-indexed, physically-tagged cache lets two virtual addresses for one physical address occupy two lines — a cache alias, which software must then flush around. Physical indexing removes aliases, and keeps a virtual address out of a structure that otherwise needs only a physical one. It is **not** strictly safer: it is a behavioural divergence in both directions | Two observable differences, both untested here: a program that deliberately constructs an alias, and an `Index_*` operation on a **TLB-mapped** page, where translation preserves only the low 12 bits while the D-cache index reaches bit 12 and the I-cache bit 13. The tested scope is KSEG0, where the two indexings coincide — every test that motivated the cache model works there. Revisit if a ROM observes either case |
 | D-2 | The VR4300 errata are **reproduced**, not fixed | They are observable behaviour that software depends on; `sra`/`srav` in particular affects every console | ADR 0007; pinned by named tests that fail if "corrected" |

@@ -35,7 +35,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
     /// *above* the subroutines, so a crashed CPU jumping there would satisfy a
     /// `pc >= SUBROUTINES` test and hand back the vacuous pass this guard exists
     /// to catch.
-    const SUBROUTINES: core::ops::Range<u64> = 0x8000_12E8..0x8000_2000;
+    const SUBROUTINES: core::ops::Range<u64> = 0xFFFF_FFFF_8000_12E8..0xFFFF_FFFF_8000_2000;
 
     let Some(image) = load() else {
         eprintln!("SKIP: {BASIC_Z64} not staged (external tier, no licence)");
@@ -43,7 +43,10 @@ fn basic_z64_runs_and_reports_a_real_result() {
     };
 
     let entry = rom::entry_point(&image).expect("readable header");
-    assert_eq!(entry, 0x8000_1000, "basic.z64's documented entry point");
+    assert_eq!(
+        entry, 0xFFFF_FFFF_8000_1000,
+        "basic.z64's documented entry point, sign-extended as a 64-bit address"
+    );
 
     let mut sys = System::new(0);
     let copied = rom::load_direct(&mut sys, &image, entry).expect("loadable");
@@ -109,7 +112,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
 fn loading_clamps_to_rdram_rather_than_panicking() {
     let mut sys = System::new(0);
     let huge = vec![0xAAu8; 16 * 1024 * 1024];
-    let n = rom::load_direct(&mut sys, &huge, 0x8000_1000).expect("loadable");
+    let n = rom::load_direct(&mut sys, &huge, 0xFFFF_FFFF_8000_1000).expect("loadable");
     assert_eq!(n, rom::IPL3_COPY_BYTES, "clamped to what IPL3 copies");
     assert_eq!(sys.bus.rdram[0x1000], 0xAA);
 }

@@ -400,12 +400,18 @@ const fn zext_imm(imm: u16) -> u64 {
 // naming used throughout the manual and this crate. Any pair dissimilar enough
 // to satisfy the lint would be less clear, so the names stay and the lint goes.
 #[allow(clippy::similar_names)]
+/// `fp_condition` is `FCSR.C`, which only the `BC1` family reads. It is passed
+/// in rather than reached for because this function is pure and has no view of
+/// the coprocessor state — and passing it as a parameter makes every call site a
+/// compile error until it supplies one, which is what stopped `BC1` from being
+/// wired up to a stale or defaulted condition.
 pub const fn execute(
     d: Decoded,
     rs_val: u64,
     rt_val: u64,
     hilo: HiLo,
     pc: u64,
+    fp_condition: bool,
 ) -> Result<Executed, Exception> {
     // Most instructions write one general register with no stall.
     macro_rules! gpr {
@@ -649,6 +655,11 @@ pub const fn execute(
         // `control` links iff `d.dest != 0`, so one arm serves both.
         Op::Jr | Op::Jalr => Ok(control(d, rs_val, false)),
 
+        // `BC1` — the FP condition is the predicate; the target arithmetic and
+        // the branch-likely nullification are shared with every other branch.
+        Op::Bc1t | Op::Bc1tl => Ok(branch(d, fp_condition, pc)),
+        Op::Bc1f | Op::Bc1fl => Ok(branch(d, !fp_condition, pc)),
+
         Op::Beq | Op::Beql => Ok(branch(d, rs_val == rt_val, pc)),
         Op::Bne | Op::Bnel => Ok(branch(d, rs_val != rt_val, pc)),
         Op::Blez | Op::Blezl => Ok(branch(d, (rs_val as i64) <= 0, pc)),
@@ -849,7 +860,14 @@ mod tests {
 
     #[allow(clippy::similar_names)] // mirrors the MIPS operand naming
     fn run(word: u32, rs_val: u64, rt_val: u64) -> Result<Executed, Exception> {
-        execute(decode(word), rs_val, rt_val, HiLo { hi: 0, lo: 0 }, 0)
+        execute(
+            decode(word),
+            rs_val,
+            rt_val,
+            HiLo { hi: 0, lo: 0 },
+            0,
+            false,
+        )
     }
     const fn r(funct: u32, rs: u32, rt: u32, rd: u32, sa: u32) -> u32 {
         (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct
@@ -938,6 +956,7 @@ mod tests {
                 lo: 0xBEEF,
             },
             0,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -957,6 +976,7 @@ mod tests {
                 lo: 0xBEEF,
             },
             0,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -973,6 +993,7 @@ mod tests {
             0,
             HiLo { hi: 0, lo: 0 },
             0,
+            false,
         )
         .unwrap();
         assert_eq!(e.write_back, WriteBack::Hi(0x1234));

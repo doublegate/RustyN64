@@ -251,6 +251,14 @@ pub enum Op {
     Bltzall,
     /// `BGEZALL` — branch-likely, links.
     Bgezall,
+    /// `BC1F off` — branch if the FP condition is **clear**.
+    Bc1f,
+    /// `BC1T off` — branch if the FP condition is **set**.
+    Bc1t,
+    /// `BC1FL` — branch-likely on a clear FP condition.
+    Bc1fl,
+    /// `BC1TL` — branch-likely on a set FP condition.
+    Bc1tl,
 
     // --- the trap family
     /// `TGE rs, rt`.
@@ -283,11 +291,15 @@ pub enum Op {
     // and lumping them in would make `Op` claim support this crate lacks.
     /// `CACHE op, off(base)` — a cache maintenance operation.
     ///
-    /// Decoded and **executed as an address-translating no-op**: this CPU does
-    /// not model cache *contents*, so invalidate and write-back have nothing to
-    /// act on. What matters is that it does **not raise** — IPL3 and libdragon
-    /// both use it, so a `Reserved` decode blocks every real ROM. See
-    /// `docs/cpu.md` and accuracy-ledger D-5.
+    /// Operates on **modelled cache state** as of T-11-003: both primary caches
+    /// hold real tags and data, so invalidate, write-back and the tag moves all
+    /// act. This doc said "executed as an address-translating no-op" until the
+    /// caches landed, which was true under ledger **D-5** and is not any more —
+    /// D-5 is superseded by **D-6**.
+    ///
+    /// `op`'s `rt` slot is the operation selector, not a destination. What
+    /// mattered first is that it does **not raise** — IPL3 and libdragon both
+    /// issue it, so a `Reserved` decode blocks every real ROM. See `docs/cpu.md`.
     Cache,
     /// A COP0 **CO-class instruction in the `funct` 0x20-0x3F extension range**,
     /// executed as a no-op.
@@ -427,6 +439,65 @@ pub enum Op {
 }
 
 impl Op {
+    /// Is this one of the MIPS III **64-bit operations**?
+    ///
+    /// They raise a Reserved Instruction exception when executed in 32-bit User
+    /// or Supervisor mode. The manual states it once, as the **epsilon** marker
+    /// in the opcode table (UM Figure 16-1, Key): *"The operation code marked
+    /// with an epsilon is valid in the 64-bit mode and 32-bit Kernel mode. In
+    /// the 32-bit User or Supervisor mode, this code generates the reserved
+    /// instruction exception."*
+    ///
+    /// That legend — not the per-instruction "Exceptions" notes — is the
+    /// authority, and reading it is what caught `LWU`: the set was first built
+    /// from n64-systemtest's 28 tested instructions, which do not include it. Kernel mode may use them at any width.
+    ///
+    /// The `*32` shift forms are included on the same rule rather than by
+    /// extrapolation: `DSLL32`/`DSRL32`/`DSRA32` carry the identical exception
+    /// note in the manual, being 64-bit operations by the same definition.
+    ///
+    /// **Not** included: `DMFC0`/`DMTC0` and `DMFC1`/`DMTC1`, which the table
+    /// does mark epsilon. Doubleword moves to and from a coprocessor are also
+    /// governed by that coprocessor's own usability and reserved-encoding rules
+    /// (ledger C-18), and those raise a *different* exception; in User mode COP0
+    /// is unusable, so `CpU` is what hardware reports. n64-systemtest exercises
+    /// neither, so rather than pick an ordering on no evidence they stay out —
+    /// recorded here so the omission is a decision and not an oversight.
+    #[must_use]
+    pub const fn is_64_bit(self) -> bool {
+        matches!(
+            self,
+            Self::Dadd
+                | Self::Daddi
+                | Self::Daddiu
+                | Self::Daddu
+                | Self::Ddiv
+                | Self::Ddivu
+                | Self::Dmult
+                | Self::Dmultu
+                | Self::Dsll
+                | Self::Dsll32
+                | Self::Dsllv
+                | Self::Dsra
+                | Self::Dsra32
+                | Self::Dsrav
+                | Self::Dsrl
+                | Self::Dsrl32
+                | Self::Dsrlv
+                | Self::Dsub
+                | Self::Dsubu
+                | Self::Ld
+                | Self::Lwu
+                | Self::Ldl
+                | Self::Ldr
+                | Self::Lld
+                | Self::Scd
+                | Self::Sd
+                | Self::Sdl
+                | Self::Sdr
+        )
+    }
+
     /// Does this instruction have a branch delay slot?
     ///
     /// Every jump and branch on MIPS does. The instruction *after* it executes
@@ -456,7 +527,21 @@ impl Op {
                 | Self::Bgezl
                 | Self::Bltzall
                 | Self::Bgezall
+                | Self::Bc1f
+                | Self::Bc1t
+                | Self::Bc1fl
+                | Self::Bc1tl
         )
+    }
+
+    /// Does this instruction read `FCSR.C`?
+    ///
+    /// Only the `BC1` family does, which is why the condition can be interlocked
+    /// against rather than bypassed everywhere — see accuracy-ledger **R-2** for
+    /// the interlock that is still outstanding.
+    #[must_use]
+    pub const fn reads_fp_condition(self) -> bool {
+        matches!(self, Self::Bc1f | Self::Bc1t | Self::Bc1fl | Self::Bc1tl)
     }
 
     /// Is this a **branch-likely** form?
@@ -477,6 +562,8 @@ impl Op {
                 | Self::Bgezl
                 | Self::Bltzall
                 | Self::Bgezall
+                | Self::Bc1fl
+                | Self::Bc1tl
         )
     }
 
@@ -982,9 +1069,33 @@ pub const fn decode(word: u32) -> Decoded {
                 // integer-to-float conversion a silent no-op — the same shape of
                 // gap that made `MOV.fmt` cost nine rounds. Only `CVT.S` and
                 // `CVT.D` are defined from these formats; converting an integer
-                // to an integer is not an instruction.
-                0o24 | 0o25 if matches!(word & 0o77, 0o40 | 0o41) => Decoded {
-                    op: Op::FpArith,
+                // to an integer is **not an instruction**.
+                //
+                // The to-integer functs are admitted here anyway, so that they
+                // reach the arithmetic path and raise *Unimplemented Operation*
+                // there. Leaving them to the `Cop1Unimplemented` fallthrough
+                // retires them silently, which is what n64-systemtest caught:
+                // `CVT.W.W`, `CVT.L.W` and their `.L`-source siblings expect an
+                // exception and saw none.
+                0o24 | 0o25 if matches!(word & 0o77, 0o10..=0o17 | 0o40 | 0o41 | 0o44 | 0o45) => {
+                    Decoded {
+                        op: Op::FpArith,
+                        ..base
+                    }
+                }
+                // `BC1` — branch on the FP condition. `rs = 0o10` selects the
+                // branch family; bits 17:16 are `nd:tf`, so the four encodings
+                // are TF (true/false) crossed with likely/not.
+                //
+                // `imm` carries the offset, as for every other branch, so the
+                // target arithmetic in `exec` is shared rather than duplicated.
+                0o10 => Decoded {
+                    op: match (word >> 16) & 0b11 {
+                        0b00 => Op::Bc1f,
+                        0b01 => Op::Bc1t,
+                        0b10 => Op::Bc1fl,
+                        _ => Op::Bc1tl,
+                    },
                     ..base
                 },
                 0o04 => Decoded {

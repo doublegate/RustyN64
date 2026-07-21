@@ -74,12 +74,19 @@ pub fn load_direct(system: &mut System, rom: &[u8], entry: u64) -> Result<usize,
 
 /// Read the entry point from a ROM header (big-endian, offset `0x08`).
 ///
+/// **Sign-extended** to 64 bits. The header field is 32 bits and every N64 entry
+/// point is in a kernel segment, so its top bit is set — and under 32-bit
+/// addressing `0x0000_0000_8000_1000` is not a shorthand for
+/// `0xFFFF_FFFF_8000_1000`, it is an address error. Zero-extending it makes the
+/// very first fetch fault.
+///
 /// # Errors
 ///
 /// [`LoadError::TooSmall`] if the header is truncated.
 pub fn entry_point(rom: &[u8]) -> Result<u64, LoadError> {
     let b = rom.get(8..12).ok_or(LoadError::TooSmall)?;
-    Ok(u64::from(u32::from_be_bytes([b[0], b[1], b[2], b[3]])))
+    let raw = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    Ok(i64::from(raw.cast_signed()).cast_unsigned())
 }
 
 /// Seed RSP DMEM with what **IPL3 would have written**, for a harness that

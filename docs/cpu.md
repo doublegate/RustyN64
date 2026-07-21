@@ -93,8 +93,13 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
 - **Caches** — 16 KB instruction cache (32-byte lines) + 8 KB write-back data
   cache (16-byte lines), 24 KB L1 total, both direct-mapped, virtually-indexed
   and physically-tagged (UM §11.2). Modelled as of T-11-003, with one deliberate
-  deviation: indexing is **physical** here, which makes cache aliases impossible
-  rather than merely unlikely (ledger **D-6**). Instruction fetch and every
+  deviation: indexing is **physical** here (ledger **D-6**). Aliases are therefore
+  impossible in the model, but that is a *divergence*, not an improvement —
+  software that deliberately constructs an alias, or that issues an `Index_*`
+  operation on a TLB-mapped page, sees different behaviour, because translation
+  preserves only the low 12 bits while the D-cache index reaches bit 12 and the
+  I-cache bit 13. The tested scope is KSEG0, where the two indexings coincide.
+  Instruction fetch and every
   cached load and store run through them; a cached store is a write-allocate that
   leaves the line dirty until something forces it out. Coherency against DMA is
   still outstanding: cart/RSP DMA writes land in RDRAM behind the cache, and
@@ -491,7 +496,8 @@ system interface and the TLB) — UM §4.7.3.
 
 ### Virtual address space
 
-Standard MIPS segment layout (`ref-docs/research-report.md` §1):
+Standard MIPS segment layout (`ref-docs/research-report.md` §1), **as seen from
+Kernel mode under 32-bit addressing**:
 
 | Segment | Range | Mapping |
 | --- | --- | --- |
@@ -500,9 +506,35 @@ Standard MIPS segment layout (`ref-docs/research-report.md` §1):
 | KSEG1 | `0xA000_0000`–`0xBFFF_FFFF` | direct, **uncached** |
 | KSSEG/KSEG3 | `0xC000_0000`–`0xFFFF_FFFF` | TLB-mapped |
 
-Hardware registers are reached through KSEG1 (uncached). The skeleton bus strips
-`addr & 0x1FFF_FFFF` to the physical RDRAM window; the full TLB path replaces that
-for mapped segments.
+Hardware registers are reached through KSEG1 (uncached).
+
+**The map is not a function of the address alone** (UM §5.2.4, Tables 5-3/5-4;
+n64-systemtest `Privilege: memory accesses`). It depends on the privilege mode
+and on whether that mode is using 64-bit addressing:
+
+- **User** sees `USEG` alone. **Supervisor** sees `SUSEG` and `SSEG`
+  (`0xC000_0000`–`0xDFFF_FFFF`). **Kernel** sees the table above.
+- Everything else is an **address error, raised before the TLB is consulted**.
+  That is what stops a user program reaching `KSEG0` — not the TLB. Folding the
+  case into a TLB refill instead would send the program to the refill handler,
+  where a well-behaved kernel maps the page and grants the access it was never
+  allowed to make.
+- With `Status.KX`/`SX`/`UX` set for the current mode, each mapped segment widens
+  to 2^40 and the space grows holes: an address inside a segment's *region* but
+  past its size faults. Kernel additionally gains **XKPHYS**
+  (`0x8000_0000_0000_0000`–`0xBFFF_FFFF_FFFF_FFFF`), eight 2^32 direct windows
+  chosen by bits 61:59 and
+  differing only in cacheability — and by the same rule as a TLB entry's `C`
+  field, only `C == 2` is uncached.
+
+**Under 32-bit addressing an address must be the sign extension of its low word.**
+`0x0000_0000_8000_1000` is not a shorthand for `KSEG0`; it is an address error.
+Measured, not inferred: n64-systemtest asserts it directly in *"LW with address
+not sign extended"* / *"SW with address not sign extended"*, whose own comment
+reads "causes AdEL, as upper bits are 0".
+Truncating to 32 bits is the natural shortcut and accepts it silently. The reset
+vector and any ROM entry point are therefore stored sign-extended
+(`0xFFFF_FFFF_BFC0_0000`), not as bare 32-bit values.
 
 ### Interrupts
 
@@ -599,6 +631,79 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   unconditionally raises spurious refills on exactly the code that matters —
   cache-init walks every index with an arbitrary base, before any mapping
   exists.
+- **`BC1F`/`BC1T`/`BC1FL`/`BC1TL` branch on `FCSR.C`.** COP1 `rs = 0o10`, with
+  bits 17:16 as `nd:tf`, so the four encodings are true/false crossed with
+  likely/not. The target arithmetic and the branch-likely nullification are
+  shared with every other branch rather than duplicated.
+
+  The condition is passed into `execute` as a parameter rather than reached for,
+  because that function is pure and has no view of coprocessor state — and a
+  parameter makes every call site a compile error until it supplies one.
+
+  `BC1` reads the condition in `EX` while `C.cond.fmt` commits it in `WB`, so an
+  adjacent pair is served by a **forwarding path** that re-evaluates the in-flight
+  compare from its latched operands. A stall cannot substitute: freezing the
+  pipeline delays the compare's `WB` equally. Accuracy-ledger **C-25**.
+- **A to-integer conversion refuses an integer source format** (n64-systemtest
+  `COP1: CVT.W…`/`CVT.L…`, the `W => W` and `L => W` rows, which expect
+  Unimplemented Operation). `CVT.W.W`,
+  `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family
+  from `.W`/`.L` are not instructions, and the VR4300 declines them with
+  *Unimplemented Operation* rather than reinterpreting the source register.
+
+  They decode into the arithmetic path specifically so they reach that refusal.
+  Left to the generic `Cop1Unimplemented` fallthrough — which deliberately does
+  **not** raise — they retire silently, and a silent retirement is exactly what
+  a "not an instruction" case looks like when it is wrong.
+
+  The refusal is checked **before** the source is read as a float. An integer
+  source format has no float to widen, and reading one anyway yields a plausible
+  number for an instruction that does not exist.
+- **Under `FR = 0`, `fs` and `ft` resolve differently.** A floating-point
+  arithmetic instruction ignores the low bit of `fs` and does **not** ignore the
+  low bit of `ft`; the destination `fd` is used as-is in both modes. The manual
+  declines to specify this — an odd register with `FR = 0` is "undefined" (UM
+  §7.5.3, §16) — so the rule is **measured** against n64-systemtest and recorded
+  in the accuracy ledger as **C-21**, not cited as documentation.
+
+  This does not extend C-14, which governs `MTC1`/`LWC1` and the doubleword
+  coprocessor moves: those really do reach an odd register's high half. Separate
+  accessors (`read_s_fs` / `read_s_ft`) keep the two apart so a call site cannot
+  silently pick the wrong one.
+- **The MIPS III 64-bit operations are Reserved in 32-bit User and Supervisor
+  mode** — the **epsilon** marker in UM Figure 16-1's Key: *"valid in the 64-bit
+  mode and 32-bit Kernel mode. In the 32-bit User or Supervisor mode, this code
+  generates the reserved instruction exception."* `DADD`, `DSLL`, `LD`, `SD` and the rest raise Reserved Instruction when
+  the current mode's `UX`/`SX` bit is clear and the mode is not Kernel. Kernel may
+  use them at any width, so this is **not** a property of `Status.KX` alone.
+
+  Coprocessor doubleword moves (`DMFC0`/`DMTC0`, `DMFC1`/`DMTC1`) are excluded:
+  they follow that coprocessor's own usability and reserved-encoding rules
+  (ledger C-18) and raise different exceptions.
+- **`Status.RE` reverses endianness, and only in User mode** (UM §5.2). Kernel
+  and Supervisor are unaffected, and so is any access taken while `EXL`/`ERL`
+  forces kernel mode — which is what lets an exception handler read memory the
+  way it wrote it.
+
+  Reversing endianness on a 64-bit datapath is a permutation of byte lanes within
+  the doubleword, expressed as an XOR of the low address bits: a doubleword does
+  not move, a word moves by 4, a halfword by 6 and a byte by 7. **Instruction
+  fetch is a 4-byte access and is swapped too**, which is why n64-systemtest has
+  to emit its reverse-endian programs with each instruction *pair* exchanged for
+  them to execute in order.
+
+  The swap is applied to the **physical** address, after translation. It touches
+  only bits 2:0, which every translation maps identically, so it is exactly
+  equivalent to swapping the virtual address first — and it keeps `BadVAddr` raw
+  on a fault, which the suite asserts directly.
+
+  **The `LWL`/`LWR`/`SWL`/`SWR` family takes the BYTE swap**, `addr ^ 7`, not the
+  swap for its container's width. Derived from n64-systemtest's own expected
+  tables (`RE user mode partial loads/stores matrix`), not from the manual, which
+  does not cover the combination — these instructions address individual bytes,
+  so the byte lane is what moves. One XOR relocates the container and complements
+  the byte index together: `LWL 0` becomes container 4 with byte index 3, because
+  `0 ^ 7 == 7`, `7 & !3 == 4` and `7 & 3 == 3`.
 - **`LL` to an uncached address is undefined** (UM §16 p. 453). Not currently
   detected; if a test ROM ever depends on it, it becomes an accuracy-ledger
   entry rather than a special case.

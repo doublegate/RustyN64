@@ -17,11 +17,15 @@
 //!
 //! The real caches are virtually indexed and physically tagged, so two virtual
 //! addresses mapping to one physical address can occupy two lines (a cache
-//! alias). Indexing by physical address instead makes aliases impossible. This
-//! is a **simplification, not a model of the hardware**, and it is recorded as
-//! such in the accuracy ledger: it is invisible to any program that does not
-//! deliberately construct an alias, and every test that motivated this module
-//! operates through KSEG0, where the two indexings coincide.
+//! alias). Indexing by physical address instead makes aliases impossible.
+//!
+//! This is a **deviation, not a simplification that is strictly safer**. Software
+//! that observes aliasing — or that relies on an `Index_*` operation selecting a
+//! line by *virtual* index on a TLB-mapped page — sees different behaviour here,
+//! because translation preserves only the low 12 bits while the D-cache index
+//! reaches bit 12 and the I-cache bit 13. What is bounded is the tested scope:
+//! every test that motivated this module operates through KSEG0, where the two
+//! indexings coincide. Accuracy ledger **D-6**.
 //!
 //! # `TagLo`
 //!
@@ -85,8 +89,17 @@ const fn pack_tag(tag: u32, valid: bool, valid_state: u32) -> u32 {
 }
 
 /// Unpack a `TagLo` value into `(tag, valid)`.
-const fn unpack_tag(tag_lo: u32) -> (u32, bool) {
-    ((tag_lo >> 8) & 0x000F_FFFF, (tag_lo >> 6) & 3 != 0)
+///
+/// `valid` requires the cache's **own** `PState` encoding — 2 for the I-cache,
+/// 3 for the D-cache — not merely a non-zero field. The two reserved values (1,
+/// and 2-vs-3 crossed between the caches) are not "valid": treating any non-zero
+/// `PState` as valid would let `Index_Store_Tag` conjure a live line out of an
+/// encoding the hardware does not define.
+const fn unpack_tag(tag_lo: u32, valid_state: u32) -> (u32, bool) {
+    (
+        (tag_lo >> 8) & 0x000F_FFFF,
+        (tag_lo >> 6) & 3 == valid_state,
+    )
 }
 
 /// What a cache operation needs the caller to do on its behalf.
@@ -222,7 +235,7 @@ impl Dcache {
     /// `Index_Store_Tag`: overwrite the tag at the index `addr` selects.
     pub const fn store_tag(&mut self, addr: u32, tag_lo: u32) {
         let i = Self::index(addr);
-        let (tag, valid) = unpack_tag(tag_lo);
+        let (tag, valid) = unpack_tag(tag_lo, DCACHE_VALID_STATE);
         self.lines[i].tag = tag;
         self.lines[i].valid = valid;
         self.lines[i].dirty = false;
@@ -368,7 +381,7 @@ impl Icache {
     /// `Index_Store_Tag`: overwrite the tag at the index `addr` selects.
     pub const fn store_tag(&mut self, addr: u32, tag_lo: u32) {
         let i = Self::index(addr);
-        let (tag, valid) = unpack_tag(tag_lo);
+        let (tag, valid) = unpack_tag(tag_lo, ICACHE_VALID_STATE);
         self.lines[i].tag = tag;
         self.lines[i].valid = valid;
     }
@@ -457,6 +470,28 @@ mod tests {
         let mut d = Dcache::new();
         d.install(0x1_0000, [0xAA; 16]);
         assert_eq!(d.miss_plan(0x1_0008), None, "same line");
+    }
+
+    /// `Index_Store_Tag` requires the cache's OWN valid encoding. Accepting any
+    /// non-zero `PState` conjures a live line from an undefined one — and note
+    /// the two caches disagree, so the D-cache's 3 must not validate an I-cache
+    /// line either.
+    #[test]
+    fn store_tag_rejects_a_pstate_this_cache_does_not_define() {
+        let mut d = Dcache::new();
+        let mut i = Icache::new();
+        for bad in [1u32, 2] {
+            d.store_tag(0x1000, (bad << 6) | (0x1 << 8));
+            assert!(!d.hits(0x1000), "D-cache PState {bad} is not Valid");
+        }
+        for bad in [1u32, 3] {
+            i.store_tag(0x1000, (bad << 6) | (0x1 << 8));
+            assert!(!i.hits(0x1000), "I-cache PState {bad} is not Valid");
+        }
+        d.store_tag(0x1000, (3 << 6) | (0x1 << 8));
+        assert!(d.hits(0x1000), "3 is the D-cache's Valid");
+        i.store_tag(0x1000, (2 << 6) | (0x1 << 8));
+        assert!(i.hits(0x1000), "2 is the I-cache's Valid");
     }
 
     #[test]
