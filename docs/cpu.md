@@ -622,6 +622,19 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   unconditionally raises spurious refills on exactly the code that matters —
   cache-init walks every index with an arbitrary base, before any mapping
   exists.
+- **A to-integer conversion refuses an integer source format.** `CVT.W.W`,
+  `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family
+  from `.W`/`.L` are not instructions, and the VR4300 declines them with
+  *Unimplemented Operation* rather than reinterpreting the source register.
+
+  They decode into the arithmetic path specifically so they reach that refusal.
+  Left to the generic `Cop1Unimplemented` fallthrough — which deliberately does
+  **not** raise — they retire silently, and a silent retirement is exactly what
+  a "not an instruction" case looks like when it is wrong.
+
+  The refusal is checked **before** the source is read as a float. An integer
+  source format has no float to widen, and reading one anyway yields a plausible
+  number for an instruction that does not exist.
 - **Under `FR = 0`, `fs` and `ft` resolve differently.** A floating-point
   arithmetic instruction ignores the low bit of `fs` and does **not** ignore the
   low bit of `ft`; the destination `fd` is used as-is in both modes. The manual

@@ -2399,14 +2399,17 @@ impl Pipeline {
             2 => Rounding::TowardPlusInf,
             _ => Rounding::TowardMinusInf,
         };
+        // Refusal is decided BEFORE the source is read as a float: an integer
+        // source format has no float to widen, and reading one anyway produces a
+        // plausible number for an instruction that does not exist.
+        if self.integer_conversion_unimplemented(fmt, fs, fr) {
+            return (FpCommit::Single(0), fpu::Flags::NONE, true);
+        }
         // The source is widened to `f64` first, which is EXACT for an `f32`, so
         // no rounding happens before the one the instruction asks for.
         let v = self.fp_source_as_f64(fmt, fs, fr);
         // funct 8..=11 target `.L`, 12..=15 target `.W`.
         let wide = funct < 0o14;
-        if self.integer_conversion_unimplemented(fmt, fs, fr) {
-            return (FpCommit::Single(0), fpu::Flags::NONE, true);
-        }
         if wide {
             let out = fpu::to_i64(v, mode);
             // `to_i64` reports NaN and out-of-range as Invalid, which is the
@@ -2454,6 +2457,15 @@ impl Pipeline {
         /// The last integer a `double` represents exactly.
         const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
 
+        // An INTEGER source format is not a conversion this processor has:
+        // `CVT.W.W`, `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the whole
+        // `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family from `.W`/`.L` do not exist, and
+        // the VR4300 declines them with Unimplemented Operation rather than
+        // reinterpreting the source. Checked first, because every branch below
+        // would happily read the register as a float and return a number.
+        if fmt != 0o20 && fmt != 0o21 {
+            return true;
+        }
         let v = if fmt == 0o20 {
             let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
             if fpu::is_subnormal_f32(a) {

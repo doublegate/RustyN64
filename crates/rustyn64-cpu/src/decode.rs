@@ -1032,11 +1032,20 @@ pub const fn decode(word: u32) -> Decoded {
                 // integer-to-float conversion a silent no-op — the same shape of
                 // gap that made `MOV.fmt` cost nine rounds. Only `CVT.S` and
                 // `CVT.D` are defined from these formats; converting an integer
-                // to an integer is not an instruction.
-                0o24 | 0o25 if matches!(word & 0o77, 0o40 | 0o41) => Decoded {
-                    op: Op::FpArith,
-                    ..base
-                },
+                // to an integer is **not an instruction**.
+                //
+                // The to-integer functs are admitted here anyway, so that they
+                // reach the arithmetic path and raise *Unimplemented Operation*
+                // there. Leaving them to the `Cop1Unimplemented` fallthrough
+                // retires them silently, which is what n64-systemtest caught:
+                // `CVT.W.W`, `CVT.L.W` and their `.L`-source siblings expect an
+                // exception and saw none.
+                0o24 | 0o25 if matches!(word & 0o77, 0o10..=0o17 | 0o40 | 0o41 | 0o44 | 0o45) => {
+                    Decoded {
+                        op: Op::FpArith,
+                        ..base
+                    }
+                }
                 0o04 => Decoded {
                     op: Op::Mtc1,
                     ..base

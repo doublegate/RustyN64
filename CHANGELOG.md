@@ -9,6 +9,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — a to-integer conversion refuses an integer source format
+
+`CVT.W.W`, `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the whole `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family from
+`.W`/`.L` are **not instructions**. They were reaching the `Cop1Unimplemented` fallthrough, which
+deliberately does not raise, so they retired silently — n64-systemtest saw no exception where it
+expects Unimplemented Operation.
+
+They now decode into the arithmetic path and are refused there, alongside the subnormal and 2^53
+cases. The refusal is checked **before** the source is read as a float: an integer source format has
+no float to widen, and reading one anyway produces a plausible number for an instruction that does
+not exist.
+
+**Phase 1's categories: 11 → 7.**
+
 ### Fixed — integer-to-float conversion honours `FCSR.RM`
 
 `CVT.S.W`, `CVT.S.L`, `CVT.D.W` and `CVT.D.L` were each a Rust `as` cast plus a round-trip inexact
