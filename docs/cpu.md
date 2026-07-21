@@ -93,8 +93,13 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
 - **Caches** — 16 KB instruction cache (32-byte lines) + 8 KB write-back data
   cache (16-byte lines), 24 KB L1 total, both direct-mapped, virtually-indexed
   and physically-tagged (UM §11.2). Modelled as of T-11-003, with one deliberate
-  deviation: indexing is **physical** here, which makes cache aliases impossible
-  rather than merely unlikely (ledger **D-6**). Instruction fetch and every
+  deviation: indexing is **physical** here (ledger **D-6**). Aliases are therefore
+  impossible in the model, but that is a *divergence*, not an improvement —
+  software that deliberately constructs an alias, or that issues an `Index_*`
+  operation on a TLB-mapped page, sees different behaviour, because translation
+  preserves only the low 12 bits while the D-cache index reaches bit 12 and the
+  I-cache bit 13. The tested scope is KSEG0, where the two indexings coincide.
+  Instruction fetch and every
   cached load and store run through them; a cached store is a write-allocate that
   leaves the line dirty until something forces it out. Coherency against DMA is
   still outstanding: cart/RSP DMA writes land in RDRAM behind the cache, and
