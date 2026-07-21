@@ -504,6 +504,18 @@ impl Rsp {
                 self.set_acc(lane, acc);
                 Self::clamp_signed(self.acc_signed(lane) >> 16)
             }
+            // VMULQ: a 32-bit product placed in the accumulator's MIDDLE 32
+            // bits with the low 16 zeroed, then extracted with a >>1, a signed
+            // clamp, and the low 4 bits masked off. The odd `+ 31` rounds only
+            // negative products.
+            0x03 => {
+                let mut product = ss * ts;
+                if product < 0 {
+                    product += 31;
+                }
+                self.set_acc(lane, product << 16);
+                Self::clamp_signed(product >> 1) & !15
+            }
             // The accumulating forms. Each adds the same product its
             // VMUL/VMUD counterpart *sets* -- with one difference that is
             // easy to miss: VMACF adds `2 * vs * vt` with **no rounding
@@ -2035,5 +2047,66 @@ mod vrnd_tests {
             [0, 1, 0, 0x7FFE, 0xFFFD, 0xBFFF, 0xA000, 0x3FFF],
             "ACC_LO"
         );
+    }
+}
+
+#[cfg(test)]
+mod vmulq_tests {
+    use super::*;
+
+    const VS: [u16; 8] = [
+        0x0000, 0x0001, 0x7FFF, 0x7FFF, 0x8000, 0x8000, 0xFFFE, 0xFFFF,
+    ];
+    const VT: [u16; 8] = [
+        0x0000, 0x0001, 0x7FFF, 0xFFFF, 0x7FFF, 0x7FFF, 0x0001, 0x0001,
+    ];
+
+    fn seeded() -> Rsp {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[0] = VS; // used as vs
+        rsp.vu_regs[1] = VT;
+        rsp
+    }
+
+    fn acc_slice(rsp: &Rsp, shift: u32) -> [u16; 8] {
+        core::array::from_fn(|i| (rsp.vu_acc[i] >> shift) as u16)
+    }
+
+    /// **`VMULQ` against n64-systemtest's vectors.** The result's low 4 bits are
+    /// masked off and `ACC_LO` is always zero — two properties a naive multiply
+    /// gets wrong and the accumulator slices expose.
+    #[test]
+    fn vmulq_matches_the_oracle_vectors() {
+        let mut rsp = seeded();
+        assert!(rsp.vu_compute(0x03, 0, 0, 1, 2));
+        assert_eq!(
+            rsp.vu_regs[2],
+            [0, 0, 0x7FF0, 0xC010, 0x8000, 0x8000, 0, 0],
+            "VMULQ result -- note the low nibble is always clear"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 32),
+            [0, 0, 0x3FFF, 0xFFFF, 0xC000, 0xC000, 0, 0],
+            "ACC_HI"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 16),
+            [0, 1, 1, 0x8020, 0x801F, 0x801F, 0x1D, 0x1E],
+            "ACC_MD"
+        );
+        assert_eq!(acc_slice(&rsp, 0), [0; 8], "ACC_LO is zeroed");
+    }
+
+    /// **The result always has its low 4 bits clear**, independent of the
+    /// operands — the `& ~15` is not incidental.
+    #[test]
+    fn vmulq_masks_the_low_nibble() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[0] = [0x00FF; 8];
+        rsp.vu_regs[1] = [0x00FF; 8];
+        rsp.vu_compute(0x03, 0, 0, 1, 2);
+        for lane in 0..8 {
+            assert_eq!(rsp.vu_regs[2][lane] & 15, 0, "lane {lane} low nibble");
+        }
     }
 }

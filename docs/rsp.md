@@ -204,7 +204,7 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
 accumulating forms, `VSAR` and the six bitwise operations execute, as do
 `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS`, the `VLT`/`VEQ`/`VNE`/`VGE` compares,
-`VMRG`, and `VRNDN`/`VRNDP`. `VCL`/`VCH`/`VCR` and `VMULQ` do not yet, and report
+`VMRG`, and `VRNDN`/`VRNDP`. `VMULQ` too. `VCL`/`VCH`/`VCR`, `VMACQ`, and the packed/strided loads do not yet, and report
 so rather than writing a wrong result — `vu_compute` returns `false` and the
 instruction retires inertly.
 
@@ -314,6 +314,19 @@ before use. The product is conditionally added to the 48-bit accumulator by its
 **sign** — `VRNDP` adds when it is non-negative, `VRNDN` when it is negative —
 the sum is sign-clipped to 48 bits, and `vd` is the signed-clamped middle. Both
 are pinned against the oracle's full result-plus-three-slices vectors.
+
+`VMULQ` places a 32-bit product in the accumulator's **middle** 32 bits with the
+low 16 zeroed, rounds only *negative* products by `+31`, and produces a result
+that is `>>1`, signed-clamped, then **masked to clear its low 4 bits**. Pinned
+against the oracle's full vectors.
+
+`VMACQ` is **deliberately not implemented yet**: the suite's own reference and
+ares disagree on its rounding condition — ares nudges when the 32-bit value is
+`>= 32`, the suite's `op_vmacq.rs` when `acc >> 22 > 0` (effectively `>= 64`),
+and those differ across `[32, 63]`. Resolving that needs the suite's vectors
+read carefully rather than either source trusted, so it reports unimplemented
+rather than shipping a guess. Recorded here so the divergence is not
+rediscovered.
 
 `VABS` applies the **sign of `vs` to `vt`** — it is not the absolute value of
 either operand, and a zero in `vs` yields zero regardless of `vt`.
