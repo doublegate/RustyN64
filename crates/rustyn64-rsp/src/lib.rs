@@ -95,6 +95,46 @@ impl Rsp {
         }
     }
 
+    /// Byte offset within the CPU-visible SP memory window, folded into the one
+    /// 8 KiB image that DMEM and IMEM form.
+    ///
+    /// The window at `0x0400_0000` is 8 KiB of real storage repeated all the way
+    /// to `0x0404_0000` — n64-systemtest writes `0x3E000` and reads the result
+    /// back at offset 0 (`sp_memory::SW (out of bounds)`), which is the same
+    /// 8 KiB seen for the 31st time. Masking is therefore the behaviour, not a
+    /// bounds-check standing in for one: there is no out-of-range access to
+    /// reject inside the window.
+    const fn fold(off: u32) -> usize {
+        (off & 0x1FFF) as usize
+    }
+
+    /// Read a byte of DMEM/IMEM as the CPU sees it.
+    ///
+    /// Bit 12 of the folded offset selects IMEM over DMEM, and each bank wraps
+    /// within its own 4 KiB — a transfer or access never spills from one into
+    /// the other (N64brew *RSP Interface* §DMEM and IMEM).
+    #[must_use]
+    pub fn mem_read(&self, off: u32) -> u8 {
+        let off = Self::fold(off);
+        let bank = if off & 0x1000 == 0 {
+            &self.dmem
+        } else {
+            &self.imem
+        };
+        bank[off & 0xFFF]
+    }
+
+    /// Write a byte of DMEM/IMEM as the CPU sees it.
+    pub const fn mem_write(&mut self, off: u32, val: u8) {
+        let off = Self::fold(off);
+        let bank = if off & 0x1000 == 0 {
+            &mut self.dmem
+        } else {
+            &mut self.imem
+        };
+        bank[off & 0xFFF] = val;
+    }
+
     /// Advance the RSP by one microcode instruction when running.
     ///
     /// Hot path: keep allocation-free. No-op while halted.

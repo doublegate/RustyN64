@@ -13,14 +13,15 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 2 (LLE RSP). Phase 1 is complete — [Sprint 2](phase-1-cpu-golden-log/sprint-2-cop0-tlb-exceptions.md) planned and next. The
-  VR4300 executes the MIPS III integer set as a five-stage pipeline off a canonical 187.5 MHz
-  master clock, and `basic.z64` passes 5/5. Phase 0 is complete: the workspace compiles, CI is
-  green across Linux/macOS/Windows, the docs site publishes, and the test-ROM corpora are
-  staged. No chip *other than the CPU* executes instructions yet.
-- **Release:** v0.2.0, tagged. The architecture is in place — the Bus owns all mutable state,
-  the scheduler runs, the crate graph is one-directional — but every chip `tick` is an
-  LLE-shaped stub. See `docs/STATUS.md` for the honest per-subsystem state.
+- **Current phase:** Phase 2 (LLE RSP), [Sprint 1](phase-2-rsp-lle/sprint-1-scalar-sp.md) next.
+  Phases 0 and 1 are complete. The VR4300 executes MIPS III — the integer set, COP0, the TLB,
+  the exception model, the primary caches, and a soft-float COP1 — as a five-stage pipeline off
+  the canonical 187.5 MHz master clock. **No chip other than the CPU executes anything yet**:
+  the RSP, RDP and AI are LLE-shaped stubs, so a green `cargo test` says nothing about them.
+- **Release:** v0.2.0 "Interpreter", tagged, with both Phase 1 exit criteria met by oracle —
+  n64-systemtest reports `Failed: 0` for the CPU/COP0/TLB/COP1 categories, and the golden-log
+  differ finds no divergence across 50,027 retired records. The 413 suite-wide failures that
+  remain are Phase 2's and later. See `docs/STATUS.md` for the per-subsystem state.
 - **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
   and ADR 0007's cycle-accurate five-stage pipeline are both **implemented** (T-11-001); the
   93.75 MHz tick and its 3:2 fractional accumulator no longer exist in the tree. The residue

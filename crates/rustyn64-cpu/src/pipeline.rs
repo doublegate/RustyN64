@@ -1671,19 +1671,11 @@ impl Pipeline {
             self.dcache.write(addr, width as usize, value);
             return;
         }
-        match width {
-            1 => bus.write_u8(addr, value as u8),
-            2 => {
-                bus.write_u8(addr, (value >> 8) as u8);
-                bus.write_u8(addr.wrapping_add(1), value as u8);
-            }
-            4 => bus.write_u32(addr, value as u32),
-            8 => {
-                bus.write_u32(addr, (value >> 32) as u32);
-                bus.write_u32(addr.wrapping_add(4), value as u32);
-            }
-            _ => {}
-        }
+        // Hand the bus the width and the *untruncated* register. Narrowing here
+        // would discard the upper bits before the target can decide whether it
+        // wants them -- and every device on the RCP's internal bus does (see
+        // `Bus::write_sized`).
+        bus.write_sized(addr, width, value);
     }
 
     /// `EX` — execute.

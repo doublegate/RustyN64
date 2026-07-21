@@ -76,14 +76,10 @@ pub struct Bus {
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
-    /// RSP DMEM + IMEM as plain memory (`0x0400_0000..0x0400_2000`).
-    ///
-    /// The RSP does not execute yet, but its memory must be **readable**: boot
-    /// code and IPL3 use DMEM as a handoff area, and n64-systemtest reads its
-    /// RDRAM size and ELF offset straight out of it on its second and third
-    /// instructions. A stub returning 0 made it build a memory map from zeros
-    /// and jump into nothing.
-    pub spmem: alloc::boxed::Box<[u8]>,
+    // DMEM and IMEM are **not** here: the RSP owns them (`Bus::rsp`), and this
+    // Bus reaches them through `Rsp::mem_read`/`mem_write`. They were a separate
+    // `spmem` slice on the Bus while the RSP was a stub, which meant the CPU and
+    // the RSP addressed two different memories that happened to start equal.
     /// The `ISViewer` buffer, as guest-visible memory.
     isviewer: alloc::boxed::Box<[u8]>,
     /// Text the guest has flushed through the `ISViewer` channel.
@@ -143,7 +139,6 @@ impl Default for Bus {
             // `vec![..].into_boxed_slice()` allocates straight on the heap —
             // no 8 MiB stack temporary (which `Box::new([0; N])` would create).
             pi: rustyn64_cart::pi::Pi::new(),
-            spmem: alloc::vec![0u8; Self::SPMEM_LEN].into_boxed_slice(),
             isviewer: alloc::vec![0u8; 0x20 + Self::ISVIEWER_LEN].into_boxed_slice(),
             isviewer_out: alloc::vec::Vec::new(),
             emux_out: alloc::vec::Vec::new(),
@@ -283,9 +278,30 @@ impl Bus {
     /// DMEM + IMEM, 4 KiB each.
     pub const SPMEM_LEN: usize = 0x2000;
 
-    /// Is this address in RSP DMEM/IMEM?
+    /// End of the SP memory window — where the SP *registers* begin.
+    ///
+    /// The 8 KiB of real storage repeats for this whole range rather than
+    /// ending at `0x0400_2000`; see [`rustyn64_rsp::Rsp::mem_read`].
+    pub const SPMEM_WINDOW_END: u32 = 0x0404_0000;
+
+    /// Is this address in the RSP DMEM/IMEM window?
     const fn is_spmem(addr: u32) -> bool {
-        addr >= Self::SPMEM_BASE && addr < Self::SPMEM_BASE + Self::SPMEM_LEN as u32
+        addr >= Self::SPMEM_BASE && addr < Self::SPMEM_WINDOW_END
+    }
+
+    /// Is this address handled by a device on the RCP's **internal** bus?
+    ///
+    /// `0x0400_0000-0x04FF_FFFF`, the range N64brew *Memory map* describes as
+    /// dispatched inside the RCP without going to an external bus. What matters
+    /// here is the shared consequence: every device in it ignores the access
+    /// size (see [`CpuBus::write_sized`]).
+    ///
+    /// The PI and SI external-bus windows share that size-blindness on hardware
+    /// and are deliberately **not** included — the PI already models its own
+    /// bus quirks separately, and folding both into one rule without the cart
+    /// tests to check it against would be a change made blind. Phase 5.
+    const fn is_rcp_internal(addr: u32) -> bool {
+        matches!(addr, 0x0400_0000..=0x04FF_FFFF)
     }
 
     /// Base of the **`ISViewer`** debug window, in cart address space.
@@ -424,11 +440,11 @@ impl Bus {
                     continue;
                 };
                 // Wrap within the selected 4 KiB half, never across it.
-                let m = half | (mem & 0xFFF);
+                let m = (half | (mem & 0xFFF)) as u32;
                 if to_dram {
-                    self.rdram[off] = self.spmem.get(m).copied().unwrap_or(0);
-                } else if let Some(dst) = self.spmem.get_mut(m) {
-                    *dst = self.rdram[off];
+                    self.rdram[off] = self.rsp.mem_read(m);
+                } else {
+                    self.rsp.mem_write(m, self.rdram[off]);
                 }
                 mem += 1;
                 dram = dram.wrapping_add(1);
@@ -505,11 +521,7 @@ impl CpuBus for Bus {
             return (w >> (8 * (3 - (addr & 3)))) as u8;
         }
         if Self::is_spmem(addr) {
-            return self
-                .spmem
-                .get((addr - Self::SPMEM_BASE) as usize)
-                .copied()
-                .unwrap_or(0);
+            return self.rsp.mem_read(addr - Self::SPMEM_BASE);
         }
         // SP_STATUS. The RSP is an LLE-shaped stub (see `docs/STATUS.md`), so
         // only the power-on `halt` bit is modelled -- enough for software to see
@@ -601,9 +613,7 @@ impl CpuBus for Bus {
             return;
         }
         if Self::is_spmem(addr) {
-            if let Some(b) = self.spmem.get_mut((addr - Self::SPMEM_BASE) as usize) {
-                *b = val;
-            }
+            self.rsp.mem_write(addr - Self::SPMEM_BASE, val);
             return;
         }
         if Self::is_isviewer(addr) {
@@ -614,6 +624,59 @@ impl CpuBus for Bus {
         }
         // TODO(T-CORE-01): decode + dispatch the remaining RCP register windows.
         self.cart.pi_write(addr, val);
+    }
+
+    /// Model the RCP's **size-blind** write path.
+    ///
+    /// Everything on the RCP's internal bus latches the whole 32-bit word the
+    /// VR4300 put on `SysAD`, ignoring both the access size and the low two
+    /// address bits (N64brew *Memory map* §Physical Memory Map accesses). The
+    /// VR4300 has already shifted the source register into the byte lane the
+    /// address selects, so a narrow store writes that shifted register —
+    /// **including the bits above the stored byte**, which is why the effect
+    /// looks like zero-fill rather than a partial update.
+    ///
+    /// n64-systemtest states the rule outright in its own header comment
+    /// (`src/tests/sp_memory/mod.rs`): *"SH/SB are broken: they overwrite the
+    /// whole 32 bit, filling everything that isn't written with zeroes. SD is
+    /// broken: it only writes the upper 32 bit of the value, touching only 4
+    /// bytes."* With `$3 = 0x1234_5678`, `SB $3, 5(spmem)` leaves `0x5678_0000`
+    /// in the word at offset 4 — the register shifted left 16, not the byte
+    /// `0x78`.
+    ///
+    /// RDRAM is excluded because the RI passes the low address bits and the
+    /// access size on to the RDRAM devices, which build a real byte mask from
+    /// them; only the RCP's internal path throws that information away.
+    fn write_sized(&mut self, addr: u32, width: u64, value: u64) {
+        if !Self::is_rcp_internal(addr) {
+            // RDRAM, the PI/SI external buses and the ISViewer keep byte-exact
+            // semantics -- see `is_rcp_internal` for why the external buses are
+            // not folded in here yet.
+            match width {
+                1 => self.write_u8(addr, value as u8),
+                2 => {
+                    self.write_u8(addr, (value >> 8) as u8);
+                    self.write_u8(addr.wrapping_add(1), value as u8);
+                }
+                4 => self.write_u32(addr, value as u32),
+                8 => {
+                    self.write_u32(addr, (value >> 32) as u32);
+                    self.write_u32(addr.wrapping_add(4), value as u32);
+                }
+                _ => {}
+            }
+            return;
+        }
+        let word = match width {
+            // 64-bit: the two words go out MSB-first and the RCP takes the
+            // first, dropping the second entirely -- so a `SD` touches four
+            // bytes, not eight.
+            8 => (value >> 32) as u32,
+            4 => value as u32,
+            // Narrow: the register as the VR4300 placed it on the bus.
+            w => (value as u32) << (8 * (4 - w as u32 - (addr & 3))),
+        };
+        self.write_u32(addr & !3, word);
     }
 
     fn write_u32(&mut self, addr: u32, val: u32) {
@@ -1044,8 +1107,8 @@ mod pi_tests {
         bus.write_u32(Bus::SP_MEM_ADDR, 0);
         bus.write_u32(Bus::SP_RD_LEN, 7); // 8 bytes, one row
         assert_eq!(
-            &bus.spmem[0..8],
-            &[0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7]
+            core::array::from_fn::<u8, 8, _>(|i| bus.rsp.mem_read(i as u32)),
+            [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7]
         );
     }
 
@@ -1053,8 +1116,8 @@ mod pi_tests {
     #[test]
     fn an_sp_dma_moves_spmem_into_rdram() {
         let mut bus = Bus::new();
-        for (i, b) in bus.spmem[0..8].iter_mut().enumerate() {
-            *b = 0x50 + i as u8;
+        for i in 0..8u32 {
+            bus.rsp.mem_write(i, 0x50 + i as u8);
         }
         bus.write_u32(Bus::SP_DRAM_ADDR, 0x200);
         bus.write_u32(Bus::SP_MEM_ADDR, 0);
@@ -1082,12 +1145,12 @@ mod pi_tests {
         // length = 7 (8 bytes), count = 1 (two rows), skip = 8.
         bus.write_u32(Bus::SP_RD_LEN, 7 | (1 << 12) | (8 << 20));
         assert_eq!(
-            &bus.spmem[0..8],
-            &[0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17]
+            core::array::from_fn::<u8, 8, _>(|i| bus.rsp.mem_read(i as u32)),
+            [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17]
         );
         assert_eq!(
-            &bus.spmem[8..16],
-            &[0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27],
+            core::array::from_fn::<u8, 8, _>(|i| bus.rsp.mem_read(8 + i as u32)),
+            [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27],
             "the second row must land contiguously in SPMEM"
         );
     }
@@ -1101,8 +1164,100 @@ mod pi_tests {
         bus.write_u32(Bus::SP_DRAM_ADDR, 0x400);
         bus.write_u32(Bus::SP_MEM_ADDR, 0x1000); // IMEM
         bus.write_u32(Bus::SP_RD_LEN, 7);
-        assert_eq!(bus.spmem[0x1000], 0x99, "landed in IMEM");
-        assert_eq!(bus.spmem[0], 0, "and NOT in DMEM");
+        assert_eq!(bus.rsp.mem_read(0x1000), 0x99, "landed in IMEM");
+        assert_eq!(bus.rsp.mem_read(0), 0, "and NOT in DMEM");
+    }
+
+    /// Read a word out of SPMEM the way the CPU does, for the tests below.
+    fn spmem_word(bus: &mut Bus, off: u32) -> u32 {
+        bus.read_u32(Bus::SPMEM_BASE + off)
+    }
+
+    /// **A byte store to the RCP's internal bus writes 32 bits.**
+    ///
+    /// The values are n64-systemtest's, not ours (`sp_memory::SB`): with
+    /// `$3 = 0x1234_5678`, storing a byte at offsets 0, 5, 10 and 15 leaves the
+    /// register *shifted into the addressed lane* in each of the four words,
+    /// wiping the rest. Byte-exact semantics would leave `0x7800_0000`,
+    /// `0x0078_0000`, `0x0000_7800`, `0x0000_0078` instead -- so this test fails
+    /// in all four words if the size-blind path is lost.
+    #[test]
+    fn a_byte_store_to_spmem_writes_the_whole_shifted_word() {
+        let mut bus = Bus::new();
+        for (i, off) in [0u32, 5, 10, 15].iter().enumerate() {
+            bus.write_sized(Bus::SPMEM_BASE + off, 1, 0x1234_5678);
+            let _ = i;
+        }
+        assert_eq!(spmem_word(&mut bus, 0), 0x7800_0000);
+        assert_eq!(spmem_word(&mut bus, 4), 0x5678_0000);
+        assert_eq!(spmem_word(&mut bus, 8), 0x3456_7800);
+        assert_eq!(spmem_word(&mut bus, 12), 0x1234_5678);
+    }
+
+    /// The same rule for halfwords, and it **destroys the untouched half** --
+    /// `sp_memory::SH` presets `0xDEAD_BEEF`/`0xBADD_ECAF` and expects both gone.
+    #[test]
+    fn a_halfword_store_to_spmem_writes_the_whole_shifted_word() {
+        let mut bus = Bus::new();
+        bus.write_u32(Bus::SPMEM_BASE, 0xDEAD_BEEF);
+        bus.write_u32(Bus::SPMEM_BASE + 4, 0xBADD_ECAF);
+
+        bus.write_sized(Bus::SPMEM_BASE, 2, 0x1234_5678);
+        bus.write_sized(Bus::SPMEM_BASE + 6, 2, 0x1234_5678);
+
+        assert_eq!(spmem_word(&mut bus, 0), 0x5678_0000);
+        assert_eq!(spmem_word(&mut bus, 4), 0x1234_5678);
+    }
+
+    /// **A 64-bit store touches four bytes, not eight.** The RCP takes the first
+    /// word off the bus and drops the second (`sp_memory::SD`), so the preset
+    /// second word must survive intact -- which is what distinguishes this from
+    /// a plain 64-bit write.
+    #[test]
+    fn a_doubleword_store_to_spmem_writes_only_the_upper_word() {
+        let mut bus = Bus::new();
+        bus.write_u32(Bus::SPMEM_BASE, 0xDEAD_BEEF);
+        bus.write_u32(Bus::SPMEM_BASE + 4, 0xBADD_ECAF);
+
+        bus.write_sized(Bus::SPMEM_BASE, 8, 0xABCD_EF98_7654_3210);
+
+        assert_eq!(spmem_word(&mut bus, 0), 0xABCD_EF98);
+        assert_eq!(
+            spmem_word(&mut bus, 4),
+            0xBADD_ECAF,
+            "the low word is dropped on the floor, not stored"
+        );
+    }
+
+    /// **RDRAM is not size-blind.** The RI passes the low address bits and the
+    /// access size to the RDRAM devices, which build a real byte mask. Without
+    /// this the size-blind rule would corrupt every ordinary narrow store, so
+    /// the exclusion is load-bearing rather than an optimisation.
+    #[test]
+    fn a_byte_store_to_rdram_writes_one_byte() {
+        let mut bus = Bus::new();
+        bus.write_u32(0x100, 0xDEAD_BEEF);
+        bus.write_sized(0x101, 1, 0x1234_5678);
+        assert_eq!(bus.read_u32(0x100), 0xDE78_BEEF);
+    }
+
+    /// The 8 KiB of DMEM+IMEM **repeats** up to `0x0404_0000`, where the SP
+    /// registers begin. n64-systemtest writes at `0x3E000` and reads the result
+    /// back at offset 0 (`sp_memory::SW (out of bounds)`).
+    #[test]
+    fn the_spmem_window_repeats_every_8_kib() {
+        let mut bus = Bus::new();
+        bus.write_u32(Bus::SPMEM_BASE, 0x0123_4567);
+        bus.write_u32(Bus::SPMEM_BASE + 0x1000, 0x89AB_CDEF);
+        bus.write_u32(Bus::SPMEM_BASE + 0x3E000, 0x7654_3210);
+
+        assert_eq!(
+            spmem_word(&mut bus, 0),
+            0x7654_3210,
+            "0x3E000 is offset 0 seen for the 31st time"
+        );
+        assert_eq!(spmem_word(&mut bus, 0x1000), 0x89AB_CDEF, "IMEM untouched");
+        assert_eq!(spmem_word(&mut bus, 0x3E000), 0x7654_3210);
     }
 
     /// **The PI external bus is 16 bits wide and the RCP ignores access size**,

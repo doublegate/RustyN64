@@ -1145,6 +1145,38 @@ stores and was still sitting in dirty D-cache lines. Reading *through* the D-cac
 independent confirmation that the cache model is right, found because the log channel had to obey
 the same rules a guest `LB` does.
 
+### C-28 — the RCP's internal bus is size-blind, and RDRAM is not
+
+**Claim.** Every device in `0x0400_0000-0x04FF_FFFF` ignores the access size and the low two
+address bits, latching the whole 32-bit word the VR4300 placed on `SysAD`. A narrow store there
+writes the *source register shifted into the addressed byte lane*, wiping the rest of the word; a
+64-bit store writes only the upper word and touches four bytes. RDRAM is exempt.
+
+**Basis: documented, and independently stated by the oracle.** N64brew *Memory map* SS Physical
+Memory Map accesses gives the mechanism and the worked example -- with `S0 = 0x1234_5678` and
+`A0 = 0x0400_0001`, `SB S0, 0(A0)` puts `0x3456_7800` on the bus and the RCP writes it to
+`A0 & ~3`. n64-systemtest states the same rule in its own words at the head of
+`src/tests/sp_memory/mod.rs`: *"SH/SB are broken: they overwrite the whole 32 bit, filling
+everything that isn't written with zeroes. SD is broken: it only writes the upper 32 bit of the
+value, touching only 4 bytes."* Two independent sources, one of them executable.
+
+**Why RDRAM differs, and why that asymmetry is the whole point.** The RI forwards the low address
+bits and the access size to the RDRAM devices, which build a real byte mask from them; only the
+RCP's internal path discards that information. So the correct narrowing is a property of the
+**target**, not of the instruction -- which is why `Bus::write_sized` carries the width and the
+untruncated register to the bus rather than letting the CPU narrow first. A CPU that narrows
+eagerly cannot express this, and the bug is invisible until something reads back a neighbouring
+byte it never wrote.
+
+**Scope, stated rather than assumed.** The PI and SI external-bus windows share the size-blindness
+on hardware (same wiki section), and are **not** covered here: the PI already models its own bus
+quirks separately, and merging them without the cart tests to check against would be a change made
+blind. Phase 5 owns that. The 64-bit *read* case -- which hangs the VR4300 outright, because the
+RCP never puts a second word on the bus -- is not modelled either; nothing tests it, since a test
+for it would hang the console.
+
+---
+
 ---
 
 ## 5. Deliberate deviations from hardware

@@ -116,6 +116,37 @@ pub trait Bus {
         self.write_u8(addr.wrapping_add(3), b[3]);
     }
 
+    /// Write `value` as a `width`-byte store, **carrying the access width and
+    /// the untruncated source register to the bus**.
+    ///
+    /// The CPU cannot narrow the value itself, because whether narrowing is
+    /// correct is a property of the *target*, not of the instruction. RDRAM
+    /// honours the byte enables and stores exactly `width` bytes; every device
+    /// on the RCP's internal bus ignores the access size entirely and latches
+    /// the whole 32-bit word the VR4300 placed on `SysAD` — including the bits
+    /// of the source register that a narrow store was never meant to send
+    /// (N64brew *Memory map* §Physical Memory Map accesses).
+    ///
+    /// So the width and the full register both have to survive the call, and
+    /// the implementor decides. The default here is the RDRAM-style narrowing,
+    /// which is right for a plain memory and for the test buses; `rustyn64-core`
+    /// overrides it to model the RCP's size-blindness.
+    fn write_sized(&mut self, addr: u32, width: u64, value: u64) {
+        match width {
+            1 => self.write_u8(addr, value as u8),
+            2 => {
+                self.write_u8(addr, (value >> 8) as u8);
+                self.write_u8(addr.wrapping_add(1), value as u8);
+            }
+            4 => self.write_u32(addr, value as u32),
+            8 => {
+                self.write_u32(addr, (value >> 32) as u32);
+                self.write_u32(addr.wrapping_add(4), value as u32);
+            }
+            _ => {}
+        }
+    }
+
     /// Does this host offer the **EMUX** emulator extensions?
     ///
     /// Default: **no**, and that default is the load-bearing part. Real hardware
