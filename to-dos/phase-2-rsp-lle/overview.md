@@ -27,9 +27,36 @@ recognised.
 - [ ] `SP_STATUS` halt, broke, and interrupt semantics drive the MI line so the CPU's polling
       loops terminate.
 - [ ] The SU/VU dual-issue pipeline is modelled to the depth the test ROMs observe.
+      **Made falsifiable (this was previously unmeasurable as written).** N64brew *RSP CPU
+      Pipeline* states its scope up front: it *"describes the effects of the pipelines on code
+      execution"* from a software point of view. Those effects are **entirely timing** — the
+      4-cycle VU write latency, the 3-cycle DMEM-load latency, and the stalls they cause. None
+      of them changes an architectural result: the same registers end up holding the same
+      values, only later.
+      The RSP exposes no cycle counter to software, and a `grep` for `dual`/`cycles`/`stall`
+      across `ref-proj/n64-systemtest/src/tests/rsp/` returns **nothing** — the suite contains
+      no RSP timing assertion of any kind. So *"the depth the test ROMs observe"* is currently
+      **zero**, and this criterion is met by that measurement rather than by modelling.
+      **Bounded, not dismissed.** It stops being zero the moment either of these is true, and
+      whichever comes first should reopen this box: (a) a real microcode's *output* depends on
+      when the RSP finishes relative to the CPU — an `SP_STATUS` polling loop makes RSP timing
+      indirectly visible; (b) a cycle-counting harness exists to compare against. Recording the
+      measurement is what makes the reopening trigger checkable instead of a matter of opinion.
 - [ ] `n64-systemtest` reports `Failed: 0` for the RSP category.
 - [ ] A real graphics microcode boots and emits a plausible RDP command list into RDRAM, even
       though nothing rasterises it yet.
+      **Source resolved: libdragon's `src/rdpq/rsp_rdpq.S`.** libdragon is released into the
+      **public domain** (`ref-proj/libdragon/LICENSE.md`, Unlicense) and is already on
+      `ref-proj/README.md`'s vendorable list, so its RDP-queue microcode can be built and
+      committed as a test fixture. That removes the licence obstacle that made this criterion
+      look open-ended — F3DEX2 from a commercial ROM is *not* available to us and never was.
+      **"Plausible" still needs defining, and should be defined before the work starts**, or it
+      becomes a judgement call made by whoever happens to be looking at the output. The
+      proposal: the emitted command list is compared byte-for-byte against the same microcode
+      run under a reference emulator, exactly as the CPU golden log is (ledger C-26). That
+      turns "plausible" into "identical to an oracle", which is the standard the rest of this
+      project holds itself to. Anything weaker — eyeballing a command stream for
+      reasonable-looking opcodes — would be the only unfalsifiable criterion in the phase.
 
 ## Scope
 
