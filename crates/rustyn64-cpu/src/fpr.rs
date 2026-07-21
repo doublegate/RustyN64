@@ -3,29 +3,40 @@
 //! 32 physical 64-bit **FGRs**. How software sees them depends on
 //! `Status.FR` (UM §6.3.5, and the FPR/FGR figures in Ch. 7):
 //!
-//! The view applies to **64-bit accesses only**:
-//!
-//! | `FR` | 64-bit (double / `DMxC1`) view |
+//! | `FR` | Register `n` addresses |
 //! | --- | --- |
-//! | 1 | FPR *n* **is** FGR *n* — 32 independent 64-bit registers |
-//! | 0 | 64-bit values use **even** indices; the value is the FGR **pair** `FGR[n+1]:FGR[n]` |
+//! | 1 | FGR *n* — 32 independent 64-bit registers |
+//! | 0 | FGR *n & !1* — **odd FGRs are not addressable at all** |
 //!
-//! **Single precision is unaffected**: all 32 indices are valid under both
-//! settings, and a `.S` value is always the low 32 bits of FGR *n*. `FR = 0`
-//! does not make half the register file disappear — it changes how a *double*
-//! is laid out across it.
+//! With `FR = 0` there are 16 usable 64-bit registers, and a 32-bit access
+//! picks a half of one of them: an **even** register number is the low half,
+//! an **odd** register number is the **high** half of its even partner.
 //!
-//! # Why this indirection is not optional
+//! # This is not the "FGR pair" model, and the difference is observable
 //!
-//! It is tempting to store 32 `u64`s and index them directly, which is exactly
-//! right for `FR = 1` and silently wrong for `FR = 0` — where a double written
-//! to FPR 2 must land in FGRs 2 **and** 3, and reading FPR 2 back through a
-//! direct index returns only half of it. Both modes occur on real N64 software:
-//! IPL3 leaves `FR` set, but plenty of games clear it.
+//! It is natural to read "`FR = 0` uses register pairs" as *the value is
+//! `FGR[n+1]:FGR[n]`, assembled from two registers' low halves*. This module
+//! had exactly that, and it is wrong: it makes `MTC1 $1` write FGR1, where
+//! hardware writes the upper half of FGR0 and leaves FGR1 untouched.
 //!
-//! Single-precision is the same in both modes — the low 32 bits of FGR *n* —
-//! which is what makes the bug survive casual testing: every `.S` operation
-//! works, and only doubles break.
+//! n64-systemtest pins it directly. In half mode, after `MTC1 $1`:
+//!
+//! ```text
+//! DMFC1(0) == 0x01234567_89ABCDEF   <- the write landed in FGR0's HIGH half
+//! DMFC1(1) == 0x44445555_66667777   <- unchanged
+//! ```
+//!
+//! # Three write behaviours, not one
+//!
+//! - [`Fpr::write_s`] — `MTC1`/`LWC1`: deposit 32 bits, **preserve** the other
+//!   half of the register.
+//! - [`Fpr::write_s_arith`] — a single-precision arithmetic result: **clear**
+//!   the other half. The suite's *"Upper bits of 32 bit operation"* reads the
+//!   destination back with `DMFC1` after an `ADD.S` and expects zero there.
+//! - [`Fpr::write_d`] — a 64-bit value, whole register.
+//!
+//! Collapsing the first two is invisible until something reads the register at
+//! a different width, which is precisely what those tests do.
 
 /// The 32 physical floating-point general registers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,66 +62,99 @@ impl Fpr {
         Self { fgr: [0; 32] }
     }
 
-    /// Read a single-precision value — the low 32 bits of FGR *n*.
+    /// Read a 32-bit value from FPR `n` under the current `FR` view.
     ///
-    /// Identical under both `FR` settings, which is precisely why an
-    /// `FR`-ignoring implementation passes every single-precision test.
+    /// | `FR` | Register `n` maps to |
+    /// | --- | --- |
+    /// | 1 | the **low** half of FGR *n* |
+    /// | 0 | FGR *n & !1* — its **low** half for even `n`, its **HIGH** half for odd `n` |
+    ///
+    /// The `FR = 0` row is the whole subtlety, and it is not what "the pair
+    /// `FGR[n+1]:FGR[n]`" suggests: an **odd** register in half mode is the
+    /// upper 32 bits of its *even partner*, and odd FGRs are not addressable
+    /// at all. n64-systemtest pins it directly — after `MTC1 $1` in half mode,
+    /// `DMFC1(0)` shows the written value in its high half while `DMFC1(1)` is
+    /// **unchanged**.
     #[must_use]
-    pub const fn read_s(&self, n: u8) -> u32 {
-        self.fgr[(n & 31) as usize] as u32
-    }
-
-    /// Write a single-precision value into the low 32 bits of FGR *n*.
-    ///
-    /// The upper half is **preserved**, not cleared: with `FR = 0` that half is
-    /// the other word of a double held in the same pair, and clearing it would
-    /// corrupt a value the program never touched.
-    pub const fn write_s(&mut self, n: u8, v: u32) {
+    pub const fn read_s(&self, n: u8, fr: bool) -> u32 {
         let i = (n & 31) as usize;
-        self.fgr[i] = (self.fgr[i] & 0xFFFF_FFFF_0000_0000) | v as u64;
+        if fr {
+            self.fgr[i] as u32
+        } else if i & 1 == 1 {
+            (self.fgr[i & !1] >> 32) as u32
+        } else {
+            self.fgr[i] as u32
+        }
     }
 
-    /// Read a double-precision value, applying the `FR` view.
+    /// Write a 32-bit value to FPR `n` under the current `FR` view.
     ///
-    /// With `FR = 0` the register number is forced even and the value is
-    /// assembled from the pair — *"the odd register holds the high-order word"*.
+    /// The other half of the 64-bit register is **preserved** — this models
+    /// `MTC1`/`LWC1`, which deposit 32 bits and leave the rest alone. An
+    /// arithmetic `.S` result does not behave this way; see
+    /// [`Fpr::write_s_arith`].
+    ///
+    /// See [`Fpr::read_s`] for the `FR = 0` mapping.
+    pub const fn write_s(&mut self, n: u8, fr: bool, v: u32) {
+        let i = (n & 31) as usize;
+        if !fr && i & 1 == 1 {
+            let e = i & !1;
+            self.fgr[e] = (self.fgr[e] & 0xFFFF_FFFF) | ((v as u64) << 32);
+        } else {
+            let e = if fr { i } else { i & !1 };
+            self.fgr[e] = (self.fgr[e] & 0xFFFF_FFFF_0000_0000) | v as u64;
+        }
+    }
+
+    /// Write a single-precision **arithmetic result**, which clears the other
+    /// half of the destination rather than preserving it.
+    ///
+    /// This is what separates an arithmetic write-back from `MTC1`.
+    /// n64-systemtest's *"Upper bits of 32 bit operation"* reads the
+    /// destination back with `DMFC1` after an `ADD.S` and expects the upper
+    /// 32 bits to be **zero**, not the register's previous contents.
+    pub const fn write_s_arith(&mut self, n: u8, fr: bool, v: u32) {
+        let i = (n & 31) as usize;
+        if !fr && i & 1 == 1 {
+            // An odd destination in half mode still addresses the high half of
+            // its even partner; the *low* half is what gets cleared.
+            self.fgr[i & !1] = (v as u64) << 32;
+        } else {
+            let e = if fr { i } else { i & !1 };
+            self.fgr[e] = v as u64;
+        }
+    }
+
+    /// Read a 64-bit value from FPR `n` under the current `FR` view.
+    ///
+    /// With `FR = 0` the register number is forced even and the **whole**
+    /// 64-bit FGR is the value — not an assembly of two FGRs' low halves,
+    /// which is the shape this originally had and which disagreed with
+    /// hardware on every odd index.
     #[must_use]
     pub const fn read_d(&self, n: u8, fr: bool) -> u64 {
         let i = (n & 31) as usize;
-        if fr {
-            self.fgr[i]
-        } else {
-            // FR = 0: 64-bit accesses use even indices. An odd `n` here is
-            // architecturally *undefined* (UM Ch. 17) -- forcing it even is a
-            // documented choice, not a fact. Single-precision access to odd
-            // registers remains perfectly valid; only this 64-bit path is
-            // constrained.
-            let even = i & !1;
-            ((self.fgr[even | 1] & 0xFFFF_FFFF) << 32) | (self.fgr[even] & 0xFFFF_FFFF)
-        }
+        self.fgr[if fr { i } else { i & !1 }]
     }
 
-    /// Write a double-precision value, applying the `FR` view.
+    /// Write a 64-bit value to FPR `n` under the current `FR` view.
     pub const fn write_d(&mut self, n: u8, fr: bool, v: u64) {
         let i = (n & 31) as usize;
-        if fr {
-            self.fgr[i] = v;
-        } else {
-            let even = i & !1;
-            self.fgr[even] = (self.fgr[even] & 0xFFFF_FFFF_0000_0000) | (v & 0xFFFF_FFFF);
-            self.fgr[even | 1] =
-                (self.fgr[even | 1] & 0xFFFF_FFFF_0000_0000) | ((v >> 32) & 0xFFFF_FFFF);
-        }
+        self.fgr[if fr { i } else { i & !1 }] = v;
     }
 
-    /// Read a raw FGR — for `DMFC1`, which moves the physical register rather
-    /// than a formatted value, and so ignores `FR`.
+    /// Read a raw FGR, ignoring `FR`.
+    ///
+    /// **Not for any instruction.** `DMFC1` looked like a user of this and is
+    /// not: it is a *formatted* 64-bit access and goes through [`Fpr::read_d`]
+    /// (accuracy ledger U-7). This exists for tests and for save-state
+    /// serialisation, which want the physical file.
     #[must_use]
     pub const fn read_raw(&self, n: u8) -> u64 {
         self.fgr[(n & 31) as usize]
     }
 
-    /// Write a raw FGR — for `DMTC1`.
+    /// Write a raw FGR, ignoring `FR`. See [`Fpr::read_raw`].
     pub const fn write_raw(&mut self, n: u8, v: u64) {
         self.fgr[(n & 31) as usize] = v;
     }
@@ -136,78 +180,112 @@ mod tests {
         }
     }
 
-    /// **With `FR = 0` a double occupies an FGR pair.** Writing FPR 2 must land
-    /// in FGRs 2 *and* 3, with the odd register holding the high word.
+    /// **The n64-systemtest `MTC1` half-mode sequence, verbatim.**
     ///
-    /// A direct-index implementation stores the whole 64 bits in FGR 2 and reads
-    /// it back correctly — so this only fails once something *else* observes the
-    /// pair, which is why the assertion is on the raw FGRs.
+    /// This is the vector that showed the old "FGR pair" model was wrong, so it
+    /// is transcribed rather than paraphrased: writing an **odd** register in
+    /// half mode lands in the **high half of its even partner**, and the odd
+    /// FGR is left completely alone.
     #[test]
-    fn fr_clear_splits_a_double_across_an_fgr_pair() {
+    fn a_half_mode_odd_index_writes_the_high_half_of_its_even_partner() {
         let mut f = Fpr::new();
-        f.write_d(2, false, 0x1122_3344_5566_7788);
-        assert_eq!(f.read_raw(2), 0x5566_7788, "even FGR holds the LOW word");
-        assert_eq!(f.read_raw(3), 0x1122_3344, "odd FGR holds the HIGH word");
-        assert_eq!(f.read_d(2, false), 0x1122_3344_5566_7788, "and reassembles");
-    }
+        f.write_raw(0, 0x0000_1111_2222_3333);
+        f.write_raw(1, 0x4444_5555_6666_7777);
+        f.write_raw(2, 0x8888_9999_AAAA_BBBB);
 
-    /// With `FR = 0` the two views disagree, which is the whole point: reading
-    /// the same register as a double under `FR = 1` sees only the low half.
-    #[test]
-    fn the_two_views_of_the_same_storage_differ() {
-        let mut f = Fpr::new();
-        f.write_d(2, false, 0x1122_3344_5566_7788);
-        assert_ne!(
-            f.read_d(2, true),
-            f.read_d(2, false),
-            "an FR-ignoring implementation would make these equal"
-        );
-        assert_eq!(f.read_d(2, true), 0x5566_7788, "FR=1 sees FGR 2 alone");
-    }
+        // MTC1 $0 in half mode -> low half of FGR0, high half preserved.
+        f.write_s(0, false, 0x89AB_CDEF);
+        assert_eq!(f.read_d(0, true), 0x0000_1111_89AB_CDEF);
 
-    /// Single precision is **identical under both settings** — the low 32 bits
-    /// of FGR *n*. This is why an `FR`-ignoring implementation passes every
-    /// single-precision test and only breaks on doubles.
-    #[test]
-    fn single_precision_is_the_same_under_both_fr_settings() {
-        let mut f = Fpr::new();
-        for n in 0..32u8 {
-            f.write_s(n, 0x4000_0000 | u32::from(n));
-        }
-        for n in 0..32u8 {
-            assert_eq!(f.read_s(n), 0x4000_0000 | u32::from(n));
-        }
-    }
-
-    /// A single-precision write **preserves** the upper half. With `FR = 0` that
-    /// half is the other word of a double in the same pair — clearing it would
-    /// corrupt a value the program never touched.
-    #[test]
-    fn a_single_write_preserves_the_upper_half_of_the_fgr() {
-        let mut f = Fpr::new();
-        f.write_raw(4, 0xAAAA_BBBB_CCCC_DDDD);
-        f.write_s(4, 0x1234_5678);
+        // MTC1 $1 in half mode -> HIGH half of FGR0. FGR1 is untouched.
+        f.write_s(1, false, 0x0123_4567);
         assert_eq!(
-            f.read_raw(4),
-            0xAAAA_BBBB_1234_5678,
-            "the upper half must survive"
+            f.read_d(0, true),
+            0x0123_4567_89AB_CDEF,
+            "landed in FGR0's high half"
         );
+        assert_eq!(
+            f.read_d(1, true),
+            0x4444_5555_6666_7777,
+            "FGR1 must be untouched -- the old pair model wrote here"
+        );
+
+        // MTC1 $2 -> low half of FGR2; MTC1 $3 -> high half of FGR2.
+        f.write_s(2, false, 0x1234_5678);
+        assert_eq!(f.read_d(2, true), 0x8888_9999_1234_5678);
+        f.write_s(3, false, 0x9ABC_DEF0);
+        assert_eq!(f.read_d(3, false), 0x9ABC_DEF0_1234_5678);
     }
 
-    /// For **64-bit** accesses, `FR = 0` forces the register number even, so a
-    /// double at FPR 3 aliases FPR 2. That is a **documented choice** for an
-    /// architecturally undefined case (UM Ch. 17), not a hardware fact — this
-    /// test pins the choice so changing it is deliberate.
-    ///
-    /// Single-precision access to odd registers is unaffected and valid.
+    /// Reading mirrors writing: an odd index in half mode reads the high half.
     #[test]
-    fn fr_clear_forces_the_register_even_by_choice_not_by_evidence() {
+    fn a_half_mode_odd_index_reads_the_high_half() {
+        let mut f = Fpr::new();
+        f.write_raw(0, 0x0123_4567_89AB_CDEF);
+        f.write_raw(1, 0xFFFF_FFFF_FFFF_FFFF);
+        assert_eq!(f.read_s(0, false), 0x89AB_CDEF, "even -> low half");
+        assert_eq!(f.read_s(1, false), 0x0123_4567, "odd -> HIGH half of FGR0");
+        // ...and under FR = 1 the same index is a different register entirely.
+        assert_eq!(f.read_s(1, true), 0xFFFF_FFFF, "FR=1 -> FGR1's low half");
+    }
+
+    /// A 64-bit access in half mode is the **whole** even register, not two
+    /// registers' low halves assembled.
+    #[test]
+    fn a_half_mode_64_bit_access_is_one_whole_register() {
         let mut f = Fpr::new();
         f.write_d(2, false, 0x1122_3344_5566_7788);
+        assert_eq!(f.read_raw(2), 0x1122_3344_5566_7788, "all 64 bits in FGR2");
+        assert_eq!(f.read_raw(3), 0, "FGR3 is not part of it");
         assert_eq!(
             f.read_d(3, false),
-            f.read_d(2, false),
-            "odd FPR aliases its even partner -- see the doc comment"
+            0x1122_3344_5566_7788,
+            "odd aliases its partner"
         );
+    }
+
+    /// **`MTC1` preserves the other half; an arithmetic result clears it.**
+    ///
+    /// Both write 32 bits to the same place, so a single `write_s` for both is
+    /// the natural implementation — and it is wrong. n64-systemtest reads the
+    /// destination back with `DMFC1` after an `ADD.S` and expects zero above.
+    #[test]
+    fn an_arithmetic_write_clears_the_other_half_but_mtc1_preserves_it() {
+        let mut f = Fpr::new();
+        f.write_raw(4, 0xAAAA_BBBB_CCCC_DDDD);
+        f.write_s(4, true, 0x1234_5678);
+        assert_eq!(f.read_raw(4), 0xAAAA_BBBB_1234_5678, "MTC1 preserves");
+
+        f.write_raw(4, 0xAAAA_BBBB_CCCC_DDDD);
+        f.write_s_arith(4, true, 0x1234_5678);
+        assert_eq!(f.read_raw(4), 0x0000_0000_1234_5678, "arithmetic clears");
+
+        // Half mode, odd destination: the arithmetic result still goes to the
+        // high half, and it is the LOW half that gets cleared.
+        f.write_raw(4, 0xAAAA_BBBB_CCCC_DDDD);
+        f.write_s_arith(5, false, 0x1234_5678);
+        assert_eq!(f.read_raw(4), 0x1234_5678_0000_0000);
+    }
+
+    /// `FR = 0` addresses only even FGRs, so the odd ones are unreachable
+    /// through every accessor. Pinned because the old model used them as
+    /// storage.
+    #[test]
+    fn half_mode_never_touches_an_odd_fgr() {
+        let mut f = Fpr::new();
+        for n in 0..32u8 {
+            f.write_raw(n, 0x5A5A_5A5A_5A5A_5A5A);
+        }
+        for n in 0..32u8 {
+            f.write_s(n, false, 0x1111_2222);
+            f.write_d(n, false, 0x3333_4444_5555_6666);
+        }
+        for n in (1..32u8).step_by(2) {
+            assert_eq!(
+                f.read_raw(n),
+                0x5A5A_5A5A_5A5A_5A5A,
+                "FGR {n} is odd and must be untouched in half mode"
+            );
+        }
     }
 }

@@ -592,7 +592,7 @@ impl Pipeline {
                     let fr = fr_of(&self.cop0);
                     self.fpr.write_d(dest, fr, value);
                 } else {
-                    self.fpr.write_s(dest, value as u32);
+                    self.fpr.write_s(dest, fr_of(&self.cop0), value as u32);
                 }
             }
             if let Some(Cop0Access::Cop1(Cop1Access::WriteControl { dest, value })) =
@@ -754,7 +754,7 @@ impl Pipeline {
                 value: if wide {
                     self.fpr.read_d(src, fr_of(&self.cop0))
                 } else {
-                    crate::alu::sext32(self.fpr.read_s(src))
+                    crate::alu::sext32(self.fpr.read_s(src, fr_of(&self.cop0)))
                 },
             };
         }
@@ -1110,14 +1110,14 @@ impl Pipeline {
                 match op {
                     Op::Lwc1 => {
                         let v = Self::read_width(bus, phys, 4) as u32;
-                        self.fpr.write_s(ft, v);
+                        self.fpr.write_s(ft, fr_of(&self.cop0), v);
                     }
                     Op::Ldc1 => {
                         let v = Self::read_width(bus, phys, 8);
                         self.fpr.write_d(ft, fr, v);
                     }
                     Op::Swc1 => {
-                        let v = self.fpr.read_s(ft);
+                        let v = self.fpr.read_s(ft, fr_of(&self.cop0));
                         Self::write_width(bus, phys, 4, u64::from(v));
                     }
                     _ => {
@@ -1550,12 +1550,14 @@ impl Pipeline {
             return self.fp_sign_op(fmt, funct, fs, fd, fr);
         }
         if funct == 6 {
-            if fmt == 0o20 {
-                self.fpr.write_s(fd, self.fpr.read_s(fs));
-            } else {
-                let v = self.fpr.read_d(fs, fr);
-                self.fpr.write_d(fd, fr, v);
-            }
+            // **`MOV.S` moves all 64 bits, not just the formatted half.**
+            // n64-systemtest's "Upper bits of 32 bit operation" reads the
+            // destination back with `DMFC1` after a `MOV.S` and expects the
+            // SOURCE's upper half there, not the destination's previous
+            // contents -- so this is a whole-register transfer that happens to
+            // be spelled `.S`.
+            let v = self.fpr.read_d(fs, fr);
+            self.fpr.write_d(fd, fr, v);
             // **`FCSR` is left completely alone**, `Cause` included.
             //
             // Clearing `Cause` here was written first, on no evidence, and was
@@ -1624,7 +1626,7 @@ impl Pipeline {
             // register (`write_raw`, zeroing the upper half) was tried and
             // REVERTED: it moved the oracle by nothing and it bypasses the `FR`
             // view, which is exactly the mistake ledger U-7 records (C-10).
-            FpCommit::Single(v) => self.fpr.write_s(fd, v),
+            FpCommit::Single(v) => self.fpr.write_s_arith(fd, fr, v),
             FpCommit::Double(v) => self.fpr.write_d(fd, fr, v),
             // `FCSR.C` is bit 23, and it is NOT part of the `Cause`/`Flags`
             // bookkeeping — a compare writes it and no other operation touches
@@ -1656,7 +1658,7 @@ impl Pipeline {
 
         let fcsr = self.cop1.fcsr();
         let (commit, flags, unimplemented) = if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs));
+            let a = f32::from_bits(self.fpr.read_s(fs, fr));
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 (0u64, fpu::Flags::NONE, true)
             } else if fpu::is_snan_f32(a) {
@@ -1712,7 +1714,7 @@ impl Pipeline {
             return true;
         }
         if fmt == 0o20 {
-            self.fpr.write_s(fd, commit as u32);
+            self.fpr.write_s_arith(fd, fr, commit as u32);
         } else {
             self.fpr.write_d(fd, fr, commit);
         }
@@ -1738,7 +1740,7 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let bits = u64::from(self.fpr.read_s(fs));
+            let bits = u64::from(self.fpr.read_s(fs, fr));
             let a = f32::from_bits(bits as u32);
             if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
@@ -1849,8 +1851,8 @@ impl Pipeline {
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
         if fmt == 0o20 {
-            let a = f32::from_bits(self.fpr.read_s(fs));
-            let b = f32::from_bits(self.fpr.read_s(ft));
+            let a = f32::from_bits(self.fpr.read_s(fs, fr));
+            let b = f32::from_bits(self.fpr.read_s(ft, fr));
             if fpu::arith_unimplemented_s(a, b) {
                 return (FpCommit::Single(0), fpu::Flags::NONE, true);
             }
@@ -1934,7 +1936,7 @@ impl Pipeline {
     fn integer_conversion_unimplemented(&self, fmt: u8, fs: u8, fr: bool) -> bool {
         use crate::fpu;
         if fmt == 0o20 {
-            fpu::is_subnormal_f32(f32::from_bits(self.fpr.read_s(fs)))
+            fpu::is_subnormal_f32(f32::from_bits(self.fpr.read_s(fs, fr)))
         } else {
             fpu::is_subnormal_f64(f64::from_bits(self.fpr.read_d(fs, fr)))
         }
@@ -1977,7 +1979,7 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
-                    let out = fpu::cvt_s_w(self.fpr.read_s(fs) as i32);
+                    let out = fpu::cvt_s_w(self.fpr.read_s(fs, fr) as i32);
                     (FpCommit::Single(out.value.to_bits()), out.flags, false)
                 }
                 // From `.L`, which the VR4300 restricts: bits 63:55 must be all
@@ -1996,7 +1998,7 @@ impl Pipeline {
             // To double.
             0o41 => match fmt {
                 0o20 => {
-                    let bits = u64::from(self.fpr.read_s(fs));
+                    let bits = u64::from(self.fpr.read_s(fs, fr));
                     let a = f32::from_bits(bits as u32);
                     if fpu::is_subnormal_f32(a) || fpu::is_unimplemented_nan_f32(a) {
                         return (FpCommit::Double(0), fpu::Flags::NONE, true);
@@ -2009,7 +2011,7 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)]
                 0o24 => {
-                    let out = fpu::cvt_d_w(self.fpr.read_s(fs) as i32);
+                    let out = fpu::cvt_d_w(self.fpr.read_s(fs, fr) as i32);
                     (FpCommit::Double(out.value.to_bits()), out.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
@@ -2059,8 +2061,8 @@ impl Pipeline {
         use crate::fpu;
         let out = if fmt == 0o20 {
             fpu::compare_s(
-                f32::from_bits(self.fpr.read_s(fs)),
-                f32::from_bits(self.fpr.read_s(ft)),
+                f32::from_bits(self.fpr.read_s(fs, fr)),
+                f32::from_bits(self.fpr.read_s(ft, fr)),
                 cond,
             )
         } else {
@@ -2079,7 +2081,7 @@ impl Pipeline {
     /// the only rounding is the one the instruction performs.
     fn fp_source_as_f64(&self, fmt: u8, fs: u8, fr: bool) -> f64 {
         if fmt == 0o20 {
-            f64::from(f32::from_bits(self.fpr.read_s(fs)))
+            f64::from(f32::from_bits(self.fpr.read_s(fs, fr)))
         } else {
             f64::from_bits(self.fpr.read_d(fs, fr))
         }
@@ -4281,7 +4283,7 @@ mod tests {
         }
 
         assert_eq!(
-            p.fpr.read_s(0),
+            p.fpr.read_s(0, true),
             0x4000_0000,
             "MOV.S must copy fs's low word into fd"
         );
@@ -4310,13 +4312,13 @@ mod tests {
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-            p.fpr.write_s(4, input);
-            p.fpr.write_s(0, 0x1122_3344);
+            p.fpr.write_s(4, true, input);
+            p.fpr.write_s(0, true, 0x1122_3344);
             let mut pc = KSEG0_PROG;
             for _ in 0..16 {
                 p.advance(&mut bus, &mut regs, &mut pc);
             }
-            assert_eq!(p.fpr.read_s(0), want, "funct {funct} did not execute");
+            assert_eq!(p.fpr.read_s(0, true), want, "funct {funct} did not execute");
         }
     }
 
@@ -4340,8 +4342,8 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000); // CU1 | FR
         p.cop1.ctc1(31, fcsr);
-        p.fpr.write_s(0, 0x7F80_0000); // +inf
-        p.fpr.write_s(2, 0xFF80_0000); // -inf
+        p.fpr.write_s(0, true, 0x7F80_0000); // +inf
+        p.fpr.write_s(2, true, 0xFF80_0000); // -inf
         p.fpr.write_raw(4, 0x1122_3344_5566_7788); // untouched-if-trapped marker
         let mut pc = KSEG0_PROG;
         for _ in 0..24 {
@@ -4360,7 +4362,7 @@ mod tests {
         let (p, code) = run_invalid_add_s(0);
         assert_eq!(code, 0, "masked: no exception");
         assert_ne!(
-            p.fpr.read_s(4),
+            p.fpr.read_s(4, true),
             0x5566_7788,
             "fd must be written when no trap is taken"
         );
@@ -4426,8 +4428,8 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         p.cop1.ctc1(31, ENABLE_INVALID);
-        p.fpr.write_s(0, 0x7F80_0000);
-        p.fpr.write_s(2, 0xFF80_0000);
+        p.fpr.write_s(0, true, 0x7F80_0000);
+        p.fpr.write_s(2, true, 0xFF80_0000);
 
         let mut pc = KSEG0_PROG;
         let mut saw_trap = false;
@@ -4482,8 +4484,8 @@ mod tests {
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         // f32::MAX + 1.0 -- the value is unchanged and the operation is
         // inexact, which is the n64-systemtest case from ledger C-11.
-        p.fpr.write_s(0, f32::MAX.to_bits());
-        p.fpr.write_s(2, 1.0f32.to_bits());
+        p.fpr.write_s(0, true, f32::MAX.to_bits());
+        p.fpr.write_s(2, true, 1.0f32.to_bits());
 
         let mut pc = KSEG0_PROG;
         for _ in 0..8 {
@@ -4497,7 +4499,11 @@ mod tests {
         for _ in 0..16 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(6), p.fpr.read_s(4), "the MOV.S did run");
+        assert_eq!(
+            p.fpr.read_s(6, true),
+            p.fpr.read_s(4, true),
+            "the MOV.S did run"
+        );
         assert_ne!(
             p.cop1.fcsr() & CAUSE_INEXACT,
             0,
@@ -4530,14 +4536,14 @@ mod tests {
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         // Pre-set the bit, as a previous unimplemented operation would have.
         p.cop1.ctc1(31, CAUSE_E);
-        p.fpr.write_s(0, 1.0f32.to_bits());
-        p.fpr.write_s(2, 2.0f32.to_bits());
+        p.fpr.write_s(0, true, 1.0f32.to_bits());
+        p.fpr.write_s(2, true, 2.0f32.to_bits());
 
         let mut pc = KSEG0_PROG;
         for _ in 0..16 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(4), 3.0f32.to_bits(), "the ADD.S ran");
+        assert_eq!(p.fpr.read_s(4, true), 3.0f32.to_bits(), "the ADD.S ran");
         assert_eq!(
             p.cop1.fcsr() & CAUSE_E,
             0,
@@ -4566,8 +4572,8 @@ mod tests {
             // Start with the condition at the OPPOSITE of the expected result,
             // so "wrote the right value" is distinguishable from "left it".
             p.cop1.ctc1(31, if want { 0 } else { FCSR_C });
-            p.fpr.write_s(0, a.to_bits());
-            p.fpr.write_s(2, b.to_bits());
+            p.fpr.write_s(0, true, a.to_bits());
+            p.fpr.write_s(2, true, b.to_bits());
             p.fpr.write_raw(4, 0xDEAD_BEEF_1122_3344);
 
             let mut pc = KSEG0_PROG;
@@ -4609,14 +4615,14 @@ mod tests {
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
             p.cop1.ctc1(31, 0); // RM = 0, round to nearest even
-            p.fpr.write_s(0, (-1.5f32).to_bits());
+            p.fpr.write_s(0, true, (-1.5f32).to_bits());
 
             let mut pc = KSEG0_PROG;
             for _ in 0..16 {
                 p.advance(&mut bus, &mut regs, &mut pc);
             }
             #[allow(clippy::cast_possible_wrap)] // reading the word back as signed
-            let got = p.fpr.read_s(4) as i32;
+            let got = p.fpr.read_s(4, true) as i32;
             assert_eq!(got, want, "instruction {word:#010X} on -1.5");
         }
     }
@@ -4637,8 +4643,8 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-        p.fpr.write_s(0, 12345u32);
-        p.fpr.write_s(4, 0x1122_3344);
+        p.fpr.write_s(0, true, 12345u32);
+        p.fpr.write_s(4, true, 0x1122_3344);
 
         let mut pc = KSEG0_PROG;
         for _ in 0..16 {
@@ -4648,7 +4654,7 @@ mod tests {
         // so this is the stricter check and it also catches a wrong-signed
         // zero or a NaN payload that float equality would accept.
         assert_eq!(
-            p.fpr.read_s(4),
+            p.fpr.read_s(4, true),
             12345.0f32.to_bits(),
             "the integer source must be converted, not reinterpreted"
         );
@@ -4671,8 +4677,8 @@ mod tests {
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
         p.cop1.ctc1(31, fcsr);
-        p.fpr.write_s(0, a);
-        p.fpr.write_s(2, b);
+        p.fpr.write_s(0, true, a);
+        p.fpr.write_s(2, true, b);
         p.fpr.write_raw(4, 0x1122_3344_5566_7788);
         let mut pc = KSEG0_PROG;
         for _ in 0..24 {
@@ -4750,7 +4756,7 @@ mod tests {
             (3, (-f32::MIN_POSITIVE).to_bits()), // toward -inf: away from zero
         ] {
             let p = run_add_s(FCSR_FS | rm, a, b);
-            assert_eq!(p.fpr.read_s(4), want, "RM={rm}");
+            assert_eq!(p.fpr.read_s(4, true), want, "RM={rm}");
             let fcsr = p.cop1.fcsr();
             assert_ne!(fcsr & (1 << 13), 0, "Cause.underflow, RM={rm}");
             assert_ne!(fcsr & (1 << 12), 0, "Cause.inexact, RM={rm}");
@@ -4763,7 +4769,7 @@ mod tests {
             1.539_154_3e-37f32.to_bits(),
         );
         assert_eq!(
-            p.fpr.read_s(4),
+            p.fpr.read_s(4, true),
             f32::MIN_POSITIVE.to_bits(),
             "a positive tiny result under toward-+inf"
         );
@@ -4830,7 +4836,7 @@ mod tests {
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-            p.fpr.write_s(0, subnormal);
+            p.fpr.write_s(0, true, subnormal);
             let mut pc = KSEG0_PROG;
             for _ in 0..24 {
                 p.advance(&mut bus, &mut regs, &mut pc);
@@ -4848,12 +4854,16 @@ mod tests {
         let mut regs = Regs::new();
         let mut p = Pipeline::new();
         p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-        p.fpr.write_s(0, subnormal);
+        p.fpr.write_s(0, true, subnormal);
         let mut pc = KSEG0_PROG;
         for _ in 0..24 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(4), subnormal, "MOV.S moves the subnormal");
+        assert_eq!(
+            p.fpr.read_s(4, true),
+            subnormal,
+            "MOV.S moves the subnormal"
+        );
         assert_eq!(p.cop1.fcsr(), 0, "and raises nothing");
     }
 
@@ -4871,7 +4881,7 @@ mod tests {
             let mut regs = Regs::new();
             let mut p = Pipeline::new();
             p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
-            p.fpr.write_s(0, src.to_bits());
+            p.fpr.write_s(0, true, src.to_bits());
             let mut pc = KSEG0_PROG;
             for _ in 0..24 {
                 p.advance(&mut bus, &mut regs, &mut pc);
@@ -5010,18 +5020,25 @@ mod tests {
         for _ in 0..40 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
-        assert_eq!(p.fpr.read_s(4), 0x55, "MTC1 reached the FP register file");
+        assert_eq!(
+            p.fpr.read_s(4, true),
+            0x55,
+            "MTC1 reached the FP register file"
+        );
         assert_eq!(regs.read(2), 0x55, "and MFC1 read it back");
         assert_eq!(regs.read(1), 0x55, "$1 -- MTC1's source -- must survive");
     }
 
     /// **`DMFC1`/`DMTC1` apply the `FR` view**, they do not move the physical
     /// register. UM Ch. 17's pseudocode: with `FR = 0` and an even `fs`,
-    /// `data <- FGR[fs+1] || FGR[fs]` — the pair, exactly like `LDC1`.
+    /// In half mode a 64-bit access addresses **FGR `fs & !1` in its
+    /// entirety**, and the odd FGR is not part of it.
     ///
-    /// An implementation that moves `FGR[fs]` raw round-trips through
-    /// `DMTC1`/`DMFC1` correctly and disagrees with `SDC1`, which is why this
-    /// asserts across *both* paths.
+    /// This test previously asserted the *pair* model — low word in the even
+    /// FGR, high word in the odd one — which round-trips through
+    /// `DMTC1`/`DMFC1` perfectly and is still wrong: hardware never touches
+    /// the odd register. See `fpr.rs` for the n64-systemtest vector that
+    /// settles it.
     #[test]
     fn dmtc1_and_dmfc1_apply_the_fr_view_rather_than_moving_the_raw_fgr() {
         use crate::cop0::reg;
@@ -5041,17 +5058,13 @@ mod tests {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
 
-        // The pair, not FGR 2 alone -- this is what a raw move gets wrong.
+        // All 64 bits in FGR 2; FGR 3 is not involved.
         assert_eq!(
             p.fpr.read_raw(2),
-            0x5566_7788,
-            "even FGR holds the low word"
+            0x1122_3344_5566_7788,
+            "the whole value lives in the even FGR"
         );
-        assert_eq!(
-            p.fpr.read_raw(3),
-            0x1122_3344,
-            "odd FGR holds the high word"
-        );
+        assert_eq!(p.fpr.read_raw(3), 0, "the odd FGR is untouched");
         assert_eq!(regs.read(2), 0x1122_3344_5566_7788, "DMFC1 reassembles it");
         // And it agrees with the LDC1/SDC1 view of the same register.
         assert_eq!(p.fpr.read_d(2, false), 0x1122_3344_5566_7788);

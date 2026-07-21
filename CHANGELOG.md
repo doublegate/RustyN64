@@ -9,6 +9,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — `FR = 0` addresses whole even registers, not FGR pairs
+
+With `Status.FR = 0` an FPR addresses **FGR `n & !1` in its entirety**; odd FGRs are unaddressable,
+and a 32-bit access picks the low half for an even register number and the **high** half for an odd
+one. The previous model assembled a value from two registers' low halves — which round-trips
+perfectly through `DMTC1`/`DMFC1` and is still wrong, because hardware never touches the odd
+register.
+
+Two more behaviours fell out of the same tests: a single-precision **arithmetic** result *clears*
+the other half of its destination while `MTC1`/`LWC1` *preserve* it (now `write_s_arith` vs
+`write_s`), and `MOV.S` moves **all 64 bits** rather than the formatted half.
+
+**Phase 1's categories: 99 → 89.** The entire odd-index cluster reached zero. Accuracy ledger
+**C-14**.
+
 ### Added — `SQRT` and a correctly-rounded `CVT.S.D`
 
 `softfloat` gains `convert` (format narrowing/widening) and `sqrt`, both correctly rounded with

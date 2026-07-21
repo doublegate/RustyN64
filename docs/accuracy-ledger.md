@@ -755,6 +755,53 @@ comparison **is** the sticky bit. (An earlier version of this sentence claimed
 it avoided re-squaring, which the code never did — the same wrong claim reached
 three files before review caught it.)
 
+### C-14 — `FR = 0` is not the "FGR pair" model
+
+**Claim.** With `Status.FR = 0` the register file presents **16** usable 64-bit
+registers: FPR *n* addresses **FGR `n & !1` in its entirety**, and odd FGRs are
+not addressable at all. A 32-bit access picks a half of that register — the low
+half for an even register number, the **high** half for an odd one.
+
+**What it replaces.** This module implemented the natural reading of "`FR = 0`
+uses register pairs": the value is `FGR[n+1]:FGR[n]`, assembled from two
+registers' *low halves*. That model round-trips through `DMTC1`/`DMFC1`
+perfectly, which is why it survived — every test that wrote and read through the
+same path agreed with it.
+
+**What refutes it.** n64-systemtest writes an odd register in half mode and then
+reads *both* registers back in full mode:
+
+```text
+MTC1 $1, <0x01234567>          ; half mode
+DMFC1(0) == 0x01234567_89ABCDEF ; landed in FGR0's HIGH half
+DMFC1(1) == 0x44445555_66667777 ; UNCHANGED -- the pair model writes here
+```
+
+The second line is the one that matters: under the pair model FGR1 is where the
+value goes, so an implementation cannot satisfy both.
+
+**A second behaviour fell out of the same tests.** A single-precision
+**arithmetic** result *clears* the other half of its destination, while
+`MTC1`/`LWC1` *preserve* it. Both write 32 bits to the same place, so one
+`write_s` for both is the natural implementation — and the difference is
+invisible until something reads the register at a different width, which is
+exactly what `DMFC1` after an `ADD.S` does. They are now `write_s` and
+`write_s_arith`.
+
+**And a third:** `MOV.S` moves **all 64 bits**, not the formatted half. The
+suite reads the destination after a `MOV.S` and expects the *source's* upper
+half there. It is a whole-register transfer that happens to be spelled `.S`.
+
+**Effect:** Phase 1's categories 99 → **89**; the whole odd-index cluster
+(`MTC1`/`MFC1`/`DMTC1`/`DMFC1`/`LWC1`/`SWC1`/`LDC1`/`SDC1` "with odd index in
+32 bit mode", plus the half-mode comparison and 64-bit-index tests) reached
+zero.
+
+**Note this supersedes a documented guess.** `fpr.rs` previously recorded
+forcing an odd index even as "a documented choice for an architecturally
+undefined case (UM Ch. 17), not a hardware fact". The choice was reasonable and
+the case is not undefined on this part — the suite defines it.
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.
