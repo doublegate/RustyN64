@@ -291,11 +291,15 @@ pub enum Op {
     // and lumping them in would make `Op` claim support this crate lacks.
     /// `CACHE op, off(base)` — a cache maintenance operation.
     ///
-    /// Decoded and **executed as an address-translating no-op**: this CPU does
-    /// not model cache *contents*, so invalidate and write-back have nothing to
-    /// act on. What matters is that it does **not raise** — IPL3 and libdragon
-    /// both use it, so a `Reserved` decode blocks every real ROM. See
-    /// `docs/cpu.md` and accuracy-ledger D-5.
+    /// Operates on **modelled cache state** as of T-11-003: both primary caches
+    /// hold real tags and data, so invalidate, write-back and the tag moves all
+    /// act. This doc said "executed as an address-translating no-op" until the
+    /// caches landed, which was true under ledger **D-5** and is not any more —
+    /// D-5 is superseded by **D-6**.
+    ///
+    /// `op`'s `rt` slot is the operation selector, not a destination. What
+    /// mattered first is that it does **not raise** — IPL3 and libdragon both
+    /// issue it, so a `Reserved` decode blocks every real ROM. See `docs/cpu.md`.
     Cache,
     /// A COP0 **CO-class instruction in the `funct` 0x20-0x3F extension range**,
     /// executed as a no-op.
