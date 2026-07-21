@@ -170,6 +170,25 @@ peak "one SU + one VU opcode per clock" (`ref-docs/research-report.md` §3). The
 LLE step fetches the IMEM word at `pc`, decodes the SU op and (for the COP2
 escape / `LWC2`/`SWC2`) the VU op, runs `step_su` then `step_vu`, advances `pc`.
 
+### The VU register file and SU/VU moves (implemented, Sprint 2)
+
+The four COP2 moves — `MFC2` (0), `CFC2` (2), `MTC2` (4), `CTC2` (6) — are
+selected by the `rs` field, whose top bit (word bit 25) is what separates them
+from the computational instructions. That one bit also changes what the element
+field *means*: a **byte offset** for a move, a **broadcast modifier** for a
+computation. Conflating the two is the first thing to get wrong here.
+
+Because the offset is in bytes, three edge cases exist that a lane-oriented
+implementation cannot express, and all agree with a lane model at even offsets —
+so a test using only aligned offsets cannot tell them apart:
+
+- An **odd** offset straddles two lanes.
+- `MTC2` at byte 15 writes **one** byte, from `rt[15..8]`, and does not wrap.
+- `MFC2` at byte 15 **wraps** its second byte to byte 0 of the same register.
+
+`CFC2`/`CTC2` name `VCO` (0), `VCC` (1) or `VCE` (2) and ignore the element
+field. `VCE` is 8 bits; the other two are 16, and `CFC2` sign-extends from 16.
+
 ### Vector unit fixed-point math
 
 The VU operates on 8 lanes of signed 1.15 fixed-point. The multiply family
