@@ -1043,6 +1043,31 @@ whole range.
 
 ---
 
+### C-24 — integer-to-float conversion honours `FCSR.RM`, and a Rust `as` cast does not
+
+**Claim.** `CVT.S.W`, `CVT.S.L`, `CVT.D.W` and `CVT.D.L` round according to `FCSR.RM`.
+
+**Evidence.** n64-systemtest converts `0x4996_02D3` (1234567891) under round-toward-zero and
+expects `0x4E93_2C05`; nearest-even gives `0x4E93_2C06`. Likewise `CVT.D.L` of
+`0x007F_FFFF_FFFF_FFFE` toward zero expects `0x435F_FFFF_FFFF_FFFF`, not `0x4360_0000_0000_0000`.
+
+**Why it was wrong.** Each converter was a Rust `as` cast plus a round-trip inexact check. `as`
+rounds to nearest-even *unconditionally*, so the mode was ignored — and the round-trip check
+correctly reported `inexact`, which made the flags right and the value wrong. Flags agreeing is not
+evidence the value does.
+
+**What the fix removed.** All four converters were **deleted** rather than left unused once the
+pipeline moved to `softfloat::from_int`. An unused function that quietly gets an operation wrong is
+the inert-API hazard `docs/engineering-lessons.md` §3.2 describes; `addr.rs` deleted a stale
+`translate` for the same reason, and that precedent is why this was not simply left in place.
+`long_convertible` stays — the VR4300 range restriction is a separate rule and is still consulted.
+
+The conversion is now one line: an integer is `sign × |v| × 2^0`, so it is the shared rounding
+point with a zero exponent and no sticky bit. Routing it through the same `round_pack` as every
+other operation is what makes the mode impossible to forget.
+
+---
+
 ## 5. Deliberate deviations from hardware
 
 Behaviour we model differently *on purpose*, so it is never mistaken for a bug.

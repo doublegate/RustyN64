@@ -260,6 +260,29 @@ const fn invalid(f: Format) -> Rounded {
     }
 }
 
+/// Convert a two's-complement integer to `f`, honouring `mode`.
+///
+/// An integer is `sign × |v| × 2^0`, so this is `round_pack` with a zero
+/// exponent and no sticky bit — which is the whole point of routing it here
+/// rather than through a Rust `as` cast. `as` rounds to nearest-even
+/// unconditionally, so `CVT.S.W` of a value needing more than 24 significand
+/// bits ignored `FCSR.RM` entirely: n64-systemtest converts `1234567891` under
+/// round-toward-zero and expects `0x4E93_2C05`, where nearest-even gives
+/// `0x4E93_2C06`.
+///
+/// The result cannot overflow (no integer exceeds the largest finite `f64`, and
+/// an `i64` fits inside `f32`'s range) and cannot be subnormal, so `inexact` is
+/// the only flag it can raise.
+#[must_use]
+pub fn from_int(v: i64, f: Format, mode: Rounding) -> Rounded {
+    if v == 0 {
+        // `+0`, never `-0`: an integer zero is unsigned, and `round_pack`'s
+        // `sig == 0` path would take the sign from an operand that has none.
+        return zero(false, f);
+    }
+    round_pack(v < 0, u128::from(v.unsigned_abs()), 0, false, f, mode)
+}
+
 /// Round `sign × (sig + ε) × 2^exp` into `f`, where `ε ∈ (0, 1)` exactly when
 /// `sticky` — and report every flag the rounding raised.
 ///

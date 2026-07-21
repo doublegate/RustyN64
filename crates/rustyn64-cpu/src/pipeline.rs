@@ -2507,8 +2507,12 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)] // reinterpreting a word as signed
                 0o24 => {
-                    let out = fpu::cvt_s_w(self.fpr.read_s_fs(fs, fr) as i32);
-                    (FpCommit::Single(out.value.to_bits()), out.flags, false)
+                    // Through `softfloat`, not a Rust `as` cast: an i32 can need
+                    // more than 24 significand bits, so this rounds -- and must
+                    // round the way `FCSR.RM` says.
+                    let v = i64::from(self.fpr.read_s_fs(fs, fr) as i32);
+                    let r = softfloat::from_int(v, softfloat::F32, mode);
+                    (FpCommit::Single(r.bits as u32), r.flags, false)
                 }
                 // From `.L`, which the VR4300 restricts: bits 63:55 must be all
                 // zeroes or all ones (UM §7.5.2). Outside that it raises
@@ -2516,12 +2520,17 @@ impl Pipeline {
                 // result -- so the commit value is a placeholder the trap path
                 // discards.
                 #[allow(clippy::cast_possible_wrap)]
-                _ => fpu::cvt_s_l(self.fpr.read_d_fs(fs, fr) as i64).map_or(
-                    // No defined result when the restriction is violated, so
-                    // the value is a placeholder the trap path discards.
-                    (FpCommit::Single(0), fpu::Flags::NONE, true),
-                    |out| (FpCommit::Single(out.value.to_bits()), out.flags, false),
-                ),
+                _ => {
+                    let v = self.fpr.read_d_fs(fs, fr) as i64;
+                    if fpu::long_convertible(v) {
+                        let r = softfloat::from_int(v, softfloat::F32, mode);
+                        (FpCommit::Single(r.bits as u32), r.flags, false)
+                    } else {
+                        // No defined result when the restriction is violated, so
+                        // the value is a placeholder the trap path discards.
+                        (FpCommit::Single(0), fpu::Flags::NONE, true)
+                    }
+                }
             },
             // To double.
             0o41 => match fmt {
@@ -2539,16 +2548,25 @@ impl Pipeline {
                 }
                 #[allow(clippy::cast_possible_wrap)]
                 0o24 => {
-                    let out = fpu::cvt_d_w(self.fpr.read_s_fs(fs, fr) as i32);
-                    (FpCommit::Double(out.value.to_bits()), out.flags, false)
+                    // Exact for every i32 -- 53 bits hold 32 -- but routed the
+                    // same way as the others so there is one conversion rather
+                    // than two that can disagree.
+                    let v = i64::from(self.fpr.read_s_fs(fs, fr) as i32);
+                    let r = softfloat::from_int(v, softfloat::F64, mode);
+                    (FpCommit::Double(r.bits), r.flags, false)
                 }
                 #[allow(clippy::cast_possible_wrap)]
-                _ => fpu::cvt_d_l(self.fpr.read_d_fs(fs, fr) as i64).map_or(
-                    // No defined result when the restriction is violated, so
-                    // the value is a placeholder the trap path discards.
-                    (FpCommit::Double(0), fpu::Flags::NONE, true),
-                    |out| (FpCommit::Double(out.value.to_bits()), out.flags, false),
-                ),
+                _ => {
+                    let v = self.fpr.read_d_fs(fs, fr) as i64;
+                    if fpu::long_convertible(v) {
+                        let r = softfloat::from_int(v, softfloat::F64, mode);
+                        (FpCommit::Double(r.bits), r.flags, false)
+                    } else {
+                        // No defined result when the restriction is violated, so
+                        // the value is a placeholder the trap path discards.
+                        (FpCommit::Double(0), fpu::Flags::NONE, true)
+                    }
+                }
             },
             // To word / to long, both honouring `FCSR.RM` -- which is what
             // separates them from the fixed-mode family above.

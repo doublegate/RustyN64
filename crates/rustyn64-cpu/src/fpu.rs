@@ -671,72 +671,6 @@ pub const fn long_convertible(v: i64) -> bool {
     top == 0 || top == 0x1FF
 }
 
-/// `CVT.S.W` / `CVT.D.W` — 32-bit integer to float. Always exact for `f64`.
-#[must_use]
-pub fn cvt_s_w(v: i32) -> Outcome<f32> {
-    let value = v as f32;
-    let mut flags = Flags::NONE;
-    // 24 bits of mantissa cannot hold every i32, so this one CAN be inexact --
-    // unlike the f64 case, which is exact for every i32.
-    //
-    // Compared through `f64`, NOT by casting back to `i32`: Rust's float-to-int
-    // cast **saturates**, so `i32::MAX as f32 as i32` is `i32::MAX` again and
-    // the round-trip check silently never fires for exactly the value most
-    // likely to be inexact.
-    if f64::from(value) != f64::from(v) {
-        flags.inexact = true;
-    }
-    Outcome { value, flags }
-}
-
-/// `CVT.D.W` — 32-bit integer to double. Exact for every input.
-#[must_use]
-pub fn cvt_d_w(v: i32) -> Outcome<f64> {
-    Outcome {
-        value: f64::from(v),
-        flags: Flags::NONE,
-    }
-}
-
-/// `CVT.S.L` — 64-bit integer to single, honouring the VR4300 restriction.
-///
-/// # Errors
-///
-/// [`CAUSE_UNIMPLEMENTED`] when bits 63:55 are neither all-zero nor all-one.
-/// There is no defined result to return in that case, which is why this is a
-/// `Result` rather than a value plus a flag.
-pub fn cvt_s_l(v: i64) -> Result<Outcome<f32>, u32> {
-    if !long_convertible(v) {
-        return Err(CAUSE_UNIMPLEMENTED);
-    }
-    let value = v as f32;
-    let mut flags = Flags::NONE;
-    // Via `f64` for the same saturation reason as `cvt_s_w`. `f32`→`f64` is
-    // exact, and the restriction bounds `|v| < 2^55`, so the `f64`→`i64` step is
-    // exact too for any value an `f32` can hold.
-    if (f64::from(value)) as i64 != v {
-        flags.inexact = true;
-    }
-    Ok(Outcome { value, flags })
-}
-
-/// `CVT.D.L` — 64-bit integer to double, honouring the VR4300 restriction.
-///
-/// # Errors
-///
-/// [`CAUSE_UNIMPLEMENTED`] when bits 63:55 are neither all-zero nor all-one.
-pub fn cvt_d_l(v: i64) -> Result<Outcome<f64>, u32> {
-    if !long_convertible(v) {
-        return Err(CAUSE_UNIMPLEMENTED);
-    }
-    let value = v as f64;
-    let mut flags = Flags::NONE;
-    if value as i64 != v {
-        flags.inexact = true;
-    }
-    Ok(Outcome { value, flags })
-}
-
 /// `CVT.D.S` — single to double. Always exact: every `f32` is an `f64`.
 #[must_use]
 pub fn cvt_d_s(v: f32) -> Outcome<f64> {
@@ -1226,13 +1160,10 @@ mod tests {
         // Small positives and negatives: bits 63:55 uniform.
         for v in [0i64, 1, -1, 1 << 40, -(1 << 40), (1 << 55) - 1] {
             assert!(long_convertible(v), "{v} must be convertible");
-            assert!(cvt_d_l(v).is_ok());
         }
         // Bits 63:55 mixed -- declines.
         for v in [1i64 << 55, 1 << 60, i64::MAX, i64::MIN + 1] {
             assert!(!long_convertible(v), "{v} must be rejected");
-            assert_eq!(cvt_d_l(v), Err(CAUSE_UNIMPLEMENTED));
-            assert_eq!(cvt_s_l(v), Err(CAUSE_UNIMPLEMENTED));
         }
         // i64::MIN is 0x8000_0000_0000_0000, so bits 63:55 are 0b1_0000_0000 --
         // neither all-zero nor all-one, so it is NOT convertible. Easy to
@@ -1256,18 +1187,26 @@ mod tests {
         );
     }
 
-    /// `CVT.D.W` is exact for every `i32`; `CVT.S.W` is not, because 24 mantissa
-    /// bits cannot hold every 32-bit integer.
+    /// Integer-to-float rounding lives in `softfloat::from_int`, not here.
+    ///
+    /// This module used to carry `cvt_s_w`/`cvt_s_l`/`cvt_d_w`/`cvt_d_l`, each a
+    /// Rust `as` cast plus a round-trip inexact check. They were **deleted**
+    /// rather than left unused once the pipeline moved to `softfloat::from_int`:
+    /// an `as` cast rounds to nearest-even unconditionally, so every one of them
+    /// ignored `FCSR.RM`, and an unused function that quietly gets an operation
+    /// wrong is the inert-API hazard `docs/engineering-lessons.md` §3.2
+    /// describes. `addr.rs` deleted a stale `translate` for the same reason.
+    ///
+    /// [`long_convertible`] stays: it is the VR4300 range restriction, which is
+    /// a separate rule from the rounding and is still consulted.
     #[test]
-    fn int_to_double_is_exact_but_int_to_single_can_be_inexact() {
-        for v in [0i32, 1, -1, i32::MAX, i32::MIN] {
-            assert_eq!(cvt_d_w(v).flags, Flags::NONE, "{v} to double is exact");
-        }
-        assert_eq!(cvt_s_w(1).flags, Flags::NONE);
-        assert!(
-            cvt_s_w(i32::MAX).flags.inexact,
-            "0x7FFFFFFF does not fit in 24 mantissa bits"
-        );
+    fn int_to_single_rounding_is_not_in_this_module() {
+        // A value needing more than 24 significand bits, converted toward zero.
+        // Nearest-even would give 0x4E93_2C06; the mode must be honoured.
+        let r =
+            crate::softfloat::from_int(1_234_567_891, crate::softfloat::F32, Rounding::TowardZero);
+        assert_eq!(r.bits as u32, 0x4E93_2C05);
+        assert!(r.flags.inexact);
     }
 
     /// `CVT.S.D` can overflow; `CVT.D.S` never can, since every `f32` is an

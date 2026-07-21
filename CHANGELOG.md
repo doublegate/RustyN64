@@ -9,6 +9,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — integer-to-float conversion honours `FCSR.RM`
+
+`CVT.S.W`, `CVT.S.L`, `CVT.D.W` and `CVT.D.L` were each a Rust `as` cast plus a round-trip inexact
+check. `as` rounds to nearest-even *unconditionally*, so the mode was ignored — while the round-trip
+check still reported `inexact` correctly, which made the flags right and the value wrong. Flags
+agreeing is not evidence that the value does.
+
+All four are now `softfloat::from_int`, which is the shared rounding point with a zero exponent and
+no sticky bit — an integer is just `sign × |v| × 2^0`. Routing it through the same `round_pack` as
+every other operation is what makes the mode impossible to forget.
+
+The four old converters were **deleted**, not left unused: an unused function that quietly gets an
+operation wrong is the inert-API hazard `docs/engineering-lessons.md` §3.2 describes.
+`long_convertible` stays, since the VR4300 range restriction is a separate rule. Ledger **C-24**.
+
+**Phase 1's categories: 16 → 11.**
+
 ### Fixed — `PRId.Rev`, the `Random` counter, and `BadVAddr` on an unaligned fault
 
 Three unrelated one-line rules, each with a reason it stayed wrong:
