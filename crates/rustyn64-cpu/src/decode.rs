@@ -438,19 +438,27 @@ impl Op {
     /// Is this one of the MIPS III **64-bit operations**?
     ///
     /// They raise a Reserved Instruction exception when executed in 32-bit User
-    /// or Supervisor mode — that is, whenever the current mode's `KX`/`SX`/`UX`
-    /// bit is clear and the mode is not Kernel (UM §16, per-instruction
-    /// "Exceptions" notes). Kernel mode may use them at any width.
+    /// or Supervisor mode. The manual states it once, as the **epsilon** marker
+    /// in the opcode table (UM Figure 16-1, Key): *"The operation code marked
+    /// with an epsilon is valid in the 64-bit mode and 32-bit Kernel mode. In
+    /// the 32-bit User or Supervisor mode, this code generates the reserved
+    /// instruction exception."*
+    ///
+    /// That legend — not the per-instruction "Exceptions" notes — is the
+    /// authority, and reading it is what caught `LWU`: the set was first built
+    /// from n64-systemtest's 28 tested instructions, which do not include it. Kernel mode may use them at any width.
     ///
     /// The `*32` shift forms are included on the same rule rather than by
     /// extrapolation: `DSLL32`/`DSRL32`/`DSRA32` carry the identical exception
     /// note in the manual, being 64-bit operations by the same definition.
     ///
-    /// **Not** included: `DMFC0`/`DMTC0` and `DMFC1`/`DMTC1`. Doubleword moves to
-    /// and from a coprocessor are governed by that coprocessor's own usability
-    /// and reserved-encoding rules (ledger C-18), which raise different
-    /// exceptions from this one. Folding them in here would make an already
-    /// unusable COP0 report the wrong cause.
+    /// **Not** included: `DMFC0`/`DMTC0` and `DMFC1`/`DMTC1`, which the table
+    /// does mark epsilon. Doubleword moves to and from a coprocessor are also
+    /// governed by that coprocessor's own usability and reserved-encoding rules
+    /// (ledger C-18), and those raise a *different* exception; in User mode COP0
+    /// is unusable, so `CpU` is what hardware reports. n64-systemtest exercises
+    /// neither, so rather than pick an ordering on no evidence they stay out —
+    /// recorded here so the omission is a decision and not an oversight.
     #[must_use]
     pub const fn is_64_bit(self) -> bool {
         matches!(
@@ -475,6 +483,7 @@ impl Op {
                 | Self::Dsub
                 | Self::Dsubu
                 | Self::Ld
+                | Self::Lwu
                 | Self::Ldl
                 | Self::Ldr
                 | Self::Lld

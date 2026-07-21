@@ -1120,7 +1120,9 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// A TLB fault on the untransformed address.
+    /// Whatever [`Pipeline::translate_data`] raises on the untransformed
+    /// address: a TLB fault, **or** [`Exception::AddressError`] when the address
+    /// is not valid in the current privilege mode.
     fn translate_re(
         &mut self,
         vaddr: u64,
@@ -1155,9 +1157,12 @@ impl Pipeline {
             match (status & KSU) >> 3 {
                 1 => crate::addr::Mode::Supervisor,
                 2 => crate::addr::Mode::User,
-                // 0 is Kernel; 3 is not a defined encoding and the manual gives
-                // it no behaviour, so it takes the most restrictive-to-reach
-                // reading rather than an invented one.
+                // 0 is Kernel. 3 is not a defined encoding and the manual
+                // gives it no behaviour; it falls in with Kernel because that is
+                // what `KSU == 0` already does and it keeps the match total
+                // without inventing a fourth mode. Note this is the most
+                // PERMISSIVE choice, not the safest one -- if a test ever pins
+                // `KSU == 3`, it belongs in the accuracy ledger, not here.
                 _ => crate::addr::Mode::Kernel,
             }
         };
@@ -1358,10 +1363,16 @@ impl Pipeline {
             let p = self.translate_data(addr, false)?;
             self.cache_hit_op(bus, op, p.addr);
         } else {
-            // An `Index_*` op indexes on the raw VIRTUAL address. That is not a
-            // shortcut around the untranslated case: the index lives in bits
-            // 13:5 (I) / 12:4 (D), and every segment's translation leaves those
-            // bits alone.
+            // An `Index_*` op indexes on the raw VIRTUAL address, which is what
+            // the hardware does: both primary caches are VIRTUALLY indexed.
+            //
+            // This model indexes by physical address (ledger D-6), so on a
+            // TLB-mapped page the two can select different lines -- translation
+            // preserves only the low 12 bits, while the D-cache index reaches
+            // bit 12 and the I-cache bit 13. That divergence is exactly what D-6
+            // records. It is NOT the claim an earlier revision of this comment
+            // made -- that translation leaves the index bits alone -- which is
+            // false for every mapped segment.
             self.cache_index_op(bus, op, addr as u32);
         }
         Ok(WriteBack::None)
@@ -2169,10 +2180,11 @@ impl Pipeline {
         }
 
         match commit {
-            // Preserves the upper half, as `MTC1` does. Writing the full
-            // register (`write_raw`, zeroing the upper half) was tried and
-            // REVERTED: it moved the oracle by nothing and it bypasses the `FR`
-            // view, which is exactly the mistake ledger U-7 records (C-10).
+            // CLEARS the upper half -- `write_s_arith`, not `write_s`. An
+            // arithmetic `.S` result is not an `MTC1`: the suite reads the
+            // destination back with `DMFC1` and expects zero above (C-10).
+            // Going through the `Fpr` accessor rather than `write_raw` is what
+            // keeps the `FR` view applied, which is the part ledger U-7 records.
             FpCommit::Single(v) => self.fpr.write_s_arith(fd, fr, v),
             FpCommit::Double(v) => self.fpr.write_d_arith(fd, fr, v),
             // `FCSR.C` is bit 23, and it is NOT part of the `Cause`/`Flags`
@@ -5047,10 +5059,14 @@ mod tests {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
 
+        // The WHOLE register, not just the low word. `MOV.S` is a 64-bit bit
+        // move (C-10), so checking only the low half passes against a formatted
+        // half-copy -- which is what the destination's junk upper word is here
+        // to catch.
         assert_eq!(
-            p.fpr.read_s(0, true),
-            0x4000_0000,
-            "MOV.S must copy fs's low word into fd"
+            p.fpr.read_raw(0),
+            0x0011_0011_4000_0000,
+            "MOV.S copies fs entire, upper half included"
         );
         assert_eq!(
             (p.cop0.read(reg::CAUSE) >> 2) & 0x1F,
