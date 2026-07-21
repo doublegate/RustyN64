@@ -1153,6 +1153,40 @@ impl Rsp {
                 }
                 true
             }
+            // LHV/SHV: the **strided** pair, accessing every *other* DMEM byte.
+            // Like the packed family but the DMEM index steps by 2 per lane, and
+            // the value lands one bit lower (bit 14). The offset scales by 16.
+            // LFV/SFV (0x09) and the transposing LTV/STV (0x0B) are not here yet
+            // -- LFV/SFV have element-dependent lane subsets the suite itself
+            // calls "complicated", and are left to derive fresh rather than
+            // guessed.
+            0x08 => {
+                let base = rs.wrapping_add_signed(Self::sext7(offset) * 16);
+                let addr = base & !7;
+                if store {
+                    // The store reads the register at stride 2 and combines each
+                    // adjacent byte pair into one DMEM byte; index is the raw low
+                    // 3 bits, NOT folded with the element field (which the load
+                    // does). See ares SHV vs LHV.
+                    let index = base & 7;
+                    for lane in 0..8u32 {
+                        let byte = element + (lane as usize) * 2;
+                        let hi = u16::from(self.vu_byte(vt, byte & 15));
+                        let lo = u16::from(self.vu_byte(vt, (byte + 1) & 15));
+                        let value = ((hi << 1) | (lo >> 7)) as u8;
+                        let at = index.wrapping_add(lane * 2) & 15;
+                        self.dmem_write_pub(addr.wrapping_add(at), value);
+                    }
+                } else {
+                    let index = (base & 7).wrapping_sub(element as u32);
+                    for lane in 0..8u32 {
+                        let at = index.wrapping_add(lane * 2) & 15;
+                        let v = u16::from(self.dmem_read_pub(addr.wrapping_add(at)));
+                        self.vu_regs[vt & 31][lane as usize] = v << 7;
+                    }
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -2255,5 +2289,57 @@ mod packed_tests {
                 if suv { "SUV" } else { "SPV" }
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod strided_tests {
+    use super::*;
+
+    /// **`LHV` reads every *other* DMEM byte, one per lane**, placing it at
+    /// bit 14. With `rs = 0`, `e = 0` the eight lanes take bytes 0, 2, 4 … 14.
+    /// Expected values were computed independently before being pinned here.
+    #[test]
+    fn lhv_reads_every_other_byte() {
+        let bytes: [u8; 16] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = Rsp::new();
+        for (i, b) in bytes.iter().enumerate() {
+            rsp.dmem[i] = *b;
+        }
+        assert!(rsp.vector_mem(false, 0x08, 0, 1, 0, 0));
+        assert_eq!(
+            rsp.vu_regs[1],
+            [
+                0x0800, 0x0900, 0x0A00, 0x0B00, 0x0C00, 0x0D00, 0x0E00, 0x0F00
+            ],
+            "each lane holds byte (2*lane) at bit 14"
+        );
+    }
+
+    /// **`SHV` combines each adjacent byte pair of the register into one strided
+    /// DMEM byte** (`hi << 1 | lo >> 7`). The eight results land at DMEM 0, 2,
+    /// 4 … 14. Independently computed.
+    #[test]
+    fn shv_combines_adjacent_bytes() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = core::array::from_fn(|l| ((0x10 + l as u16) << 8) | (0x80 + l as u16));
+        rsp.set_su(2, 0);
+        assert!(rsp.vector_mem(true, 0x08, 2, 1, 0, 0));
+
+        let expected: [(usize, u8); 8] = [
+            (0x0, 0x21),
+            (0x2, 0x23),
+            (0x4, 0x25),
+            (0x6, 0x27),
+            (0x8, 0x29),
+            (0xA, 0x2B),
+            (0xC, 0x2D),
+            (0xE, 0x2F),
+        ];
+        for (at, want) in expected {
+            assert_eq!(rsp.dmem[at], want, "DMEM byte {at:#x}");
+        }
+        // The odd bytes between them are untouched.
+        assert_eq!(rsp.dmem[0x1], 0, "byte 1 is not written");
     }
 }
