@@ -869,6 +869,28 @@ per-register and echoes the first value cannot pass. Our replacement test does
 the same in miniature: the second assertion is the one that distinguishes a
 latch from storage.
 
+### C-20 — COP2 is one 64-bit latch, not a register file
+
+**Claim.** COP2 is not populated on the VR4300. What remains is a **single**
+64-bit value: every `MTC2`/`DMTC2` writes it and every `MFC2`/`DMFC2` reads it,
+with the register index **ignored**. `MTC2` writes all 64 bits despite being
+nominally a 32-bit move; `MFC2` returns the low half sign-extended and `DMFC2`
+the whole thing.
+
+**Evidence.** n64-systemtest writes with one index and reads back with several
+others — including 30 and 31 — and gets the same value every time. Its own
+comment on a neighbouring test says as much: *"it's unlikely that there are
+actually 32 registers"*.
+
+**Index-independence is the whole test.** A real 32-entry register file passes
+a write-then-read-same-index check perfectly, so the assertion that matters
+reads back through a *different* index.
+
+**The same shape as ledger C-15.** This processor's answer to "a coprocessor
+that is not really there" is a single latch, and it gives that answer twice —
+once for the reserved COP0 registers, once for COP2. Worth knowing before
+implementing either: the natural design (an array) is wrong both times.
+
 ### C-19 — a jump-and-link inside a delay slot links past the OUTER target
 
 **Claim.** The link register receives *the address of the instruction that runs

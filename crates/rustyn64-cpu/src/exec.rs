@@ -334,15 +334,12 @@ const fn branch(d: Decoded, taken: bool, pc: u64) -> Executed {
     // lets it run. Either way the linking forms STILL link -- BLTZAL writes $31
     // even when the branch is not taken, which is easy to miss.
     Executed {
-        link: None,
-        write_back: if d.dest == 0 {
-            WriteBack::None
-        } else {
-            WriteBack::Gpr {
-                dest: d.dest,
-                value: pc.wrapping_add(8),
-            }
-        },
+        // The link goes through `link`, not `write_back`, for the same reason
+        // the taken path does: a NOT-taken `BGEZAL` in another jump's delay
+        // slot still links, and still links to the OUTER target + 4. Computing
+        // `pc + 8` here was the one remaining place that formula survived.
+        link: if d.dest == 0 { None } else { Some(d.dest) },
+        write_back: WriteBack::None,
         stall_cycles: 0,
         mem: None,
         cop0: None,
@@ -758,15 +755,19 @@ pub const fn execute(
             })),
             ..NOTHING
         }),
-        // `Cop1ReservedControl` reaches here only when the pipeline has already
-        // decided not to trap it, which today cannot happen — the EX stage
-        // raises before `execute` runs. It is listed rather than left to a
-        // catch-all so that adding a COP1 op forces a decision here.
+        // Everything here is completed or refused in `EX` rather than by
+        // `execute`: the reserved-control forms trap there, and the COP2 moves
+        // need the latch, which `EX` owns. They are listed individually rather
+        // than left to a catch-all so that adding a coprocessor op forces a
+        // decision at this site.
         Op::Cop1Unimplemented
         | Op::Cop0Extension
         | Op::Cop2
         | Op::Cop1ReservedControl
-        | Op::Cop2ReservedControl => Ok(NOTHING),
+        | Op::Cop2ReservedControl
+        | Op::Mfc2
+        | Op::Dmfc2
+        | Op::Mtc2 => Ok(NOTHING),
         Op::Tlbr => Ok(Executed {
             link: None,
             cop0: Some(Cop0Access::Tlb(TlbOp::Read)),

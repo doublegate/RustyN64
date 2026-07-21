@@ -303,6 +303,12 @@ struct Pending {
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default)]
 pub struct Pipeline {
+    /// The **whole** of COP2: one 64-bit latch.
+    ///
+    /// COP2 is not populated on the VR4300, and what remains is a single
+    /// value that every `MTC2`/`DMTC2` writes and every `MFC2`/`DMFC2` reads,
+    /// with the register index ignored. See the `EX` stage and ledger C-20.
+    pub cop2_latch: u64,
     /// `IC` → `RF`.
     pub ic_rf: Latch,
     /// `RF` → `EX`.
@@ -391,6 +397,8 @@ impl Pipeline {
             mem: None,
         };
         Self {
+            // Power-on value: a documented zero (ADR 0004).
+            cop2_latch: 0,
             ic_rf: EMPTY,
             rf_ex: EMPTY,
             ex_dc: EMPTY,
@@ -993,7 +1001,7 @@ impl Pipeline {
             // unconditionally -- a program that had not enabled COP1 would get
             // results instead of an exception.
             | Op::FpArith => 1,
-            Op::Cop2 | Op::Cop2ReservedControl => 2,
+            Op::Cop2 | Op::Cop2ReservedControl | Op::Mfc2 | Op::Dmfc2 | Op::Mtc2 => 2,
             _ => return None,
         };
         let status = self.cop0.read(crate::cop0::reg::STATUS);
@@ -1313,6 +1321,32 @@ impl Pipeline {
                     // ordinary case and silently wrong for the nested one; the
                     // live `next_pc` is that address by construction rather
                     // than by a second formula that can disagree.
+                    // **COP2 is one 64-bit latch, not a register file.** The
+                    // register index is ignored entirely: n64-systemtest writes with
+                    // one index and reads back with several others, including 30 and
+                    // 31, and gets the same value every time. `MTC2` writes all 64
+                    // bits despite being nominally a 32-bit move; `MFC2` returns the
+                    // low half sign-extended and `DMFC2` the whole thing.
+                    //
+                    // The same shape as the reserved COP0 registers (ledger C-15) --
+                    // this processor's answer to "a coprocessor that is not really
+                    // there" is a single latch, twice over.
+                    match out.decoded.op {
+                        crate::decode::Op::Mtc2 => self.cop2_latch = out.rt_val,
+                        crate::decode::Op::Mfc2 => {
+                            out.write_back = WriteBack::Gpr {
+                                dest: out.decoded.dest,
+                                value: crate::alu::sext32(self.cop2_latch as u32),
+                            };
+                        }
+                        crate::decode::Op::Dmfc2 => {
+                            out.write_back = WriteBack::Gpr {
+                                dest: out.decoded.dest,
+                                value: self.cop2_latch,
+                            };
+                        }
+                        _ => {}
+                    }
                     if let Some(dest) = e.link {
                         out.write_back = WriteBack::Gpr {
                             dest,
@@ -4978,6 +5012,50 @@ mod tests {
                 "and specifically NOT to its own pc + 8"
             );
         }
+    }
+
+    /// **COP2 is one 64-bit latch, not a register file.**
+    ///
+    /// The register index is ignored entirely: n64-systemtest writes with one
+    /// index and reads back with several others — including 30 and 31 — and
+    /// gets the same value every time. `MTC2` writes all 64 bits despite being
+    /// nominally a 32-bit move; `MFC2` returns the low half sign-extended and
+    /// `DMFC2` the whole thing.
+    ///
+    /// The index-independence is the assertion that matters: a real 32-entry
+    /// register file passes a write-then-read-same-index test perfectly.
+    #[test]
+    fn cop2_is_a_single_latch_whose_register_index_is_ignored() {
+        use crate::cop0::reg;
+        /// `MTC2 $1, $5` — COP2 rs 0o04, rt 1, rd 5.
+        const MTC2_R1_TO_5: u32 = (0o22 << 26) | (0o04 << 21) | (1 << 16) | (5 << 11);
+        /// `DMFC2 $2, $30` — rs 0o01, rt 2, rd 30. A DIFFERENT index.
+        const DMFC2_30_TO_R2: u32 = (0o22 << 26) | (0o01 << 21) | (2 << 16) | (30 << 11);
+        /// `MFC2 $3, $31` — rs 0o00 (so no `rs` term), rt 3, rd 31. Another
+        /// different index again.
+        const MFC2_31_TO_R3: u32 = (0o22 << 26) | (3 << 16) | (31 << 11);
+
+        let mut bus = Ram::new(alloc::vec![MTC2_R1_TO_5, DMFC2_30_TO_R2, MFC2_31_TO_R3]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // CU2 usable, or these fault before reaching the latch.
+        p.cop0.set_hardware(reg::STATUS, 0x5000_0000);
+        regs.write(1, 0x0123_4567_89AB_CDEF);
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..32 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_eq!(
+            regs.read(2),
+            0x0123_4567_89AB_CDEF,
+            "DMFC2 from a DIFFERENT index reads all 64 bits MTC2 wrote"
+        );
+        assert_eq!(
+            regs.read(3),
+            0xFFFF_FFFF_89AB_CDEF,
+            "MFC2 from another index reads the low half, sign-extended"
+        );
     }
 
     // --- Unimplemented operation on subnormals (T-13-004) -------------------

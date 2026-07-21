@@ -9,6 +9,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — COP2 as a single latch, and a not-taken `BGEZAL` links correctly
+
+COP2 is not a register file: it is one 64-bit latch that every `MTC2`/`DMTC2` writes and every
+`MFC2`/`DMFC2` reads, with the register index ignored. `MFC2` returns the low half sign-extended.
+Ledger **C-20** — the same shape as the reserved COP0 registers (C-15).
+
+A **not-taken** `BGEZAL` in another jump's delay slot now links through the same `next_pc` path as
+the taken forms; it was the last place the old `pc + 8` formula survived.
+
+**Phase 1's categories: 42 → 40.**
+
 ### Fixed — a jump-and-link inside a delay slot links past the outer target
 
 The link register receives the address of the instruction that runs after the jump's delay slot.

@@ -362,6 +362,16 @@ pub enum Op {
     /// coprocessors decline in different ways and the encodings are otherwise
     /// identical, so this is easy to get uniformly wrong.
     Cop2ReservedControl,
+    /// `MFC2` — read the COP2 latch's low 32 bits, sign-extended.
+    Mfc2,
+    /// `DMFC2` — read all 64 bits of the COP2 latch.
+    Dmfc2,
+    /// `MTC2` / `DMTC2` — write the COP2 latch.
+    ///
+    /// Both write the **whole 64-bit** GPR, despite `MTC2` being nominally a
+    /// 32-bit move: n64-systemtest writes a 64-bit value with `MTC2` and reads
+    /// all of it back with `DMFC2`.
+    Mtc2,
     /// Any **COP2** encoding.
     ///
     /// The VR4300 has a COP2 unit, so these are architecturally *valid*
@@ -877,16 +887,31 @@ pub const fn decode(word: u32) -> Decoded {
             // `DCFC2` (3) and `DCTC2` (7) are not implemented; every other COP2
             // encoding retires silently. See `Op::Cop2ReservedControl`.
             let rs = (word >> 21) & 31;
-            if rs == 0o03 || rs == 0o07 {
-                Decoded {
+            match rs {
+                0o03 | 0o07 => Decoded {
                     op: Op::Cop2ReservedControl,
                     ..base
-                }
-            } else {
-                Decoded {
+                },
+                // The move-FROM forms write a GPR, so they need `dest`.
+                0o00 => Decoded {
+                    op: Op::Mfc2,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                0o01 => Decoded {
+                    op: Op::Dmfc2,
+                    dest: ((word >> 16) & 31) as u8,
+                    ..base
+                },
+                // `MTC2` and `DMTC2` behave identically -- see `Op::Mtc2`.
+                0o04 | 0o05 => Decoded {
+                    op: Op::Mtc2,
+                    ..base
+                },
+                _ => Decoded {
                     op: Op::Cop2,
                     ..base
-                }
+                },
             }
         }
         // COP1. The CONTROL moves (T-12-006), the DATA moves (T-13-001) and the
@@ -1284,15 +1309,26 @@ mod tests {
     /// aborted the entire run with "Exception storm detected".
     #[test]
     fn cop2_encodings_are_valid_not_reserved() {
-        // MFC2, DMFC2, CFC2, MTC2, DMTC2, CTC2 -- the `rs` sub-opcodes.
-        for rs in [0o00u32, 0o01, 0o02, 0o04, 0o05, 0o06] {
+        // None of these is `Reserved` -- that is the point of the test. The
+        // moves now decode to themselves rather than to the generic `Cop2`,
+        // and the doubleword control forms trap (ledger C-18), so each is
+        // named rather than lumped together.
+        for (rs, want) in [
+            (0o00u32, Op::Mfc2),
+            (0o01, Op::Dmfc2),
+            (0o02, Op::Cop2), // CFC2 -- still a no-op
+            (0o04, Op::Mtc2),
+            (0o05, Op::Mtc2), // DMTC2 behaves identically to MTC2
+            (0o06, Op::Cop2), // CTC2 -- still a no-op
+            (0o03, Op::Cop2ReservedControl),
+            (0o07, Op::Cop2ReservedControl),
+        ] {
             let word = (0o22 << 26) | (rs << 21);
-            assert_eq!(
-                decode(word).op,
-                Op::Cop2,
-                "COP2 rs={rs:#o} is a valid encoding"
-            );
+            assert_eq!(decode(word).op, want, "COP2 rs={rs:#o}");
+            assert_ne!(decode(word).op, Op::Reserved, "COP2 rs={rs:#o}");
         }
+        // The move-FROM forms must carry `dest`, or they write GPR 0.
+        assert_eq!(decode((0o22 << 26) | (7 << 16)).dest, 7, "MFC2 dest = rt");
     }
 
     /// COP1 S/D arithmetic decodes to [`Op::FpArith`], not `Cop1Unimplemented`.
