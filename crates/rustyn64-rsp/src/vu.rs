@@ -344,6 +344,11 @@ impl Rsp {
         let mut clear_vco = false;
         let mut set_vco = false;
         let mut new_vco = 0u16;
+        // The compare group rebuilds VCC's low half from its per-lane results
+        // and clears the high half; `wrote_vcc` distinguishes that from an
+        // instruction that leaves VCC alone entirely (VMRG does).
+        let mut wrote_vcc = false;
+        let mut compare_flags = 0u16;
         for lane in 0..8 {
             let s = self.vu_regs[vs & 31][lane];
             let t = self.vt_lane(vt, element, lane);
@@ -388,6 +393,46 @@ impl Rsp {
                     set_vco = true;
                     low
                 }
+                // The compare group. Each writes a **selection** into the
+                // accumulator -- `vs` or `vt` per lane -- and records the
+                // predicate in VCC's low half, then clears VCO wholesale.
+                //
+                // The equality cases consult VCO, which is what chains a
+                // compare onto a preceding `VSUBC`: that is the entire reason
+                // the pair exists, and dropping the VCO terms leaves a compare
+                // that looks right on unequal operands and wrong on equal ones.
+                0x20..=0x23 => {
+                    // VCO's low half is the carry/borrow; its high half is the
+                    // "result was non-zero" flag a preceding VSUBC left.
+                    let carry = (self.vu_ctrl.vco >> lane) & 1 != 0;
+                    let non_zero = (self.vu_ctrl.vco >> (lane + 8)) & 1 != 0;
+                    let cond = match op {
+                        0x20 => ss < ts || (ss == ts && carry && non_zero),
+                        0x21 => !non_zero && s == t,
+                        0x22 => s != t || non_zero,
+                        _ => ss > ts || (ss == ts && (!carry || !non_zero)),
+                    };
+                    if cond {
+                        compare_flags |= 1 << lane;
+                    }
+                    wrote_vcc = true;
+                    clear_vco = true;
+                    let picked = if cond { s } else { t };
+                    self.set_acc_low(lane, picked);
+                    picked
+                }
+                // VMRG selects on VCC without *changing* it -- the consumer of
+                // a compare rather than another producer. It still clears VCO.
+                0x27 => {
+                    let picked = if (self.vu_ctrl.vcc >> lane) & 1 != 0 {
+                        s
+                    } else {
+                        t
+                    };
+                    self.set_acc_low(lane, picked);
+                    clear_vco = true;
+                    picked
+                }
                 // VSAR: read a 16-bit slice of the accumulator. The slice is
                 // chosen by the *element* field, not by an operand.
                 0x1D => {
@@ -416,6 +461,11 @@ impl Rsp {
                 self.vu_acc[lane] = (self.vu_acc[lane] & 0xFFFF_FFFF_0000) | u64::from(out);
             }
             self.vu_regs[vd & 31][lane] = out;
+        }
+        // VCC is rebuilt once for the whole instruction: the low half from the
+        // predicates, the high half cleared.
+        if wrote_vcc {
+            self.vu_ctrl.vcc = compare_flags;
         }
         // VCO is written once for the whole instruction, not per lane.
         if clear_vco {
@@ -1712,5 +1762,112 @@ mod arithmetic_tests {
             0x8000,
             "the accumulator does not"
         );
+    }
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::*;
+
+    fn pair(a: [u16; 8], b: [u16; 8]) -> Rsp {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = a; // vs
+        rsp.vu_regs[0] = b; // vt
+        rsp
+    }
+
+    /// **A compare writes a *selection*, not a boolean.** `vd` receives `vs` or
+    /// `vt` per lane; the predicate goes to `VCC`. An implementation that wrote
+    /// 0/1 into `vd` would satisfy any test that only inspected `VCC`.
+    #[test]
+    fn a_compare_selects_an_operand_and_records_the_predicate() {
+        let mut rsp = pair([1, 9, 5, 0, 0, 0, 0, 0], [5, 5, 5, 0, 0, 0, 0, 0]);
+        assert!(rsp.vu_compute(0x20, 0, 1, 0, 2)); // VLT
+
+        assert_eq!(rsp.vu_regs[2][0], 1, "1 < 5, so vs is selected");
+        assert_eq!(rsp.vu_regs[2][1], 5, "9 !< 5, so vt is");
+        assert_eq!(rsp.vu_ctrl.vcc & 0b011, 0b001, "only lane 0 compared true");
+        assert_eq!(rsp.vu_ctrl.vcc >> 8, 0, "VCC's high half is cleared");
+    }
+
+    /// **`VLT`'s equality case consults `VCO`**, which is what chains it onto a
+    /// preceding `VSUBC`. Dropping the `VCO` terms leaves a compare that looks
+    /// right on unequal operands and wrong on equal ones — the exact case a
+    /// casual test omits.
+    #[test]
+    fn vlt_on_equal_operands_depends_on_vco() {
+        // Equal operands, with both VCO halves set for lane 0 only.
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = (1 << 0) | (1 << 8);
+        rsp.vu_compute(0x20, 0, 1, 0, 2);
+        assert_ne!(rsp.vu_ctrl.vcc & 1, 0, "equal + carry + ne compares true");
+        assert_eq!(rsp.vu_ctrl.vcc & 2, 0, "lane 1 has neither, so false");
+
+        // Same operands, no VCO: now false everywhere.
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_compute(0x20, 0, 1, 0, 2);
+        assert_eq!(rsp.vu_ctrl.vcc, 0, "without VCO, equal is not less-than");
+    }
+
+    /// `VGE`'s equality case uses the **opposite** VCO condition to `VLT`'s, so
+    /// the two are not complements of each other on equal operands.
+    #[test]
+    fn vge_and_vlt_are_not_complements_on_equal_operands() {
+        let mut lt = pair([5; 8], [5; 8]);
+        lt.vu_ctrl.vco = (1 << 0) | (1 << 8);
+        lt.vu_compute(0x20, 0, 1, 0, 2);
+
+        let mut ge = pair([5; 8], [5; 8]);
+        ge.vu_ctrl.vco = (1 << 0) | (1 << 8);
+        ge.vu_compute(0x23, 0, 1, 0, 2);
+
+        assert_ne!(lt.vu_ctrl.vcc & 1, 0, "VLT true for lane 0");
+        assert_eq!(
+            ge.vu_ctrl.vcc & 1,
+            0,
+            "and VGE ALSO false -- not a negation"
+        );
+    }
+
+    /// `VEQ` and `VNE` consult `VCO`'s **high** half (the non-zero flag) rather
+    /// than its carry.
+    #[test]
+    fn veq_and_vne_consult_the_non_zero_flag() {
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = 1 << 8; // lane 0's "non-zero" flag
+        rsp.vu_compute(0x21, 0, 1, 0, 2); // VEQ
+        assert_eq!(rsp.vu_ctrl.vcc & 1, 0, "equal, but the ne flag suppresses");
+        assert_ne!(rsp.vu_ctrl.vcc & 2, 0, "lane 1 has no flag, so equal holds");
+
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = 1 << 8;
+        rsp.vu_compute(0x22, 0, 1, 0, 2); // VNE
+        assert_ne!(rsp.vu_ctrl.vcc & 1, 0, "the flag forces not-equal");
+        assert_eq!(rsp.vu_ctrl.vcc & 2, 0, "lane 1 is genuinely equal");
+    }
+
+    /// **`VMRG` consumes `VCC` without changing it** — it is the consumer of a
+    /// compare, not another producer. It still clears `VCO`.
+    #[test]
+    fn vmrg_selects_on_vcc_and_leaves_it_alone() {
+        let mut rsp = pair([0xAAAA; 8], [0xBBBB; 8]);
+        rsp.vu_ctrl.vcc = 0b1010_0101;
+        rsp.vu_ctrl.vco = 0xFFFF;
+        assert!(rsp.vu_compute(0x27, 0, 1, 0, 2));
+
+        assert_eq!(rsp.vu_regs[2][0], 0xAAAA, "VCC bit set selects vs");
+        assert_eq!(rsp.vu_regs[2][1], 0xBBBB, "clear selects vt");
+        assert_eq!(rsp.vu_ctrl.vcc, 0b1010_0101, "VCC survives untouched");
+        assert_eq!(rsp.vu_ctrl.vco, 0, "but VCO is cleared");
+    }
+
+    /// Every compare clears `VCO` wholesale, so a second compare does not
+    /// inherit the first's flags.
+    #[test]
+    fn a_compare_clears_vco() {
+        let mut rsp = pair([5; 8], [5; 8]);
+        rsp.vu_ctrl.vco = 0xFFFF;
+        rsp.vu_compute(0x21, 0, 1, 0, 2);
+        assert_eq!(rsp.vu_ctrl.vco, 0);
     }
 }

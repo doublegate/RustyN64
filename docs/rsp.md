@@ -202,8 +202,8 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 ### The accumulator and the multiply family (partly implemented, Sprint 2)
 
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
-accumulating forms, `VSAR` and the six bitwise operations execute. `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS` execute too. The compares,
-the selects, `VRNDN`/`VRNDP` and `VMULQ` do not yet, and report
+accumulating forms, `VSAR` and the six bitwise operations execute. `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS` execute too. `VLT`/`VEQ`/`VNE`/`VGE` and `VMRG` execute too. `VCL`/`VCH`/`VCR`,
+`VRNDN`/`VRNDP` and `VMULQ` do not yet, and report
 so rather than writing a wrong result — `vu_compute` returns `false` and the
 instruction retires inertly.
 
@@ -284,6 +284,25 @@ reading only `vd` cannot see either:
 - `VADD` clamps its result while the accumulator keeps the unclamped low bits.
 - `VABS` of `0x8000` saturates `vd` to `0x7FFF` because the negation is not
   representable, while the accumulator keeps `0x8000`.
+
+### The compare group and `VCC`
+
+A compare writes a **selection**, not a boolean: `vd` receives `vs` or `vt` per
+lane, and the predicate goes to `VCC`'s low half while the high half is cleared.
+An implementation writing 0/1 into `vd` satisfies any test that only inspects
+`VCC`.
+
+**The equality cases consult `VCO`**, which is what chains a compare onto a
+preceding `VSUBC` — the reason that pair exists. `VLT` treats equal operands as
+less-than only when *both* VCO halves are set; `VGE` uses the opposite
+condition, so **the two are not complements** on equal operands (both can be
+false). `VEQ`/`VNE` consult the high half — the "result was non-zero" flag —
+rather than the carry. Dropping the VCO terms leaves compares that look right on
+unequal operands and wrong on equal ones.
+
+`VMRG` **consumes** `VCC` without changing it: the consumer of a compare rather
+than another producer. Every one of these clears `VCO` wholesale, so a second
+compare cannot inherit the first's flags.
 
 `VABS` applies the **sign of `vs` to `vt`** — it is not the absolute value of
 either operand, and a zero in `vs` yields zero regardless of `vt`.
