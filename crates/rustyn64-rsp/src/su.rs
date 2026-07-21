@@ -333,6 +333,12 @@ impl Rsp {
         // two groups share one opcode. The four moves are `rs` 0/2/4/6, all
         // with it clear.
         if d.rs & 0x10 != 0 {
+            // Computational. Note the operand fields are NOT in the usual MIPS
+            // positions: `vt` is at 20..16 (where `rt` normally sits), `vs` at
+            // 15..11 and `vd` at 10..6 -- so the natural reading of a MIPS
+            // R-type would swap the source and destination.
+            let element = d.rs as u32 & 0xF;
+            self.vu_compute(d.funct, element, d.rd, d.rt, d.sa as usize);
             return;
         }
         // `vs_elem` is bits 10..=7 of the word, a byte offset into the register.

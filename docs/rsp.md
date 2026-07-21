@@ -199,6 +199,33 @@ write-back: **signed** clamp to `[-32768, 32767]`; **unsigned** clamps negatives
 to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.md`
 §3). Getting saturation or accumulator slicing wrong drifts geometry and audio.
 
+### The accumulator and the multiply family (partly implemented, Sprint 2)
+
+`VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, `VSAR` and the six bitwise
+operations execute. The `VMAC*`/`VMAD*` accumulating forms, the compares, the
+selects and `VRCP`/`VRSQ` do not yet, and report so rather than writing a wrong
+result — `vu_compute` returns `false` and the instruction retires inertly.
+
+The accumulator is **one 48-bit register per lane**, not three 16-bit ones.
+`VSAR` slicing it into `ACC_HI`/`ACC_MD`/`ACC_LO` invites the latter, but the
+multiplies write across the full 48 bits and the extraction that produces `vd`
+reads a 32-bit window *spanning* two slices — split storage loses the carries
+between them.
+
+`VMULF`'s rule was derived from n64-systemtest's own expected vectors rather
+than recalled: **acc = 2·vs·vt + 0x8000**, with `vd` a signed clamp of
+`acc >> 16`. The rounding constant lands in the *accumulator*, which is only
+visible because the suite reads `ACC_LO` back as `0x8000` for a zero product.
+The last lane of its vector is what pins the clamp: the 48-bit accumulator is
+positive there, `acc >> 16` is `0x8000` = 32768, one past the signed maximum,
+and the result saturates to `0x7FFF`.
+
+**None of this is observable through n64-systemtest yet.** Every VU test loads
+its operands with `LQV` and reads results back with `SQV`, and the vector
+load/store family is Sprint 3 — so the suite count is unchanged, and these
+instructions are pinned only by unit tests against the oracle's published
+vectors. That is weaker evidence than a passing suite, and is recorded as such.
+
 ### Reciprocal / rsqrt via ROM
 
 `VRCP`/`VRSQ` (and the H/L two-part variants) are **table lookups**, not
