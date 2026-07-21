@@ -21,7 +21,11 @@ Two more behaviours fell out of the same tests: a single-precision **arithmetic*
 the other half of its destination while `MTC1`/`LWC1` *preserve* it (now `write_s_arith` vs
 `write_s`), and `MOV.S` moves **all 64 bits** rather than the formatted half.
 
-**Phase 1's categories: 99 → 89.** The entire odd-index cluster reached zero. Accuracy ledger
+Alongside it, C-13's subnormal-result policy gained its missing half: a result that underflows
+**past** the subnormal grid to zero is refused too. `is_subnormal` and `flags.underflow` are both
+needed — neither implies the other, since IEEE signals underflow only when tiny *and inexact*.
+
+**Phase 1's categories: 99 → 67.** The entire odd-index cluster reached zero. Accuracy ledger
 **C-14**.
 
 ### Added — `SQRT` and a correctly-rounded `CVT.S.D`

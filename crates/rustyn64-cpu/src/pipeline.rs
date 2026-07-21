@@ -1776,7 +1776,18 @@ impl Pipeline {
         mode: crate::fpu::Rounding,
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
-        if !fpu::is_subnormal_f32(out.value) {
+        // **Either** condition triggers, and both are needed.
+        //
+        // `is_subnormal` alone misses a result that underflows past the
+        // subnormal grid all the way to zero (`f64::MIN_POSITIVE` narrowed to
+        // `f32`; `MIN_POSITIVE` squared) — the VR4300 refuses those exactly as
+        // it refuses a subnormal.
+        //
+        // `flags.underflow` alone misses an *exact* subnormal, because IEEE
+        // signals underflow only when tiny **and inexact**. Replacing the
+        // first test with the second was tried and regressed the oracle from
+        // 89 to 131.
+        if !fpu::is_subnormal_f32(out.value) && !out.flags.underflow {
             return (FpCommit::Single(out.value.to_bits()), out.flags, false);
         }
         if !self.cop1.flush_denorm_to_zero() || self.underflow_traps() {
@@ -1796,7 +1807,18 @@ impl Pipeline {
         mode: crate::fpu::Rounding,
     ) -> (FpCommit, crate::fpu::Flags, bool) {
         use crate::fpu;
-        if !fpu::is_subnormal_f64(out.value) {
+        // **Either** condition triggers, and both are needed.
+        //
+        // `is_subnormal` alone misses a result that underflows past the
+        // subnormal grid all the way to zero (`f64::MIN_POSITIVE` narrowed to
+        // `f32`; `MIN_POSITIVE` squared) — the VR4300 refuses those exactly as
+        // it refuses a subnormal.
+        //
+        // `flags.underflow` alone misses an *exact* subnormal, because IEEE
+        // signals underflow only when tiny **and inexact**. Replacing the
+        // first test with the second was tried and regressed the oracle from
+        // 89 to 131.
+        if !fpu::is_subnormal_f64(out.value) && !out.flags.underflow {
             return (FpCommit::Double(out.value.to_bits()), out.flags, false);
         }
         if !self.cop1.flush_denorm_to_zero() || self.underflow_traps() {
@@ -4735,6 +4757,43 @@ mod tests {
             crate::exception::exc_code::FPE
         );
         assert_ne!(p.cop1.fcsr() & CAUSE_E, 0);
+    }
+
+    /// **An underflow that rounds past the subnormal grid to ZERO is refused
+    /// too**, not just one that lands on a subnormal.
+    ///
+    /// `MIN_POSITIVE * MIN_POSITIVE` is about `1.4e-76`, far below `f32`'s
+    /// smallest subnormal, so the rounded result is plain zero and
+    /// `is_subnormal` is false for it. Testing only that condition let every
+    /// such case through silently — worth 22 oracle assertions.
+    ///
+    /// The converse matters as much and is covered by
+    /// `a_subnormal_result_raises_unimplemented_when_fs_is_clear`: IEEE signals
+    /// underflow only when tiny **and inexact**, so an *exact* subnormal has
+    /// `underflow` clear. Neither condition implies the other; the
+    /// implementation needs both.
+    #[test]
+    fn an_underflow_that_reaches_zero_is_refused_as_well() {
+        use crate::cop0::reg;
+        /// `MUL.S $f4, $f0, $f2` — fmt 16, funct 2.
+        const MUL_S: u32 = (0o21 << 26) | (0o20 << 21) | (2 << 16) | (4 << 6) | 2;
+
+        let mut bus = Ram::new(alloc::vec![MUL_S]);
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        p.cop0.set_hardware(reg::STATUS, 0x3400_0000);
+        p.fpr.write_s(0, true, f32::MIN_POSITIVE.to_bits());
+        p.fpr.write_s(2, true, f32::MIN_POSITIVE.to_bits());
+
+        let mut pc = KSEG0_PROG;
+        for _ in 0..24 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+        assert_ne!(
+            p.cop1.fcsr() & CAUSE_E,
+            0,
+            "an underflow to zero must raise unimplemented with FS clear"
+        );
     }
 
     /// With `FS` set, the same operation **flushes** — and where it flushes to

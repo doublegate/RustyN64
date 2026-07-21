@@ -792,7 +792,17 @@ exactly what `DMFC1` after an `ADD.S` does. They are now `write_s` and
 suite reads the destination after a `MOV.S` and expects the *source's* upper
 half there. It is a whole-register transfer that happens to be spelled `.S`.
 
-**Effect:** Phase 1's categories 99 → **89**; the whole odd-index cluster
+**A second, independent fix landed alongside it.** C-13's subnormal-result
+policy triggered on *"the result is subnormal"*, which misses a result that
+underflows **past** the subnormal grid to zero — `f64::MIN_POSITIVE` narrowed to
+`f32`, or `MIN_POSITIVE` squared. Both conditions are needed and neither implies
+the other: `is_subnormal` misses the rounds-to-zero case, and `flags.underflow`
+misses an *exact* subnormal, because IEEE signals underflow only when tiny **and
+inexact**. Replacing the first test with the second rather than adding to it was
+tried and regressed the oracle from 89 to **131**, caught immediately by the
+existing tests. Worth 22 assertions once correct.
+
+**Effect:** Phase 1's categories 99 → **67**; the whole odd-index cluster
 (`MTC1`/`MFC1`/`DMTC1`/`DMFC1`/`LWC1`/`SWC1`/`LDC1`/`SDC1` "with odd index in
 32 bit mode", plus the half-mode comparison and 64-bit-index tests) reached
 zero.
