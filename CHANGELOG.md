@@ -12,7 +12,9 @@ The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 ### Fixed — an in-flight `C.cond.fmt` is forwarded to `BC1`
 
 **This clears Phase 1's cut criterion: n64-systemtest's CPU/COP0/TLB/COP1 categories are at
-`Failed: 0`.**
+`Failed: 0`**, across 917 tests started — reproducible with
+`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`, which is committed
+alongside it.
 
 `BC1` resolves in `EX` while `C.cond.fmt` commits `FCSR.C` in `WB`, so an adjacent pair sampled the
 previous condition — and the ROM emits exactly that pair with no separating instruction.

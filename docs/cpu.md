@@ -508,8 +508,9 @@ Kernel mode under 32-bit addressing**:
 
 Hardware registers are reached through KSEG1 (uncached).
 
-**The map is not a function of the address alone.** It depends on the privilege
-mode and on whether that mode is using 64-bit addressing:
+**The map is not a function of the address alone** (UM §5.2.4, Tables 5-3/5-4;
+n64-systemtest `Privilege: memory accesses`). It depends on the privilege mode
+and on whether that mode is using 64-bit addressing:
 
 - **User** sees `USEG` alone. **Supervisor** sees `SUSEG` and `SSEG`
   (`0xC000_0000`–`0xDFFF_FFFF`). **Kernel** sees the table above.
@@ -521,13 +522,16 @@ mode and on whether that mode is using 64-bit addressing:
 - With `Status.KX`/`SX`/`UX` set for the current mode, each mapped segment widens
   to 2^40 and the space grows holes: an address inside a segment's *region* but
   past its size faults. Kernel additionally gains **XKPHYS**
-  (`0x8000_..`–`0xBFFF_..`), eight 2^32 direct windows chosen by bits 61:59 and
+  (`0x8000_0000_0000_0000`–`0xBFFF_FFFF_FFFF_FFFF`), eight 2^32 direct windows
+  chosen by bits 61:59 and
   differing only in cacheability — and by the same rule as a TLB entry's `C`
   field, only `C == 2` is uncached.
 
 **Under 32-bit addressing an address must be the sign extension of its low word.**
-`0x0000_0000_8000_1000` is not a shorthand for `KSEG0`; it is an address error,
-which n64-systemtest asserts directly ("LW with address not sign extended").
+`0x0000_0000_8000_1000` is not a shorthand for `KSEG0`; it is an address error.
+Measured, not inferred: n64-systemtest asserts it directly in *"LW with address
+not sign extended"* / *"SW with address not sign extended"*, whose own comment
+reads "causes AdEL, as upper bits are 0".
 Truncating to 32 bits is the natural shortcut and accepts it silently. The reset
 vector and any ROM entry point are therefore stored sign-extended
 (`0xFFFF_FFFF_BFC0_0000`), not as bare 32-bit values.
@@ -640,7 +644,9 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   adjacent pair is served by a **forwarding path** that re-evaluates the in-flight
   compare from its latched operands. A stall cannot substitute: freezing the
   pipeline delays the compare's `WB` equally. Accuracy-ledger **C-25**.
-- **A to-integer conversion refuses an integer source format.** `CVT.W.W`,
+- **A to-integer conversion refuses an integer source format** (n64-systemtest
+  `COP1: CVT.W…`/`CVT.L…`, the `W => W` and `L => W` rows, which expect
+  Unimplemented Operation). `CVT.W.W`,
   `CVT.W.L`, `CVT.L.W`, `CVT.L.L` and the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` family
   from `.W`/`.L` are not instructions, and the VR4300 declines them with
   *Unimplemented Operation* rather than reinterpreting the source register.
@@ -665,7 +671,9 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   accessors (`read_s_fs` / `read_s_ft`) keep the two apart so a call site cannot
   silently pick the wrong one.
 - **The MIPS III 64-bit operations are Reserved in 32-bit User and Supervisor
-  mode.** `DADD`, `DSLL`, `LD`, `SD` and the rest raise Reserved Instruction when
+  mode** — the **epsilon** marker in UM Figure 16-1's Key: *"valid in the 64-bit
+  mode and 32-bit Kernel mode. In the 32-bit User or Supervisor mode, this code
+  generates the reserved instruction exception."* `DADD`, `DSLL`, `LD`, `SD` and the rest raise Reserved Instruction when
   the current mode's `UX`/`SX` bit is clear and the mode is not Kernel. Kernel may
   use them at any width, so this is **not** a property of `Status.KX` alone.
 
@@ -690,7 +698,9 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   on a fault, which the suite asserts directly.
 
   **The `LWL`/`LWR`/`SWL`/`SWR` family takes the BYTE swap**, `addr ^ 7`, not the
-  swap for its container's width — these instructions address individual bytes,
+  swap for its container's width. Derived from n64-systemtest's own expected
+  tables (`RE user mode partial loads/stores matrix`), not from the manual, which
+  does not cover the combination — these instructions address individual bytes,
   so the byte lane is what moves. One XOR relocates the container and complements
   the byte index together: `LWL 0` becomes container 4 with byte index 3, because
   `0 ^ 7 == 7`, `7 & !3 == 4` and `7 & 3 == 3`.

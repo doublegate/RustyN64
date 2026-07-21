@@ -86,9 +86,17 @@ the VR4300's refusal to produce subnormals as a separate layer.
 executes anything. A green `cargo test` still does not mean a subsystem works — check
 `docs/STATUS.md`.
 
-**There is no committed n64-systemtest runner.** Every session so far has rebuilt a throwaway one
-(load the ELF, sign-extend its entry, step to a tick budget, read `bus.isviewer_output()`). That is
-a real gap in a project whose primary oracle this is; worth a ticket rather than a fourth rewrite.
+**The n64-systemtest runner is committed** at
+`crates/rustyn64-test-harness/tests/systemtest.rs`, `#[ignore]`d because a full pass takes ~2
+minutes in `--release`:
+
+```bash
+cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored --nocapture
+```
+
+It asserts Phase 1's criterion directly and witnesses execution before trusting a zero (an empty
+run produces zero failures just as convincingly as a passing one). Every `Failed: 0` claim in
+`docs/STATUS.md` is this test, not a self-assessment — which is the whole point of committing it.
 
 ## Where things live
 
