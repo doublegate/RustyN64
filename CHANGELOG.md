@@ -9,6 +9,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — a TLB tag is masked by `PageMask`, not divided by the page size
+
+`EntryHi`'s tag keeps every bit `PageMask` does **not** cover. It was stored as `VA / pair_size`,
+which clears the tag's *low* bits — right for all six legal page sizes, since those are contiguous
+runs from bit 13, and wrong once a canonicalised mask has a hole. `0b11_11_11_11_00` covers bits
+22:15 and leaves 14:13 alone; division cannot express that.
+
+The tag is now held **in place**, masked rather than divided, so `vpn2_of` and the read-back agree by
+construction. Mutation-checked: restoring the divide turns the new test red on exactly the
+holed-mask row and no other.
+
+**Phase 1's categories: 6 → 5.** All TLB items pass.
+
 ### Fixed — a `PageMask` pair stores only its higher bit
 
 `PageMask` bits 24:13 are six 2-bit pairs, and an entry does not store twelve independent bits: a
