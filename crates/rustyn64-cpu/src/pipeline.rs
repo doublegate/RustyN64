@@ -1675,8 +1675,10 @@ impl Pipeline {
             return;
         }
 
-        // TODO(T-11-003): fetch through the I-cache rather than straight off the
-        // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
+        // The fetch itself now goes through the I-cache (see below); what is
+        // still outstanding is the COST.
+        // TODO(T-11-003): charge the I-cache miss cost (14..=15 + M PCycles, UM
+        // Table 11-2) once `M` is measured -- accuracy-ledger C-1.
         // Every address handed to the Bus is PHYSICAL (`docs/cpu.md`); the
         // segment map is applied here, in the CPU, not by the Bus.
         // Instruction fetch goes through the micro-ITLB in front of the JTLB
