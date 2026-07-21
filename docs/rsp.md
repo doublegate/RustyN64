@@ -220,11 +220,14 @@ The last lane of its vector is what pins the clamp: the 48-bit accumulator is
 positive there, `acc >> 16` is `0x8000` = 32768, one past the signed maximum,
 and the result saturates to `0x7FFF`.
 
-**None of this is observable through n64-systemtest yet.** Every VU test loads
-its operands with `LQV` and reads results back with `SQV`, and the vector
-load/store family is Sprint 3 — so the suite count is unchanged, and these
-instructions are pinned only by unit tests against the oracle's published
-vectors. That is weaker evidence than a passing suite, and is recorded as such.
+**These became observable only once `LQV`/`SQV` landed**, which is why they are
+in the same sprint. Every VU test in n64-systemtest loads its operands with
+`LQV` and reads results back with `SQV`, so the computational group moved the
+suite count by *zero* until the vector load/store group existed — at which point
+the count fell from 247 to 224 in one step. Until then these instructions were
+pinned only by unit tests written against the oracle's published vectors, which
+is weaker evidence than a passing suite; that gap is now closed for the
+implemented opcodes and remains open for the rest.
 
 ### Reciprocal / rsqrt via ROM
 

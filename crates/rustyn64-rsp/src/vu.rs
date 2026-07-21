@@ -445,6 +445,47 @@ mod compute_tests {
         assert_eq!(rsp.vu_regs[2][7], 0x7FFF, "and the result saturates");
     }
 
+    /// **`VMULU` against the oracle's vectors** — the same accumulator as
+    /// `VMULF`, differing *only* in the clamp.
+    ///
+    /// That shared path is exactly why this needs its own instruction-level
+    /// case: `clamp_unsigned` being right as a helper says nothing about the
+    /// `op == 0x01` arm selecting it, and a mis-selection would hide behind the
+    /// `VMULF` coverage. Lane 5 is the discriminator — `VMULF` gives `0x8001`
+    /// there and `VMULU` gives `0`, because the accumulator is negative and
+    /// unsigned clamping floors it. Lane 7 is the other half: positive and over
+    /// the 15-bit threshold, so it saturates to `0xFFFF` where `VMULF` gives
+    /// `0x7FFF`.
+    ///
+    /// Note this test's `vs` differs from `VMULF`'s in lane 2 (`0x0010`), which
+    /// is the oracle's own input — kept rather than normalised, so the expected
+    /// vectors can be compared against the suite verbatim.
+    #[test]
+    fn vmulu_matches_the_oracle_vectors() {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[0] = [0x0000, 0x0000, 0x0010, 0xE000, 0x8001, 0x8000, 0x7FFF, 0x8000];
+        rsp.vu_regs[1] = VT;
+        assert!(rsp.vu_compute(0x01, 0, 0, 1, 2));
+        assert_eq!(
+            rsp.vu_regs[2],
+            [0, 0, 0, 0, 0x7fff, 0, 0x7ffe, 0xffff],
+            "VMULU result"
+        );
+        assert_eq!(acc_slice(&rsp, 32), [0, 0, 0, 0, 0, 0xffff, 0, 0], "ACC_HI");
+        assert_eq!(
+            acc_slice(&rsp, 16),
+            [0, 0, 0, 0, 0x7fff, 0x8001, 0x7ffe, 0x8000],
+            "ACC_MD"
+        );
+        assert_eq!(
+            acc_slice(&rsp, 0),
+            [
+                0x8000, 0x8000, 0x7fe0, 0xc000, 0x8000, 0x8000, 0x8002, 0x8000
+            ],
+            "ACC_LO -- identical to VMULF's, since only the clamp differs"
+        );
+    }
+
     /// **`VMUDL` against the oracle's vectors** — an unsigned product keeping
     /// the high half, so nothing sign-extends into the upper accumulator.
     #[test]
