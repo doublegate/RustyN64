@@ -384,9 +384,13 @@ ares, since the suite is the oracle. It computes eight lanes from a fixed offset
 pattern and then writes only the register bytes `[e, e + min(8, 16 - e))`,
 leaving the rest untouched.
 
-Not yet implemented, and reported rather than approximated: `SFV` (whose source
-lanes are chosen by an `e`-dependent table, with some `e` writing zero) and
-`SWV`. (`LWV` does not
+`SFV` writes four bytes at DMEM stride 4, their source lanes chosen by an
+`e`-dependent table (also from the suite reference); for any `e` **not** in the
+table it writes a real **zero**, not a wrapped lane — the "even 0 for some E"
+case the suite warns about.
+
+Not yet implemented, and reported rather than approximated: `SWV` and `LWV`
+(the latter does nothing on hardware). (`LWV` does not
 exist on hardware — the suite records that it *"does nothing"*.)
 
 ### Vector load/store

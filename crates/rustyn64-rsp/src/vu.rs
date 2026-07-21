@@ -1151,6 +1151,14 @@ impl Rsp {
                 self.lfv(Self::base_16(rs, offset), vt, element);
                 true
             }
+            // SFV store. Also from the suite reference: it writes FOUR bytes,
+            // whose source lanes are chosen by an `e`-dependent table, and for
+            // any `e` not in that table it writes **zero** -- not a wrap, an
+            // actual zero, which a table-less implementation gets wrong.
+            0x09 => {
+                self.sfv(Self::base_16(rs, offset), vt, element);
+                true
+            }
             _ => false,
         }
     }
@@ -1270,6 +1278,34 @@ impl Rsp {
         let length = core::cmp::min(8, 16 - element);
         for (i, &b) in bytes.iter().enumerate().skip(element).take(length) {
             self.set_vu_byte(vt, i, b);
+        }
+    }
+
+    /// `SFV` — the fractional store, transcribed from n64-systemtest's
+    /// reference.
+    ///
+    /// Four bytes are written at DMEM stride 4 within the aligned window. Which
+    /// four source lanes supply them depends on `e` through a fixed table; for
+    /// any `e` **not** in the table the bytes are **zero** — a real zero, not a
+    /// wrap, which is the "even 0 for some E" behaviour the suite warns about.
+    fn sfv(&mut self, address: u32, vt: usize, element: usize) {
+        // The source-lane table (N64brew / n64-systemtest). `None` -> write 0.
+        let lanes: Option<[usize; 4]> = match element {
+            0 | 15 => Some([0, 1, 2, 3]),
+            1 => Some([6, 7, 4, 5]),
+            4 => Some([1, 2, 3, 0]),
+            5 => Some([7, 4, 5, 6]),
+            8 => Some([4, 5, 6, 7]),
+            11 => Some([3, 0, 1, 2]),
+            12 => Some([5, 6, 7, 4]),
+            _ => None,
+        };
+        let a = address & 7;
+        let b = address & !7;
+        for i in 0..4u32 {
+            let value = lanes.map_or(0, |l| (self.vu_regs[vt & 31][l[i as usize]] >> 7) as u8);
+            let at = b + ((a + (i << 2)) & 15);
+            self.dmem_write_pub(at, value);
         }
     }
 
@@ -2556,5 +2592,57 @@ mod lfv_tests {
         let mut rsp = with_dmem();
         assert!(rsp.vector_mem(false, 0x09, 0, 1, 4, 0));
         assert_eq!(rsp.vu_regs[1], [0, 0, 0x0A00, 0x0C00, 0x0A00, 0x0C00, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod sfv_tests {
+    use super::*;
+
+    fn seeded() -> Rsp {
+        let mut rsp = Rsp::new();
+        // Lane l = (l+1) << 8, so lane>>7 = (l+1)<<1 -- distinct per lane.
+        rsp.vu_regs[1] = core::array::from_fn(|l| (l as u16 + 1) << 8);
+        rsp.set_su(2, 0);
+        rsp
+    }
+
+    /// **`SFV` writes four bytes, source lanes chosen by an `e`-table.** `e=0`
+    /// takes lanes 0..3; `e=4` rotates to 1,2,3,0. Values computed from the
+    /// suite reference.
+    #[test]
+    fn sfv_selects_source_lanes_by_element() {
+        let mut rsp = seeded();
+        assert!(rsp.vector_mem(true, 0x09, 2, 1, 0, 0)); // e=0
+        assert_eq!(
+            [rsp.dmem[0], rsp.dmem[4], rsp.dmem[8], rsp.dmem[12]],
+            [2, 4, 6, 8]
+        );
+
+        let mut rsp = seeded();
+        assert!(rsp.vector_mem(true, 0x09, 2, 1, 4, 0)); // e=4 -> lanes 1,2,3,0
+        assert_eq!(
+            [rsp.dmem[0], rsp.dmem[4], rsp.dmem[8], rsp.dmem[12]],
+            [4, 6, 8, 2]
+        );
+    }
+
+    /// **An `e` outside the table writes zero, not a wrapped lane.** This is the
+    /// "even 0 for some E" case; a table-less implementation would store some
+    /// plausible lane instead.
+    #[test]
+    fn sfv_writes_zero_for_an_undefined_element() {
+        let mut rsp = seeded();
+        // Seed the DMEM non-zero so a zero write is visible.
+        for i in 0..16 {
+            rsp.dmem[i] = 0xEE;
+        }
+        assert!(rsp.vector_mem(true, 0x09, 2, 1, 2, 0)); // e=2 not in table
+        assert_eq!(
+            [rsp.dmem[0], rsp.dmem[4], rsp.dmem[8], rsp.dmem[12]],
+            [0, 0, 0, 0],
+            "undefined e writes real zeros"
+        );
+        assert_eq!(rsp.dmem[1], 0xEE, "untouched bytes stay");
     }
 }
