@@ -1094,6 +1094,32 @@ mod mem_tests {
         }
     }
 
+    /// **A scalar load near the end of the register loads fewer bytes rather
+    /// than wrapping.**
+    ///
+    /// The regression test for the bug this branch fixed: the register side
+    /// masked its byte index with 15, so an `LDV` at element 12 wrapped its
+    /// last four bytes back to `VPR[0..3]` instead of stopping. Nothing here
+    /// caught it before — the existing scalar test uses `element = 0`, where
+    /// wrapping and truncating agree.
+    #[test]
+    fn a_scalar_load_near_the_end_of_the_register_truncates() {
+        let bytes: [u8; 16] = core::array::from_fn(|i| i as u8 + 0x10);
+        let mut rsp = with_dmem(&bytes);
+        // LDV wants 8 bytes; at element 12 only 4 fit.
+        assert!(rsp.vector_mem(false, 0x03, 0, 1, 12, 0));
+        for i in 12..16 {
+            assert_eq!(rsp.vu_byte(1, i), bytes[i - 12], "byte {i} loaded");
+        }
+        for i in 0..12 {
+            assert_eq!(
+                rsp.vu_byte(1, i),
+                0,
+                "byte {i} must be untouched -- the tail must NOT wrap to the start"
+            );
+        }
+    }
+
     /// An unimplemented opcode reports so rather than moving wrong bytes.
     #[test]
     fn an_unimplemented_vector_memory_op_is_reported() {
@@ -1114,34 +1140,90 @@ mod mem_tests {
 /// have no rounding freedom, so they reproduce the ROM rather than estimating
 /// it. The construction is ares's (ISC).
 pub mod rom {
-    /// The reciprocal ROM: `(1 << 34) / (index + 512)`, rounded.
+    /// The reciprocal ROM, built at **compile time**.
     ///
-    /// Entry 0 is `0xFFFF` and does not follow the formula — the divisor there
-    /// would give a value that does not fit, so hardware pins it.
-    #[must_use]
-    pub fn reciprocal(index: usize) -> u16 {
-        if index == 0 {
-            return u16::MAX;
+    /// A `static` rather than a function, which is what makes it a table in the
+    /// binary: the generator runs during const evaluation and nothing computes
+    /// a reciprocal at run time. An earlier revision computed each entry on
+    /// demand, which made every `VRSQ` pay for a search — see the note on
+    /// [`INVERSE_SQUARE_ROOT`].
+    pub static RECIPROCAL: [u16; 512] = build_reciprocal();
+
+    /// The inverse-square-root ROM, likewise built at compile time.
+    pub static INVERSE_SQUARE_ROOT: [u16; 512] = build_inverse_square_root();
+
+    /// `(1 << 34) / (index + 512)`, rounded.
+    ///
+    /// Entry 0 is `0xFFFF` and does **not** follow the formula — hardware pins
+    /// it, and a generator that applies the formula uniformly gets the
+    /// most-used entry wrong.
+    const fn build_reciprocal() -> [u16; 512] {
+        let mut table = [0u16; 512];
+        table[0] = u16::MAX;
+        let mut index = 1usize;
+        while index < 512 {
+            let a = (index as u64) + 512;
+            let b = (1u64 << 34) / a;
+            table[index] = ((b + 1) >> 8) as u16;
+            index += 1;
         }
-        let a = (index as u64) + 512;
-        let b = (1u64 << 34) / a;
-        ((b + 1) >> 8) as u16
+        table
     }
 
-    /// The inverse-square-root ROM: the largest `b` with `a·(b+1)² < 2⁴⁴`,
-    /// where `a` is halved on odd indices.
+    /// The **smallest** `b ≥ 2¹⁷` with `a·(b+1)² ≥ 2⁴⁴`, where `a` is halved on
+    /// odd indices.
     ///
-    /// A search rather than a closed form, because that is what the quantity
-    /// is — but an exact one over integers, so it terminates on the same value
-    /// every time and on every platform.
+    /// Note the predicate, which is *not* what ares's comment above the same
+    /// loop says. That comment reads "find the largest b where b < 1.0 /
+    /// sqrt(a)", but the loop is `while cond { b += 1 }` — it walks *through*
+    /// the last satisfying value and stops one past it. The value the table
+    /// actually holds is therefore one greater than the comment describes.
+    ///
+    /// This was found by pinning the bisection against twelve values captured
+    /// from the original upward scan: implementing the comment's predicate gave
+    /// `26964` where the scan gives `26965`. Without that test the off-by-one
+    /// would have shipped, since every property the other tests check
+    /// (monotonicity, the odd/even interleave, the 16-bit range) holds just as
+    /// well one step to the left.
+    ///
+    /// **Binary search, not a linear scan.** The naive upward walk runs
+    /// ~131,000 iterations of two 64-bit multiplications for the smallest `a`,
+    /// per entry — tolerable once at build time, disastrous when an earlier
+    /// revision called it per instruction, and emulated in software on
+    /// `thumbv7em`, which this crate must build for.
+    const fn build_inverse_square_root() -> [u16; 512] {
+        let mut table = [0u16; 512];
+        let mut index = 0usize;
+        while index < 512 {
+            let a = ((index as u64) + 512) >> ((index % 2 == 1) as u32);
+            // `b + 1` stays under 2^19 for the smallest `a`, so `a*(b+1)^2`
+            // fits in `u64`.
+            let mut lo = 1u64 << 17;
+            let mut hi = 1u64 << 19;
+            while lo < hi {
+                let mid = u64::midpoint(lo, hi);
+                if a * (mid + 1) * (mid + 1) >= (1u64 << 44) {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            table[index] = (lo >> 1) as u16;
+            index += 1;
+        }
+        table
+    }
+
+    /// The reciprocal ROM entry for `index`.
+    #[must_use]
+    pub fn reciprocal(index: usize) -> u16 {
+        RECIPROCAL[index & 511]
+    }
+
+    /// The inverse-square-root ROM entry for `index`.
     #[must_use]
     pub fn inverse_square_root(index: usize) -> u16 {
-        let a = ((index as u64) + 512) >> u32::from(index % 2 == 1);
-        let mut b = 1u64 << 17;
-        while a * (b + 1) * (b + 1) < (1u64 << 44) {
-            b += 1;
-        }
-        (b >> 1) as u16
+        INVERSE_SQUARE_ROOT[index & 511]
     }
 }
 
@@ -1177,6 +1259,23 @@ mod rom_tests {
                 "entry {i} rose above its predecessor"
             );
         }
+    }
+
+    /// **The binary search reproduces the linear scan exactly.**
+    ///
+    /// The build switched from an upward scan to a bisection for speed, and the
+    /// two agreeing is the whole basis for calling that a refactor rather than
+    /// a change. These twelve values were captured from the scan *before* the
+    /// switch; if the bisection has an off-by-one at the boundary it lands
+    /// here rather than in a wrong vertex months later.
+    #[test]
+    fn the_inverse_square_root_rom_matches_the_linear_scan() {
+        assert_eq!(
+            core::array::from_fn::<u16, 12, _>(rom::inverse_square_root),
+            [
+                27145, 65535, 26965, 65280, 26785, 65026, 26607, 64774, 26430, 64523, 26253, 64274
+            ]
+        );
     }
 
     /// Every entry fits the 16 bits the ROM is, at both ends of the range.

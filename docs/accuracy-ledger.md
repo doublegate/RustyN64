@@ -1273,11 +1273,27 @@ it is `(1 << 34) / (index + 512)`, rounded by `+ 1 >> 8`, in 64-bit integers; fo
 square root it searches for the largest `b` with `a·(b+1)² < 2⁴⁴`. Both are exact integer
 constructions with no rounding freedom, so they reproduce the ROM rather than estimating it.
 
+**Built at compile time.** The generators are `const fn`s producing `static` arrays, so the
+artifact in the binary *is* a table and nothing computes a reciprocal at run time. An earlier
+revision of this entry described per-call generation; that was a performance bug (the
+inverse-square-root search ran ~131,000 iterations of two 64-bit multiplications **per `VRSQ`**,
+software-emulated on `thumbv7em`), and moving it to const evaluation also brings the
+implementation much closer to what `docs/rsp.md`'s rule asks for.
+
 **Why generate rather than paste.** A 512-entry literal table is 512 opportunities for a
 transcription error, and a wrong entry is invisible until some specific divisor is used — the
 worst failure profile available. The generator is eight lines that can be read against the source
 they came from. The trade is real and goes the other way too: a bug in the generator is *also*
 invisible until exercised, and it applies to every entry at once rather than to one.
+
+**An off-by-one this caught.** ares's comment above its search reads *"find the largest b where
+b < 1.0 / sqrt(a)"* — but the loop is `while cond { b += 1 }`, which walks *through* the last
+satisfying value and stops one past it, so the table holds one **more** than the comment says.
+Reimplementing the comment's predicate as a bisection produced `26964` where the scan gives
+`26965`. It was caught only because the bisection was pinned against values captured from the
+original scan: every *property* the other tests check — monotonicity, the odd/even interleave, the
+16-bit range — holds just as well one step to the left. A reference implementation's comment is a
+claim about its code, and decays the same way ours do.
 
 **What makes it falsifiable.** The tables are pinned by tests against values n64-systemtest
 expects, so an error in the generator shows up as a failing oracle assertion rather than as a
