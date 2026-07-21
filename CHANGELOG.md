@@ -9,6 +9,32 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the primary caches, and `CACHE` now has state to operate on
+
+A 16 KiB instruction cache (32-byte lines) and an 8 KiB write-back data cache (16-byte lines),
+both direct-mapped, in `crates/rustyn64-cpu/src/cache.rs`. Instruction fetch and every cached load
+and store run through them; a cached store is a write-allocate that leaves the line dirty until a
+`CACHE` operation or an eviction forces it out.
+
+All thirteen `CACHE` operations now act: index invalidate / load tag / store tag, hit invalidate,
+hit write-back, hit write-back invalidate, create-dirty-exclusive and I-cache fill. `Index_Load_Tag`
+and `Index_Store_Tag` move a line's tag through COP0 `TagLo`.
+
+Three details each of which passes a plausible-looking wrong implementation:
+
+- **Invalidation keeps the tag.** Only the valid bit clears; `Index_Load_Tag` still reports the PFN.
+- **The two caches encode a valid line differently** — `PState` 2 for the I-cache, 3 for the
+  D-cache. One shared constant satisfies any test that only checks "non-zero".
+- **The dirty bit has no `TagLo` field**, so a clean valid D-cache line and a dirty one read back
+  identically. That is the hardware, not an omission.
+
+Indexing is by **physical** address where the hardware indexes virtually, which makes cache aliases
+impossible rather than merely unlikely — a deliberate deviation, recorded as ledger **D-6**.
+Ledger **D-5** (`CACHE` as an address-translating no-op) is superseded, not edited: it named the
+boundary — "sound only while no cache state exists to become stale" — that this work crossed.
+
+**Phase 1's categories: 40 → 31.**
+
 ### Added — COP2 as a single latch, and a not-taken `BGEZAL` links correctly
 
 COP2 is not a register file: it is one 64-bit latch that every `MTC2`/`DMTC2` writes and every

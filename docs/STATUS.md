@@ -98,7 +98,7 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | VR4300 COP0, TLB, exception model | **done** (Sprint 2) | Phase 1 |
 | VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
 | CPU golden-log 0-diff | not started — no reference trace captured | Phase 1 (Sprint 3) |
-| VR4300 I/D caches | stub | Phase 1 (Sprint 2, to observable depth) |
+| VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
 | RSP LLE (SU interpreter, then VU) | stub | Phase 2 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
@@ -178,7 +178,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | no — needs a cen64/ares capture | not started (golden source returns empty) |
-| n64-systemtest `Failed: 0` (**CPU/COP0/TLB** — Phase 1's criterion) | **yes** — ROM committed | **runs; 40 failing in those categories** (453 suite-wide). The RSP's 291 are **Phase 2's** criterion, not this one |
+| n64-systemtest `Failed: 0` (**CPU/COP0/TLB** — Phase 1's criterion) | **yes** — ROM committed | **runs; 31 failing in those categories** (444 suite-wide). The RSP's 291 are **Phase 2's** criterion, not this one |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |

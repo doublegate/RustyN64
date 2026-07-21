@@ -351,6 +351,10 @@ pub struct Pipeline {
     pub fpr: Fpr,
     /// The joint TLB and its instruction micro-TLB (T-12-004).
     pub tlb: Tlb,
+    /// The 16 KiB primary instruction cache (T-11-003).
+    pub icache: crate::cache::Icache,
+    /// The 8 KiB primary write-back data cache (T-11-003).
+    pub dcache: crate::cache::Dcache,
     /// The COP0 register file (T-12-001).
     ///
     /// Public because exception dispatch, the TLB and the interrupt path all
@@ -412,6 +416,8 @@ impl Pipeline {
             cop1: Cop1Control::new(),
             fpr: Fpr::new(),
             tlb: Tlb::new(),
+            icache: crate::cache::Icache::new(),
+            dcache: crate::cache::Dcache::new(),
             cop0: Cop0::new(),
             ll_bit: false,
         }
@@ -877,11 +883,20 @@ impl Pipeline {
     }
 
     /// Translate a data address through the TLB.
-    fn translate_data(&mut self, vaddr: u64, store: bool) -> Result<u32, Exception> {
+    ///
+    /// Returns the whole [`crate::addr::Physical`], **cacheability included**.
+    /// It used to return the address alone, which is exactly the information a
+    /// D-cache needs and cannot recover: once KSEG0 and KSEG1 have both become
+    /// the same physical number, nothing downstream can tell them apart.
+    fn translate_data(
+        &mut self,
+        vaddr: u64,
+        store: bool,
+    ) -> Result<crate::addr::Physical, Exception> {
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
         let erl = self.erl();
         match crate::addr::translate_via(&mut self.tlb, vaddr, asid, store, erl) {
-            Ok(p) => Ok(p.addr),
+            Ok(p) => Ok(p),
             Err(f) => {
                 self.fault_vaddr = vaddr;
                 self.note_shutdown();
@@ -917,7 +932,7 @@ impl Pipeline {
         let byte8 = addr & 7;
         Ok(match op {
             Op::Lwl | Op::Lwr => {
-                let w = bus.read_u32(word_addr);
+                let w = self.read_width(bus, word_addr, 4) as u32;
                 let v = if matches!(op, Op::Lwl) {
                     mem::lwl(rt, w, byte4)
                 } else {
@@ -926,7 +941,7 @@ impl Pipeline {
                 WriteBack::Gpr { dest, value: v }
             }
             Op::Ldl | Op::Ldr => {
-                let d = Self::read_width(bus, dword_addr, 8);
+                let d = self.read_width(bus, dword_addr, 8);
                 let v = if matches!(op, Op::Ldl) {
                     mem::ldl(rt, d, byte8)
                 } else {
@@ -935,23 +950,23 @@ impl Pipeline {
                 WriteBack::Gpr { dest, value: v }
             }
             Op::Swl | Op::Swr => {
-                let w = bus.read_u32(word_addr);
+                let w = self.read_width(bus, word_addr, 4) as u32;
                 let merged = if matches!(op, Op::Swl) {
                     mem::swl(rt, w, byte4)
                 } else {
                     mem::swr(rt, w, byte4)
                 };
-                bus.write_u32(word_addr, merged);
+                self.write_width(bus, word_addr, 4, u64::from(merged));
                 WriteBack::None
             }
             Op::Sdl | Op::Sdr => {
-                let d = Self::read_width(bus, dword_addr, 8);
+                let d = self.read_width(bus, dword_addr, 8);
                 let merged = if matches!(op, Op::Sdl) {
                     mem::sdl(rt, d, byte8)
                 } else {
                     mem::sdr(rt, d, byte8)
                 };
-                Self::write_width(bus, dword_addr, 8, merged);
+                self.write_width(bus, dword_addr, 8, merged);
                 WriteBack::None
             }
             // `MemOp::Unaligned` is only ever constructed for the eight
@@ -1059,7 +1074,7 @@ impl Pipeline {
                     return Err(Exception::AddressError { store: false });
                 }
                 let phys = self.translate_data(addr, false)?;
-                let raw = Self::read_width(bus, phys, kind.width());
+                let raw = self.read_width(bus, phys, kind.width());
                 Ok(WriteBack::Gpr {
                     dest,
                     value: kind.shape(raw),
@@ -1071,7 +1086,7 @@ impl Pipeline {
                     return Err(Exception::AddressError { store: true });
                 }
                 let phys = self.translate_data(addr, true)?;
-                Self::write_width(bus, phys, kind.width(), value);
+                self.write_width(bus, phys, kind.width(), value);
                 Ok(WriteBack::None)
             }
             // Load linked: an ordinary aligned load that also arms the link.
@@ -1085,14 +1100,14 @@ impl Pipeline {
                     return Err(Exception::AddressError { store: false });
                 }
                 let phys = self.translate_data(addr, false)?;
-                let raw = Self::read_width(bus, phys, kind.width());
+                let raw = self.read_width(bus, phys, kind.width());
                 self.ll_bit = true;
                 // "the value with the high-order four bits of the physical
                 // address PA(31:4) ... zero-extended" (UM Figure 5-17). Written
                 // via `set_hardware` because LLAddr is software-writable too:
                 // this is the hardware side effect, not an MTC0.
                 self.cop0
-                    .set_hardware(crate::cop0::reg::LL_ADDR, u64::from(phys >> 4));
+                    .set_hardware(crate::cop0::reg::LL_ADDR, u64::from(phys.addr >> 4));
                 Ok(WriteBack::Gpr {
                     dest,
                     value: kind.shape(raw),
@@ -1116,7 +1131,7 @@ impl Pipeline {
                 let stored = self.ll_bit;
                 if stored {
                     let phys = self.translate_data(addr, true)?;
-                    Self::write_width(bus, phys, kind.width(), value);
+                    self.write_width(bus, phys, kind.width(), value);
                 }
                 // Written whether or not the store happened. Note the link bit
                 // is deliberately NOT cleared here -- see `Pipeline::ll_bit`.
@@ -1142,57 +1157,25 @@ impl Pipeline {
                 let fr = fr_of(&self.cop0);
                 match op {
                     Op::Lwc1 => {
-                        let v = Self::read_width(bus, phys, 4) as u32;
+                        let v = self.read_width(bus, phys, 4) as u32;
                         self.fpr.write_s(ft, fr_of(&self.cop0), v);
                     }
                     Op::Ldc1 => {
-                        let v = Self::read_width(bus, phys, 8);
+                        let v = self.read_width(bus, phys, 8);
                         self.fpr.write_d(ft, fr, v);
                     }
                     Op::Swc1 => {
                         let v = self.fpr.read_s(ft, fr_of(&self.cop0));
-                        Self::write_width(bus, phys, 4, u64::from(v));
+                        self.write_width(bus, phys, 4, u64::from(v));
                     }
                     _ => {
                         let v = self.fpr.read_d(ft, fr);
-                        Self::write_width(bus, phys, 8, v);
+                        self.write_width(bus, phys, 8, v);
                     }
                 }
                 Ok(WriteBack::None)
             }
-            // CACHE: translate (so a TLB fault still raises) and do nothing else.
-            //
-            // The cache CONTENTS are not modelled, so invalidate and write-back
-            // have nothing to act on -- which is observationally sound only
-            // because no cache state exists to become stale. It stops being
-            // sound when DMA coherency arrives in Phase 5, and the ledger says
-            // so (D-5) rather than leaving it to be discovered.
-            //
-            // What matters today is that it does NOT raise: IPL3 and libdragon
-            // both issue CACHE, so a reserved-instruction exception here blocks
-            // every real ROM.
-            MemOp::Cache { addr, op } => {
-                // Only the ADDRESS-addressed operations translate. `op4..2`
-                // (UM Ch. 16, p. 404):
-                //
-                //   0..=2  Index_Invalidate / Index_Load_Tag / Index_Store_Tag
-                //          -- address the cache "at the index specified", so
-                //          they never consult the TLB and cannot fault.
-                //   3      Create_Dirty_Exclusive -- "set the cache block tag to
-                //          the specified physical address", so it does.
-                //   4..=6  Hit_* -- "if the cache block contains the specified
-                //          address", so they do.
-                //
-                // Translating unconditionally raises spurious TLB refills on
-                // `Index_*` ops against unmapped addresses, which is exactly
-                // what cache-init code does at boot: walk every index with an
-                // arbitrary base. An earlier revision of this comment described
-                // the distinction while the code ignored it.
-                if (op >> 2) >= 3 {
-                    self.translate_data(addr, false)?;
-                }
-                Ok(WriteBack::None)
-            }
+            MemOp::Cache { addr, op } => self.cache_op(bus, addr, op),
             // The unaligned family accesses the ALIGNED container holding `addr`
             // and merges, so it can never raise an address error -- but it CAN
             // still raise a TLB fault, which is why it is fallible.
@@ -1202,19 +1185,196 @@ impl Pipeline {
         }
     }
 
-    /// Read `width` big-endian bytes, right-justified.
+    /// `CACHE`: dispatch to the index- or address-addressed half.
     ///
-    /// Dispatches on width so 4- and 8-byte accesses go through [`Bus::read_u32`],
-    /// which `rustyn64-core` overrides with a fast RDRAM path. A byte loop would
-    /// issue 4-8x more bus calls on the *most common* operations, and memory
-    /// access is the hot path for a core targeting full speed
-    /// (`docs/performance.md`).
+    /// Only the ADDRESS-addressed operations translate. `op4..2`
+    /// (UM Ch. 16, p. 404):
+    ///
+    /// - `0..=2` `Index_Invalidate` / `Index_Load_Tag` / `Index_Store_Tag` —
+    ///   address the cache "at the index specified", so they never consult the
+    ///   TLB and cannot fault.
+    /// - `3` `Create_Dirty_Exclusive` — "set the cache block tag to the
+    ///   specified physical address", so it does.
+    /// - `4..=6` `Hit_*` — "if the cache block contains the specified address",
+    ///   so they do.
+    ///
+    /// Translating unconditionally raises spurious TLB refills on `Index_*` ops
+    /// against unmapped addresses, which is exactly what cache-init code does at
+    /// boot: walk every index with an arbitrary base. An earlier revision of
+    /// this comment described the distinction while the code ignored it.
+    ///
+    /// # Errors
+    ///
+    /// A TLB fault, on the address-addressed operations only.
+    fn cache_op<B: Bus>(&mut self, bus: &mut B, addr: u64, op: u8) -> Result<WriteBack, Exception> {
+        if (op >> 2) >= 3 {
+            let p = self.translate_data(addr, false)?;
+            self.cache_hit_op(bus, op, p.addr);
+        } else {
+            // An `Index_*` op indexes on the raw VIRTUAL address. That is not a
+            // shortcut around the untranslated case: the index lives in bits
+            // 13:5 (I) / 12:4 (D), and every segment's translation leaves those
+            // bits alone.
+            self.cache_index_op(bus, op, addr as u32);
+        }
+        Ok(WriteBack::None)
+    }
+
+    /// The index-addressed half of `CACHE` (`op4..2` in `0..=2`).
+    ///
+    /// `addr` is the *virtual* address: these operations select a line by index
+    /// and never translate. Bit 0 of `op` picks the cache.
+    fn cache_index_op<B: Bus>(&mut self, bus: &mut B, op: u8, addr: u32) {
+        let dcache = op & 1 == 1;
+        match (op >> 2, dcache) {
+            // Index_Invalidate (I) / Index_WriteBack_Invalidate (D).
+            //
+            // Both clear the valid bit and LEAVE THE TAG in place, which
+            // `Index_Load_Tag` then reports. Clearing the tag as well would look
+            // tidier and would be wrong: n64-systemtest asserts the PFN is
+            // unchanged across an invalidate.
+            (0, false) => self.icache.invalidate_index(addr),
+            (0, true) => {
+                if let Some(w) = self.dcache.flush_index(addr, true, false) {
+                    Self::push_line(bus, w.addr, &w.data);
+                }
+            }
+            // Index_Load_Tag -> COP0 TagLo. Written with `set_hardware` because
+            // this is the hardware side effect of CACHE, not an MTC0, and the
+            // register's software write mask must not apply to it.
+            (1, false) => {
+                let t = self.icache.load_tag(addr);
+                self.cop0
+                    .set_hardware(crate::cop0::reg::TAG_LO, u64::from(t));
+            }
+            (1, true) => {
+                let t = self.dcache.load_tag(addr);
+                self.cop0
+                    .set_hardware(crate::cop0::reg::TAG_LO, u64::from(t));
+            }
+            // Index_Store_Tag <- COP0 TagLo.
+            (2, false) => {
+                let t = self.cop0.read(crate::cop0::reg::TAG_LO) as u32;
+                self.icache.store_tag(addr, t);
+            }
+            (2, true) => {
+                let t = self.cop0.read(crate::cop0::reg::TAG_LO) as u32;
+                self.dcache.store_tag(addr, t);
+            }
+            _ => {}
+        }
+    }
+
+    /// The address-addressed half of `CACHE` (`op4..2` in `3..=6`).
+    ///
+    /// `addr` is PHYSICAL — the caller has already translated it, which is what
+    /// makes a TLB fault on these operations possible.
+    fn cache_hit_op<B: Bus>(&mut self, bus: &mut B, op: u8, addr: u32) {
+        let dcache = op & 1 == 1;
+        match (op >> 2, dcache) {
+            // Create_Dirty_Exclusive (D only): claim the line without a fill.
+            (3, true) => {
+                if let Some(w) = self.dcache.create_dirty_exclusive(addr) {
+                    Self::push_line(bus, w.addr, &w.data);
+                }
+            }
+            // Hit_Invalidate: only if the line is actually resident.
+            (4, false) => self.icache.hit_invalidate(addr),
+            (4, true) => {
+                if self.dcache.hits(addr) {
+                    self.dcache.flush_index(addr, true, false);
+                }
+            }
+            // Fill (I) — an unconditional line fill, no hit test.
+            (5, false) => self.icache_fill(bus, addr),
+            // Hit_WriteBack_Invalidate (D).
+            (5, true) => {
+                if self.dcache.hits(addr)
+                    && let Some(w) = self.dcache.flush_index(addr, true, false)
+                {
+                    Self::push_line(bus, w.addr, &w.data);
+                }
+            }
+            // Hit_WriteBack: the line stays resident, and stops being dirty.
+            (6, false) => {
+                if let Some(w) = self.icache.flush_hit(addr) {
+                    Self::push_line(bus, w.addr, &w.data);
+                }
+            }
+            (6, true) => {
+                if self.dcache.hits(addr)
+                    && let Some(w) = self.dcache.flush_index(addr, false, true)
+                {
+                    Self::push_line(bus, w.addr, &w.data);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Make the I-cache line covering `addr` resident.
+    fn icache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {
+        let base = addr & !(crate::cache::ICACHE_LINE - 1);
+        let mut data = [0u8; 32];
+        Self::pull_line(bus, base, &mut data);
+        self.icache.install(base, data);
+    }
+
+    /// Make the D-cache line covering `addr` resident, writing back whatever it
+    /// evicts.
+    fn dcache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {
+        let Some(evicted) = self.dcache.miss_plan(addr) else {
+            return;
+        };
+        if let Some(w) = evicted {
+            Self::push_line(bus, w.addr, &w.data);
+        }
+        let base = addr & !(crate::cache::DCACHE_LINE - 1);
+        let mut data = [0u8; 16];
+        Self::pull_line(bus, base, &mut data);
+        self.dcache.install(base, data);
+    }
+
+    /// Write a whole cache line out to the bus, a word at a time.
+    ///
+    /// Word-wide rather than byte-wide because [`Bus::read_u32`]/[`Bus::write_u32`]
+    /// are the calls `rustyn64-core` gives a fast RDRAM path; a byte loop would
+    /// issue four times the bus traffic on every fill and eviction, and a line
+    /// is always naturally aligned so the split is exact.
+    fn push_line<B: Bus>(bus: &mut B, addr: u32, data: &[u8]) {
+        for (k, w) in data.chunks_exact(4).enumerate() {
+            let word = u32::from_be_bytes([w[0], w[1], w[2], w[3]]);
+            bus.write_u32(addr.wrapping_add(k as u32 * 4), word);
+        }
+    }
+
+    /// Read a whole cache line from the bus into `data`.
+    fn pull_line<B: Bus>(bus: &mut B, addr: u32, data: &mut [u8]) {
+        for (k, w) in data.chunks_exact_mut(4).enumerate() {
+            let word = bus.read_u32(addr.wrapping_add(k as u32 * 4));
+            w.copy_from_slice(&word.to_be_bytes());
+        }
+    }
+
+    /// Read `width` big-endian bytes, right-justified, through the D-cache when
+    /// the access is cached.
+    ///
+    /// Dispatches on width so 4- and 8-byte *uncached* accesses go through
+    /// [`Bus::read_u32`], which `rustyn64-core` overrides with a fast RDRAM path.
+    /// A byte loop would issue 4-8x more bus calls on the *most common*
+    /// operations, and memory access is the hot path for a core targeting full
+    /// speed (`docs/performance.md`).
     ///
     /// Alignment is **not** rechecked here. `access` has already validated it
     /// against the specific [`crate::mem::LoadKind`]/[`crate::mem::StoreKind`],
     /// and the unaligned family passes an address it has aligned down itself.
     /// Duplicating the check would put the rule in two places, where it can drift.
-    fn read_width<B: Bus>(bus: &mut B, addr: u32, width: u64) -> u64 {
+    fn read_width<B: Bus>(&mut self, bus: &mut B, p: crate::addr::Physical, width: u64) -> u64 {
+        let addr = p.addr;
+        if p.cached == crate::addr::Cached::Yes {
+            self.dcache_fill(bus, addr);
+            return self.dcache.read(addr, width as usize);
+        }
         match width {
             1 => u64::from(bus.read_u8(addr)),
             2 => (u64::from(bus.read_u8(addr)) << 8) | u64::from(bus.read_u8(addr.wrapping_add(1))),
@@ -1228,10 +1388,28 @@ impl Pipeline {
         }
     }
 
-    /// Write the low `width` big-endian bytes of `value`.
+    /// Write the low `width` big-endian bytes of `value`, through the D-cache
+    /// when the access is cached.
+    ///
+    /// A cached store is a **write-allocate**: the line is filled first, then
+    /// modified and left dirty. The VR4300's D-cache has no write-around path,
+    /// so a partial store to an absent line must read the rest of it from memory
+    /// or the eventual write-back would push out fifteen bytes of nothing.
     ///
     /// Width-dispatched for the same reason as [`Pipeline::read_width`].
-    fn write_width<B: Bus>(bus: &mut B, addr: u32, width: u64, value: u64) {
+    fn write_width<B: Bus>(
+        &mut self,
+        bus: &mut B,
+        p: crate::addr::Physical,
+        width: u64,
+        value: u64,
+    ) {
+        let addr = p.addr;
+        if p.cached == crate::addr::Cached::Yes {
+            self.dcache_fill(bus, addr);
+            self.dcache.write(addr, width as usize, value);
+            return;
+        }
         match width {
             1 => bus.write_u8(addr, value as u8),
             2 => {
@@ -1497,8 +1675,10 @@ impl Pipeline {
             return;
         }
 
-        // TODO(T-11-003): fetch through the I-cache rather than straight off the
-        // bus, and charge the miss cost (14..=15 + M PCycles, UM Table 11-2).
+        // The fetch itself now goes through the I-cache (see below); what is
+        // still outstanding is the COST.
+        // TODO(T-11-003): charge the I-cache miss cost (14..=15 + M PCycles, UM
+        // Table 11-2) once `M` is measured -- accuracy-ledger C-1.
         // Every address handed to the Bus is PHYSICAL (`docs/cpu.md`); the
         // segment map is applied here, in the CPU, not by the Bus.
         // Instruction fetch goes through the micro-ITLB in front of the JTLB
@@ -1506,8 +1686,8 @@ impl Pipeline {
         // JTLB miss is an exception. Only the mapped segments involve either --
         // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
         let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let phys = match crate::addr::segment(pc, self.erl()) {
-            crate::addr::Segment::Direct { addr, .. } => addr,
+        let (phys, cached) = match crate::addr::segment(pc, self.erl()) {
+            crate::addr::Segment::Direct { addr, cached } => (addr, cached),
             crate::addr::Segment::Mapped => {
                 // The 3-PCycle penalty is "incurred when the micro-TLB is
                 // updated from the JTLB" (UM §4.6.2) -- so it is charged only
@@ -1519,7 +1699,14 @@ impl Pipeline {
                     self.stall_for(crate::tlb::ITLB_MISS_PCYCLES, Interlock::Itm);
                 }
                 match self.tlb.lookup(pc, asid, false) {
-                    Ok(t) => t.addr,
+                    Ok(t) => (
+                        t.addr,
+                        if t.uncached {
+                            crate::addr::Cached::No
+                        } else {
+                            crate::addr::Cached::Yes
+                        },
+                    ),
                     Err(f) => {
                         // An instruction fetch is a load, so TLBL never TLBS.
                         let exc = Self::tlb_exception(f, false);
@@ -1537,7 +1724,18 @@ impl Pipeline {
                 }
             }
         };
-        let word = bus.read_u32(phys);
+        // Fetch through the I-cache when the segment is cached. This is what
+        // makes an uncached patch to already-fetched code invisible until a
+        // CACHE invalidate -- the behaviour n64-systemtest's ICACHE group
+        // asserts, and the reason the cache is modelled at all.
+        let word = if cached == crate::addr::Cached::Yes {
+            if !self.icache.hits(phys) {
+                self.icache_fill(bus, phys);
+            }
+            self.icache.read_word(phys)
+        } else {
+            bus.read_u32(phys)
+        };
         // Decode here rather than at RF: a branch must be decoded before the
         // NEXT fetch, so that fetch can be marked as its delay slot.
         //
@@ -3172,6 +3370,24 @@ mod tests {
         Ram::new(alloc::vec![])
     }
 
+    /// Push the dirty D-cache line covering `vaddr` out to the bus.
+    ///
+    /// A store to a cached segment now lands in the write-back D-cache and RAM
+    /// does not see it until something forces it out. That is the whole point of
+    /// a write-back cache, and it is what real software does before handing a
+    /// buffer to DMA -- so a test that asserts on RAM without this would be
+    /// asserting the cache does not exist.
+    fn writeback<B: Bus>(p: &mut Pipeline, bus: &mut B, vaddr: u64) {
+        p.access(
+            bus,
+            MemOp::Cache {
+                addr: vaddr,
+                op: 25,
+            },
+        )
+        .expect("Hit_WriteBack on a mapped address cannot fault");
+    }
+
     /// Without a preceding `LL` the store must not happen, and `rt` must still
     /// be written — with 0. A `Store`-shaped implementation writes memory
     /// unconditionally; a `Load`-shaped one never writes `rt` on failure.
@@ -3242,6 +3458,7 @@ mod tests {
             )
             .expect("aligned");
         assert_eq!(wb, WriteBack::Gpr { dest: 9, value: 1 });
+        writeback(&mut p, &mut bus, 0x8000_0040);
         assert_eq!(bus.read_u32(0x40), 0xA5A5_A5A5, "the store happened");
     }
 
@@ -3371,6 +3588,7 @@ mod tests {
             },
         )
         .expect("aligned");
+        writeback(&mut p, &mut bus, 0x8000_0040);
         assert_eq!(bus.read_u32(0x40), u32::MAX);
         assert_eq!(bus.read_u32(0x44), u32::MAX, "all eight bytes, not four");
     }
@@ -5577,6 +5795,7 @@ mod tests {
             0x0123_4567_89AB_CDEF,
             "the double survived memory in the FR = 0 paired view"
         );
+        writeback(&mut p, &mut bus, 0x8000_0100);
         assert_eq!(
             bus.read_u32(0x100),
             0x0123_4567,
