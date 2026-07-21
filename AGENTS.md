@@ -79,7 +79,7 @@ executes anything. A green `cargo test` still does not mean a subsystem works �
 
 **Phase 1's exit criterion is not met.** The criterion is `Failed: 0` on the **CPU/COP0/TLB
 categories** (`to-dos/VERSION-PLAN.md` §v0.2.0) — *not* suite-wide. n64-systemtest currently
-reports **60 failing assertions in those categories**, against 473 suite-wide. The RSP's 291 are
+reports **53 failing assertions in those categories**, against 466 suite-wide. The RSP's 291 are
 explicitly **Phase 2's** criterion (§v0.3.0), and cart/PIF/RDP belong to later phases still.
 `docs/STATUS.md` said "CPU/COP0/TLB/RSP" for a while, which conflated the two — VERSION-PLAN is
 authoritative for cut criteria.

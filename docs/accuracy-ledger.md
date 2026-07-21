@@ -158,7 +158,7 @@ implementation choice here is treated as correct.
 
 | # | Question | What the manual says | Owner |
 | --- | --- | --- | --- |
-| U-1 | `MFC0`/`MTC0` on COP0 registers 7, 21–25, 31 | *"Reserved for future use"* (UM Table 1-2 p. 46) and nothing further — no read value, no write effect | Sprint 2 |
+| U-1 | Reserved COP0 registers 7, 21..=25, 31 | **RESOLVED — measured** — they are a shared write latch, see C-15 | resolved |
 | U-2 | `TLBP` low `Index` bits on a miss (we leave them **zero**) | Only that `Index.P` (bit 31) is set (UM §5.4.11 p. 158); the remaining bits are unstated | Sprint 2 |
 | U-3 | The N64's full `PRId` value | `Imp = 0x0B` for the VR4300 series; the `Rev` field is unstated and the manual warns against depending on it (UM §5.4.5 p. 151) | Sprint 2 |
 | U-4 | ~~Which `Int[4:0]` line the MI drives~~ | **RESOLVED** — `IP2`. Not in the CPU manual (board-level) nor in the N64brew mirror, but stated by libdragon: `#define C0_INTERRUPT_RCP C0_INTERRUPT_2` (`ref-proj/libdragon/include/cop0.h`), which also gives `IP3` = CART, `IP4` = PRENMI, `IP7` = timer. libdragon is public domain, so this is citable rather than merely observed | **closed** |
@@ -824,6 +824,43 @@ zero.
 forcing an odd index even as "a documented choice for an architecturally
 undefined case (UM Ch. 17), not a hardware fact". The choice was reasonable and
 the case is not undefined on this part — the suite defines it.
+
+### C-15 — the reserved COP0 registers are one shared write latch
+
+**Claim.** COP0 registers 7, 21..=25 and 31 are not storage. A write goes
+nowhere; a read returns the value of the most recent `MTC0`/`DMTC0` to **any**
+COP0 register.
+
+So writing register 7 and reading it back returns what was written — and the
+same sequence with *any other* COP0 write in between returns **that** value
+instead.
+
+**This resolves ledger U-1**, which recorded "discards writes and reads zero" as
+an arbitrary choice because the manual documents only an absence (UM Table 1-2,
+p. 46). It was a reasonable guess and it was wrong; n64-systemtest documents the
+behaviour in its own test comments and exercises it directly.
+
+**The oracle is built to defeat the obvious cheat.** It sweeps five written
+values against three interposed ones, precisely so an implementation that stores
+per-register and echoes the first value cannot pass. Our replacement test does
+the same in miniature: the second assertion is the one that distinguishes a
+latch from storage.
+
+### C-16 — `EntryLo0`/`EntryLo1` are writable to bit 29, not bit 25
+
+**Claim.** Both registers accept `0x3FFF_FFFF`. The architectural fields —
+PFN (25:6), C (5:3), D (2), V (1), G (0) — account only for bits 25:0, and the
+mask was set to that width. Bits 29:26 are writable too and read back exactly as
+written.
+
+**Evidence.** n64-systemtest writes a sweep including `0x0F000000` and
+`0xFFFFFFFF` and expects `value & 0x3FFF_FFFF` back for each
+(`tests/tlb/mod.rs`). Deriving the mask from the field diagram instead silently
+dropped four bits on every write-back.
+
+A reminder that a *field* table and a *writable-bits* mask are different
+documents: the first says what the hardware interprets, the second what it
+stores.
 
 ## 5. Deliberate deviations from hardware
 

@@ -9,6 +9,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.2.0 "Interpreter"` — the VR4300 (see
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — reserved COP0 registers are a shared write latch; `EntryLo` is 30 bits wide
+
+COP0 registers 7, 21..=25 and 31 are not storage: a write goes nowhere and a read returns the value
+of the most recent `MTC0`/`DMTC0` to **any** COP0 register. This replaces the guess recorded as
+accuracy-ledger **U-1** ("discards writes and reads zero"), which the manual's silence licensed and
+which n64-systemtest documents as wrong. Ledger **C-15**.
+
+`EntryLo0`/`EntryLo1` are writable to bit **29**, not bit 25. The architectural fields account only
+for bits 25:0, and the mask had been derived from them; bits 29:26 store and read back exactly as
+written. Ledger **C-16** — a field table and a writable-bits mask are different documents.
+
+**Phase 1's categories: 60 → 53.**
+
 ### Fixed — `FR = 0` addresses whole even registers, not FGR pairs
 
 With `Status.FR = 0` an FPR addresses **FGR `n & !1` in its entirety**; odd FGRs are unaddressable,
