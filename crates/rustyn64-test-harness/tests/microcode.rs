@@ -147,6 +147,9 @@ fn the_microcode_boots_to_its_idle_break() {
     /// below is only satisfied if `li $gp, 0` actually executed (not vacuously
     /// true because the register file starts zeroed).
     const GP_SENTINEL: u32 = 0xDEAD_BEEF;
+    /// The idle `break` sits at IMEM `0x14` (`rsp_queue.inc:403`); the PC parks
+    /// at the sequential address after it.
+    const IDLE_BREAK: u32 = 0x14;
 
     assert!(
         UCODE.len() >= IMEM_LMA,
@@ -184,7 +187,6 @@ fn the_microcode_boots_to_its_idle_break() {
     // rather than only `halted()` is what proves a real `break` — a `SET_HALT`
     // write halts without it — and pinning the exact PC ties the witness to the
     // documented idle target rather than "somewhere non-zero".
-    const IDLE_BREAK: u32 = 0x14; // the `break` at IMEM 0x14 (rsp_queue.inc:403)
     assert!(
         sys.bus.rsp.sp.halted() && sys.bus.rsp.sp.broke(),
         "the microcode must reach its idle `break` HALTED+BROKE — halted={}, broke={}, \
