@@ -73,8 +73,11 @@ copies a rectangle; `Load Block` (0x33) streams a linear run with the dxt odd-li
 
 - [ ] `Load Tile` copies the exact rectangle into TMEM at the tile's address and `line` stride,
       byte-for-byte against a hand-computed expectation.
-- [ ] `Load Block` streams `SH − SL` texels, applies the dxt odd-line 32-bit swap, and refuses a
-      load over 2048 texels (nothing written), matching the wiki's limit.
+- [ ] `Load Block` streams `SH − SL` texels and applies the dxt odd-line 32-bit swap. On a load
+      over 2048 texels it writes nothing: N64brew *…/Commands* §Load Block states such a load
+      "fail\[s\]" with nothing written into TMEM — this is the documented source, and the
+      over-limit path is asserted separately and re-checked against the fuzz oracle in Sprint 3
+      (if the hardware truly does a partial write, the fuzz result supersedes this).
 - [ ] Both update the descriptor's tile size as documented.
 - [ ] A property test: a Load Tile followed by reading TMEM at the mapped address round-trips the
       source bytes for 4/8/16/32-bit texel sizes.
@@ -95,8 +98,10 @@ document YUV16 (decode deferred if no oracle test needs it this sprint).
 
 **Acceptance criteria:**
 
-- [ ] `Load TLUT` writes `count` entries, each quadrupled, into the addressed high-TMEM region,
-      rejecting a base below word 0x100.
+- [ ] `Load TLUT` writes `SH − SL + 1` entries (an **inclusive** count — the typical
+      `(0, 0, count-1, 0)` gives `count` entries), each quadrupled, into the addressed high-TMEM
+      region, rejecting a base below word 0x100, and latches `(SL, TL, SH, TH)` into the tile
+      descriptor.
 - [ ] A `fetch_texel(tile, s, t) -> [u8; 4]` returns the correct RGBA8888 for each listed format,
       checked against hand-derived values (5→8 bit replication for RGBA16; CI4 uses the descriptor
       `palette` as the high half of the TLUT address).

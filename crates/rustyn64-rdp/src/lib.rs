@@ -1258,13 +1258,23 @@ mod tests {
     /// descriptor** and leaves the format/addressing fields alone.
     #[test]
     fn set_tile_size_decodes_coords() {
-        // SL=0x123 TL=0x045 | index=2 SH=0x678 TH=0x0AB
         let mut rdp = Rdp::new();
+        // Seed descriptor 2's addressing fields to non-zero first, so the
+        // preservation check is real: if Set Tile Size wrongly cleared them this
+        // catches it, whereas asserting `== 0` on a fresh descriptor could not.
+        rdp.set_tile(0x3570_3F00, 0x02A9_CD59); // index 2: format=3 size=2 line=0x1F addr=0x100
+        // SL=0x123 TL=0x045 | index=2 SH=0x678 TH=0x0AB
         rdp.set_tile_size(0x3212_3045, 0x0267_80AB);
         let t = rdp.tiles[2];
-        assert_eq!((t.sl, t.tl, t.sh, t.th), (0x123, 0x045, 0x678, 0x0AB));
-        assert_eq!(t.format, 0, "Set Tile Size does not touch format");
-        assert_eq!(t.line, 0, "nor line");
+        assert_eq!(
+            (t.sl, t.tl, t.sh, t.th),
+            (0x123, 0x045, 0x678, 0x0AB),
+            "coords updated"
+        );
+        assert_eq!(t.format, 3, "Set Tile Size preserves format");
+        assert_eq!(t.size, 2, "preserves size");
+        assert_eq!(t.line, 0x1F, "preserves line");
+        assert_eq!(t.tmem_addr, 0x100, "preserves tmem_addr");
     }
 
     /// **`Set Tile` preserves the tile-size coords** — the two commands write
