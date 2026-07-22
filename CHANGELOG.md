@@ -24,6 +24,11 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   three bits) and the two-word **Texture Rectangle** pair (`0x24`/`0x25`).
   Exhaustively unit-tested across the whole map, and a mixed-list walk asserts
   the decoder lands `DPC_CURRENT` exactly on `DPC_END`.
+- **Two stall conditions** keep the decoder off invalid data: a command is
+  consumed only once it is present in full (so an incrementally-advanced
+  `DPC_END` that lands mid-command waits for the rest rather than decoding
+  unwritten RDRAM), and `XBUS` mode (DMEM command source, not yet wired) stalls
+  rather than mis-reading RDRAM.
 
 ## [0.3.0] — 2026-07-22 — "Microcode"
 

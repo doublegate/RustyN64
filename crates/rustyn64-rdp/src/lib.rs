@@ -191,17 +191,33 @@ impl Rdp {
     ///
     /// Commands are read from RDRAM (the `XBUS` bit clear). The `XBUS`/DMEM
     /// command source is not yet wired: the `rdpq` microcode that drives us DMAs
-    /// its list to RDRAM, so the RDRAM path is the one exercised.
+    /// its list to RDRAM, so the RDRAM path is the one exercised. With `XBUS`
+    /// set the decoder **stalls** rather than mis-reading RDRAM as the command
+    /// stream — decoding DMEM commands out of RDRAM would treat parameter data
+    /// as opcodes and desync.
     // TODO(T-31-002): dispatch each decoded opcode to a handler — the sync
     // commands (raising the DP interrupt on `SYNC_FULL`), then the fill pipeline
     // and the full rasterizer into `color_image`.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
-        if self.status & DP_STATUS_FREEZE != 0 || self.cmd_current >= self.cmd_end {
+        // Frozen, empty FIFO, or the command source is DMEM (XBUS, not yet
+        // wired) — nothing to consume from RDRAM.
+        if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0
+            || self.cmd_current >= self.cmd_end
+        {
             return;
         }
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;
+        // Consume a command only once it is present in full. The `rdpq`
+        // microcode advances `DPC_END` incrementally as it fills the buffer, so
+        // `DPC_END` can land mid-command; consuming a partially-written
+        // multi-word primitive would decode against unwritten RDRAM. The guard
+        // above guarantees `cmd_current < cmd_end`, so the subtraction cannot
+        // underflow.
+        if self.cmd_end - self.cmd_current < len_bytes {
+            return;
+        }
         self.cmd_current = self.cmd_current.wrapping_add(len_bytes);
         self.commands_processed = self.commands_processed.wrapping_add(1);
     }
@@ -346,13 +362,14 @@ mod tests {
     }
     impl VideoBus for SliceBus {}
 
-    /// Append a command whose only meaningful content is its opcode (in bits
-    /// 61:56 of the first word); the remaining words are zero-filled. Its total
-    /// length is exactly what the decoder must recover from the opcode alone.
-    fn push_cmd(buf: &mut Vec<u8>, opcode: u8) {
-        let len_bytes = command::command_len_words(opcode) * 8;
+    /// Append a command: its opcode in bits 61:56 of the first word, then
+    /// `words` total 64-bit words with the remainder zero-filled. The word count
+    /// is supplied **explicitly by the caller**, independent of the production
+    /// decoder, so a walk over the buffer is a genuine check of
+    /// `command_len_words` rather than a tautology built from it.
+    fn push_cmd(buf: &mut Vec<u8>, opcode: u8, words: u32) {
         buf.extend_from_slice(&(u32::from(opcode) << 24).to_be_bytes());
-        for _ in 4..len_bytes {
+        for _ in 4..words * 8 {
             buf.push(0);
         }
     }
@@ -361,13 +378,21 @@ mod tests {
     /// list exercising all three length classes — a 1-word set-state, a 22-word
     /// shade+texture+z triangle, a no-op, a 2-word texture rectangle, and
     /// `Sync Full` — drains one command per tick and lands `DPC_CURRENT` exactly
-    /// on `DPC_END`. A wrong length anywhere would overshoot or stop short.
+    /// on `DPC_END`. The expected lengths are stated here from the N64brew
+    /// command map, so a wrong decoder length overshoots or stops short.
     #[test]
     fn decoder_consumes_each_command_whole_without_desync() {
-        let opcodes = [0x3F_u8, 0x0F, 0x00, 0x24, 0x29];
+        // (opcode, documented 64-bit-word length) — independent of the decoder.
+        let fixtures = [
+            (0x3F_u8, 1), // Set Color Image
+            (0x0F, 22),   // Fill Triangle (shade + texture + z)
+            (0x00, 1),    // No Operation
+            (0x24, 2),    // Texture Rectangle
+            (0x29, 1),    // Sync Full
+        ];
         let mut mem = Vec::new();
-        for &op in &opcodes {
-            push_cmd(&mut mem, op);
+        for &(op, words) in &fixtures {
+            push_cmd(&mut mem, op, words);
         }
         let total = u32::try_from(mem.len()).unwrap();
         let mut bus = SliceBus { mem };
@@ -390,12 +415,50 @@ mod tests {
     #[test]
     fn a_multiword_command_is_consumed_in_one_tick() {
         let mut mem = Vec::new();
-        push_cmd(&mut mem, 0x0E); // Fill Triangle (ST): 20 words
+        push_cmd(&mut mem, 0x0E, 20); // Fill Triangle (ST): 20 words
         let mut bus = SliceBus { mem };
         let mut rdp = Rdp::new();
         rdp.cmd_end = 20 * 8;
         rdp.tick(&mut bus);
         assert_eq!(rdp.cmd_current, 20 * 8, "whole 20-word triangle at once");
         assert_eq!(rdp.commands_processed, 1);
+    }
+
+    /// **A partially-written command is not consumed until it is complete.** If
+    /// `DPC_END` lands mid-command — as it does while the `rdpq` microcode fills
+    /// the buffer and advances `DPC_END` incrementally — the decoder stalls
+    /// rather than executing against unwritten RDRAM, then consumes the command
+    /// whole once the rest of its words arrive.
+    #[test]
+    fn a_partial_command_is_not_consumed_until_complete() {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, 0x0F, 22); // 22-word triangle
+        let mut bus = SliceBus { mem };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = 10 * 8; // DPC_END only reached word 10 of 22
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.cmd_current, 0, "stalled: partial command not consumed");
+        assert_eq!(rdp.commands_processed, 0);
+
+        rdp.cmd_end = 22 * 8; // the rest of the command arrives
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.cmd_current, 22 * 8, "consumed whole once complete");
+        assert_eq!(rdp.commands_processed, 1);
+    }
+
+    /// **XBUS mode reads commands from DMEM, which is not yet wired**, so the
+    /// decoder must not mis-read RDRAM as the command stream. With `XBUS` set it
+    /// stalls, leaving `DPC_CURRENT` and the counter untouched.
+    #[test]
+    fn xbus_mode_does_not_decode_rdram() {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, 0x3F, 1);
+        let mut bus = SliceBus { mem };
+        let mut rdp = Rdp::new();
+        rdp.status = DP_STATUS_XBUS;
+        rdp.cmd_end = 8;
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.cmd_current, 0, "XBUS: RDRAM not decoded");
+        assert_eq!(rdp.commands_processed, 0);
     }
 }

@@ -92,7 +92,22 @@ frozen, it reads the command word at `DPC_CURRENT` from RDRAM, decodes the opcod
 consumes one command per scheduler tick, so the FIFO drains gradually rather than
 in a burst. No opcode is dispatched to a handler yet — every command is
 recognised, its length consumed, and a retired-work counter (`commands_processed`)
-incremented; the rasterizer arrives in the following tickets. Length rules
+incremented; the rasterizer arrives in the following tickets.
+
+Two stall conditions keep the decoder from acting on data that is not a valid
+command yet:
+
+- **A command is consumed only once it is present in full.** The `rdpq`
+  microcode advances `DPC_END` incrementally as it fills the buffer, so `DPC_END`
+  can land mid-command; if `DPC_END - DPC_CURRENT` is less than the decoded
+  length the decoder stalls, then consumes the command whole once the rest of its
+  words arrive. Consuming a partially-written multi-word primitive would decode
+  against unwritten RDRAM.
+- **`XBUS` stalls the decoder.** When `DPC_STATUS.XBUS` selects DMEM as the
+  command source (not yet wired), the decoder does not fall back to reading
+  RDRAM — that would treat DMEM-bound parameter data as RDRAM opcodes and desync.
+
+Length rules
 (`command::command_len_words`, provenance N64brew *Reality Display
 Processor/Commands*):
 
