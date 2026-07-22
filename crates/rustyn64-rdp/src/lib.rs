@@ -385,7 +385,7 @@ mod tests {
         // (opcode, documented 64-bit-word length) — independent of the decoder.
         let fixtures = [
             (0x3F_u8, 1), // Set Color Image
-            (0x0F, 22),   // Fill Triangle (shade + texture + z)
+            (0x0F, 22),   // Fill Triangle (STZ) = shade + texture + z
             (0x00, 1),    // No Operation
             (0x24, 2),    // Texture Rectangle
             (0x29, 1),    // Sync Full
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn a_multiword_command_is_consumed_in_one_tick() {
         let mut mem = Vec::new();
-        push_cmd(&mut mem, 0x0E, 20); // Fill Triangle (shade + texture): 20 words
+        push_cmd(&mut mem, 0x0E, 20); // Fill Triangle (ST) = shade + texture: 20 words
         let mut bus = SliceBus { mem };
         let mut rdp = Rdp::new();
         rdp.cmd_end = 20 * 8;
