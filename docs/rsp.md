@@ -202,10 +202,30 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 ### The accumulator and the multiply family (partly implemented, Sprint 2)
 
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
-accumulating forms, `VSAR` and the six bitwise operations execute. `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS` execute too. `VLT`/`VEQ`/`VNE`/`VGE` and `VMRG` execute too. `VCL`/`VCH`/`VCR`,
-`VRNDN`/`VRNDP` and `VMULQ` do not yet, and report
-so rather than writing a wrong result — `vu_compute` returns `false` and the
-instruction retires inertly.
+accumulating forms, `VSAR` and the six bitwise operations execute, as do
+`VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS`, the `VLT`/`VEQ`/`VNE`/`VGE` compares,
+`VMRG`, `VRNDN`/`VRNDP`, `VMULQ`, `VMACQ` and the three clip compares
+`VCL`/`VCH`/`VCR`.
+
+**The clip compares carried two findings the earlier reverted attempt left
+behind:**
+
+- **Derive from n64-systemtest's reference, not ares — they differ.** In `VCH`'s
+  *else* branch, the suite sets `VCOH = (diff != 0)` with **no** second term,
+  while ares has `result != 0 && vs != ~vt`. The suite is the oracle, and
+  `vch_lane` follows it.
+- **Snapshot the sources before writing any lane (read-before-write).** The case
+  that defeated the first attempt was `V6,V6,V7[Q0]` — a quarter-broadcast where
+  `vd == vt`. Broadcast lane 3 reads `vt` lane 2, which lane 2's iteration had
+  already overwritten because it shares the register with `vd`. The hardware
+  reads the whole (broadcast) `vt` and `vs` first; `clip` now builds `sv`/`tv`
+  arrays before the write loop. The same hazard was latent in `vu_compute`'s main
+  loop and `vrnd` (it surfaced as `VNE …[Q0]`, the `(e=H1)` multiplies, and the
+  "overwrite itself with element specifier" `VRND` cases); both now snapshot
+  too. A model-based unit test could not have caught any of this — validating a
+  hand-transcribed instruction against a hand-transcribed *model* of the same
+  source shares the bug; only the systemtest exercised the destructive
+  broadcast.
 
 **`VMACF` adds no rounding constant**, where `VMULF` adds `0x8000`. It is the
 most confusable difference in the family and the accumulator is the only place
@@ -304,6 +324,29 @@ unequal operands and wrong on equal ones.
 than another producer. Every one of these clears `VCO` wholesale, so a second
 compare cannot inherit the first's flags.
 
+### VRNDN / VRNDP
+
+Unlike every other computational opcode, these **read the accumulator** and do
+not read a `vs` register at all: the low bit of the `vs` *field* number is an
+immediate that selects whether the sign-extended `vt` element is shifted left 16
+before use. The product is conditionally added to the 48-bit accumulator by its
+**sign** — `VRNDP` adds when it is non-negative, `VRNDN` when it is negative —
+the sum is sign-clipped to 48 bits, and `vd` is the signed-clamped middle. Both
+are pinned against the oracle's full result-plus-three-slices vectors.
+
+`VMULQ` places a 32-bit product in the accumulator's **middle** 32 bits with the
+low 16 zeroed, rounds only *negative* products by `+31`, and produces a result
+that is `>>1`, signed-clamped, then **masked to clear its low 4 bits**. Pinned
+against the oracle's full vectors.
+
+`VMACQ` re-rounds the accumulator's magnitude toward a multiple of `0x20_0000`
+with no operands, then produces `acc >> 17` saturated and masked to clear its
+low 4 bits. It was derived from n64-systemtest's own `simulate`; that reference
+and ares **agree** once `should_change` (bit 21 clear) is seen to exclude the
+`[0x20_0000, 0x3F_FFFF]` band where the two *looked* to differ — an earlier note
+here recorded them as conflicting, which a careful read disproved. `ACC_LO`
+survives because the nudge sits at bit 21, above it.
+
 `VABS` applies the **sign of `vs` to `vt`** — it is not the absolute value of
 either operand, and a zero in `vs` yields zero regardless of `vt`.
 
@@ -314,18 +357,27 @@ Encoding: `LWC2`/`SWC2` | `base` (25..21) | `vt` (20..16) | `opcode` (15..11) |
 scaled by the access size, not the 16-bit immediate an ordinary load carries —
 reading `imm` whole gives a wildly wrong address.
 
-`element` is a **byte** index naming the first byte the operation touches, so a
-non-zero element moves *fewer* bytes rather than shifting a full-width window.
+`element` is a **byte** index naming the first byte the operation touches.
 
 Implemented: the scalar group (`LBV`/`LSV`/`LLV`/`LDV` and their stores, sizes
-1/2/4/8 with the offset scaled to match), `LQV`/`SQV`, and `LRV`/`SRV`.
+1/2/4/8 with the offset scaled to match), `LQV`/`SQV`, `LRV`/`SRV`, and `SWV`.
 
-**The register side never wraps.** n64-systemtest states it outright: *"the
-element specifier specifies the starting element. If there isn't enough room
-after e, there is no wrap-around but the number of bytes loaded is reduced."*
-Masking the byte index with 15 — the obvious reading of a 16-byte register —
-silently wraps to byte 0 and corrupts the far end of the vector. The **DMEM**
-side does wrap, and only for `LSV`/`LLV`/`LDV`: *"only three instructions can
+**Loads and stores treat the register end differently, and this is the single
+most common transcription error in the family.** n64-systemtest states it
+outright (`op_vector_stores.rs:17`): *"the element specifier specifies the
+starting element. If there isn't enough room after e, there is wrap-around inside
+of the register (this is **different from loads**)."*
+
+- **Loads** do not wrap: a non-zero element moves *fewer* bytes rather than
+  shifting a full-width window (`min(size, 16 - e)`). Masking the register byte
+  with 15 instead silently wraps to byte 0 and corrupts the far end.
+- **Stores** *do* wrap the register index (`& 15`) and always move the full
+  width; the element rotates which register byte feeds each DMEM byte, it does
+  not shorten the transfer. Applying the load rule to a store drops the wrapped
+  tail — the `SQV [e=1]` oracle case left `mem[0x100F]` holding stale data where
+  the hardware writes register byte 0.
+
+The **DMEM** side wraps only for `LSV`/`LLV`/`LDV`: *"only three instructions can
 overflow"*, the rest stay inside 16 bytes by alignment.
 
 `LQV` and `LRV` are the pair that reconstructs a misaligned 128-bit load, and
@@ -335,10 +387,40 @@ end** of the register — 8 bytes go to `VPR[8..15]`, not `VPR[0..7]`. Writing
 them from byte 0, the natural mirror of `LQV`, puts the right-hand half in the
 left-hand slots and the pair stops reconstructing anything.
 
-Not yet implemented, and reported rather than approximated: the packed
-`LPV`/`LUV`/`SPV`/`SUV`, the strided `LHV`/`LFV`/`SHV`/`SFV`, and the
-transposing `LTV`/`STV`/`SWV`. (`LWV` does not exist on hardware — the suite
-records that it *"does nothing"*.)
+The **packed** family — `LPV`/`LUV` loads, `SPV`/`SUV` stores — moves one byte
+per lane. The loads place each byte in the lane's high portion (`LPV` at bit 15,
+`LUV` one bit lower at 14); the element field rotates which DMEM byte each lane
+reads, wrapping in 16. The stores are **not** a mirror of the loads: each of
+eight consecutive bytes comes from either a lane's high byte or its value
+shifted down 7, chosen by a `(offset & 15) < 8` test, with `SPV` and `SUV`
+taking opposite branches — a split that only appears once the element field
+pushes an offset past 8, and the store address is **not** aligned where the load
+address is.
+
+`LHV`/`SHV` access every *other* DMEM byte, one per lane at bit 14; the load's
+DMEM index folds in the element field, the store's does not (ares SHV vs LHV).
+
+`LTV`/`STV` are the **transpose**: they touch a whole group of eight registers
+(`vt & ~7`), moving one lane into or out of each with a rotating byte offset and
+wraparound inside the 16-byte window, forming a diagonal. Modelled in a scratch
+script and cross-checked before implementation.
+
+`LFV` is the "complicated" fractional load, and the one place ares and the suite
+reference **disagree** — for `e != 0`, ares uses `mis - e` for lane 0 where the
+suite uses `mis + e`. It is derived from **n64-systemtest's own reference**, not
+ares, since the suite is the oracle. It computes eight lanes from a fixed offset
+pattern and then writes only the register bytes `[e, e + min(8, 16 - e))`,
+leaving the rest untouched.
+
+`SFV` writes four bytes at DMEM stride 4, their source lanes chosen by an
+`e`-dependent table (also from the suite reference); for any `e` **not** in the
+table it writes a real **zero**, not a wrapped lane — the "even 0 for some E"
+case the suite warns about.
+
+`SWV` stores all 16 register bytes, but the DMEM target rotates within a 16-byte
+window anchored to the **8-byte**-aligned base (`misalignment` is `& 7`, not `&
+15`), with the source index wrapping as the element advances. `LWV` does not
+exist on hardware — the suite records that it *"does nothing"*.
 
 ### Vector load/store
 
