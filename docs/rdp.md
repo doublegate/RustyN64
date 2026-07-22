@@ -84,6 +84,34 @@ commands, and the `END_VALID`/`CMD_BUSY`/`PIPE_BUSY`/`CBUF_READY` read bits.
 These need a running transfer to have meaning, so they arrive with the FIFO
 drain and the rasterizer — not with this register file.
 
+### The command decoder (T-31-001)
+
+`Rdp::tick` now drains the FIFO: while `DPC_CURRENT < DPC_END` and the DP is not
+frozen, it reads the command word at `DPC_CURRENT` from RDRAM, decodes the opcode
+(bits 61:56), and advances `DPC_CURRENT` by the command's **full length**. It
+consumes one command per scheduler tick, so the FIFO drains gradually rather than
+in a burst. No opcode is dispatched to a handler yet — every command is
+recognised, its length consumed, and a retired-work counter (`commands_processed`)
+incremented; the rasterizer arrives in the following tickets. Length rules
+(`command::command_len_words`, provenance N64brew *Reality Display
+Processor/Commands*):
+
+- Every command is **one 64-bit word** except the two below — including the
+  no-operation ranges (`0x00`–`0x07`, `0x10`–`0x23`, `0x31`), so an
+  unimplemented or reserved opcode consumes exactly its header and the pointer
+  stays aligned.
+- **Fill Triangle** (`0x08`–`0x0F`): a 4-word base plus optional coefficient
+  blocks. The opcode's low three bits *are* the enable flags — bit 2 shade
+  (+8 words), bit 1 texture (+8), bit 0 z-buffer (+2), appended in that order —
+  the same bits 58/57/56 the command word also names. So `0x08` is 4 words and
+  `0x0F` is 22.
+- **Texture Rectangle** / **Flip** (`0x24`/`0x25`): 2 words.
+
+Commands are read from RDRAM (the `XBUS` bit clear); the `XBUS`/DMEM command
+source is not yet wired, because the `rdpq` microcode that drives the DP today
+DMAs its list to RDRAM. Honouring the DMEM source (per *Edge cases* below)
+arrives with a bus seam for DMEM reads.
+
 ## State
 
 Beyond the skeleton FIFO pointers + image bases (the rest is marked TODO):

@@ -7,9 +7,11 @@
 //! per-pixel pipeline (the ParaLLEl-RDP / angrylion reference), not a
 //! triangle-list HLE.
 //!
-//! This is a **skeleton**: the actual rasterizer (edge walking, the texture
-//! engine with TMEM, the combiner/blender, dithering, coverage AA) is the major
-//! roadmap phase and is left behind a no-op step with a TODO marker.
+//! The DP FIFO is **decoded but not yet rasterized**: [`Rdp::tick`] recognises
+//! every command `0x00`–`0x3F` and consumes each one's full length (via
+//! [`command`]), so the stream stays aligned — but no primitive is drawn yet.
+//! The rasterizer proper (edge walking, the texture engine with TMEM, the
+//! combiner/blender, dithering, coverage AA) is the rest of this roadmap phase.
 //!
 //! Part of the one-directional chip-crate graph (see `docs/architecture.md`):
 //! this crate depends on **exactly one** chip crate, `rustyn64-cart`, purely for
@@ -24,6 +26,8 @@
 #![allow(clippy::missing_const_for_fn)]
 
 extern crate alloc;
+
+pub mod command;
 
 pub use rustyn64_cart::RdramBus;
 
@@ -84,8 +88,15 @@ pub struct Rdp {
     pub color_image: u32,
     /// Z-image base in RDRAM (`SET_Z_IMAGE`).
     pub z_image: u32,
-    // TODO(T-RDP-01): TMEM (4 KiB), the 8 tile descriptors, other-modes bits,
-    // the combiner + blend-mode latches, the scissor rect — see `docs/rdp.md`.
+    /// Count of commands the FIFO decoder has retired. A **retired-work tally**,
+    /// not a cycle position: nothing schedules against it (the residue
+    /// invariant governs only `master_ticks`), it is derived from the command
+    /// stream, and it exists so tests can witness that the decoder consumed the
+    /// number of commands it should. Wraps rather than panicking.
+    pub commands_processed: u64,
+    // TODO(T-31-002): the sync commands + DP interrupt, then TMEM (4 KiB), the 8
+    // tile descriptors, other-modes bits, the combiner + blend-mode latches, the
+    // scissor rect, and per-opcode dispatch — see `docs/rdp.md`.
 }
 
 impl Rdp {
@@ -166,21 +177,33 @@ impl Rdp {
         }
     }
 
-    /// Advance the RDP by one rasterization step (drain part of the DP FIFO).
+    /// Advance the RDP by one rasterization step: decode the command at
+    /// `DPC_CURRENT` and consume its whole length, so the FIFO drains one
+    /// command per scheduler tick rather than in a burst.
     ///
-    /// Hot path: keep allocation-free. No-op while the FIFO is empty or the DP
-    /// is frozen (`DPC_STATUS.FREEZE`).
+    /// Hot path: keep allocation-free. No-op while the FIFO is empty
+    /// (`DPC_CURRENT >= DPC_END`) or the DP is frozen (`DPC_STATUS.FREEZE`).
+    ///
+    /// The command length comes from [`command::command_len_words`], which
+    /// recognises every opcode `0x00`–`0x3F`; consuming the exact length is what
+    /// keeps a multi-word primitive from desyncing the pointer. Today the
+    /// decoder only advances and counts — no primitive is rasterized yet.
+    ///
+    /// Commands are read from RDRAM (the `XBUS` bit clear). The `XBUS`/DMEM
+    /// command source is not yet wired: the `rdpq` microcode that drives us DMAs
+    /// its list to RDRAM, so the RDRAM path is the one exercised.
+    // TODO(T-31-002): dispatch each decoded opcode to a handler — the sync
+    // commands (raising the DP interrupt on `SYNC_FULL`), then the fill pipeline
+    // and the full rasterizer into `color_image`.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
         if self.status & DP_STATUS_FREEZE != 0 || self.cmd_current >= self.cmd_end {
             return;
         }
-        // TODO(v0.x): LLE RDP rasterizer — parse the next DP command word at
-        // `cmd_current` via `bus.rdram_read_u32`, dispatch (triangle / rectangle
-        // / sync / set-mode), edge-walk the primitive, run the texture+combiner+
-        // blender per-pixel pipeline into the `color_image`, and raise the DP
-        // interrupt on `SYNC_FULL` via `bus.raise_dp_interrupt()`.
-        let _ = bus;
-        self.cmd_current = self.cmd_current.wrapping_add(8);
+        let word0_hi = bus.rdram_read_u32(self.cmd_current);
+        let opcode = command::opcode_of(word0_hi);
+        let len_bytes = command::command_len_words(opcode) * 8;
+        self.cmd_current = self.cmd_current.wrapping_add(len_bytes);
+        self.commands_processed = self.commands_processed.wrapping_add(1);
     }
 }
 
@@ -193,6 +216,7 @@ pub const fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     struct NullBus;
     impl RdramBus for NullBus {
@@ -302,5 +326,76 @@ mod tests {
         let mut bus = NullBus;
         rdp.tick(&mut bus);
         assert_eq!(rdp.cmd_current, 0x10, "frozen: CURRENT unchanged");
+    }
+
+    /// A bus backed by a byte buffer, so the decoder can walk a real command
+    /// list out of "RDRAM" and we can assert the pointer lands exactly on
+    /// `DPC_END`.
+    struct SliceBus {
+        mem: Vec<u8>,
+    }
+    impl RdramBus for SliceBus {
+        fn rdram_read(&self, addr: u32) -> u8 {
+            self.mem.get(addr as usize).copied().unwrap_or(0)
+        }
+        fn rdram_write(&mut self, addr: u32, val: u8) {
+            if let Some(b) = self.mem.get_mut(addr as usize) {
+                *b = val;
+            }
+        }
+    }
+    impl VideoBus for SliceBus {}
+
+    /// Append a command whose only meaningful content is its opcode (in bits
+    /// 61:56 of the first word); the remaining words are zero-filled. Its total
+    /// length is exactly what the decoder must recover from the opcode alone.
+    fn push_cmd(buf: &mut Vec<u8>, opcode: u8) {
+        let len_bytes = command::command_len_words(opcode) * 8;
+        buf.extend_from_slice(&(u32::from(opcode) << 24).to_be_bytes());
+        for _ in 4..len_bytes {
+            buf.push(0);
+        }
+    }
+
+    /// **The decoder consumes every command whole and never desyncs.** A mixed
+    /// list exercising all three length classes — a 1-word set-state, a 22-word
+    /// shade+texture+z triangle, a no-op, a 2-word texture rectangle, and
+    /// `Sync Full` — drains one command per tick and lands `DPC_CURRENT` exactly
+    /// on `DPC_END`. A wrong length anywhere would overshoot or stop short.
+    #[test]
+    fn decoder_consumes_each_command_whole_without_desync() {
+        let opcodes = [0x3F_u8, 0x0F, 0x00, 0x24, 0x29];
+        let mut mem = Vec::new();
+        for &op in &opcodes {
+            push_cmd(&mut mem, op);
+        }
+        let total = u32::try_from(mem.len()).unwrap();
+        let mut bus = SliceBus { mem };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = total;
+
+        let mut ticks = 0u32;
+        while rdp.cmd_current < rdp.cmd_end && ticks < 1000 {
+            rdp.tick(&mut bus);
+            ticks += 1;
+        }
+        assert_eq!(rdp.cmd_current, total, "consumed exactly to DPC_END");
+        assert_eq!(ticks, 5, "one command retired per scheduler tick");
+        assert_eq!(rdp.commands_processed, 5, "every command counted");
+    }
+
+    /// **A multi-word primitive is consumed in a single tick**, by its full
+    /// decoded length — an unimplemented command advances the FIFO past all its
+    /// words rather than treating each word as a fresh command.
+    #[test]
+    fn a_multiword_command_is_consumed_in_one_tick() {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, 0x0E); // Fill Triangle (ST): 20 words
+        let mut bus = SliceBus { mem };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = 20 * 8;
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.cmd_current, 20 * 8, "whole 20-word triangle at once");
+        assert_eq!(rdp.commands_processed, 1);
     }
 }
