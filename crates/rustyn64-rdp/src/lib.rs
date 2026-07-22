@@ -645,4 +645,39 @@ mod tests {
         rdp.tick(&mut bus);
         assert_eq!(rdp.stall, 9, "unfrozen: countdown resumes");
     }
+
+    /// **A preceding stall delays the `Sync Full` interrupt.** With `Sync Pipe`
+    /// (50 GCLK) queued before `Sync Full`, the DP interrupt stays low for all
+    /// 50 stall ticks and rises only once the stall drains and `Sync Full` is
+    /// dispatched — the stall-before-interrupt ordering the dispatch doc claims.
+    /// (Were the stall gate absent, `Sync Full` would dispatch on the very next
+    /// tick and the interrupt would rise during the loop.)
+    #[test]
+    fn a_preceding_stall_delays_the_sync_full_interrupt() {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, OP_SYNC_PIPE, 1);
+        push_cmd(&mut mem, OP_SYNC_FULL, 1);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = 16;
+
+        rdp.tick(&mut bus); // consume Sync Pipe -> stall = 50
+        assert_eq!(rdp.stall, SYNC_PIPE_GCLK);
+        assert!(!bus.dp_raised, "no interrupt while the stall is set");
+
+        for i in 0..SYNC_PIPE_GCLK {
+            rdp.tick(&mut bus);
+            assert!(!bus.dp_raised, "interrupt still low during stall tick {i}");
+        }
+        // Stall drained: the next tick dispatches Sync Full and raises.
+        rdp.tick(&mut bus);
+        assert!(
+            bus.dp_raised,
+            "interrupt raised only after the stall drains"
+        );
+        assert_eq!(rdp.commands_processed, 2);
+    }
 }
