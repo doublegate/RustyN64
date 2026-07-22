@@ -125,9 +125,14 @@ emits through the DPC path.
       the kernel reaches its idle/`BREAK` site (not merely "the loop returned") —
       within a bounded step budget that fails loudly if exceeded.
 - [ ] The emitted RDP command words are captured from the DPC seam over an
-      **exact, documented range** (`DPC_START..DPC_END` in the output buffer), not
-      a heuristic scan; execution is witnessed (`DPC_END` advanced past
-      `DPC_START`, `BROKE` set) before the capture is trusted.
+      **exact, documented range**: `[DPC_START, DPC_END)` — **half-open**, since
+      `DPC_END` is the *exclusive* end bound (N64brew *Interface* §DPC_END;
+      `docs/rdp.md`), so the byte length is `DPC_END - DPC_START`. Not a heuristic
+      scan; execution is witnessed (`DPC_END` advanced past `DPC_START`, `BROKE`
+      set) before the capture is trusted. The literal command-list/scratch
+      addresses, operand bytes, and initial `DPC_*` values are authored **as part
+      of this ticket** (they follow from the assembled rdpq encoding) and pinned
+      in the fixture then — not invented here in the plan.
 
 **Dependencies:** T-24-002
 **Reference:** `src/rdpq/rsp_rdpq.S` (the `0xC0`–`0xFF` command table, `RDPQ_Send`
