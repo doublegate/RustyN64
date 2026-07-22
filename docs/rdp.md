@@ -34,6 +34,7 @@ pub struct Rdp {
     pub status: u32,      // DPC_STATUS (FREEZE, START/END-valid, XBUS, ...)
     pub color_image: u32, // SET_COLOR_IMAGE base in RDRAM
     pub z_image: u32,     // SET_Z_IMAGE base in RDRAM
+    pub commands_processed: u64, // retired-work tally (decoded commands)
 }
 impl Rdp {
     pub const fn dpc_read(&self, offset: u32) -> u32;      // 0x0410_0000 block
