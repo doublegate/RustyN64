@@ -204,23 +204,28 @@ to 0 and overflow to 65535 using a 15-bit threshold (`ref-docs/research-report.m
 `VMULF`/`VMULU`, `VMUDL`/`VMUDM`/`VMUDN`/`VMUDH`, the six `VMAC*`/`VMAD*`
 accumulating forms, `VSAR` and the six bitwise operations execute, as do
 `VADD`/`VSUB`/`VADDC`/`VSUBC`/`VABS`, the `VLT`/`VEQ`/`VNE`/`VGE` compares,
-`VMRG`, `VRNDN`/`VRNDP`, `VMULQ` and `VMACQ`. Only the three clip compares
-`VCL`/`VCH`/`VCR` do not yet, and they report so rather than writing a wrong
-result — `vu_compute` returns `false` and the instruction retires inertly.
+`VMRG`, `VRNDN`/`VRNDP`, `VMULQ`, `VMACQ` and the three clip compares
+`VCL`/`VCH`/`VCR`.
 
-**Two findings for whoever implements `VCL`/`VCH`/`VCR`** (a full attempt was
-made and reverted because it produced wrong results on broadcast-element cases —
-better none than subtly wrong):
+**The clip compares carried two findings the earlier reverted attempt left
+behind:**
 
 - **Derive from n64-systemtest's reference, not ares — they differ.** In `VCH`'s
   *else* branch, the suite sets `VCOH = (diff != 0)` with **no** second term,
-  while ares has `result != 0 && vs != ~vt`. The suite is the oracle.
-- **A model-based unit test of a coupled instruction is circular.** Validating a
-  hand-transcribed `VCL`/`VCH`/`VCR` against a hand-transcribed *model* of the
-  same source passes even when both share a bug; the systemtest caught what the
-  unit test could not. Pin these against the suite's published output (the
-  failing case was `V6,V6,V7[Q0]` — a quarter-broadcast with `vd == vs`), not
-  against a re-derivation.
+  while ares has `result != 0 && vs != ~vt`. The suite is the oracle, and
+  `vch_lane` follows it.
+- **Snapshot the sources before writing any lane (read-before-write).** The case
+  that defeated the first attempt was `V6,V6,V7[Q0]` — a quarter-broadcast where
+  `vd == vt`. Broadcast lane 3 reads `vt` lane 2, which lane 2's iteration had
+  already overwritten because it shares the register with `vd`. The hardware
+  reads the whole (broadcast) `vt` and `vs` first; `clip` now builds `sv`/`tv`
+  arrays before the write loop. The same hazard was latent in `vu_compute`'s main
+  loop and `vrnd` (it surfaced as `VNE …[Q0]`, the `(e=H1)` multiplies, and the
+  "overwrite itself with element specifier" `VRND` cases); both now snapshot
+  too. A model-based unit test could not have caught any of this — validating a
+  hand-transcribed instruction against a hand-transcribed *model* of the same
+  source shares the bug; only the systemtest exercised the destructive
+  broadcast.
 
 **`VMACF` adds no rounding constant**, where `VMULF` adds `0x8000`. It is the
 most confusable difference in the family and the accumulator is the only place
@@ -352,18 +357,27 @@ Encoding: `LWC2`/`SWC2` | `base` (25..21) | `vt` (20..16) | `opcode` (15..11) |
 scaled by the access size, not the 16-bit immediate an ordinary load carries —
 reading `imm` whole gives a wildly wrong address.
 
-`element` is a **byte** index naming the first byte the operation touches, so a
-non-zero element moves *fewer* bytes rather than shifting a full-width window.
+`element` is a **byte** index naming the first byte the operation touches.
 
 Implemented: the scalar group (`LBV`/`LSV`/`LLV`/`LDV` and their stores, sizes
-1/2/4/8 with the offset scaled to match), `LQV`/`SQV`, and `LRV`/`SRV`.
+1/2/4/8 with the offset scaled to match), `LQV`/`SQV`, `LRV`/`SRV`, and `SWV`.
 
-**The register side never wraps.** n64-systemtest states it outright: *"the
-element specifier specifies the starting element. If there isn't enough room
-after e, there is no wrap-around but the number of bytes loaded is reduced."*
-Masking the byte index with 15 — the obvious reading of a 16-byte register —
-silently wraps to byte 0 and corrupts the far end of the vector. The **DMEM**
-side does wrap, and only for `LSV`/`LLV`/`LDV`: *"only three instructions can
+**Loads and stores treat the register end differently, and this is the single
+most common transcription error in the family.** n64-systemtest states it
+outright (`op_vector_stores.rs:17`): *"the element specifier specifies the
+starting element. If there isn't enough room after e, there is wrap-around inside
+of the register (this is **different from loads**)."*
+
+- **Loads** do not wrap: a non-zero element moves *fewer* bytes rather than
+  shifting a full-width window (`min(size, 16 - e)`). Masking the register byte
+  with 15 instead silently wraps to byte 0 and corrupts the far end.
+- **Stores** *do* wrap the register index (`& 15`) and always move the full
+  width; the element rotates which register byte feeds each DMEM byte, it does
+  not shorten the transfer. Applying the load rule to a store drops the wrapped
+  tail — the `SQV [e=1]` oracle case left `mem[0x100F]` holding stale data where
+  the hardware writes register byte 0.
+
+The **DMEM** side wraps only for `LSV`/`LLV`/`LDV`: *"only three instructions can
 overflow"*, the rest stay inside 16 bytes by alignment.
 
 `LQV` and `LRV` are the pair that reconstructs a misaligned 128-bit load, and
@@ -403,8 +417,10 @@ leaving the rest untouched.
 table it writes a real **zero**, not a wrapped lane — the "even 0 for some E"
 case the suite warns about.
 
-Not yet implemented, and reported rather than approximated: `SWV`. `LWV` does
-not exist on hardware — the suite records that it *"does nothing"*.
+`SWV` stores all 16 register bytes, but the DMEM target rotates within a 16-byte
+window anchored to the **8-byte**-aligned base (`misalignment` is `& 7`, not `&
+15`), with the source index wrapping as the element advances. `LWV` does not
+exist on hardware — the suite records that it *"does nothing"*.
 
 ### Vector load/store
 

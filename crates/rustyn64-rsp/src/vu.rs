@@ -350,6 +350,13 @@ impl Rsp {
             self.vrnd(op == 0x02, element, vs, vt, vd);
             return true;
         }
+        // The clip compares VCL/VCH/VCR (0x24/0x25/0x26) read the whole
+        // VCO/VCC/VCE set and are the one place ares and the suite reference
+        // diverge (VCH else-branch VCOH). Derived from n64-systemtest.
+        if matches!(op, 0x24..=0x26) {
+            self.clip(op, element, vs, vt, vd);
+            return true;
+        }
         // VMACQ (0x0B): re-round the accumulator's magnitude toward a multiple
         // of 0x20_0000, no operands. Transcribed from n64-systemtest's
         // `simulate`; ares agrees once `should_change` gates out the range where
@@ -366,9 +373,17 @@ impl Rsp {
         // instruction that leaves VCC alone entirely (VMRG does).
         let mut wrote_vcc = false;
         let mut compare_flags = 0u16;
+        // Snapshot both source vectors before writing any lane. The hardware
+        // reads the whole (broadcast) `vt` and `vs` first; a lane-by-lane loop
+        // that reads and writes in step corrupts a broadcast read when
+        // `vd == vs` or `vd == vt` (a later lane broadcasts from a lane an
+        // earlier iteration already overwrote). The oracle exercises exactly
+        // this: `VNE V6,V6,V7[Q0]` and the `(e=H1)`/"overwrite itself" cases.
+        let sv: [u16; 8] = core::array::from_fn(|l| self.vu_regs[vs & 31][l]);
+        let tv: [u16; 8] = core::array::from_fn(|l| self.vt_lane(vt, element, l));
         for lane in 0..8 {
-            let s = self.vu_regs[vs & 31][lane];
-            let t = self.vt_lane(vt, element, lane);
+            let s = sv[lane];
+            let t = tv[lane];
             let ss = i64::from(s.cast_signed());
             let ts = i64::from(t.cast_signed());
             let su = i64::from(s);
@@ -616,8 +631,11 @@ impl Rsp {
     /// accumulator is written back.
     fn vrnd(&mut self, positive: bool, element: u32, vs_field: usize, vt: usize, vd: usize) {
         let shift = vs_field & 1 != 0;
-        for lane in 0..8 {
-            let mut product = i64::from(self.vt_lane(vt, element, lane).cast_signed());
+        // Snapshot `vt` first: `VRNDP/N V6,V6[...]` overwrites its own source,
+        // and a broadcast read of an already-written lane would be corrupt.
+        let tv: [u16; 8] = core::array::from_fn(|l| self.vt_lane(vt, element, l));
+        for (lane, &tl) in tv.iter().enumerate() {
+            let mut product = i64::from(tl.cast_signed());
             if shift {
                 product <<= 16;
             }
@@ -627,6 +645,131 @@ impl Rsp {
             }
             self.set_acc(lane, acc);
             self.vu_regs[vd & 31][lane] = Self::clamp_signed(acc >> 16);
+        }
+    }
+
+    /// The clip compares `VCL` (0x24), `VCH` (0x25), `VCR` (0x26).
+    ///
+    /// The most flag-entangled VU instructions: they read and write `VCO`,
+    /// `VCC` and `VCE` together, per lane. Transcribed from **n64-systemtest's
+    /// reference**, which diverges from ares in `VCH`'s else branch (the suite's
+    /// `VCOH` is just `diff != 0`; ares adds `&& vs != ~vt`).
+    ///
+    /// **Inputs are snapshotted before any write.** With `vd == vt` and a
+    /// broadcast element, a lane can read a `vt` lane a *later*-indexed lane has
+    /// not yet reached — but an *earlier* one may already have overwritten if
+    /// the reads and writes interleave. Hardware reads the whole (broadcast)
+    /// `vt` and `vs` first; so does this. The failing oracle case that forced
+    /// this was `V6,V6,V7[Q0]`.
+    fn clip(&mut self, op: u32, element: u32, vs: usize, vt: usize, vd: usize) {
+        let sv: [u16; 8] = core::array::from_fn(|l| self.vu_regs[vs & 31][l]);
+        let tv: [u16; 8] = core::array::from_fn(|l| self.vt_lane(vt, element, l));
+        for lane in 0..8 {
+            let s = sv[lane];
+            let t = tv[lane];
+            let ss = s.cast_signed();
+            let ts = t.cast_signed();
+            let out = match op {
+                0x25 => self.vch_lane(lane, s, t, ss, ts),
+                0x26 => self.vcr_lane(lane, s, t, ss, ts),
+                _ => self.vcl_lane(lane, s, t),
+            };
+            self.set_acc_low(lane, out);
+            self.vu_regs[vd & 31][lane] = out;
+        }
+        if op != 0x25 {
+            self.vu_ctrl.vco = 0;
+            self.vu_ctrl.vce = 0;
+        }
+    }
+
+    const fn vco_l(&self, n: usize) -> bool {
+        (self.vu_ctrl.vco >> n) & 1 != 0
+    }
+    const fn vco_h(&self, n: usize) -> bool {
+        (self.vu_ctrl.vco >> (n + 8)) & 1 != 0
+    }
+    const fn vcc_l(&self, n: usize) -> bool {
+        (self.vu_ctrl.vcc >> n) & 1 != 0
+    }
+    const fn vcc_h(&self, n: usize) -> bool {
+        (self.vu_ctrl.vcc >> (n + 8)) & 1 != 0
+    }
+    const fn vce_bit(&self, n: usize) -> bool {
+        (self.vu_ctrl.vce >> n) & 1 != 0
+    }
+    const fn set_flag(reg: &mut u16, bit: usize, v: bool) -> bool {
+        if v {
+            *reg |= 1 << bit;
+        } else {
+            *reg &= !(1 << bit);
+        }
+        v
+    }
+    const fn set_vce(reg: &mut u8, bit: usize, v: bool) {
+        if v {
+            *reg |= 1 << bit;
+        } else {
+            *reg &= !(1 << bit);
+        }
+    }
+
+    fn vch_lane(&mut self, n: usize, s: u16, t: u16, ss: i16, ts: i16) -> u16 {
+        if (ss ^ ts) < 0 {
+            let r = ss.wrapping_add(ts);
+            Self::set_flag(&mut self.vu_ctrl.vcc, n, r <= 0);
+            Self::set_flag(&mut self.vu_ctrl.vcc, n + 8, ts < 0);
+            Self::set_flag(&mut self.vu_ctrl.vco, n, true);
+            Self::set_flag(&mut self.vu_ctrl.vco, n + 8, r != 0 && s != (t ^ 0xFFFF));
+            Self::set_vce(&mut self.vu_ctrl.vce, n, r == -1);
+            if r <= 0 { t.wrapping_neg() } else { s }
+        } else {
+            let r = ss.wrapping_sub(ts);
+            Self::set_flag(&mut self.vu_ctrl.vcc, n, ts < 0);
+            Self::set_flag(&mut self.vu_ctrl.vcc, n + 8, r >= 0);
+            Self::set_flag(&mut self.vu_ctrl.vco, n, false);
+            // Suite: else-branch VCOH is `diff != 0` alone (ares adds a term).
+            Self::set_flag(&mut self.vu_ctrl.vco, n + 8, r != 0);
+            Self::set_vce(&mut self.vu_ctrl.vce, n, false);
+            if r >= 0 { t } else { s }
+        }
+    }
+
+    fn vcl_lane(&mut self, n: usize, s: u16, t: u16) -> u16 {
+        if self.vco_l(n) {
+            if self.vco_h(n) {
+                if self.vcc_l(n) { t.wrapping_neg() } else { s }
+            } else {
+                let sum = s.wrapping_add(t);
+                let carry = u32::from(s) + u32::from(t) != u32::from(sum);
+                let v = if self.vce_bit(n) {
+                    sum == 0 || !carry
+                } else {
+                    sum == 0 && !carry
+                };
+                Self::set_flag(&mut self.vu_ctrl.vcc, n, v);
+                if v { t.wrapping_neg() } else { s }
+            }
+        } else if self.vco_h(n) {
+            if self.vcc_h(n) { t } else { s }
+        } else {
+            let v = i32::from(s) - i32::from(t) >= 0;
+            Self::set_flag(&mut self.vu_ctrl.vcc, n + 8, v);
+            if v { t } else { s }
+        }
+    }
+
+    fn vcr_lane(&mut self, n: usize, s: u16, t: u16, ss: i16, ts: i16) -> u16 {
+        if (ss ^ ts) < 0 {
+            Self::set_flag(&mut self.vu_ctrl.vcc, n + 8, ts < 0);
+            let v = i32::from(ss) + i32::from(ts) < 0;
+            Self::set_flag(&mut self.vu_ctrl.vcc, n, v);
+            if v { !t } else { s }
+        } else {
+            Self::set_flag(&mut self.vu_ctrl.vcc, n, ts < 0);
+            let v = i32::from(ss) - i32::from(ts) >= 0;
+            Self::set_flag(&mut self.vu_ctrl.vcc, n + 8, v);
+            if v { t } else { s }
         }
     }
 
@@ -1098,24 +1241,28 @@ impl Rsp {
             0x00..=0x03 => {
                 let size = 1usize << op;
                 let addr = rs.wrapping_add_signed(Self::sext7(offset) * size.cast_signed() as i32);
-                // **The register side does not wrap.** n64-systemtest states it
-                // outright: "the element specifier specifies the starting
-                // element. If there isn't enough room after e, there is no
-                // wrap-around but the number of bytes loaded is reduced."
+                // **Loads and stores treat the register end differently** --
+                // n64-systemtest says so outright (op_vector_stores.rs:17):
+                // "the element specifier specifies the starting element. If
+                // there isn't enough room after e, there is wrap-around inside
+                // of the register (this is *different from loads*)".
                 //
-                // Masking the byte index with 15 instead -- the obvious reading
-                // of a 16-byte register -- silently wraps back to byte 0 and
-                // corrupts the far end of the vector. The DMEM side *does* wrap,
-                // and only for this group: "only three instructions can
-                // overflow ...: LSV, LLV, LDV".
-                let size = core::cmp::min(size, 16 - element);
-                for i in 0..size {
-                    let byte = element + i;
-                    let at = addr.wrapping_add(i as u32);
-                    if store {
+                // LOAD: no wrap; a short tail past byte 15 simply reduces the
+                // count ("only LSV/LLV/LDV can overflow"). STORE: the register
+                // index wraps (`& 15`) and the full width always moves -- the
+                // element rotates the source, it does not shorten the transfer.
+                if store {
+                    for i in 0..size {
+                        let byte = (element + i) & 15;
+                        let at = addr.wrapping_add(i as u32);
                         let v = self.vu_byte(vt, byte);
                         self.dmem_write_pub(at, v);
-                    } else {
+                    }
+                } else {
+                    let size = core::cmp::min(size, 16 - element);
+                    for i in 0..size {
+                        let byte = element + i;
+                        let at = addr.wrapping_add(i as u32);
                         let v = self.dmem_read_pub(at);
                         self.set_vu_byte(vt, byte, v);
                     }
@@ -1129,7 +1276,16 @@ impl Rsp {
             0x04 => {
                 let addr = rs.wrapping_add_signed(Self::sext7(offset) * 16);
                 let end = addr | 15;
-                let size = core::cmp::min(end - addr, 15 - element as u32);
+                // The transfer runs to the 16-byte boundary. On a STORE that
+                // count is `16 - (addr & 15)` regardless of the element (the
+                // element only rotates the wrapped source); on a LOAD the
+                // element shortens it, since loads do not wrap (see the scalar
+                // group above and op_vector_stores.rs:17).
+                let size = if store {
+                    end - addr
+                } else {
+                    core::cmp::min(end - addr, 15 - element as u32)
+                };
                 for i in 0..=size {
                     let byte = (element + i as usize) & 15;
                     let at = addr.wrapping_add(i);
@@ -1157,19 +1313,27 @@ impl Rsp {
                 let end = rs.wrapping_add_signed(Self::sext7(offset) * 16);
                 let addr = end & !15;
                 let n = (end & 15) as usize;
-                if element < n {
+                if store {
+                    // SRV: the `n` bytes from the boundary up to `end`, pulled
+                    // from the register starting at `16 - n` and wrapping (`&
+                    // 15`). The element rotates the source; unlike the load it
+                    // does not shorten the transfer (op_vector_stores.rs:191).
+                    for i in 0..n {
+                        let byte = (element + 16 - n + i) & 15;
+                        let at = addr.wrapping_add(i as u32);
+                        let v = self.vu_byte(vt, byte);
+                        self.dmem_write_pub(at, v);
+                    }
+                } else if element < n {
+                    // LRV: loads do not wrap, so the element shortens the count
+                    // and shifts the destination toward the register's far end.
                     let count = n - element;
                     let dest_base = 16 - n + element;
                     for i in 0..count {
                         let byte = dest_base + i;
                         let at = addr.wrapping_add(i as u32);
-                        if store {
-                            let v = self.vu_byte(vt, byte);
-                            self.dmem_write_pub(at, v);
-                        } else {
-                            let v = self.dmem_read_pub(at);
-                            self.set_vu_byte(vt, byte, v);
-                        }
+                        let v = self.dmem_read_pub(at);
+                        self.set_vu_byte(vt, byte, v);
                     }
                 }
                 true
@@ -1179,7 +1343,7 @@ impl Rsp {
             // registers (`vt & ~7`), moving one lane into or out of each with
             // rotating byte offsets and wraparound inside a 16-byte window. They
             // do not fit the single-register loop above, so they have their own
-            // handler. LFV/SFV (0x09) and SWV (0x0A) are still not implemented.
+            // handler. LFV/SFV (0x09) and SWV (0x0A) are handled below.
             0x0B => {
                 let addr = Self::base_16(rs, offset);
                 if store {
@@ -1202,6 +1366,22 @@ impl Rsp {
             // actual zero, which a table-less implementation gets wrong.
             0x09 => {
                 self.sfv(Self::base_16(rs, offset), vt, element);
+                true
+            }
+            // SWV store. All 16 bytes leave the register, but the DMEM target
+            // rotates within a 16-byte window anchored to the *8-byte*-aligned
+            // base -- `misalignment` is `& 7`, not `& 15`. The source index
+            // wraps with the element (op_vector_stores.rs:353).
+            0x0A if store => {
+                let ea = rs.wrapping_add_signed(Self::sext7(offset) * 16);
+                let base = ea & !7;
+                let mis = ea & 7;
+                for i in 0..16u32 {
+                    let at = base.wrapping_add((mis + i) & 15);
+                    let byte = (element + i as usize) & 15;
+                    let v = self.vu_byte(vt, byte);
+                    self.dmem_write_pub(at, v);
+                }
                 true
             }
             _ => false,
@@ -2598,6 +2778,58 @@ mod transpose_tests {
         let expected: [u8; 16] = [
             0x00, 0x01, 0x12, 0x13, 0x24, 0x25, 0x36, 0x37, 0x48, 0x49, 0x5A, 0x5B, 0x6C, 0x6D,
             0x7E, 0x7F,
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(rsp.dmem[i], *want, "DMEM byte {i}");
+        }
+    }
+}
+
+/// Store-side register wrap. Loads shorten on a non-zero element; **stores wrap
+/// the register index and move the full width** (`op_vector_stores.rs:17`). The
+/// expected DMEM below is computed by hand from that rule, not from the code, so
+/// it fails if the store silently adopts the load's shortening behaviour.
+#[cfg(test)]
+mod store_wrap_tests {
+    use super::*;
+
+    fn seeded() -> Rsp {
+        let mut rsp = Rsp::new();
+        // Register 1, byte b = 0xA0 + b: every byte distinct so a wrap shows.
+        for b in 0..16usize {
+            rsp.set_vu_byte(1, b, 0xA0 + b as u8);
+        }
+        rsp
+    }
+
+    /// **`SQV [e=1]` on an aligned address writes 16 bytes, the last wrapped.**
+    /// Bytes 1..15 land at DMEM 0..14; byte 0 wraps to DMEM 15. The load rule
+    /// (`16 - e = 15` bytes) would leave DMEM 15 untouched.
+    #[test]
+    fn sqv_wraps_the_register_tail() {
+        let mut rsp = seeded();
+        rsp.set_su(0, 0);
+        assert!(rsp.vector_mem(true, 0x04, 0, 1, 1, 0));
+        let expected: [u8; 16] = [
+            0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
+            0xAF, 0xA0,
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(rsp.dmem[i], *want, "DMEM byte {i}");
+        }
+    }
+
+    /// **`SWV` rotates all 16 bytes within the window anchored to the 8-byte
+    /// base.** With `ea = 3`, base is `0` and `misalignment` is `3`, so byte `i`
+    /// lands at DMEM `(3 + i) & 15`; the last three wrap to DMEM 0..2.
+    #[test]
+    fn swv_rotates_within_the_eight_byte_window() {
+        let mut rsp = seeded();
+        rsp.set_su(2, 3);
+        assert!(rsp.vector_mem(true, 0x0A, 2, 1, 0, 0));
+        let expected: [u8; 16] = [
+            0xAD, 0xAE, 0xAF, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA,
+            0xAB, 0xAC,
         ];
         for (i, want) in expected.iter().enumerate() {
             assert_eq!(rsp.dmem[i], *want, "DMEM byte {i}");
