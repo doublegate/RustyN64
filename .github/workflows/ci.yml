@@ -164,6 +164,19 @@ jobs:
       # also catches a ROM that slipped in via an earlier commit.
       - run: bash scripts/check_no_roms.sh
 
+  microcode-blob:
+    name: microcode blob integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # The vendored rdpq microcode is committed as a generated blob (assembled
+      # from third_party/libdragon-rsp/ with the mips64-elf toolchain). This
+      # toolchain-free gate catches a corrupted or hand-edited blob by checking
+      # it against its committed checksum. Full source->blob reassembly is the
+      # local assemble.sh step (see third_party/libdragon-rsp/NOTICE.md).
+      - run: bash scripts/check_microcode_blob.sh
+
   no-conflict-markers:
     name: no conflict markers
     runs-on: ubuntu-latest
