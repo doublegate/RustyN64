@@ -103,9 +103,8 @@ fn the_entry_point_is_real_code_and_the_data_section_is_populated() {
         UCODE[start + 2],
         UCODE[start + 3],
     ]);
-    const ADDIU: u32 = 0x09; // MIPS I-type opcode
-    const GP: u32 = 28; // $gp
-    let li_gp_0 = (ADDIU << 26) | (GP << 16); // addiu $gp, $zero, 0
+    // `addiu $gp, $zero, 0`: MIPS I-type opcode 0x09, rt = $gp (28), rs/imm 0.
+    let li_gp_0 = (0x09_u32 << 26) | (28_u32 << 16);
     assert_eq!(
         entry, li_gp_0,
         "_start must open with `li $gp, 0` ({li_gp_0:#010x}); got {entry:#010x}"
