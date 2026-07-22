@@ -231,16 +231,21 @@ fn the_kernel_dmas_and_dispatches_a_command_queue() {
     use rustyn64_core::System;
     use rustyn64_core::rsp::sp;
 
-    /// DMEM offsets of the queue pointer and the in-DMEM command ring (from the
-    /// symbol map: `RSPQ_RDRAM_PTR`, `RSPQ_DMEM_BUFFER`).
+    // DMEM offsets from the committed symbol map (`microcode/symbols.txt`):
+    // `RSPQ_RDRAM_PTR` (`rsp_queue.inc:355`, read at `:410`) and the command ring
+    // `RSPQ_DMEM_BUFFER` (`:362`, the DMAIn target at `:420`/`:434`).
     const RSPQ_RDRAM_PTR: usize = 0xe0;
     const RSPQ_DMEM_BUFFER: usize = 0xe8;
-    /// `SP_STATUS` write bits: `CLR_HALT` (un-halt) and set signal 7 = `SIG_MORE`.
+    // `SP_STATUS` write bits (`sp::write_status`): `CLR_HALT` (bit 0), and set
+    // signal 7 = `SIG_MORE` (read bit 0x4000, checked at `rsp_queue.inc:398`).
     const CLR_HALT: u32 = 1 << 0;
     const SET_SIG_MORE: u32 = 1 << 24;
     /// Where the fixture queue lives in RDRAM, and the marker in its word 1.
     const QUEUE_ADDR: u32 = 0x2000;
     const MARKER: u32 = 0xDEAD_BEEF;
+    /// A DMEM-ring sentinel distinct from `MARKER` and 0, so the post-run check
+    /// proves the DMA *overwrote* it rather than reading a pre-existing value.
+    const RING_SENTINEL: u32 = 0x1234_5678;
     /// The idle `break` parks the PC at 0x18 (see the boot-to-idle test).
     const IDLE_PC: u32 = 0x18;
     const MAX_STEPS: usize = 600;
@@ -255,6 +260,10 @@ fn the_kernel_dmas_and_dispatches_a_command_queue() {
     sys.bus.rdram[qa..qa + 4].copy_from_slice(&0u32.to_be_bytes());
     sys.bus.rdram[qa + 4..qa + 8].copy_from_slice(&MARKER.to_be_bytes());
     sys.bus.rsp.dmem[RSPQ_RDRAM_PTR..RSPQ_RDRAM_PTR + 4].copy_from_slice(&QUEUE_ADDR.to_be_bytes());
+    // Pre-seed the ring word the DMA must overwrite, so the marker landing there
+    // is provably the DMA's doing, not a leftover zero or coincidence.
+    sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 4..RSPQ_DMEM_BUFFER + 8]
+        .copy_from_slice(&RING_SENTINEL.to_be_bytes());
 
     // Un-halt AND set SIG_MORE so the entry takes `wakeup`, not the idle break.
     sys.bus.rsp.sp.set_pc(0);
@@ -268,26 +277,33 @@ fn the_kernel_dmas_and_dispatches_a_command_queue() {
         sys.bus.rsp_tick();
         steps += 1;
     }
-
     assert!(
-        sys.bus.rsp.sp.broke(),
-        "the kernel must return to its idle break (broke={}, halted={}, pc={:#x}, steps={steps})",
-        sys.bus.rsp.sp.broke(),
+        steps < MAX_STEPS,
+        "the kernel timed out after {MAX_STEPS} steps (never halted, PC={:#x})",
+        sys.bus.rsp.sp.pc()
+    );
+
+    // Completion: HALTED *and* BROKE — the kernel reached its idle `break`, not a
+    // bare halt — parked at the idle PC.
+    assert!(
+        sys.bus.rsp.sp.halted() && sys.bus.rsp.sp.broke(),
+        "the kernel must halt at its idle break — halted={}, broke={}, pc={:#x}",
         sys.bus.rsp.sp.halted(),
+        sys.bus.rsp.sp.broke(),
         sys.bus.rsp.sp.pc()
     );
     assert_eq!(sys.bus.rsp.sp.pc(), IDLE_PC, "returned to the idle break");
 
-    // The DMA must have physically moved the queue into the DMEM ring — the
-    // marker at word 1 is what the immediate-break path (no DMA) would leave zero.
-    let dmaed = u32::from_be_bytes([
-        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 4],
-        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 5],
-        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 6],
-        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 7],
-    ]);
+    // The `wakeup` DMA must have physically overwritten the ring sentinel with
+    // the queue's word-1 marker — the immediate-break path (T-24-002) never DMAs.
+    let dmaed = u32::from_be_bytes(
+        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 4..RSPQ_DMEM_BUFFER + 8]
+            .try_into()
+            .unwrap(),
+    );
     assert_eq!(
         dmaed, MARKER,
-        "the `wakeup` DMA must have moved the queue into RSPQ_DMEM_BUFFER"
+        "the `wakeup` DMA must have moved the queue into RSPQ_DMEM_BUFFER \
+         (found {dmaed:#010x}, sentinel was {RING_SENTINEL:#010x})"
     );
 }
