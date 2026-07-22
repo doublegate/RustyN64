@@ -285,7 +285,7 @@ fn the_kernel_dmas_and_dispatches_a_command_queue() {
         steps += 1;
     }
     assert!(
-        steps < MAX_STEPS,
+        sys.bus.rsp.sp.halted(),
         "the kernel timed out after {MAX_STEPS} steps (never halted, PC={:#x})",
         sys.bus.rsp.sp.pc()
     );
@@ -432,7 +432,7 @@ fn the_microcode_emits_an_rdp_command_through_the_dpc_seam() {
         steps += 1;
     }
     assert!(
-        steps < MAX_STEPS,
+        sys.bus.rsp.sp.halted(),
         "the kernel timed out after {MAX_STEPS} steps (PC={:#x})",
         sys.bus.rsp.sp.pc()
     );
@@ -562,7 +562,7 @@ fn the_microcode_generates_a_set_fill_color_command() {
         steps += 1;
     }
     assert!(
-        steps < MAX_STEPS,
+        sys.bus.rsp.sp.halted(),
         "timed out (PC={:#x})",
         sys.bus.rsp.sp.pc()
     );
