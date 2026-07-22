@@ -9,6 +9,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — VI framebuffer scan-out (Phase 3, T-31-004 part 2)
+
+- **`Bus::scanout` converts the framebuffer to a presentable RGBA8 frame.** It
+  reads `VI_ORIGIN`/`VI_WIDTH`/`VI_CTRL` and the active height from `VI_V_VIDEO`,
+  and converts **16-bit RGBA5551** (5→8-bit channel expansion, 1-bit alpha to
+  0/255) and **32-bit RGBA8888** (direct copy); a blanked VI (`TYPE == 0`) scans
+  out nothing. This is what turns the FILL pipeline's pixels into a picture.
+- **Scope:** a 1:1 scan — `VI_X_SCALE`/`VI_Y_SCALE` resampling and the
+  AA/divot/de-dither post-filters are deferred (open residual R-5), and there is
+  no per-frame driver yet (the scheduler tick that calls it lands with
+  `V_CURRENT`). Byte-for-byte unit-tested at 16- and 32-bit; the 5→8 expansion is
+  mutation-checked.
+
 ### Added — the VI register file (Phase 3, T-31-004 part 1)
 
 - **The Video Interface register block is implemented** (`rustyn64_core::vi::Vi`,

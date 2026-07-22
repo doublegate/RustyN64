@@ -24,7 +24,15 @@ use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
 use rustyn64_rsp::Rsp;
 
-use crate::vi::Vi;
+use crate::vi::{self, Vi};
+
+/// Expand a 5-bit colour channel to 8 bits, replicating the high bits into the
+/// low so 0x1F maps to 0xFF (not 0xF8) — the standard RGBA5551 → RGBA8 widening.
+/// Masks to 5 bits first, so an out-of-range argument cannot overflow the shift.
+const fn expand5(v5: u8) -> u8 {
+    let v = v5 & 0x1F;
+    (v << 3) | (v >> 2)
+}
 
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
@@ -403,6 +411,65 @@ impl Bus {
         if self.vi.write(addr >> 2, val) {
             self.rcp.mi_intr.vi = false;
         }
+    }
+
+    /// Scan the framebuffer out into `out` as RGBA8, returning the active
+    /// `(width, height)` — the presentable frame the VI would send to the DAC.
+    ///
+    /// Reads `VI_ORIGIN`/`VI_WIDTH`/`VI_CTRL` and derives the height from the
+    /// active region `VI_V_VIDEO` (`(V_END − V_START)` half-lines → lines).
+    /// Pixel formats (`VI_CTRL.TYPE`): 2 = 16-bit RGBA5551 (each 5-bit channel
+    /// expanded to 8, the 1-bit alpha to 0/255), 3 = 32-bit RGBA8888 (a direct
+    /// copy). `TYPE` 0/1 is blank — returns `(0, 0)` and writes nothing, the
+    /// caller keeps a black frame.
+    ///
+    /// Returns `(0, 0)` and writes nothing when the VI is blanked, the width or
+    /// height is zero, or `out` is smaller than `width * height * 4` — a caller
+    /// that gets a non-zero size can trust the whole frame was written.
+    ///
+    /// **Scope:** a 1:1 scan (no `VI_X_SCALE`/`VI_Y_SCALE` resampling) and no
+    /// AA/divot/de-dither post-filter — those are later VI work, recorded as
+    /// open residual R-5 in `docs/accuracy-ledger.md`. Byte-exact for the direct
+    /// framebuffer copy, which is what the FILL pipeline produces.
+    #[must_use]
+    pub fn scanout(&self, out: &mut [u8]) -> (u32, u32) {
+        let bpp = match self.vi.read(vi::VI_CTRL) & 0x3 {
+            2 => 2u32, // 16-bit RGBA5551
+            3 => 4,    // 32-bit RGBA8888
+            _ => return (0, 0),
+        };
+        let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
+        let width = self.vi.read(vi::VI_WIDTH) & 0xFFF;
+        let v_video = self.vi.read(vi::VI_V_VIDEO);
+        let height = ((v_video & 0x3FF).saturating_sub((v_video >> 16) & 0x3FF)) / 2;
+        if width == 0 || height == 0 {
+            return (0, 0);
+        }
+        // Refuse an undersized destination up front rather than write a
+        // truncated frame and claim full dimensions; this also keeps the
+        // per-pixel loop bounds-check-free.
+        if out.len() < (width as usize) * (height as usize) * 4 {
+            return (0, 0);
+        }
+        let stride = width * bpp;
+        for y in 0..height {
+            for x in 0..width {
+                let src = origin.wrapping_add(y * stride).wrapping_add(x * bpp);
+                let dst = ((y * width + x) * 4) as usize;
+                if bpp == 2 {
+                    let px = (u16::from(self.rdram_read(src)) << 8)
+                        | u16::from(self.rdram_read(src.wrapping_add(1)));
+                    out[dst] = expand5(((px >> 11) & 0x1F) as u8);
+                    out[dst + 1] = expand5(((px >> 6) & 0x1F) as u8);
+                    out[dst + 2] = expand5(((px >> 1) & 0x1F) as u8);
+                    out[dst + 3] = if px & 1 == 1 { 0xFF } else { 0 };
+                } else {
+                    // 32-bit RGBA8888 is a direct big-endian copy.
+                    out[dst..dst + 4].copy_from_slice(&self.rdram_read_u32(src).to_be_bytes());
+                }
+            }
+        }
+        (width, height)
     }
 
     /// Apply a write to the SP register block, performing whatever it starts.
@@ -1112,6 +1179,76 @@ mod tests {
         CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x10, 1, 0x99);
         assert!(!bus.rcp.mi_intr.vi, "a narrow VI_V_CURRENT write acks");
         assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x10), 0);
+    }
+
+    /// **Scan-out converts the framebuffer to RGBA8.** 32-bit RGBA8888 is a
+    /// direct copy; 16-bit RGBA5551 expands each 5-bit channel to 8 and the
+    /// 1-bit alpha to 0/255. Height comes from `VI_V_VIDEO`'s active half-lines.
+    #[test]
+    fn scanout_converts_32bit_and_16bit_framebuffers() {
+        let mut bus = Bus::new();
+        let fb = 0x100usize;
+        // A 2x2 32-bit framebuffer, row-major.
+        let px32 = [0xAABB_CCDDu32, 0x1122_3344, 0x5566_7788, 0x99AA_BBCC];
+        for (i, p) in px32.iter().enumerate() {
+            bus.rdram[fb + i * 4..fb + i * 4 + 4].copy_from_slice(&p.to_be_bytes());
+        }
+        // VI: 32-bit, origin 0x100, width 2, V_VIDEO active = 4 half-lines (h=2).
+        bus.vi.regs[vi::VI_CTRL as usize] = 3;
+        bus.vi.regs[vi::VI_ORIGIN as usize] = fb as u32;
+        bus.vi.regs[vi::VI_WIDTH as usize] = 2;
+        bus.vi.regs[vi::VI_V_VIDEO as usize] = 4; // start 0, end 4 -> 2 lines
+        let mut out = alloc::vec![0u8; 2 * 2 * 4];
+        assert_eq!(bus.scanout(&mut out), (2, 2));
+        assert_eq!(&out[0..4], &[0xAA, 0xBB, 0xCC, 0xDD], "direct 32-bit copy");
+        assert_eq!(&out[12..16], &[0x99, 0xAA, 0xBB, 0xCC]);
+
+        // 16-bit RGBA5551, non-uniform channels so component order and the
+        // field shifts are exercised: 0x0887 -> R=1,G=2,B=3,A=1 = [08,10,18,FF];
+        // 0x0886 is the same colour with alpha 0 = [08,10,18,00].
+        bus.rdram[fb..fb + 2].copy_from_slice(&0x0887u16.to_be_bytes());
+        bus.rdram[fb + 2..fb + 4].copy_from_slice(&0x0886u16.to_be_bytes());
+        bus.vi.regs[vi::VI_CTRL as usize] = 2;
+        bus.vi.regs[vi::VI_V_VIDEO as usize] = 2; // h = 1
+        let mut out16 = alloc::vec![0u8; 2 * 4];
+        assert_eq!(bus.scanout(&mut out16), (2, 1));
+        assert_eq!(
+            &out16[0..4],
+            &[0x08, 0x10, 0x18, 0xFF],
+            "distinct channels, A=1"
+        );
+        assert_eq!(&out16[4..8], &[0x08, 0x10, 0x18, 0x00], "same colour, A=0");
+    }
+
+    /// **A blanked VI scans out nothing.** With a non-zero sentinel in the
+    /// destination, both blank types (`TYPE == 0`, the power-on default, and
+    /// `TYPE == 1`) leave it untouched — a zero-filled buffer would pass even if
+    /// the blank path erroneously wrote zeroes.
+    #[test]
+    fn scanout_is_blank_when_the_vi_is_off() {
+        for blank_type in [0u32, 1] {
+            let mut bus = Bus::new();
+            bus.vi.regs[vi::VI_CTRL as usize] = blank_type;
+            bus.vi.regs[vi::VI_WIDTH as usize] = 2;
+            bus.vi.regs[vi::VI_V_VIDEO as usize] = 4;
+            let mut out = alloc::vec![0xA5u8; 16];
+            assert_eq!(bus.scanout(&mut out), (0, 0), "TYPE {blank_type}: no frame");
+            assert!(out.iter().all(|&b| b == 0xA5), "sentinel untouched");
+        }
+    }
+
+    /// **An undersized destination is refused up front.** Rather than write a
+    /// truncated frame and claim full dimensions, `scanout` returns `(0, 0)` and
+    /// writes nothing when `out` cannot hold `width * height * 4` bytes.
+    #[test]
+    fn scanout_refuses_an_undersized_buffer() {
+        let mut bus = Bus::new();
+        bus.vi.regs[vi::VI_CTRL as usize] = 3; // 32-bit
+        bus.vi.regs[vi::VI_WIDTH as usize] = 2;
+        bus.vi.regs[vi::VI_V_VIDEO as usize] = 4; // h = 2 -> needs 2*2*4 = 16 bytes
+        let mut out = alloc::vec![0xFFu8; 8]; // too small (< 16)
+        assert_eq!(bus.scanout(&mut out), (0, 0), "undersized: refused");
+        assert!(out.iter().all(|&b| b == 0xFF), "and left untouched");
     }
 }
 
