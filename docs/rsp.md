@@ -227,6 +227,17 @@ behind:**
   source shares the bug; only the systemtest exercised the destructive
   broadcast.
 
+**The reserved "VZERO" opcode family** — `VSUT` (funct `0x12`),
+`VADDB`/`VSUBB`/`VACCB`/`VSUCB`/`VSAD`/`VSAC`/`VSUM` (`0x16..=0x1C`), `V30`/`V31`
+(`0x1E`/`0x1F`), `V46`/`V47` (`0x2E`/`0x2F`), and
+`VEXT{T,Q,N}`/`V59`/`VINS{T,Q,N}` (`0x38..=0x3E`) — is nineteen undocumented
+encodings that n64-systemtest pins to a **single** `run_vzero` reference: each
+writes `ACC_LO = vs + vt` per lane, zeroes `vd`, and touches no flag word. They
+are not distinct instructions to reverse-engineer one by one; the suite's own
+`Level::Weird`/`RarelyUsed` grouping is the tell. The one trap is that a
+*decoded* no-op passes every "does not raise" check, so the regression seeds
+`vd` with a sentinel and asserts both the zero and the `ACC_LO` sum.
+
 **`VMACF` adds no rounding constant**, where `VMULF` adds `0x8000`. It is the
 most confusable difference in the family and the accumulator is the only place
 it shows: the oracle's lane 3 moves from `0xC000` to `0x1_0000`, a delta of

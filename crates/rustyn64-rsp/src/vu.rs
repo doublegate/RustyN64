@@ -341,28 +341,10 @@ impl Rsp {
     /// Returns `false` for an opcode this does not implement yet, so the caller
     /// can leave the instruction inert rather than writing a wrong result.
     pub fn vu_compute(&mut self, op: u32, element: u32, vs: usize, vt: usize, vd: usize) -> bool {
-        // VRNDN (0x0A) and VRNDP (0x02) are unlike every other computational
-        // opcode: they read the **accumulator**, use the low bit of the `vs`
-        // *field* as an immediate shift selector rather than reading a `vs`
-        // register, and conditionally add based on the accumulator's sign. They
-        // are handled whole here rather than in the per-lane match below.
-        if op == 0x02 || op == 0x0A {
-            self.vrnd(op == 0x02, element, vs, vt, vd);
-            return true;
-        }
-        // The clip compares VCL/VCH/VCR (0x24/0x25/0x26) read the whole
-        // VCO/VCC/VCE set and are the one place ares and the suite reference
-        // diverge (VCH else-branch VCOH). Derived from n64-systemtest.
-        if matches!(op, 0x24..=0x26) {
-            self.clip(op, element, vs, vt, vd);
-            return true;
-        }
-        // VMACQ (0x0B): re-round the accumulator's magnitude toward a multiple
-        // of 0x20_0000, no operands. Transcribed from n64-systemtest's
-        // `simulate`; ares agrees once `should_change` gates out the range where
-        // a naive reading of the two looked to differ.
-        if op == 0x0B {
-            self.vmacq(vd);
+        // The whole-instruction forms (VRND, clip, VZERO, VMACQ) act on the
+        // accumulator or the flag words as a unit and do not fit the per-lane
+        // match below; dispatch them first.
+        if self.vu_whole_instruction(op, element, vs, vt, vd) {
             return true;
         }
         let mut clear_vco = false;
@@ -373,12 +355,10 @@ impl Rsp {
         // instruction that leaves VCC alone entirely (VMRG does).
         let mut wrote_vcc = false;
         let mut compare_flags = 0u16;
-        // Snapshot both source vectors before writing any lane. The hardware
-        // reads the whole (broadcast) `vt` and `vs` first; a lane-by-lane loop
-        // that reads and writes in step corrupts a broadcast read when
-        // `vd == vs` or `vd == vt` (a later lane broadcasts from a lane an
-        // earlier iteration already overwrote). The oracle exercises exactly
-        // this: `VNE V6,V6,V7[Q0]` and the `(e=H1)`/"overwrite itself" cases.
+        // Snapshot both sources before writing any lane (read-before-write):
+        // the hardware reads the whole broadcast `vt`/`vs` first, so a
+        // destructive `vd == vt`/`vd == vs` broadcast must not read a lane an
+        // earlier iteration overwrote (`VNE V6,V6,V7[Q0]`, the `(e=H1)` cases).
         let sv: [u16; 8] = core::array::from_fn(|l| self.vu_regs[vs & 31][l]);
         let tv: [u16; 8] = core::array::from_fn(|l| self.vt_lane(vt, element, l));
         for lane in 0..8 {
@@ -661,6 +641,55 @@ impl Rsp {
     /// the reads and writes interleave. Hardware reads the whole (broadcast)
     /// `vt` and `vs` first; so does this. The failing oracle case that forced
     /// this was `V6,V6,V7[Q0]`.
+    /// The computational opcodes that act on the whole vector at once rather
+    /// than through [`Rsp::vu_compute`]'s per-lane match. Returns whether `op`
+    /// was one of them.
+    ///
+    /// - `VRNDN`/`VRNDP` (`0x02`/`0x0A`) read the **accumulator**, use the low
+    ///   bit of the `vs` *field* as a shift selector rather than reading a `vs`
+    ///   register, and conditionally add on the accumulator's sign.
+    /// - The clip compares `VCL`/`VCH`/`VCR` (`0x24..=0x26`) read and write the
+    ///   whole `VCO`/`VCC`/`VCE` set; this is where ares and the suite diverge.
+    /// - `VMACQ` (`0x0B`) re-rounds the accumulator's magnitude toward a
+    ///   multiple of `0x20_0000` with no operands.
+    /// - The reserved VZERO family (see [`Rsp::vzero`]).
+    fn vu_whole_instruction(
+        &mut self,
+        op: u32,
+        element: u32,
+        vs: usize,
+        vt: usize,
+        vd: usize,
+    ) -> bool {
+        match op {
+            0x02 | 0x0A => self.vrnd(op == 0x02, element, vs, vt, vd),
+            0x0B => self.vmacq(vd),
+            0x24..=0x26 => self.clip(op, element, vs, vt, vd),
+            0x12 | 0x16..=0x1C | 0x1E | 0x1F | 0x2E | 0x2F | 0x38..=0x3E => {
+                self.vzero(element, vs, vt, vd);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The reserved "VZERO" opcode family (VSUT, VADDB/VSUBB/VACCB/VSUCB/VSAD/
+    /// VSAC/VSUM, V30/V31, V46/V47, VEXT{T,Q,N}/V59/VINS{T,Q,N}).
+    ///
+    /// n64-systemtest pins every one of these undocumented opcodes to a single
+    /// `run_vzero` reference: `ACC_LO = vs + vt` per lane, `vd` zeroed, and no
+    /// flag word touched. Snapshotting the sources is not strictly needed here
+    /// (the write is a constant zero), but it keeps the shape identical to the
+    /// other broadcast consumers.
+    fn vzero(&mut self, element: u32, vs: usize, vt: usize, vd: usize) {
+        let sv: [u16; 8] = core::array::from_fn(|l| self.vu_regs[vs & 31][l]);
+        let tv: [u16; 8] = core::array::from_fn(|l| self.vt_lane(vt, element, l));
+        for lane in 0..8 {
+            self.set_acc_low(lane, sv[lane].wrapping_add(tv[lane]));
+            self.vu_regs[vd & 31][lane] = 0;
+        }
+    }
+
     fn clip(&mut self, op: u32, element: u32, vs: usize, vt: usize, vd: usize) {
         let sv: [u16; 8] = core::array::from_fn(|l| self.vu_regs[vs & 31][l]);
         let tv: [u16; 8] = core::array::from_fn(|l| self.vt_lane(vt, element, l));
@@ -2462,6 +2491,46 @@ mod clip_tests {
         let mut rsp = pair([1; 8], [2; 8]);
         rsp.vu_compute(0x25, 0, 1, 0, 2);
         assert_ne!(rsp.vu_ctrl.vco, 0, "VCH leaves VCO set");
+    }
+}
+
+/// The reserved "VZERO" opcode family. n64-systemtest pins all of them to one
+/// `run_vzero` reference: `ACC_LO = vs + vt`, `vd = 0`, flags untouched.
+#[cfg(test)]
+mod vzero_tests {
+    use super::*;
+
+    /// **Every reserved op writes the sum to `ACC_LO` and zeroes `vd`.** The
+    /// `vd` sentinel (`0xDEAD`) is what makes a *decoded* no-op visible: an
+    /// instruction that fell through the decode would leave it in place. The
+    /// expected `ACC_LO` is `vs + vt` computed from the seeds, not the code, and
+    /// the flag words are checked to prove the family touches none of them.
+    #[test]
+    fn reserved_ops_sum_into_acc_low_and_zero_vd() {
+        let vs = [10u16, 20, 0xFFFF, 0x8000, 1, 2, 3, 0x7FFF];
+        let vt = [5u16, 0x7FFF, 2, 0x8000, 0, 0, 0, 1];
+        // One representative from each disjoint funct band.
+        for op in [0x12u32, 0x16, 0x1C, 0x1E, 0x2E, 0x38, 0x3E] {
+            let mut rsp = Rsp::new();
+            rsp.vu_regs[1] = vs;
+            rsp.vu_regs[0] = vt;
+            rsp.vu_regs[2] = [0xDEAD; 8];
+            rsp.vu_ctrl.vco = 0xABCD;
+            rsp.vu_ctrl.vcc = 0x1234;
+            rsp.vu_ctrl.vce = 0x56;
+            assert!(rsp.vu_compute(op, 0, 1, 0, 2), "op {op:#x} is decoded");
+            for lane in 0..8 {
+                assert_eq!(rsp.vu_regs[2][lane], 0, "op {op:#x} zeroes vd lane {lane}");
+                assert_eq!(
+                    (rsp.vu_acc[lane] & 0xFFFF) as u16,
+                    vs[lane].wrapping_add(vt[lane]),
+                    "op {op:#x} ACC_LO lane {lane} = vs + vt"
+                );
+            }
+            assert_eq!(rsp.vu_ctrl.vco, 0xABCD, "op {op:#x} leaves VCO");
+            assert_eq!(rsp.vu_ctrl.vcc, 0x1234, "op {op:#x} leaves VCC");
+            assert_eq!(rsp.vu_ctrl.vce, 0x56, "op {op:#x} leaves VCE");
+        }
     }
 }
 
