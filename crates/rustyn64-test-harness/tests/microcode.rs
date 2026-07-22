@@ -6,10 +6,12 @@
 //! (`0x1000..`) image the RSP loads. Booting it and comparing the emitted RDP
 //! command list is T-24-002…004.
 //!
-//! Every invariant here is **derived from the committed symbol map**
-//! (`microcode/symbols.txt`, parsed at compile time) rather than from a
-//! hand-copied constant, so the blob is checked against the linker's own view of
-//! the layout, not against itself. Byte-for-byte integrity and source→blob
+//! The layout invariants here are **derived from the committed symbol map**
+//! (`microcode/symbols.txt`, parsed at compile time) rather than from
+//! hand-copied constants, so the blob is checked against the linker's own view
+//! of the layout, not against itself; the only fixed constants are the IMEM
+//! window (`rsp.ld`) and the `_start` prologue opcode (constructed from the MIPS
+//! encoding, not copied from the blob). Byte-for-byte integrity and source→blob
 //! reproducibility are the CI `sha256sum -c` + `assemble.sh` gates (which need
 //! the `mips64-elf` toolchain); this needs none.
 
@@ -72,31 +74,49 @@ fn the_blob_layout_matches_the_linker_symbol_map() {
         start, IMEM_LMA,
         "_start must be the first IMEM byte (RSP SP_PC 0x000)"
     );
+    // `.text` must be non-empty AND fit inside the 4 KiB IMEM window `rsp.ld`
+    // allocates (`0x1000..0x2000`) — a blob whose text overflowed IMEM could not
+    // be loaded, and `start < text_end` alone would not catch it.
     assert!(start < text_end, "the .text section must be non-empty");
+    assert!(
+        text_end <= IMEM_LMA + 0x1000,
+        "the .text section must fit inside IMEM (ends by {:#x}, got {text_end:#x})",
+        IMEM_LMA + 0x1000
+    );
 }
 
 #[test]
 fn the_entry_point_is_real_code_and_the_data_section_is_populated() {
     let start = sym("_start");
+    let data_start = sym("_data_start");
     let data_end = sym("_data_end");
 
-    // `_start`'s first instruction is real kernel code, so the entry word must be
-    // non-zero — a zero here would mean the IMEM half is padding, i.e. the
-    // microcode never got linked in. (Byte-exact integrity is the CI sha256 gate;
-    // this asserts the *structure* the boot relies on.)
+    // `_start` opens with `li $gp, 0` — the RSPQ kernel prologue (`rsp_queue.inc`;
+    // confirmed with `mips64-elf-objdump`). `li $gp, 0` is `addiu $gp, $zero, 0`.
+    // Build the expected word from the MIPS encoding rather than copying it out
+    // of the blob, so this is a real check (a corrupted or unrelated entry word
+    // fails), not a tautology. (Full byte-exact integrity is the CI sha256 gate;
+    // this asserts the one instruction the boot must open with.)
     let entry = u32::from_be_bytes([
         UCODE[start],
         UCODE[start + 1],
         UCODE[start + 2],
         UCODE[start + 3],
     ]);
-    assert_ne!(entry, 0, "_start must be a real instruction, not padding");
+    const ADDIU: u32 = 0x09; // MIPS I-type opcode
+    const GP: u32 = 28; // $gp
+    let li_gp_0 = (ADDIU << 26) | (GP << 16); // addiu $gp, $zero, 0
+    assert_eq!(
+        entry, li_gp_0,
+        "_start must open with `li $gp, 0` ({li_gp_0:#010x}); got {entry:#010x}"
+    );
 
-    // The `.data` section (overlay table + `rdpq` header) is populated up to
-    // `_data_end`, read from the map rather than hard-coded.
-    let data_nonzero = UCODE[..data_end].iter().any(|&b| b != 0);
+    // The `.data` section (overlay table + `rdpq` header) spans
+    // `[_data_start, _data_end)` — both read from the map — and must be
+    // populated, not padding.
+    let data_nonzero = UCODE[data_start..data_end].iter().any(|&b| b != 0);
     assert!(
         data_nonzero,
-        "the .data section [0, {data_end:#x}) must be populated (overlay table + header)"
+        "the .data section [{data_start:#x}, {data_end:#x}) must be populated (overlay table + header)"
     );
 }
