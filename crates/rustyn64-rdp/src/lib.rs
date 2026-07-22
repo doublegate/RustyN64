@@ -100,7 +100,12 @@ const OP_SET_COLOR_IMAGE: u8 = 0x3F;
 /// Holds the command-FIFO pointers, the current render mode (other-modes),
 /// scissor rectangle, and the color-image / Z-image RDRAM addresses. TMEM and
 /// the per-tile descriptors come with the texture engine in a later phase.
+/// `#[non_exhaustive]`: this render state grows every sprint (TMEM, tiles,
+/// other-modes, the combiner latches are still to come), so adding a field must
+/// not be a breaking change. Construct via [`Rdp::new`]; the workspace never
+/// uses a struct literal.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct Rdp {
     /// DP command FIFO start (`DPC_START`).
     pub cmd_start: u32,
@@ -384,13 +389,23 @@ impl Rdp {
     /// 32-bit writes the whole colour; 16-bit takes the upper half for even
     /// pixels and the lower half for odd; 8-bit takes byte `x & 3`. Coordinates
     /// are `u10.2`; FILL mode floors the upper-left and rounds the lower-right up
-    /// (a half-open pixel span). The exact sub-pixel edge rules are validated
-    /// later against Angrylion via the ParaLLEl-RDP fuzz suite (Sprint 3); this
-    /// integer-pixel model is byte-exact for aligned rectangles.
+    /// (a half-open pixel span — N64brew *…/Commands* §Fill Rectangle). The exact
+    /// sub-pixel edge rules, and the scissor's inclusive-right/exclusive-lower
+    /// FILL rule, are an **open residual** (`docs/accuracy-ledger.md` R-3):
+    /// byte-exact for aligned rectangles, validated bit-for-bit against Angrylion
+    /// via the ParaLLEl-RDP fuzz suite (Sprint 3) and superseded there if it
+    /// diverges.
     fn fill_rectangle<B: VideoBus>(&self, hi: u32, lo: u32, bus: &mut B) {
         let Some(bpp) = self.color_image_bpp() else {
             return; // 4-bit target: the real RDP crashes; we skip.
         };
+        // No color image configured yet (width is field+1, so a real Set Color
+        // Image never yields 0). Rendering before it is a documented hazard —
+        // the real RDP writes to an unspecified location — so we write nothing
+        // rather than smear every row onto offset 0 with a zero stride.
+        if self.color_image_width == 0 {
+            return;
+        }
         // Rectangle: lower-right x/y = hi 23:12 / 11:0, upper-left x/y = lo 23:12
         // / 11:0 (all u10.2). Floor the upper-left, round the lower-right up.
         let rx0 = ((lo >> 12) & 0xFFF) >> 2;
@@ -429,7 +444,9 @@ impl Rdp {
                         bus.rdram_write(addr.wrapping_add(1), color[half + 1]);
                     }
                     // 8-bit: one of four values, repeating every four pixels.
-                    _ => bus.rdram_write(addr, color[(x & 3) as usize]),
+                    1 => bus.rdram_write(addr, color[(x & 3) as usize]),
+                    // `color_image_bpp` yields only 1, 2, or 4; unreachable.
+                    _ => {}
                 }
             }
         }
@@ -980,5 +997,55 @@ mod tests {
             fill_rect(0, 0, 4, 2),
         ]);
         assert!(bus.mem[0..16].iter().all(|&b| b == 0), "no fill at 4-bit");
+    }
+
+    /// **Degenerate and empty rectangles write nothing.** An inverted rectangle
+    /// (`ulx > lrx`), an inverted scissor, and a rectangle disjoint from the
+    /// scissor all produce a zero-area intersection, so no pixel is written.
+    #[test]
+    fn fill_rectangle_degenerate_bounds_write_nothing() {
+        // Inverted rectangle: upper-left past lower-right.
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(0, 0, 8, 4),
+            fill_rect(6, 3, 2, 1), // ulx>lrx, uly>lry
+        ]);
+        assert!(bus.mem[0..128].iter().all(|&b| b == 0), "inverted rect");
+
+        // Rectangle entirely to the left of the scissor: empty intersection.
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(4, 0, 8, 4),
+            fill_rect(0, 0, 3, 4), // rx1 = 3 <= scissor sx0 = 4
+        ]);
+        assert!(bus.mem[0..128].iter().all(|&b| b == 0), "disjoint rect");
+    }
+
+    /// **A fill with no configured width writes nothing.** `color_image_width`
+    /// is 0 only before `Set Color Image` (which always yields field + 1 ≥ 1);
+    /// with a valid pixel size but zero width the guard skips the fill rather
+    /// than smearing every row onto offset 0 with a zero stride. Reached here by
+    /// setting the state directly, since the command stream cannot produce it.
+    #[test]
+    fn fill_rectangle_without_a_valid_width_writes_nothing() {
+        let mut mem = alloc::vec![0u8; CMD_BASE as usize + 8];
+        let (hi, lo) = fill_rect(0, 0, 4, 4);
+        mem[CMD_BASE as usize..CMD_BASE as usize + 4].copy_from_slice(&hi.to_be_bytes());
+        mem[CMD_BASE as usize + 4..CMD_BASE as usize + 8].copy_from_slice(&lo.to_be_bytes());
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.color_image_size = 3; // valid 32-bit size, but width left at 0
+        rdp.fill_color = 0xFFFF_FFFF;
+        rdp.scissor_lrx = 4 << 2;
+        rdp.scissor_lry = 4 << 2;
+        rdp.cmd_current = CMD_BASE;
+        rdp.cmd_end = CMD_BASE + 8;
+        rdp.tick(&mut bus);
+        assert!(bus.mem[0..64].iter().all(|&b| b == 0), "width 0: no write");
     }
 }

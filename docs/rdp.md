@@ -198,9 +198,12 @@ Scope limits, honestly: `Fill Rectangle` implements the **FILL-mode** path only 
 the cycle-type gate arrives with `Set Other Modes`, so a 1-/2-cycle rectangle
 (which routes through the blender, not the fill register) is not yet distinguished.
 The exact sub-pixel edge/rounding rules (inclusive-right/exclusive-lower subtleties
-between the rectangle and the scissor) are validated later against Angrylion via
-the ParaLLEl-RDP fuzz suite (Sprint 3); the integer-pixel model here is byte-exact
-for aligned rectangles, which is what the unit tests pin.
+between the rectangle and the scissor) are an **open residual** recorded in
+`docs/accuracy-ledger.md` as **R-3**: byte-exact for aligned rectangles (which the
+unit tests pin), validated bit-for-bit against Angrylion via the ParaLLEl-RDP fuzz
+suite (Sprint 3) and superseded there if it diverges. The floor-upper-left /
+ceil-lower-right rule itself is cited (N64brew §Fill Rectangle); only its exact
+edge combination with the scissor is unverified.
 
 **Measured oracle effect:** the n64-systemtest failing-assertion count is
 **unchanged at 93 suite-wide** (917 started), same as `v0.3.0`. The fill pipeline
