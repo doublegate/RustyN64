@@ -269,7 +269,12 @@ impl Rsp {
         self.su_regs[0] = 0;
 
         if let Some(next) = halt_at {
-            self.sp.set_pc(next);
+            // A BREAK in a *taken* branch's delay slot halts at the branch
+            // target, not the sequential address: the branch redirect that was
+            // already latched still wins. n64-systemtest pins this -- `beq`
+            // taken into a `break` leaves PC at the target (0x1C), while the
+            // same `break` after an untaken branch leaves it sequential (0x8).
+            self.sp.set_pc(after_delay.unwrap_or(next));
             self.sp.set_halted(true);
             self.sp.set_broke(true);
             if self.sp.status() & STATUS_INTBREAK != 0 {
@@ -567,6 +572,34 @@ mod tests {
             0x55,
             "the delay slot ran and the skipped instruction did not"
         );
+    }
+
+    /// **`BREAK` in a *taken* branch's delay slot halts at the branch target.**
+    /// The redirect the `beq` latched still wins over the sequential address:
+    /// n64-systemtest pins PC to `0x1C` (`0x4 + (6 << 2)`), not `0x8`. Reading
+    /// the sequential value instead is the natural mistake, and it is the exact
+    /// difference between this case and the untaken one below.
+    #[test]
+    fn break_in_a_taken_delay_slot_halts_at_the_branch_target() {
+        // beq r0, r0, +6 (always taken)  /  break (delay slot)
+        let beq = (0o04 << 26) | 6;
+        let rsp = run(&[beq, BREAK], 0);
+        assert_eq!(
+            rsp.sp.pc(),
+            0x1C,
+            "PC follows the branch, not sequential 0x8"
+        );
+    }
+
+    /// The mirror: a `BREAK` after an *untaken* branch halts sequentially. With
+    /// no redirect latched, `after_delay` is `None` and the PC is `0x8` — the
+    /// case that must NOT regress when the taken case is fixed.
+    #[test]
+    fn break_after_an_untaken_delay_slot_halts_sequentially() {
+        // bne r0, r0, +6 (never taken)  /  break (delay slot)
+        let bne = (0o05 << 26) | 6;
+        let rsp = run(&[bne, BREAK], 0);
+        assert_eq!(rsp.sp.pc(), 0x8, "no branch taken, so PC is sequential");
     }
 
     /// **The RSP can acknowledge its own interrupt.**
