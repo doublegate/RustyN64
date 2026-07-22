@@ -35,6 +35,7 @@ pub struct Rdp {
     pub color_image: u32, // SET_COLOR_IMAGE base in RDRAM
     pub z_image: u32,     // SET_Z_IMAGE base in RDRAM
     pub commands_processed: u64, // retired-work tally (decoded commands)
+    pub stall: u32,              // GCLK cycles the pipeline is stalled (sync cmds)
 }
 impl Rdp {
     pub const fn dpc_read(&self, offset: u32) -> u32;      // 0x0410_0000 block
@@ -91,9 +92,10 @@ drain and the rasterizer — not with this register file.
 frozen, it reads the command word at `DPC_CURRENT` from RDRAM, decodes the opcode
 (bits 61:56), and advances `DPC_CURRENT` by the command's **full length**. It
 consumes one command per scheduler tick, so the FIFO drains gradually rather than
-in a burst. No opcode is dispatched to a handler yet — every command is
-recognised, its length consumed, and a retired-work counter (`commands_processed`)
-incremented; the rasterizer arrives in the following tickets.
+in a burst. Every command is recognised, its length consumed, and a retired-work
+counter (`commands_processed`) incremented. Dispatch to a handler currently
+covers only the four sync commands (see below); every other opcode is a
+recognised no-op until the rasterizer lands.
 
 Two stall conditions keep the decoder from acting on data that is not a valid
 command yet:
@@ -127,6 +129,40 @@ Commands are read from RDRAM (the `XBUS` bit clear); the `XBUS`/DMEM command
 source is not yet wired, because the `rdpq` microcode that drives the DP today
 DMAs its list to RDRAM. Honouring the DMEM source (per *Edge cases* below)
 arrives with a bus seam for DMEM reads.
+
+### The sync commands and the DP interrupt (T-31-002)
+
+The dispatcher (`Rdp::dispatch`, called by `tick` after a command is consumed)
+handles the four synchronisation commands; every other opcode is still a
+recognised no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
+
+- **`Sync Load`** (0x26), **`Sync Pipe`** (0x27), **`Sync Tile`** (0x28) each
+  stall the pipeline for a **fixed, unconditional** number of GCLK cycles — 25,
+  50, and 33 respectively (`SYNC_LOAD_GCLK` / `SYNC_PIPE_GCLK` /
+  `SYNC_TILE_GCLK`). The stall does not wait on an internal signal: the RDP burns
+  the full time whether or not the sync was needed, which is exactly why these
+  are constants rather than conditional waits. Modelled by a `stall` countdown
+  (one GCLK per `tick`, one `tick` = one RCP/GCLK step) that holds the FIFO until
+  it expires. These are documented values, so they live in the code with their
+  citation, not in the accuracy ledger (which is for *undocumented* constants).
+- **`Sync Full`** (0x29) **raises the DP interrupt** (`bus.raise_dp_interrupt()`
+  → `MI_INTR.dp`, asserting IP2 once masked in) — the only part of the command
+  implemented. On hardware it also waits for all staged pipeline/memory work and
+  halts the pipeline counter; **neither is modelled** (there is no asynchronous
+  pipeline work yet, and no pipeline counter), so the interrupt is raised as soon
+  as the command is dispatched, after any *preceding* sync stall drains via the
+  `stall` gate. The documented hazards — `Sync Full` must be the last command
+  before `DP_END`, and no command may be submitted while it is in progress, or
+  the RDP hangs — are **not yet enforced**: the FIFO drain does not reproduce the
+  hang, so software that violates them will not fault here.
+
+**Measured oracle effect:** the n64-systemtest failing-assertion count is
+**unchanged at 93 suite-wide** (917 started) — the same as `v0.3.0`. Sync
+dispatch flips no assertion, because every remaining failure needs the RDP
+rasteriser (Phase 3) or the cart/PIF path (Phase 5), not sync handling; the
+`Sync Full` interrupt has no isolated systemtest that was failing on its absence.
+Run: `cargo test -p rustyn64-test-harness --release --test systemtest --
+--ignored`.
 
 ## State
 

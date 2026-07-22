@@ -68,6 +68,27 @@ pub const DP_STATUS_START_VALID: u32 = 0x400;
 /// address (n64-systemtest's `RDP START & END REG (masking)`).
 pub const DPC_ADDR_MASK: u32 = 0x00FF_FFF8;
 
+/// `Sync Load` (0x26) pipeline stall, in GCLK cycles.
+///
+/// Fixed and unconditional — the RDP always stalls this long, whether or not a
+/// load is in flight (N64brew *Reality Display Processor/Commands* §0x26). One
+/// `tick` is one GCLK.
+pub const SYNC_LOAD_GCLK: u32 = 25;
+/// `Sync Pipe` (0x27) pipeline stall, in GCLK cycles.
+///
+/// Fixed and unconditional (N64brew *…/Commands* §0x27).
+pub const SYNC_PIPE_GCLK: u32 = 50;
+/// `Sync Tile` (0x28) pipeline stall, in GCLK cycles.
+///
+/// Fixed and unconditional (N64brew *…/Commands* §0x28).
+pub const SYNC_TILE_GCLK: u32 = 33;
+
+// RDP command opcodes handled by the dispatcher (bits 61:56 of a command word).
+const OP_SYNC_LOAD: u8 = 0x26;
+const OP_SYNC_PIPE: u8 = 0x27;
+const OP_SYNC_TILE: u8 = 0x28;
+const OP_SYNC_FULL: u8 = 0x29;
+
 /// RDP state (skeleton).
 ///
 /// Holds the command-FIFO pointers, the current render mode (other-modes),
@@ -94,9 +115,16 @@ pub struct Rdp {
     /// stream, and it exists so tests can witness that the decoder consumed the
     /// number of commands it should. Wraps rather than panicking.
     pub commands_processed: u64,
-    // TODO(T-31-002): the sync commands + DP interrupt, then TMEM (4 KiB), the 8
-    // tile descriptors, other-modes bits, the combiner + blend-mode latches, the
-    // scissor rect, and per-opcode dispatch — see `docs/rdp.md`.
+    /// GCLK cycles the pipeline is currently stalled, counted **down** one per
+    /// `tick`; while non-zero the FIFO does not advance. Set by the sync
+    /// commands to their documented fixed stalls ([`SYNC_LOAD_GCLK`] etc.). This
+    /// is a stall countdown, not a cycle position — it is decremented, nothing
+    /// derives a clock from it, and it does not touch the derive-don't-increment
+    /// rule (only `master_ticks` is ever incremented; ADR 0006).
+    pub stall: u32,
+    // TODO(T-31-003): the fill pipeline — TMEM (4 KiB), the 8 tile descriptors,
+    // other-modes bits, the combiner + blend-mode latches, the scissor rect —
+    // see `docs/rdp.md`.
 }
 
 impl Rdp {
@@ -158,6 +186,10 @@ impl Rdp {
     /// Apply a `DPC_STATUS` write, whose bits are set/clear *commands* rather
     /// than the status layout read back. Only XBUS and FREEZE are modelled; the
     /// FLUSH/TMEM/PIPE/CMD/CLOCK-counter commands come with the FIFO drain.
+    // TODO(T-RDP-01): when `SET_FLUSH` (pipeline flush) lands here, it must also
+    // clear `self.stall` — a flush discards in-flight pipeline work, so a
+    // leftover sync-stall countdown must not persist across it. Subsystem-scoped
+    // (pre-ticket) rather than T-31-003, which is the fill pipeline, not flush.
     const fn dpc_write_status(&mut self, value: u32) {
         const CLEAR_XBUS: u32 = 0x1;
         const SET_XBUS: u32 = 0x2;
@@ -195,15 +227,26 @@ impl Rdp {
     /// set the decoder **stalls** rather than mis-reading RDRAM as the command
     /// stream — decoding DMEM commands out of RDRAM would treat parameter data
     /// as opcodes and desync.
-    // TODO(T-31-002): dispatch each decoded opcode to a handler — the sync
-    // commands (raising the DP interrupt on `SYNC_FULL`), then the fill pipeline
-    // and the full rasterizer into `color_image`.
+    ///
+    /// Dispatch so far (`dispatch`) covers the four sync commands: `Sync
+    /// Load`/`Pipe`/`Tile` set the fixed pipeline stall that gates the next
+    /// command, and `Sync Full` raises the DP interrupt. Everything else is
+    /// still recognised-and-consumed only.
+    // TODO(T-31-003): dispatch the fill pipeline — Set Color Image, Set Fill
+    // Color, Set Scissor, Fill Rectangle — into `color_image`.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
-        // Frozen, empty FIFO, or the command source is DMEM (XBUS, not yet
-        // wired) — nothing to consume from RDRAM.
-        if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0
-            || self.cmd_current >= self.cmd_end
-        {
+        // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
+        // halted, so do not even burn a stall cycle.
+        if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0 {
+            return;
+        }
+        // A prior sync is still stalling the pipeline — burn one GCLK and hold
+        // the FIFO until the stall expires.
+        if self.stall > 0 {
+            self.stall -= 1;
+            return;
+        }
+        if self.cmd_current >= self.cmd_end {
             return;
         }
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
@@ -220,6 +263,48 @@ impl Rdp {
         }
         self.cmd_current = self.cmd_current.wrapping_add(len_bytes);
         self.commands_processed = self.commands_processed.wrapping_add(1);
+        self.dispatch(opcode, bus);
+    }
+
+    /// Act on a just-consumed command. Only the sync commands are handled so
+    /// far; every other opcode is a recognised no-op until its handler lands.
+    ///
+    /// - `Sync Load`/`Pipe`/`Tile` (0x26/0x27/0x28) each stall the pipeline for
+    ///   a fixed, unconditional number of GCLK cycles (25/50/33) — the RDP waits
+    ///   the full time whether or not the sync was needed, which is why the
+    ///   stall is a constant and not a wait on an internal signal.
+    /// - `Sync Full` (0x29) **raises the DP interrupt** (`raise_dp_interrupt`) —
+    ///   the only part of the command implemented. On hardware it first waits for
+    ///   all staged pipeline/memory work and halts the pipeline counter; neither
+    ///   is modelled (there is no asynchronous pipeline work yet, and no pipeline
+    ///   counter), so the interrupt is raised as soon as the command is
+    ///   dispatched. A *preceding* sync stall still delays this dispatch via the
+    ///   `stall` gate above (checked before a command is dispatched), so a queued
+    ///   stall drains before the interrupt fires.
+    ///
+    /// On stall resolution: per-command *execution* cost is not modelled yet —
+    /// every command is consumed in a single placeholder `tick` — so the `stall`
+    /// set here is the documented pipeline stall *layered on top of* that one
+    /// consume tick, not a claim about total command latency (the next command
+    /// resumes after `1 + N` ticks). The stall itself is exactly the documented
+    /// N GCLK; exact per-command base timing is deferred to the command-timing
+    /// model.
+    fn dispatch<B: VideoBus>(&mut self, opcode: u8, bus: &mut B) {
+        match opcode {
+            OP_SYNC_LOAD => self.stall = SYNC_LOAD_GCLK,
+            OP_SYNC_PIPE => self.stall = SYNC_PIPE_GCLK,
+            OP_SYNC_TILE => self.stall = SYNC_TILE_GCLK,
+            OP_SYNC_FULL => bus.raise_dp_interrupt(),
+            // TODO(T-31-003): every other opcode is recognised and
+            // length-consumed by `tick`, but not yet dispatched — an
+            // intentional, documented no-op at this stage, not a silent discard.
+            // Handlers arrive per ticket (the fill pipeline — Set Color Image,
+            // Set Fill Color, Set Scissor, Fill Rectangle — is next), and
+            // `docs/rdp.md` is the authoritative list of what is dispatched
+            // versus recognised-only, so a later missing arm is caught against
+            // that spec rather than passing silently here.
+            _ => {}
+        }
     }
 }
 
@@ -349,6 +434,7 @@ mod tests {
     /// `DPC_END`.
     struct SliceBus {
         mem: Vec<u8>,
+        dp_raised: bool,
     }
     impl RdramBus for SliceBus {
         fn rdram_read(&self, addr: u32) -> u8 {
@@ -360,7 +446,11 @@ mod tests {
             }
         }
     }
-    impl VideoBus for SliceBus {}
+    impl VideoBus for SliceBus {
+        fn raise_dp_interrupt(&mut self) {
+            self.dp_raised = true;
+        }
+    }
 
     /// Append a command: its opcode in bits 61:56 of the first word, then
     /// `words` total 64-bit words with the remainder zero-filled. The word count
@@ -395,7 +485,10 @@ mod tests {
             push_cmd(&mut mem, op, words);
         }
         let total = u32::try_from(mem.len()).unwrap();
-        let mut bus = SliceBus { mem };
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
         let mut rdp = Rdp::new();
         rdp.cmd_end = total;
 
@@ -416,7 +509,10 @@ mod tests {
     fn a_multiword_command_is_consumed_in_one_tick() {
         let mut mem = Vec::new();
         push_cmd(&mut mem, 0x0E, 20); // Fill Triangle (ST) = shade + texture: 20 words
-        let mut bus = SliceBus { mem };
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
         let mut rdp = Rdp::new();
         rdp.cmd_end = 20 * 8;
         rdp.tick(&mut bus);
@@ -433,7 +529,10 @@ mod tests {
     fn a_partial_command_is_not_consumed_until_complete() {
         let mut mem = Vec::new();
         push_cmd(&mut mem, 0x0F, 22); // 22-word triangle
-        let mut bus = SliceBus { mem };
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
         let mut rdp = Rdp::new();
         rdp.cmd_end = 10 * 8; // DPC_END only reached word 10 of 22
         rdp.tick(&mut bus);
@@ -453,12 +552,140 @@ mod tests {
     fn xbus_mode_does_not_decode_rdram() {
         let mut mem = Vec::new();
         push_cmd(&mut mem, 0x3F, 1);
-        let mut bus = SliceBus { mem };
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
         let mut rdp = Rdp::new();
         rdp.status = DP_STATUS_XBUS;
         rdp.cmd_end = 8;
         rdp.tick(&mut bus);
         assert_eq!(rdp.cmd_current, 0, "XBUS: RDRAM not decoded");
         assert_eq!(rdp.commands_processed, 0);
+    }
+
+    /// Drive a single command through `tick` and return the resulting state.
+    fn run_one(opcode: u8) -> (Rdp, SliceBus) {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, opcode, 1);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = 8;
+        rdp.tick(&mut bus);
+        (rdp, bus)
+    }
+
+    /// **`Sync Full` (0x29) raises the DP interrupt.** The dispatcher calls
+    /// `raise_dp_interrupt` on the bus, which the live `Bus` turns into
+    /// `MI_INTR.dp`; here the test bus records the raise.
+    #[test]
+    fn sync_full_raises_the_dp_interrupt() {
+        let (rdp, bus) = run_one(OP_SYNC_FULL);
+        assert!(bus.dp_raised, "Sync Full raised the DP interrupt");
+        assert_eq!(rdp.commands_processed, 1);
+        assert_eq!(rdp.stall, 0, "Sync Full does not stall the pipeline itself");
+    }
+
+    /// **The other sync commands do not raise an interrupt** — only `Sync Full`
+    /// does. They each set the documented fixed pipeline stall instead.
+    #[test]
+    fn sync_load_pipe_tile_set_the_documented_stall() {
+        for (opcode, expected) in [
+            (OP_SYNC_LOAD, SYNC_LOAD_GCLK),
+            (OP_SYNC_PIPE, SYNC_PIPE_GCLK),
+            (OP_SYNC_TILE, SYNC_TILE_GCLK),
+        ] {
+            let (rdp, bus) = run_one(opcode);
+            assert!(!bus.dp_raised, "opcode {opcode:#04x} raised no interrupt");
+            assert_eq!(rdp.stall, expected, "opcode {opcode:#04x} stall cycles");
+        }
+    }
+
+    /// **A sync stall holds the FIFO for exactly its GCLK count.** After a
+    /// `Sync Pipe` (50 GCLK) the next command is not consumed until 50 further
+    /// ticks have elapsed — the pipeline is unavailable for exactly that long,
+    /// as the command is an unconditional fixed-length stall.
+    #[test]
+    fn a_sync_pipe_stall_holds_the_fifo_for_50_gclk() {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, OP_SYNC_PIPE, 1); // sets stall = 50
+        push_cmd(&mut mem, 0x00, 1); // a following no-op
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = 16;
+
+        rdp.tick(&mut bus); // consumes Sync Pipe, sets stall = 50
+        assert_eq!(rdp.commands_processed, 1);
+        assert_eq!(rdp.stall, SYNC_PIPE_GCLK);
+
+        // The next 50 ticks burn the stall and do not advance the FIFO.
+        for i in 0..SYNC_PIPE_GCLK {
+            rdp.tick(&mut bus);
+            assert_eq!(rdp.commands_processed, 1, "still stalled at tick {i}");
+            assert_eq!(rdp.stall, SYNC_PIPE_GCLK - 1 - i);
+        }
+        // Stall expired: the following command is consumed on the next tick.
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.commands_processed, 2, "FIFO resumes after the stall");
+    }
+
+    /// **A frozen DP does not burn stall cycles.** The freeze guard is checked
+    /// before the stall countdown, so a non-zero `stall` is held — not
+    /// decremented — while frozen, and resumes counting down only once the DP is
+    /// unfrozen. The plain `a_frozen_dp_does_not_tick` test leaves `stall` at
+    /// zero and so cannot catch a regression that decremented it under freeze.
+    #[test]
+    fn a_frozen_dp_holds_its_stall_countdown() {
+        let mut rdp = Rdp::new();
+        let mut bus = NullBus;
+        rdp.stall = 10;
+        rdp.status = DP_STATUS_FREEZE;
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.stall, 10, "frozen: stall countdown held, not burned");
+
+        rdp.status = 0; // unfreeze
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.stall, 9, "unfrozen: countdown resumes");
+    }
+
+    /// **A preceding stall delays the `Sync Full` interrupt.** With `Sync Pipe`
+    /// (50 GCLK) queued before `Sync Full`, the DP interrupt stays low for all
+    /// 50 stall ticks and rises only once the stall drains and `Sync Full` is
+    /// dispatched — the stall-before-interrupt ordering the dispatch doc claims.
+    /// (Were the stall gate absent, `Sync Full` would dispatch on the very next
+    /// tick and the interrupt would rise during the loop.)
+    #[test]
+    fn a_preceding_stall_delays_the_sync_full_interrupt() {
+        let mut mem = Vec::new();
+        push_cmd(&mut mem, OP_SYNC_PIPE, 1);
+        push_cmd(&mut mem, OP_SYNC_FULL, 1);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.cmd_end = 16;
+
+        rdp.tick(&mut bus); // consume Sync Pipe -> stall = 50
+        assert_eq!(rdp.stall, SYNC_PIPE_GCLK);
+        assert!(!bus.dp_raised, "no interrupt while the stall is set");
+
+        for i in 0..SYNC_PIPE_GCLK {
+            rdp.tick(&mut bus);
+            assert!(!bus.dp_raised, "interrupt still low during stall tick {i}");
+        }
+        // Stall drained: the next tick dispatches Sync Full and raises.
+        rdp.tick(&mut bus);
+        assert!(
+            bus.dp_raised,
+            "interrupt raised only after the stall drains"
+        );
+        assert_eq!(rdp.commands_processed, 2);
     }
 }

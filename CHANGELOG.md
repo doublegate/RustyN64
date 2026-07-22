@@ -30,6 +30,22 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   unwritten RDRAM), and `XBUS` mode (DMEM command source, not yet wired) stalls
   rather than mis-reading RDRAM.
 
+### Added — the RDP sync commands and the DP interrupt (Phase 3, T-31-002)
+
+- **`Sync Full` (0x29) raises the DP interrupt.** The RDP dispatcher calls
+  `raise_dp_interrupt` → `MI_INTR.dp`, which asserts the VR4300 IP2 line once the
+  DP line is masked in — the end-to-end path (dispatcher → `VideoBus` seam → MI →
+  mask) is covered by a core integration test that drives a real `Sync Full`
+  command through `rdp_tick`.
+- **`Sync Load`/`Pipe`/`Tile` (0x26/0x27/0x28) stall the pipeline** for their
+  documented fixed, unconditional GCLK counts (25/50/33), modelled by a `stall`
+  countdown that holds the FIFO until it expires (one `tick` = one GCLK). These
+  are documented constants (N64brew command map), cited in code rather than
+  fitted — no accuracy-ledger entry.
+- **Oracle effect:** n64-systemtest failing-assertion count unchanged at 93
+  suite-wide (same as `v0.3.0`) — sync dispatch flips no assertion, as the
+  remaining failures need the RDP rasteriser (Phase 3) or cart/PIF (Phase 5).
+
 ## [0.3.0] — 2026-07-22 — "Microcode"
 
 **Phase 2 is complete.** The **LLE RSP** runs — the scalar unit, the 8-lane vector
