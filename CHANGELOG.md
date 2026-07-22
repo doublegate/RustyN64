@@ -9,6 +9,29 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — VI scan-position timing and interrupt (Phase 3, T-31-004 part 3)
+
+- **`VI_V_CURRENT` advances and the VI interrupt fires.** `Vi::tick` (called each
+  RCP step) advances the scan half-line one at a time off the elapsed
+  `master_ticks` (accumulating the fractional remainder), wrapping at
+  `VI_V_TOTAL + 1`, and raises `MI_INTR.vi` when the position lands on
+  `VI_V_INTR`. The per-half-line step means a call spanning many half-lines cannot
+  skip it, and a `VI_V_INTR` beyond the field never fires. `VI_CTRL.TYPE == 0`
+  suppresses it, and the position is kept relative so a mid-run `VI_V_TOTAL`
+  change re-bases without a scale jump. A `System::reset` rebases the scan
+  timeline (`Vi::reset_scan`) so the interrupt keeps firing across a reset. This
+  is the vsync signal games wait on; covered by unit tests (advance/wrap,
+  once-per-field firing, disabled-VI, unreachable `VI_V_INTR`, mid-run
+  `VI_V_TOTAL` change) and scheduler integration tests (interrupt during a run,
+  and acknowledge → reset → fires again).
+- **Scope:** the field cadence is anchored to nominal 60 Hz NTSC (open residual
+  **R-6**) — the VI dot clock is off a separate crystal the wiki gives only
+  roughly, so the sub-field `H_TOTAL` timing, PAL's 50 Hz, and the interlace
+  `VI_V_INTR` bit-0 quirk are deferred. **Oracle:** n64-systemtest unchanged at 93
+  failing (Phase 1 still 0) — the VI interrupt now firing during a run does not
+  regress the CPU categories, and no VI assertion flips yet (needs the masks and
+  the exact timing).
+
 ### Added — VI framebuffer scan-out (Phase 3, T-31-004 part 2)
 
 - **`Bus::scanout` converts the framebuffer to a presentable RGBA8 frame.** It
@@ -29,11 +52,10 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   and write through the CPU bus. Writing `VI_V_CURRENT` acknowledges the VI
   interrupt (`MI_INTR.vi = false`); cold-boot state is all-zero, so the VI is off
   (`VI_CTRL.TYPE == 0`).
-- **Staged for the follow-up VI tickets:** `VI_V_CURRENT` advancing with the scan
-  position and the interrupt *firing* at `VI_V_INTR` (needs the scheduler's
-  fractional VI clock); framebuffer scan-out (which makes the FILL pipeline
-  observable); and per-register write masks (stored full-width for now, to be
-  pinned against n64-systemtest rather than guessed).
+- **Staged for the follow-up VI tickets:** per-register write masks (stored
+  full-width for now, to be pinned against n64-systemtest rather than guessed).
+  (The scan position, the `VI_V_INTR` interrupt, and framebuffer scan-out landed
+  in parts 2–3, above.)
 
 ### Added — the RDP FILL pipeline (Phase 3, T-31-003)
 

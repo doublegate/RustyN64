@@ -180,8 +180,12 @@ impl System {
         self.phases = Phases::from_seed(self.seed);
         self.master_ticks = 0;
         self.cpu = Cpu::new();
-        // TODO(T-CORE-03): warm-reset the Bus subsystems (RSP halt, clear DMA)
-        // without zeroing RDRAM — see `docs/scheduler.md`.
+        // The VI scan timeline is keyed off `master_ticks`, so it must rebase to
+        // the new zero — otherwise its delta baseline stays in the old timeline
+        // and the VI interrupt is suppressed until the run catches up.
+        self.bus.vi.reset_scan();
+        // TODO(T-CORE-03): warm-reset the remaining Bus subsystems (RSP halt,
+        // clear DMA) without zeroing RDRAM — see `docs/scheduler.md`.
     }
 
     /// Master ticks elapsed since power-on. The canonical time position.
@@ -304,6 +308,12 @@ impl System {
         self.bus.audio_tick();
         // The PI's asynchronous direct-I/O write finalises on this clock.
         self.bus.pi_tick();
+        // The VI scan position advances off `master_ticks` (the one fractional
+        // domain, ADR 0006 / `docs/scheduler.md`); a `VI_V_INTR` crossing raises
+        // the VI line into the MI.
+        if self.bus.vi.tick(self.master_ticks) {
+            self.bus.rcp.mi_intr.vi = true;
+        }
     }
 }
 
@@ -456,5 +466,54 @@ mod tests {
             assert!(now - prev <= RCP_DIVIDER, "an edge was skipped");
             prev = now;
         }
+    }
+
+    /// **A running system raises the VI interrupt as the scan crosses
+    /// `VI_V_INTR`.** With a standard NTSC field (525 half-lines) and the VI on,
+    /// stepping past `per-half-line × V_INTR` master ticks drives `MI_INTR.vi`
+    /// through the scheduler's per-step `Vi::tick` call.
+    #[test]
+    fn a_running_system_raises_the_vi_interrupt_at_v_intr() {
+        use crate::vi::{VI_CTRL, VI_V_INTR, VI_V_TOTAL};
+        let mut sys = System::new(1);
+        sys.bus.vi.regs[VI_V_TOTAL as usize] = 524; // 525 half-lines
+        sys.bus.vi.regs[VI_V_INTR as usize] = 2;
+        sys.bus.vi.regs[VI_CTRL as usize] = 2; // VI on
+        assert!(!sys.bus.rcp.mi_intr.vi, "clear before running");
+        // per-half-line ≈ 5952 ticks; 15_000 is well past half-line 2.
+        while sys.master_ticks() < 15_000 {
+            sys.step_to_next_edge();
+        }
+        assert!(
+            sys.bus.rcp.mi_intr.vi,
+            "the VI interrupt fired during the run"
+        );
+    }
+
+    /// **The VI keeps firing after a reset.** A reset zeroes `master_ticks`, so
+    /// the VI scan timeline must rebase (`Vi::reset_scan`) — otherwise its delta
+    /// baseline stays in the old timeline and the interrupt is suppressed until
+    /// the new run catches up. Acknowledge → reset → the next field fires again.
+    #[test]
+    fn a_reset_rebases_the_vi_scan_so_it_fires_again() {
+        use crate::vi::{VI_CTRL, VI_V_INTR, VI_V_TOTAL};
+        let mut sys = System::new(2);
+        sys.bus.vi.regs[VI_V_TOTAL as usize] = 524;
+        sys.bus.vi.regs[VI_V_INTR as usize] = 2;
+        sys.bus.vi.regs[VI_CTRL as usize] = 2;
+        while sys.master_ticks() < 15_000 {
+            sys.step_to_next_edge();
+        }
+        assert!(sys.bus.rcp.mi_intr.vi, "fires before reset");
+        sys.bus.rcp.mi_intr.vi = false; // the CPU would ack via VI_V_CURRENT
+        sys.reset();
+        assert!(!sys.bus.rcp.mi_intr.vi, "clear immediately after reset");
+        while sys.master_ticks() < 15_000 {
+            sys.step_to_next_edge();
+        }
+        assert!(
+            sys.bus.rcp.mi_intr.vi,
+            "fires again after the reset rebases"
+        );
     }
 }
