@@ -174,20 +174,25 @@ impl EmuCore {
     /// Scan the core's framebuffer out into the presented frame.
     ///
     /// `Bus::scanout` reads the VI registers and converts the framebuffer at
-    /// `VI_ORIGIN` to RGBA8 (the LLE RDP/VI path). It returns `(0, 0)` while the
-    /// VI is off or unconfigured — the cold-boot / no-ROM state — in which case a
-    /// black frame at the default resolution is presented. A reported geometry
-    /// larger than the backing store also falls back rather than overrun it.
+    /// `VI_ORIGIN` to RGBA8 (the LLE RDP/VI path). It **self-guards against a
+    /// buffer overrun** from untrusted VI registers: it returns `(0, 0)` and
+    /// writes nothing when its output cannot hold `w * h * 4` bytes, so a ROM
+    /// cannot make it overrun `frame.rgba`. It also returns `(0, 0)` while the VI
+    /// is off or unconfigured (cold boot / no ROM).
+    ///
+    /// A returned `(0, 0)` — or a valid-but-oversized geometry that fits the
+    /// backing store yet exceeds the blit's `FB_MAX` texture — is presented as a
+    /// black frame at the default resolution; the whole buffer is cleared so no
+    /// stale pixels from a previous, larger frame survive.
     fn produce_frame(&mut self) {
         let (w, h) = self.system.bus.scanout(&mut self.frame.rgba);
-        if w == 0 || h == 0 || w > FB_MAX_W || h > FB_MAX_H {
-            self.frame.w = FB_DEFAULT_W;
-            self.frame.h = FB_DEFAULT_H;
-            let n = (FB_DEFAULT_W * FB_DEFAULT_H * 4) as usize;
-            self.frame.rgba[..n].fill(0);
-        } else {
+        if let Some((w, h)) = presentable_geometry(w, h) {
             self.frame.w = w;
             self.frame.h = h;
+        } else {
+            self.frame.w = FB_DEFAULT_W;
+            self.frame.h = FB_DEFAULT_H;
+            self.frame.rgba.fill(0);
         }
     }
 
@@ -196,6 +201,18 @@ impl EmuCore {
     fn produce_audio(&mut self) {
         // ~800 stereo sample-pairs per 60 Hz frame at 48 kHz.
         self.audio.resize(800 * 2, 0.0);
+    }
+}
+
+/// The geometry to present from a scan-out `(w, h)`: `Some((w, h))` when it is a
+/// non-empty frame that fits the blit's `FB_MAX` texture, or `None` (present a
+/// black default frame) for the blank `(0, 0)` case or a geometry that would
+/// exceed the texture. Pure so the boundary is unit-testable without the VI.
+const fn presentable_geometry(w: u32, h: u32) -> Option<(u32, u32)> {
+    if w == 0 || h == 0 || w > FB_MAX_W || h > FB_MAX_H {
+        None
+    } else {
+        Some((w, h))
     }
 }
 
@@ -227,6 +244,23 @@ mod tests {
         let emu = EmuCore::new(0);
         assert_eq!(emu.frame().w, FB_DEFAULT_W);
         assert_eq!(emu.frame().h, FB_DEFAULT_H);
+    }
+
+    /// **The presented-geometry clamp accepts fits and rejects zero/oversized.**
+    /// Zero dimensions and any geometry past the `FB_MAX` blit texture fall back;
+    /// a fit (including exactly `FB_MAX`) is presented as-is.
+    #[test]
+    fn presentable_geometry_clamps_zero_and_oversized() {
+        assert_eq!(presentable_geometry(320, 240), Some((320, 240)));
+        assert_eq!(
+            presentable_geometry(FB_MAX_W, FB_MAX_H),
+            Some((FB_MAX_W, FB_MAX_H)),
+            "exactly FB_MAX fits"
+        );
+        assert_eq!(presentable_geometry(0, 0), None, "blank");
+        assert_eq!(presentable_geometry(0, 240), None, "zero width");
+        assert_eq!(presentable_geometry(FB_MAX_W + 1, 1), None, "too wide");
+        assert_eq!(presentable_geometry(1, FB_MAX_H + 1), None, "too tall");
     }
 
     /// With no ROM the VI is off, so `Bus::scanout` returns `(0, 0)` and
