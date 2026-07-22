@@ -1680,37 +1680,116 @@ mod tests {
         }
     }
 
-    /// **An unsupported (4-bit) texel size writes nothing.** Both loads bail on a
-    /// `size` of 0 (ledger R-7) — a silent no-op is invisible to a "does not
-    /// panic" test, so this asserts the *effect*: TMEM is never allocated. Source
-    /// bytes are present, so a load that ran would allocate and write.
+    /// **An unsupported (4-bit) *tile* size writes nothing.** Isolates the
+    /// destination-size guard: the source is a supported image, so only the
+    /// tile-size (`dst_bpt`) guard stops the load. A silent no-op is invisible to a
+    /// "does not panic" test, so this asserts the *effect*: TMEM is never allocated.
     #[test]
-    fn load_with_unsupported_size_writes_nothing() {
+    fn load_with_unsupported_tile_size_writes_nothing() {
         let mut mem = alloc::vec![0u8; 0x200];
         mem[0x100..0x108].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
         let bus = SliceBus {
             mem,
             dp_raised: false,
         };
-        // 4-bit tile (size 0): Load Tile writes nothing.
+        // 4-bit tile (size 0), supported source: Load Tile writes nothing.
         let mut a = Rdp::new();
         a.tiles[0].size = 0;
-        a.tex_image_size = 0;
+        a.tex_image_size = 2;
         a.tex_image_width = 4;
         a.tex_image_addr = 0x100;
         a.load_tile(0x0000_0000, 0x0000_C000, &bus);
-        assert!(a.tmem.is_none(), "4-bit Load Tile allocates/writes nothing");
+        assert!(a.tmem.is_none(), "4-bit tile: Load Tile writes nothing");
         // 4-bit tile: Load Block writes nothing.
         let mut b = Rdp::new();
         b.tiles[0].size = 0;
-        b.tex_image_size = 0;
+        b.tex_image_size = 1;
         b.tex_image_width = 4;
         b.tex_image_addr = 0x100;
         b.load_block(0x0000_0000, 0x0000_3000, &bus);
-        assert!(
-            b.tmem.is_none(),
-            "4-bit Load Block allocates/writes nothing"
+        assert!(b.tmem.is_none(), "4-bit tile: Load Block writes nothing");
+    }
+
+    /// **An unsupported (4-bit) *source* size writes nothing — independently.** The
+    /// tile size is supported, so only the source-size (`src_bpt`) guard stops the
+    /// load; deleting that guard would read RDRAM at the wrong stride and allocate
+    /// TMEM, failing this test.
+    #[test]
+    fn load_with_unsupported_source_size_writes_nothing() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x108].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut a = Rdp::new();
+        a.tiles[0].size = 2; // supported destination
+        a.tiles[0].line = 1;
+        a.tex_image_size = 0; // 4-bit source (unsupported)
+        a.tex_image_width = 4;
+        a.tex_image_addr = 0x100;
+        a.load_tile(0x0000_0000, 0x0000_C000, &bus);
+        assert!(a.tmem.is_none(), "4-bit source: Load Tile writes nothing");
+        let mut b = Rdp::new();
+        b.tiles[0].size = 1; // supported destination
+        b.tex_image_size = 0; // 4-bit source
+        b.tex_image_width = 4;
+        b.tex_image_addr = 0x100;
+        b.load_block(0x0000_0000, 0x0000_3000, &bus);
+        assert!(b.tmem.is_none(), "4-bit source: Load Block writes nothing");
+    }
+
+    /// **`Load Block` rejects an inverted `SH < SL` range** (like `Load Tile`),
+    /// with valid sizes so only the inverted-range guard prevents the load.
+    #[test]
+    fn load_block_rejects_inverted_range() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x110].copy_from_slice(&[0xFF; 16]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 1;
+        rdp.tex_image_size = 1;
+        rdp.tex_image_width = 8;
+        rdp.tex_image_addr = 0x100;
+        // SL=10 (field 0xA000) SH=2 (field 0x2000), u12.0: shi < slo.
+        rdp.load_block(0x0000_A000, 0x0000_2000, &bus);
+        assert!(rdp.tmem.is_none(), "shi < slo writes nothing");
+    }
+
+    /// **The dispatcher routes 0x34 and 0x33 to the load handlers.** The other
+    /// load tests call `load_tile` / `load_block` directly; this drives the actual
+    /// `dispatch` entry so a removed or mis-wired opcode arm is caught by an
+    /// observable TMEM write, not only a decode bug.
+    #[test]
+    fn dispatch_routes_load_tile_and_load_block() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x104].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut a = Rdp::new();
+        a.tiles[0].size = 2;
+        a.tiles[0].line = 1;
+        a.tex_image_size = 2;
+        a.tex_image_width = 2;
+        a.tex_image_addr = 0x100;
+        a.dispatch(OP_LOAD_TILE, 0x0000_0000, 0x0000_4000, &mut bus); // SH=1 -> 2 texels
+        assert_eq!(
+            (a.tmem_byte(0), a.tmem_byte(1)),
+            (0x11, 0x22),
+            "0x34 routed to load_tile"
         );
+        let mut b = Rdp::new();
+        b.tiles[0].size = 1;
+        b.tex_image_size = 1;
+        b.tex_image_width = 4;
+        b.tex_image_addr = 0x100;
+        b.dispatch(OP_LOAD_BLOCK, 0x0000_0000, 0x0000_3000, &mut bus); // SH=3 -> 4 texels
+        assert_eq!(b.tmem_byte(0), 0x11, "0x33 routed to load_block");
     }
 
     /// **An inverted range writes nothing.** `SH < SL` (like `TH < TL`) is a
