@@ -8,8 +8,8 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.2.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97-orange.svg" alt="Rust: 1.97"></a><br>
-  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%201%20in%20progress-yellow.svg" alt="Status: Phase 1 in progress"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/accuracy-basic.z64%205%2F5-yellow.svg" alt="Accuracy: basic.z64 5/5"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.3.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97-orange.svg" alt="Rust: 1.97"></a><br>
+  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%202%20complete-brightgreen.svg" alt="Status: Phase 2 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
 
@@ -22,16 +22,19 @@ ParaLLEl accuracy bar: one canonical 187.5 MHz master-clock timeline co-scheduli
 compute engines, a Bus that owns everything mutable, low-level emulation of the programmable
 coprocessors, and a hard determinism contract.
 
-> ### Status: Phase 1 in progress — not playable
+> ### Status: Phase 2 complete (v0.3.0) — not yet playable
 >
-> **The VR4300 executes instructions.** The canonical master clock, the five-stage pipeline, the
-> MIPS III integer set, COP0, the TLB and the exception model are implemented, and Dillon's
-> `basic.z64` runs end to end and passes 5/5.
+> **The VR4300 and the RSP both execute.** Phase 1 delivered the complete VR4300 — the canonical
+> master clock, the five-stage pipeline, the MIPS III integer set, COP0, the TLB, the exception
+> model, and a soft-float COP1 — verified at `n64-systemtest Failed: 0` on the CPU/COP0/TLB/COP1
+> categories and a 0-diff golden trace against ares. Phase 2 delivered the **LLE RSP**: the full
+> scalar and vector units, `n64-systemtest Failed: 0` on the RSP category, and libdragon's **real
+> `rdpq` microcode** booting and emitting an RDP command list through the DPC seam.
 >
-> **Everything else is still a stub.** The LLE RSP, the LLE RDP, AI audio, and PI/SI DMA do not
-> execute anything; the FPU has control registers but no arithmetic; the `rustyn64` binary opens
-> a shell and presents a test pattern. Stubs are no-op `TODO(...)` bodies rather than `todo!()`
-> panics, so **a green test run does not mean a subsystem works**.
+> **The rasteriser and beyond are still stubs.** The LLE RDP (it receives command lists but does
+> not yet rasterise), AI audio, and PI/SI boot do not draw or play anything; the `rustyn64` binary
+> opens a shell and presents a test pattern. Stubs are no-op `TODO(...)` bodies rather than
+> `todo!()` panics, so **a green test run does not mean a subsystem works**.
 >
 > **[`docs/STATUS.md`](docs/STATUS.md) is the single source of truth.** Read it before assuming
 > any feature works.
@@ -64,8 +67,8 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
   modelled as a *seeded* parameter rather than live entropy, so it is reproducible and
   save-stateable (ADR 0004).
 - **Honest status reporting.** This README, `docs/STATUS.md`, and the accuracy tables all
-  distinguish "the oracle ROM is staged" from "the gate passes". Today no gate passes, and every
-  document says so.
+  distinguish "the oracle ROM is staged" from "the gate passes". The CPU and RSP gates now pass as
+  oracle results with committed runners; every gate that does not yet pass says so plainly.
 - **Safe, modular Rust.** The chip stack is `no_std + alloc` with a one-directional crate graph,
   so each chip is independently fuzzable and benchmarkable. Every chip crate and `-core` carries
   `#![forbid(unsafe_code)]`; there is zero `unsafe` in the tree.
@@ -84,13 +87,14 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 | **VR4300 MIPS III integer set** | **Working** — incl. the 64-bit `D*` forms, unaligned `LWL`/`LWR`/`LDL`/`LDR`, `LL`/`SC`, and the documented errata reproduced rather than corrected |
 | **COP0, exceptions, interrupts** | **Working** — full register file, exception epilogue and vectors, `ERET`, `Count`/`Compare` timer, MI interrupt line |
 | **TLB + instruction micro-TLB** | **Working** — 32 joint entries, page pairs, 4K–16M sizes, TLB shutdown; a micro-TLB miss is a stall, a JTLB miss an exception |
-| **VR4300 FPU (COP1)** | Control registers only — arithmetic is Phase 1 Sprint 3 |
-| **LLE RSP (scalar + vector units)** | Stub — Phase 2 |
-| **LLE RDP + VI scan-out** | Stub — Phase 3 |
+| **VR4300 FPU (COP1)** | **Working** — a soft-float core (control, register file, arithmetic, compares, conversions, enabled traps, `BC1`); the VR4300's no-subnormal + inverted-NaN errata reproduced, verified bit-exact against the native operators |
+| **LLE RSP (scalar + vector units)** | **Working** (Phase 2) — the full SU, the 8-lane VU (multiplies, accumulator, clip compares, reciprocals, the vector load/store family, reserved opcodes), SP DMA, and the halt/break/interrupt handshake; `n64-systemtest` RSP category `Failed: 0` |
+| **Real microcode + the RSP→RDP seam** | **Working** (Phase 2) — libdragon's real `rdpq` microcode boots and emits an RDP command list; RSP COP0 `c8`–`c15` route to the DPC register file (the CPU-visible seam) |
+| **LLE RDP + VI scan-out** | Partial — the DPC command-register file is wired (it receives command lists); the rasteriser + VI scan-out are Phase 3 |
 | **AI audio** | Stub — Phase 4 |
-| **PI/SI DMA, PIF/CIC boot, saves** | Stub — Phase 5 |
+| **PI/SI DMA, PIF/CIC boot, saves** | Partial — PI DMA runs (pulled forward for n64-systemtest); SI/joybus, PIF/CIC boot, and saves are Phase 5 |
 | **egui shell** | Partial — the shell, input map, and framebuffer plumbing are real; it presents a test pattern |
-| **Test-ROM oracle** | **Partly wired** — Dillon's `basic.z64` runs end to end and passes 5/5; n64-systemtest is committed but not yet reporting; krom, 240p and a 66-ROM commercial corpus staged locally |
+| **Test-ROM oracle** | **Reporting** — `n64-systemtest` runs and asserts `Failed: 0` on CPU/COP0/TLB/COP1 **and** RSP; Dillon's `basic.z64` passes 5/5; a CPU golden-log 0-diff against ares; krom, 240p and a 66-ROM commercial corpus staged locally |
 | **Hardware reference** | **Working** — offline N64brew Wiki mirror (324 pages, 96 media) rebuilt by a script |
 | **`no_std` chip stack** | **Working** — cross-compiles to `thumbv7em-none-eabihf` |
 | **wasm** | Compiles for `wasm32-unknown-unknown`; no browser entry point yet — Phase 6 |
@@ -133,7 +137,9 @@ retrofitted:
 
 - **`n64-systemtest`** (MIT, committed) — the strict CPU/COP0/TLB/RSP gate. Self-judging: it
   reports `Failed: 0` itself, so no image comparison is needed. Built from source, since upstream
-  publishes no prebuilt ROM.
+  publishes no prebuilt ROM. It now reports `Failed: 0` on both the CPU/COP0/TLB/COP1 and the RSP
+  categories (Phase 1 and Phase 2 exit criteria); the remaining suite-wide failures are cart/PIF
+  (Phase 5) and the RDP rasteriser (Phase 3).
 - **External corpora** (gitignored) — PeterLemon/krom (196 ROMs), Dillon's n64-tests (26), the
   240p Test Suite (built from source in a container), and a 66-ROM commercial regression corpus
   organised by save type, with save types resolved by MD5 against the mupen64plus catalogue
@@ -273,19 +279,21 @@ to-dos/         ROADMAP.md plus per-phase overviews and sprint ticket breakdowns
 
 ## Compatibility and Accuracy
 
-**One gate reports a real number; the rest do not.** The distinction that matters here is that
-"oracle available" means the ROM is on disk — it says nothing about whether the emulator can
-execute it.
+**The CPU and RSP gates report real numbers; the rest do not yet.** The distinction that matters
+here is that "oracle available" means the ROM is on disk — it says nothing about whether the
+emulator can execute it.
 
 | Gate | Oracle available? | Status |
 | --- | --- | --- |
 | Dillon `basic.z64` (control flow) | **Yes** — external tier | **Passing** — 5/5 |
 | Determinism (ADR 0004) | n/a — self-checking | **Passing** — exercised, not merely specified |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/RSP) | **Yes** — ROM committed | Not yet reporting |
-| CPU/RSP golden-log (reference trace) | No — needs a cen64/ares capture | Not started |
-| ParaLLEl-RDP fuzz suite (RDP bit-exactness) | Source cloned, suite not set up | Not started |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **Yes** — ROM committed | **Passing** — Phase 1 exit criterion |
+| n64-systemtest `Failed: 0` (RSP category) | **Yes** — ROM committed | **Passing** — Phase 2 exit criterion |
+| CPU golden-log 0-diff (ares trace) | **Yes** — committed | **Passing** — Phase 1 exit criterion |
+| Real microcode emits an RDP command list | **Yes** — libdragon `rdpq`, committed | **Passing** — Phase 2 exit criterion |
+| ParaLLEl-RDP fuzz suite (RDP bit-exactness) | Source cloned, suite not set up | Not started (Phase 3) |
 | Accuracy battery | Probes not authored | 0% (battery stubbed) |
-| Visual golden / screenshots | **Yes** — krom + 240p + commercial staged | Not started |
+| Visual golden / screenshots | **Yes** — krom + 240p + commercial staged | Not started (Phase 3) |
 
 Where the hardware documentation is silent, or contradicts itself, the project records that
 rather than guessing quietly: [`docs/accuracy-ledger.md`](docs/accuracy-ledger.md) tracks measured
@@ -303,10 +311,11 @@ being evidence.
 
 ## Performance
 
-**No performance measurements exist yet**, and publishing any would be meaningless while every
-chip is a stub. The strategy is recorded in [`docs/performance.md`](docs/performance.md):
-correctness first, then accelerate validated layers. The software reference RDP lands before any
-wgpu-compute backend, and stays the oracle that backend is graded against (ADR 0002).
+**No headline performance measurements are published yet**, and any would be premature while the
+rasteriser and scan-out are stubbed. The strategy is recorded in
+[`docs/performance.md`](docs/performance.md): correctness first, then accelerate validated layers.
+The software reference RDP lands before any wgpu-compute backend, and stays the oracle that
+backend is graded against (ADR 0002).
 
 ---
 
@@ -363,18 +372,20 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.2.0 "Interpreter"** is the current tag. Its cut criterion — n64-systemtest reporting
-`Failed: 0` for the CPU/COP0/TLB/COP1 categories — is **met**, and so is Phase 1's second exit
-criterion, the CPU golden-log 0-diff against ares. Both are oracle results with committed runners,
-not self-assessments: reproduce them with
+**v0.3.0 "Microcode"** is the current tag. Both of its Phase 2 cut criteria are **met** —
+`n64-systemtest Failed: 0` on the RSP category, and libdragon's real `rdpq` microcode booting and
+emitting a plausible RDP command list. Phase 1's criteria (n64-systemtest `Failed: 0` on
+CPU/COP0/TLB/COP1 and a 0-diff golden trace against ares) remain met. All are oracle results with
+committed runners, not self-assessments: reproduce them with
 
 ```bash
-cargo test -p rustyn64-test-harness --release --test systemtest  -- --ignored
-cargo test -p rustyn64-test-harness --release --test golden_log  -- --ignored
+cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
+cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored
+cargo test -p rustyn64-test-harness --test microcode
 ```
 
-The next rung is **v0.3.0 "Microcode"** (the LLE RSP). The release ladder is
-[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
+The next rung is **v0.4.0 "Rasteriser"** (the LLE RDP and VI — first picture). The release ladder
+is [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
 [`docs/release-notes/`](docs/release-notes/).
 
 - **Authoritative current state:** [`docs/STATUS.md`](docs/STATUS.md).
@@ -382,15 +393,17 @@ The next rung is **v0.3.0 "Microcode"** (the LLE RSP). The release ladder is
 
 ## Roadmap
 
-Nine phases. **Phase 0 is complete** and **Phase 1 is in progress**:
+Nine phases. **Phases 0–2 are complete**; **Phase 3 is next**:
 
 - **Phase 0 — Foundation** *(complete)* — workspace, CI, the Bus and scheduler, and the acquired
   and licence-classified reference corpus.
-- **Phase 1 — CPU golden log** *(in progress)* — the VR4300 to a 0-diff trace and
-  n64-systemtest `Failed: 0`. The integer core, COP0, the TLB and the exception model are in;
-  the FPU and the golden-log differ are not.
-- **Phase 2 — RSP LLE** — the scalar and vector units running real microcode.
-- **Phase 3 — RDP LLE + VI** — the software reference rasteriser and scan-out; first picture.
+- **Phase 1 — CPU golden log** *(complete, v0.2.0)* — the VR4300 to a 0-diff ares trace and
+  n64-systemtest `Failed: 0` on CPU/COP0/TLB/COP1. The integer core, COP0, the TLB, the exception
+  model, and a soft-float COP1 are all in.
+- **Phase 2 — RSP LLE** *(complete, v0.3.0)* — the scalar and vector units running real microcode;
+  n64-systemtest `Failed: 0` on the RSP category, and libdragon's `rdpq` microcode emitting an RDP
+  command list through the DPC seam.
+- **Phase 3 — RDP LLE + VI** *(next)* — the software reference rasteriser and scan-out; first picture.
 - **Phase 4 — AI audio** — the interface and its timing; the microcode already runs on the RSP.
 - **Phase 5 — Cart boot + saves** — PI, SI/joybus, CIC, and all four save backends.
 - **Phase 6 — Frontend integration** — real scan-out, audio, and input; save-states and the wasm
@@ -480,14 +493,15 @@ If you use RustyN64 in academic research, please cite:
   author  = {RustyN64 Contributors},
   title   = {RustyN64: A Cycle-Accurate Nintendo 64 Emulator in Rust},
   year    = {2026},
-  version = {0.2.0},
+  version = {0.3.0},
   url     = {https://github.com/doublegate/RustyN64},
   note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,
              a one-directional no_std chip-crate graph, and a hard determinism contract;
-             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.2.0 the VR4300 is
-             complete and verified against n64-systemtest and an ares golden trace;
-             the RSP and RDP are not yet implemented}
+             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.3.0 the VR4300 and the LLE
+             RSP are complete and verified against n64-systemtest and an ares golden trace,
+             and libdragon's rdpq microcode emits an RDP command list; the RDP rasteriser
+             is not yet implemented}
 }
 ```
 

@@ -3,10 +3,10 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.2.0 "Interpreter"** — and unlike v0.1.0, the tag matches the tree.
+**Current release:** **v0.3.0 "Microcode"** — the tag matches the tree.
 
-**Phase 1 is complete.** Both exit criteria are met, and both are oracle results with committed
-runners rather than self-assessments:
+**Phases 1 and 2 are complete.** All four exit criteria (two per phase) are met, and each is an
+oracle result with a committed runner rather than a self-assessment:
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
@@ -20,9 +20,9 @@ The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage
 interrupts, the primary I- and D-caches, the privilege-aware segment map, `Status.RE`, and COP1 on a
 soft-float core.
 
-**Phase 2 (v0.3.0) — both exit criteria met; ready to cut.** The RSP-category
+**Phase 2 (v0.3.0) — both exit criteria met; cut and tagged.** The RSP-category
 `Failed: 0` criterion is **met** (above). The second — *a real graphics
-microcode boots and emits a plausible RDP command list* — is now **met** too:
+microcode boots and emits a plausible RDP command list* — is **met** too:
 libdragon's real combined RSPQ+`rdpq` microcode (vendored, `third_party/
 libdragon-rsp/`) boots to its idle break (T-24-002), processes a DMA'd command
 queue (T-24-003 foundation), and an `rdpq` overlay command
@@ -30,9 +30,8 @@ queue (T-24-003 foundation), and an `rdpq` overlay command
 RDP command** — the 8 command bytes are DMA'd to an RDRAM output buffer and
 `DP_END` is advanced through the DPC seam (T-24-003). Witnessed non-vacuously by
 `tests/microcode.rs::the_microcode_emits_an_rdp_command_through_the_dpc_seam`.
-What remains for v0.3.0 is the phase-close ceremony (pre-release gate, annotated
-tag, notes), not more accuracy work. The next accuracy phases are the LLE RDP
-rasterizer (Phase 3) and cart/PIF (Phase 5). See `to-dos/ROADMAP.md`.
+The next accuracy phases are the LLE RDP rasterizer (Phase 3) and cart/PIF
+(Phase 5). See `to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
 workspace compiles and its **386** tests pass. The CPU genuinely executes

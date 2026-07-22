@@ -6,27 +6,89 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-The next rung is `v0.3.0 "Microcode"` — the LLE RSP (see
-[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)). **Both** of its exit criteria
-are now met; what remains is the phase-close ceremony (tag + notes).
+The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
+(see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
-### Added — the RSP↔RDP command seam; a real microcode emits an RDP command list
+## [0.3.0] — 2026-07-22 — "Microcode"
 
-**Phase 2's second exit criterion is met:** libdragon's real combined RSPQ+`rdpq`
-microcode (vendored, `third_party/libdragon-rsp/`) boots on the RSP, dispatches an
-`rdpq` overlay command to its resident handler, and **emits a plausible RDP
-command list** — the command bytes are DMA'd to an RDRAM output buffer and
-`DP_END` is advanced through the DPC seam. Two golden cases (T-24-003/004,
-`tests/microcode.rs`): `RDPQCmd_Passthrough8` (raw 8-byte forward) and
-`RDPQCmd_SetFillColor32` (the microcode *generates* a `SET_FILL_COLOR` command,
-byte-compared against N64brew's documented `0x37` encoding).
+**Phase 2 is complete.** The **LLE RSP** runs — the scalar unit, the 8-lane vector
+unit, SP DMA, and the halt/break/interrupt handshake — and libdragon's real `rdpq`
+microcode boots on it and emits an RDP command list. Both of Phase 2's exit
+criteria are met as **oracle results with committed runners**, not
+self-assessments:
 
-The RSP's COP0 registers `c8`–`c15` **are** the RDP command registers. Because the
-`rustyn64-rsp` crate may not name `rustyn64-rdp` (the crate-graph rule in
-`docs/architecture.md`), an `MTC0` to those registers is now reported as the new
-`su::StepResult::dp_write`, and `Bus::rsp_tick` forwards it to `Rdp::dpc_write` —
-the same DPC register file the CPU drives at `0x0410_0000`. `Rdp::DPC_ADDR_MASK`
-is now public. Spec: `docs/rspq-boot.md`, `docs/rsp.md`, `docs/rdp.md`.
+| Criterion | Result |
+| --- | --- |
+| n64-systemtest `Failed: 0` (RSP category) | **met** — 0 RSP-prefixed failures of 917 tests started (suite-wide down 413 → 93) |
+| A real graphics microcode emits an RDP command list | **met** — libdragon's `rdpq` boots and emits, witnessed byte-for-byte |
+
+```bash
+cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
+cargo test -p rustyn64-test-harness --test microcode
+```
+
+Phase 1's criteria remain met (CPU/COP0/TLB/COP1 `Failed: 0` and the ares
+golden-log 0-diff). The 93 assertions that still fail suite-wide are cart/PIF
+(Phase 5) and the RDP rasteriser (Phase 3), each that phase's criterion.
+
+### Added — the LLE RSP scalar + vector units (#35–#43)
+
+- **The scalar unit executes** (T-21-002/004/005, #36): the MIPS subset the RSP
+  actually has, with the two rules that catch a CPU core reused wholesale — the
+  **12-bit PC that wraps** and **misaligned data accesses that are correct, not
+  faults**. `BREAK` halts the core; DMEM/IMEM are a Harvard pair (T-21-001, #35).
+- **The vector unit** (Sprint 2, #37–#39, #41): the full 8-lane VU — the register
+  file and SU/VU moves, the 48-bit-per-lane accumulator and the multiply family
+  (single and accumulating forms), add/subtract/carry, the compare/select group
+  (`VLT`/`VEQ`/`VMRG`/…), the clip compares (`VCL`/`VCH`/`VCR`), `VRND`/`VMULQ`/
+  `VMACQ`, and the reciprocal/rsqrt units driven from committed ROM tables. A
+  **read-before-write snapshot** models the hardware reading the whole broadcast
+  operand before writing any lane, so a destructive broadcast cannot corrupt itself.
+- **The whole vector load/store family** (#38, #41): `LQV`/`SQV`, `LRV`/`SRV`,
+  `LPV`/`LUV`, `SWV`, and the element-wrap edge cases, with the store register-wrap
+  and full-count fixes n64-systemtest pins.
+- **The reserved "VZERO" opcode family** (#42): 19 undocumented COP2 encodings
+  that all write `ACC_LO = vs + vt`, zero `vd`, and touch no flags.
+- **`BREAK` in a taken branch's delay slot** halts at the branch target, not the
+  sequential address (#43).
+
+### Added — the RDP DPC command registers and the RSP↔RDP seam (#44, #53)
+
+- **The DPC command-register file** (#44): `DPC_START`/`END`/`CURRENT`/`STATUS` at
+  `0x0410_0000`, the `START_VALID` double-latch and `FREEZE` — completing the
+  RSP-category criterion. Provenance N64brew *Reality Display Processor/Interface*.
+- **The RSP↔RDP command seam** (#53): the RSP's COP0 registers `c8`–`c15` **are**
+  the RDP command registers, but `rustyn64-rsp` may not name `rustyn64-rdp` (the
+  crate-graph rule in `docs/architecture.md`), so an `MTC0` to them is reported as
+  the new `su::StepResult::dp_write` and `Bus::rsp_tick` forwards it to
+  `Rdp::dpc_write`. DP access is restricted to `c8`–`c15`; `c16`–`c31` read zero.
+  `Rdp::DPC_ADDR_MASK` is now public.
+
+### Added — the real microcode boot harness (ADR 0008; #46–#53)
+
+**Phase 2's second exit criterion.** Rather than a toy microcode, the harness runs
+libdragon's real combined RSPQ+`rdpq` blob (vendored under
+`third_party/libdragon-rsp/`, Unlicense; assembled with `mips64-elf-gcc`, with the
+blob, symbol map, and `SHA256SUMS` committed and gated in CI). Golden references are
+grounded in **hardware docs, never another emulator** (ADR 0008).
+
+- **Boots to its idle `break`** (T-24-002, #51), reproducing the `rspq_start`
+  boot state in Rust, witnessed from an unreachable-as-pass baseline.
+- **DMAs and dispatches a command queue** (T-24-003 foundation, #52).
+- **Emits an RDP command list** (T-24-003/004, #53): an `rdpq` overlay command is
+  dispatched to its resident handler (the overlay "registered" with three DMEM
+  writes, reproducing `rspq_overlay_register_internal`), the command bytes are
+  DMA'd to an RDRAM output buffer, and `DP_END` is advanced through the DPC seam.
+  Two golden cases: `RDPQCmd_Passthrough8` (raw 8-byte forward) and
+  `RDPQCmd_SetFillColor32` (the microcode *generates* a `SET_FILL_COLOR` command,
+  byte-compared against N64brew's documented `0x37` encoding). Spec:
+  `docs/rspq-boot.md`, `docs/rsp.md`, `docs/rdp.md`.
+
+### Changed — infrastructure
+
+- **Antigravity PR reviewer** (#49, #50): a self-hosted-runner review workflow
+  (Gemini via Ultra) posting first-pass reviews as the `github-actions` bot, with
+  job-level concurrency + `flock`/retry so CodeRabbit comments no longer cancel it.
 
 ## [0.2.0] — 2026-07-21 — "Interpreter"
 

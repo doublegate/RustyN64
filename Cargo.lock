@@ -2233,25 +2233,25 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rustyn64-audio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.13.1",
 ]
 
 [[package]]
 name = "rustyn64-cart"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.13.1",
 ]
 
 [[package]]
 name = "rustyn64-cheevos"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "rustyn64-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rustyn64-audio",
  "rustyn64-cart",
@@ -2262,14 +2262,14 @@ dependencies = [
 
 [[package]]
 name = "rustyn64-cpu"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.13.1",
 ]
 
 [[package]]
 name = "rustyn64-frontend"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -2289,11 +2289,11 @@ dependencies = [
 
 [[package]]
 name = "rustyn64-netplay"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "rustyn64-rdp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.13.1",
  "rustyn64-cart",
@@ -2301,14 +2301,14 @@ dependencies = [
 
 [[package]]
 name = "rustyn64-rsp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.13.1",
 ]
 
 [[package]]
 name = "rustyn64-test-harness"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "insta",
  "rustyn64-core",
