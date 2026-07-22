@@ -9,6 +9,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the VI register file (Phase 3, T-31-004 part 1)
+
+- **The Video Interface register block is implemented** (`rustyn64_core::vi::Vi`,
+  wired to `0x0440_0000`): the sixteen registers `VI_CTRL`…`VI_STAGED_DATA` read
+  and write through the CPU bus. Writing `VI_V_CURRENT` acknowledges the VI
+  interrupt (`MI_INTR.vi = false`); cold-boot state is all-zero, so the VI is off
+  (`VI_CTRL.TYPE == 0`).
+- **Staged for the follow-up VI tickets:** `VI_V_CURRENT` advancing with the scan
+  position and the interrupt *firing* at `VI_V_INTR` (needs the scheduler's
+  fractional VI clock); framebuffer scan-out (which makes the FILL pipeline
+  observable); and per-register write masks (stored full-width for now, to be
+  pinned against n64-systemtest rather than guessed).
+
 ### Added — the RDP FILL pipeline (Phase 3, T-31-003)
 
 - **The RDP writes solid rectangles into the framebuffer.** `Set Color Image`

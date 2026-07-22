@@ -24,6 +24,8 @@ use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
 use rustyn64_rsp::Rsp;
 
+use crate::vi::Vi;
+
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
@@ -118,6 +120,9 @@ pub struct Bus {
     pub rsp: Rsp,
     /// The RDP rasterizer.
     pub rdp: Rdp,
+    /// The Video Interface register file (`0x0440_0000`). Scan-out and the
+    /// scheduler-driven scan position are follow-up VI tickets.
+    pub vi: Vi,
     /// The Audio Interface.
     pub audio: Audio,
     /// The cartridge (PI/SI + saves).
@@ -159,6 +164,7 @@ impl Default for Bus {
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
+            vi: Vi::new(),
             audio: Audio::new(),
             cart: Cart::new(),
             rcp: RcpRegs::default(),
@@ -377,6 +383,26 @@ impl Bus {
     /// Is this one of the eight DP command (`DPC_*`) registers?
     const fn is_dp_register(addr: u32) -> bool {
         addr >= Self::DP_REGS_BASE && addr < Self::DP_REGS_BASE + 0x20
+    }
+
+    /// Base of the VI register block (`0x0440_0000`); the AI follows at
+    /// `0x0450_0000`.
+    pub const VI_REGS_BASE: u32 = 0x0440_0000;
+
+    /// Is this address in the VI register block? The sixteen registers span
+    /// `0x0440_0000..0x0440_0040`; the rest of the `0x044x_xxxx` window mirrors
+    /// them (four-bit decode), which the word-offset mask in [`Vi::read`]
+    /// handles.
+    const fn is_vi_register(addr: u32) -> bool {
+        addr >= Self::VI_REGS_BASE && addr < 0x0450_0000
+    }
+
+    /// Write a VI register; a write to `VI_V_CURRENT` acknowledges the VI
+    /// interrupt (`MI_INTR.vi = false`).
+    const fn vi_write(&mut self, addr: u32, val: u32) {
+        if self.vi.write(addr >> 2, val) {
+            self.rcp.mi_intr.vi = false;
+        }
     }
 
     /// Apply a write to the SP register block, performing whatever it starts.
@@ -643,6 +669,9 @@ impl CpuBus for Bus {
         if Self::is_dp_register(addr) {
             return (self.rdp.dpc_read((addr >> 2) & 7) >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_vi_register(addr) {
+            return (self.vi.read(addr >> 2) >> (8 * (3 - (addr & 3)))) as u8;
+        }
         if addr & !3 == Self::SP_PC {
             return (self.rsp.sp.pc() >> (8 * (3 - (addr & 3)))) as u8;
         }
@@ -709,6 +738,9 @@ impl CpuBus for Bus {
         }
         if Self::is_dp_register(addr) {
             return self.rdp.dpc_read((addr >> 2) & 7);
+        }
+        if Self::is_vi_register(addr) {
+            return self.vi.read(addr >> 2);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -857,6 +889,10 @@ impl CpuBus for Bus {
         }
         if Self::is_dp_register(addr) {
             self.rdp.dpc_write((addr >> 2) & 7, val);
+            return;
+        }
+        if Self::is_vi_register(addr) {
+            self.vi_write(addr, val);
             return;
         }
         if addr & !3 == Self::SP_PC {
@@ -1016,6 +1052,66 @@ mod tests {
 
         bus.rcp.mi_mask.dp = true;
         assert!(CpuBus::poll_irq(&mut bus), "the masked DP line asserts IP2");
+    }
+
+    /// **VI registers round-trip through the CPU bus, and a `VI_V_CURRENT` write
+    /// acknowledges the VI interrupt.** The block is at `0x0440_0000`; a write to
+    /// `VI_V_CURRENT` (+0x10) clears `MI_INTR.vi`, the interrupt-ack path.
+    #[test]
+    fn vi_registers_round_trip_and_v_current_acks_the_interrupt() {
+        let mut bus = Bus::new();
+        // VI_ORIGIN (+0x04) is an ordinary latch.
+        CpuBus::write_u32(&mut bus, Bus::VI_REGS_BASE + 0x04, 0x0010_0000);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x04),
+            0x0010_0000,
+            "VI_ORIGIN round-trips"
+        );
+        // A pending VI interrupt is cleared by writing VI_V_CURRENT (+0x10).
+        bus.rcp.mi_intr.vi = true;
+        CpuBus::write_u32(&mut bus, Bus::VI_REGS_BASE + 0x10, 0x42);
+        assert!(
+            !bus.rcp.mi_intr.vi,
+            "writing VI_V_CURRENT acks the interrupt"
+        );
+        // ... and the write did not latch into V_CURRENT.
+        assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x10), 0);
+    }
+
+    /// **VI registers latch the whole word regardless of store size, and the
+    /// block mirrors every 16 words.** The VI is on the RCP-internal bus, so
+    /// `write_sized` routes 8-/16-/64-bit stores through `write_u32`; a byte read
+    /// recovers the addressed lane; a mirrored address decodes to the same
+    /// register; and a narrow `VI_V_CURRENT` write still acks without latching.
+    #[test]
+    fn vi_accesses_are_size_blind_and_mirrored() {
+        let mut bus = Bus::new();
+        // An 8-bit store to VI_WIDTH (+0x08) latches the shifted register across
+        // the whole word (RCP-internal, size-blind).
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x08, 1, 0x44);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x08),
+            0x4400_0000,
+            "SB latches the shifted register across the whole word"
+        );
+        // A word store (VI_WIDTH = 320 = 0x0000_0140), then a byte read recovers
+        // the addressed lane — the low byte at +0x0B is 0x40.
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x08, 4, 320);
+        assert_eq!(CpuBus::read_u8(&mut bus, Bus::VI_REGS_BASE + 0x0B), 0x40);
+        // A 64-bit store writes its upper word to VI_ORIGIN (+0x04).
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x04, 8, 0x0010_0000_DEAD_BEEF);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x04),
+            0x0010_0000
+        );
+        // The block mirrors every 16 words: +0x40 decodes to VI_CTRL (offset 0).
+        CpuBus::write_u32(&mut bus, Bus::VI_REGS_BASE + 0x40, 0x3);
+        assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE), 0x3);
+        // A narrow (8-bit) VI_V_CURRENT write still acks without latching.
+        bus.rcp.mi_intr.vi = true;
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x10, 1, 0x99);
+        assert!(!bus.rcp.mi_intr.vi, "a narrow VI_V_CURRENT write acks");
+        assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x10), 0);
     }
 }
 

@@ -258,11 +258,46 @@ RDRAM stores **9 bits per byte**; the hidden 9th bit holds per-pixel **coverage*
 (`ref-docs/research-report.md` §4, §8). The VI later uses coverage to blend
 silhouette edges. Model the 9th bit as a parallel coverage plane.
 
-### VI scan-out
+### VI registers and scan-out
 
-The VI reads the framebuffer at `VI_ORIGIN` in the format `VI_CONTROL`/
-`VI_STATUS` describe (bpp, AA mode, gamma, dither, divot enable), scales it,
-applies post-filters, and streams to the DAC (`ref-docs/research-report.md` §4):
+**The VI register file is implemented** (T-31-004, `rustyn64_core::vi::Vi`, wired
+to `0x0440_0000` by the Bus): the sixteen registers `VI_CTRL`…`VI_STAGED_DATA`,
+read and written through the CPU bus. All-size stores route through the Bus's
+size-blind RCP-internal path (`is_rcp_internal` covers `0x044x_xxxx`), so every
+access lands in the register file. One register has a side effect: **writing
+`VI_V_CURRENT` acknowledges the VI interrupt** (`MI_INTR.vi = false`). Cold-boot
+state is all-zero, so `VI_CTRL.TYPE == 0` and the VI is off.
+
+**Not here yet** (staged for the following VI tickets, called out so the register
+file is not mistaken for the whole VI):
+
+- **`VI_V_CURRENT` advancing** with the scan position and the VI interrupt
+  *firing* at `VI_V_INTR` need the scheduler's fractional VI clock — the VI pixel
+  clock (VCLK, ≈48.68 MHz NTSC) is off a separate crystal, not a rational
+  multiple of `MASTER_HZ` (N64brew *Video Interface* §Clocks; `docs/scheduler.md`,
+  which already names it the sole fractional-accumulator domain). Until then
+  `VI_V_CURRENT` reads back 0.
+- **Scan-out** (framebuffer → a presentable RGBA buffer, honouring
+  origin/width/scale/type) is the next VI ticket, which is what makes the FILL
+  pipeline observable.
+- **Per-register write masks are not applied** — the registers store the full
+  32-bit value written. This is an open residual (`docs/accuracy-ledger.md`
+  **R-4**): the masks the hardware enforces are pinned against n64-systemtest
+  rather than guessed.
+
+**Measured oracle effect:** the committed n64-systemtest runner
+(`crates/rustyn64-test-harness/tests/systemtest.rs`, the same one every prior
+`Failed: 0` claim uses) reports the suite-wide failing count **unchanged at 93 of
+917 started**, identical to `v0.3.0`. The register file alone flips no assertion,
+because the VI category tests exercise the exact write-masks (R-4, deferred) and a
+`VI_V_CURRENT` that advances (staged) — so this is necessary groundwork, not an
+oracle-visible change on its own.
+
+**Scan-out (target behaviour — not yet implemented).** The remainder of this
+section is the *spec* for the scan-out ticket above, not a description of current
+code. The VI will read the framebuffer at `VI_ORIGIN` in the format `VI_CONTROL`/
+`VI_STATUS` describe (bpp, AA mode, gamma, dither, divot enable), scale it, apply
+post-filters, and stream to the DAC (`ref-docs/research-report.md` §4):
 
 - **Anti-aliasing** — blends silhouette edges using the per-pixel coverage bit.
 - **Divot filter** — removes 1-pixel AA artifacts on silhouette edges via the
@@ -271,8 +306,8 @@ applies post-filters, and streams to the DAC (`ref-docs/research-report.md` §4)
   square") dither; applied only on full-coverage pixels.
 - Output is 320×240 or 640×480 (NTSC), up to 32-bit color.
 
-The VI must be **bit-exact with Angrylion** too — ParaLLEl-RDP reimplemented it to
-that standard (`ref-docs/research-report.md` §4).
+The scan-out must be **bit-exact with Angrylion** too — ParaLLEl-RDP reimplemented
+it to that standard (`ref-docs/research-report.md` §4).
 
 ## Edge cases and gotchas
 
