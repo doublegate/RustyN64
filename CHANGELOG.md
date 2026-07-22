@@ -9,6 +9,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — RDP texture state: TMEM, tile descriptors, state commands (Phase 3, T-32-001)
+
+- **The RDP gains its texture state and the three commands that describe it.**
+  `Rdp` now owns a 4 KiB TMEM and eight `TileDescriptor`s, and the dispatcher
+  handles `Set Texture Image` (0x3D), `Set Tile` (0x35), and `Set Tile Size`
+  (0x32) — decoding every field per the N64brew command tables. This is pure
+  state: no texel is loaded and no pixel changes yet (the loaders and sampler are
+  T-32-002..004). TMEM is a lazily-allocated `Option<Box<[u8; 4096]>>` so the
+  per-RCP-tick `core::mem::take` in `Bus::rdp_tick` stays cheap (a `None`
+  placeholder, no 4 KiB allocation or copy). Field-by-field unit tests pin each
+  decode; the n64-systemtest oracle is unchanged at 93 (nothing rendered changed).
+
 ### Added — the first golden frame (Phase 3, T-31-005)
 
 - **The Sprint-1 picture path is pinned by a committed golden.** A harness
