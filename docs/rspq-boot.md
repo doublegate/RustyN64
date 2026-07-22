@@ -61,23 +61,51 @@ hand-guessed.
 5. **Run** — `__rsp_run_async(0)`: `SP_PC ← 0` (the ucode entry = `_start`, IMEM
    0x000) and clear `SP_STATUS.HALT`.
 
-## Reaching idle
+## Two scopes: the minimal boot (T-24-002) vs the full bring-up (T-24-003)
 
-`_start` (`rsp_queue.inc:391`) checks `SIG_MORE`, DMAs a portion of the command
-list at `rspq_dram_addr` into the in-DMEM ring, and enters `RSPQ_Loop`
-(`:442`), dispatching each command through `rspq_ovl_table`. The kernel goes
-idle when the queue signals it has no more work; the exact terminating command
-and the resulting halt/`BREAK` state are the remaining T-24-002 finding, pinned
-against a run rather than assumed.
+The kernel entry doubles as its idle check (`rsp_queue.inc:391`,
+`RSPQCmd_WaitNewInput`):
 
-## Witnessing the boot (the T-24-002 test)
+```text
+_start:  li  $gp, 0
+         mfc0 t0, SP_STATUS
+         andi t0, SIG_MORE          # 0x4000
+         bnez t0, wakeup            # SIG_MORE set -> process the queue
+         li   t0, CLEAR_SIG_MORE    # (delay slot)
+         break                      # SIG_MORE clear -> "go to sleep" (idle)
+wakeup:  ...                        # fetch + DMA the queue, then RSPQ_Loop
+```
 
-Per ADR 0008, the witness must start from a state **unreachable as a pass** —
-`SP_STATUS` running (`HALT`/`BROKE` clear), `SP_PC` at `_start`, not the idle
-handler — and assert the *transition*: the kernel actually executed (its
-prologue `li $gp, 0` ran, `SP_PC` advanced into `RSPQ_Loop`, and the defined
-idle/`BREAK` state was reached). A microcode that never ran stays at `_start`,
-not idle, and fails — success and never-ran must not converge.
+- **Minimal boot (T-24-002, implemented).** `rspq_start` clears `SIG_MORE` at
+  boot (`rspq.c:548`), so with no queued work the `bnez` is not taken and the
+  kernel falls through to `break` — its documented idle state ("No new commands
+  yet, go to sleep", `rsp_queue.inc:403`). This path runs **entirely in the SU,
+  before any DMA**, so its only preconditions are: the blob in DMEM+IMEM,
+  `SP_PC = _start`, `SIG_MORE` clear, and the RSP un-halted. **No `rsp_queue_t`
+  patching, command queue, or Bus/RDRAM state is required.** The `break` lands at
+  IMEM `0x14`.
+- **Full bring-up (T-24-003, next).** To actually *process* a command list, the
+  CPU writes it to RDRAM, patches the `rsp_queue_t` DRAM pointers (above), sets
+  `SIG_MORE`, and un-halts. The kernel then takes `wakeup`, DMAs the queue into
+  the DMEM ring, and dispatches through `rspq_ovl_table` into `RSPQ_Loop`
+  (`:442`). Only this scope needs the patched boot state and a `System`-level run
+  with RDRAM.
+
+## Witnessing the minimal boot (the T-24-002 test)
+
+Per ADR 0008, the witness starts from a state **unreachable as a pass** —
+`SP_STATUS` running (`HALT`/`BROKE` clear), `SP_PC` at `_start` (0), and `$gp`
+holding a sentinel — and asserts the *transition*:
+
+- `BROKE` is set (not merely `HALTED`: a `SET_HALT` write would halt without a
+  `break`), so the kernel reached its idle `break`;
+- `SP_PC` advanced off `_start`;
+- `$gp` was overwritten to 0 by the `li $gp, 0` prologue (the sentinel is what
+  makes this non-vacuous — the register file starts zeroed).
+
+A microcode that never ran stays at `_start` with `$gp` still the sentinel, not
+`BROKE`; zeroed IMEM nops out the step budget. Success and never-ran cannot
+converge. (`tests/microcode.rs::the_microcode_boots_to_its_idle_break`.)
 
 ## Where this runs
 

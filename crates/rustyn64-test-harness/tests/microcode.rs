@@ -138,31 +138,58 @@ fn the_entry_point_is_real_code_and_the_data_section_is_populated() {
 fn the_microcode_boots_to_its_idle_break() {
     use rustyn64_core::System;
 
+    /// `$gp` — the register the prologue zeroes (`rsp_dmem_buf_ptr`).
+    const GP: usize = 28;
+    /// A generous bound: the SU-only path to the idle `break` is a handful of
+    /// instructions, so anything near this many steps means it never got there.
+    const MAX_BOOT_STEPS: usize = 1000;
+    /// A sentinel `$gp` distinct from the prologue's result, so the zero-check
+    /// below is only satisfied if `li $gp, 0` actually executed (not vacuously
+    /// true because the register file starts zeroed).
+    const GP_SENTINEL: u32 = 0xDEAD_BEEF;
+
+    assert!(
+        UCODE.len() >= IMEM_LMA,
+        "the blob must be at least one full DMEM ({IMEM_LMA:#x}) long"
+    );
+
     let mut sys = System::new(0);
     sys.bus.rsp.dmem[..IMEM_LMA].copy_from_slice(&UCODE[..IMEM_LMA]);
     let imem_len = UCODE.len() - IMEM_LMA;
     sys.bus.rsp.imem[..imem_len].copy_from_slice(&UCODE[IMEM_LMA..]);
 
-    // Unreachable-as-pass baseline: running, PC at _start.
+    // Unreachable-as-pass baseline: running (not halted, not broke), PC at
+    // `_start`, `$gp` holding a sentinel. The idle path is taken only when
+    // `SP_STATUS.SIG_MORE` is clear, which `System::new` leaves it — asserted
+    // here so the precondition is explicit rather than an unstated default.
+    sys.bus.rsp.su_regs[GP] = GP_SENTINEL;
     sys.bus.rsp.sp.set_pc(0);
     sys.bus.rsp.sp.set_halted(false);
     assert!(!sys.bus.rsp.sp.halted(), "baseline: the RSP starts running");
+    assert!(!sys.bus.rsp.sp.broke(), "baseline: BROKE is clear");
+    assert_eq!(
+        sys.bus.rsp.sp.status() & 0x4000,
+        0,
+        "baseline requires SIG_MORE (0x4000) clear so the kernel takes the idle path"
+    );
 
     let mut steps = 0;
-    while !sys.bus.rsp.sp.halted() && steps < 1000 {
+    while !sys.bus.rsp.sp.halted() && steps < MAX_BOOT_STEPS {
         sys.bus.rsp.tick();
         steps += 1;
     }
 
+    // The transition. `broke()` (not just `halted()`) is what proves the kernel
+    // reached a real `break`: a `SET_HALT` write would halt without it.
     assert!(
+        sys.bus.rsp.sp.broke(),
+        "the microcode must reach its idle `break` (BROKE) — halted={}, steps={steps}, PC={:#x}",
         sys.bus.rsp.sp.halted(),
-        "the microcode must reach its idle `break` (halted after {steps} steps, \
-         PC = {:#x})",
         sys.bus.rsp.sp.pc()
     );
     assert_ne!(sys.bus.rsp.sp.pc(), 0, "the PC must advance off _start");
     assert_eq!(
-        sys.bus.rsp.su_regs[28], 0,
-        "$gp must be zeroed by the `li $gp, 0` prologue"
+        sys.bus.rsp.su_regs[GP], 0,
+        "`li $gp, 0` must have run, overwriting the sentinel"
     );
 }
