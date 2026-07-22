@@ -11,7 +11,7 @@ runners rather than self-assessments:
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
 | n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 93 fail suite-wide, all cart/PIF/MI/RDP (Phase 3+) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
-| n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — across 917 tests started, 0 RSP-prefixed failures (was ~413 at Phase 1 close); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
+| n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — across 917 tests started, 0 RSP-prefixed failures (the suite-wide total, of which the RSP category was the bulk, fell from 413 to 93); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
 | CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares from the ELF entry | `cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored` |
 
 The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR
@@ -96,7 +96,7 @@ Commercial ROMs are blocked by three independent guards (`.gitignore`,
 `tests/roms/n64-systemtest/` is allowlisted, and a committed ROM must ship its
 upstream `LICENSE` beside it.
 
-**Three of these are executed by a gate today.** `basic.z64` from the
+**Three gates execute real results today.** `basic.z64` from the
 `dillon-n64-tests` corpus runs end to end, judged by its completion protocol
 (T-11-006). The **n64-systemtest** ROM runs under the committed `--test
 systemtest` runner and reports a real count (Phase 1 categories `Failed: 0`; RSP
