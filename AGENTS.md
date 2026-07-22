@@ -362,8 +362,7 @@ in this repo, which is worth fixing even when the suggested wording is not.
   state the template; the phase overviews instantiate it. Code TODOs use a separate
   subsystem-scoped form (`T-CPU-01`, `T-HARNESS-02`) for pre-ticket scaffolding.
 - Never commit commercial ROMs.
-- Versioning starts clean at v0.1.0 (now at v0.2.0) — RustyNES "v2.0 / engine-lineage" anchors are NOT this
+- Versioning starts clean at v0.1.0 (now at v0.3.0) — RustyNES "v2.0 / engine-lineage" anchors are NOT this
   project's releases.
 
 <<< MC-PROJECT-END >>>
-
