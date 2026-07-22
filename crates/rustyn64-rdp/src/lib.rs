@@ -47,7 +47,14 @@ pub const DP_STATUS_XBUS: u32 = 0x1;
 /// `DPC_STATUS.FREEZE` — the DP is halted; registers can be read/written freely
 /// without the command FIFO advancing.
 pub const DP_STATUS_FREEZE: u32 = 0x2;
-/// `DPC_STATUS.END_VALID` — an end address is latched and pending.
+/// `DPC_STATUS.END_VALID` (the wiki's `END_PENDING`, read bit 9) — an end
+/// address is latched behind an in-flight transfer.
+///
+/// Defined for the read-back layout but **not yet driven**: setting it requires
+/// tracking a transfer *in progress*, which only exists once the rasterizer
+/// runs (`tick` is a stub). It therefore always reads 0 today, which is exactly
+/// what n64-systemtest's frozen `start-valid` case expects; the set/clear
+/// transition lands with the FIFO drain.
 pub const DP_STATUS_END_VALID: u32 = 0x200;
 /// `DPC_STATUS.START_VALID` — a start address is latched and pending; further
 /// writes to `DPC_START` are ignored until it is consumed by a `DPC_END` write.

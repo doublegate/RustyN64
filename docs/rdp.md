@@ -69,8 +69,14 @@ against n64-systemtest's `RSP STATUS: start-valid` and `RDP START & END REG
   =0x4, `SET_XBUS`=0x2/`CLEAR_XBUS`=0x1), distinct from the status bits read back
   (*Interface* §DPC_STATUS write layout). `FREEZE` (read bit 1) halts `tick`,
   which is what lets software read and rewrite the registers without the FIFO
-  moving. The FLUSH/TMEM/PIPE/CMD/CLOCK-counter command bits arrive with the
-  FIFO drain.
+  moving.
+
+**Not modelled yet** (all read back as 0, which the frozen `start-valid` case
+tolerates, but none are driven): the `SET_FLUSH`/`CLR_FLUSH`,
+`CLR_TMEM_BUSY`/`CLR_PIPE_BUSY`, `CLR_CMD_CTR`, and `CLR_CLOCK_CTR` status
+commands, and the `END_VALID`/`CMD_BUSY`/`PIPE_BUSY`/`CBUF_READY` read bits.
+These need a running transfer to have meaning, so they arrive with the FIFO
+drain and the rasterizer — not with this register file.
 
 ## State
 
