@@ -1000,8 +1000,10 @@ mod tests {
     }
 
     /// **Degenerate and empty rectangles write nothing.** An inverted rectangle
-    /// (`ulx > lrx`), an inverted scissor, and a rectangle disjoint from the
-    /// scissor all produce a zero-area intersection, so no pixel is written.
+    /// (`ulx > lrx`), an inverted scissor (`ul* > lr*`), and a rectangle disjoint
+    /// from the scissor each yield an empty pixel span, so no pixel is written.
+    /// The span emptiness — not the early-return, which is a redundant fast path
+    /// over Rust's empty `for` ranges — is what these assert.
     #[test]
     fn fill_rectangle_degenerate_bounds_write_nothing() {
         // Inverted rectangle: upper-left past lower-right.
@@ -1012,6 +1014,15 @@ mod tests {
             fill_rect(6, 3, 2, 1), // ulx>lrx, uly>lry
         ]);
         assert!(bus.mem[0..128].iter().all(|&b| b == 0), "inverted rect");
+
+        // Inverted scissor: upper-left past lower-right.
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(6, 3, 2, 1), // sulx>slrx, suly>slry
+            fill_rect(0, 0, 8, 4),
+        ]);
+        assert!(bus.mem[0..128].iter().all(|&b| b == 0), "inverted scissor");
 
         // Rectangle entirely to the left of the scissor: empty intersection.
         let (_, bus) = run_commands(&[
