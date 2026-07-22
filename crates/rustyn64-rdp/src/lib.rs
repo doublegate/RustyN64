@@ -91,19 +91,81 @@ const OP_SYNC_PIPE: u8 = 0x27;
 const OP_SYNC_TILE: u8 = 0x28;
 const OP_SYNC_FULL: u8 = 0x29;
 const OP_SET_SCISSOR: u8 = 0x2D;
+const OP_SET_TILE_SIZE: u8 = 0x32;
+const OP_SET_TILE: u8 = 0x35;
 const OP_FILL_RECTANGLE: u8 = 0x36;
 const OP_SET_FILL_COLOR: u8 = 0x37;
+const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
 const OP_SET_COLOR_IMAGE: u8 = 0x3F;
+
+/// TMEM size in bytes — 4 KiB of on-chip texture memory.
+///
+/// Addressed as 512 64-bit words. The upper half (byte >= 0x800 / word >= 0x100)
+/// holds TLUTs and the high halves of 32-bit / YUV textures (N64brew
+/// *…/Commands* §Set Tile).
+pub const TMEM_SIZE: usize = 4096;
+
+/// One of the RDP's eight tile descriptors.
+///
+/// The format/size/addressing state that binds a region of TMEM to a texture,
+/// set by `Set Tile` (0x35) and sized by `Set Tile Size` (0x32) / the load
+/// commands. All fields are decoded straight from the command word (N64brew
+/// *…/Commands* §0x35/§0x32).
+// The four bools are the hardware's four independent clamp/mirror bit-flags (one
+// clamp + one mirror per S/T axis); they are decoded straight from command bits
+// 8/9/18/19, so an enum would misrepresent the register rather than clarify it.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TileDescriptor {
+    /// Texel format: RGBA=0, YUV=1, CI=2, IA=3, I=4 (`Set Tile` bits 55:53).
+    pub format: u8,
+    /// Texel size code: 4bpp=0, 8bpp=1, 16bpp=2, 32bpp=3 (bits 52:51).
+    pub size: u8,
+    /// Row stride in 64-bit TMEM words (bits 49:41).
+    pub line: u16,
+    /// Base TMEM address in 64-bit words (bits 40:32); word 0x100 = byte 0x800.
+    pub tmem_addr: u16,
+    /// Palette index, the high half of the TLUT address for CI4 tiles only
+    /// (bits 23:20).
+    pub palette: u8,
+    // T-axis fields precede S-axis, matching the command word's MSB→LSB order
+    // (T in bits 19:10, S in bits 9:0) and the `set_tile` decoder.
+    /// Clamp T when sampling outside the tile (bit 19).
+    pub clamp_t: bool,
+    /// Mirror T on every other wrap (bit 18).
+    pub mirror_t: bool,
+    /// Number of T integer-coordinate bits used for wrap; 0 = all (bits 17:14).
+    pub mask_t: u8,
+    /// T coordinate shift code, per the shift table (bits 13:10).
+    pub shift_t: u8,
+    /// Clamp S when sampling outside the tile (bit 9).
+    pub clamp_s: bool,
+    /// Mirror S on every other wrap (bit 8).
+    pub mirror_s: bool,
+    /// Number of S integer-coordinate bits used for wrap; 0 = all (bits 7:4).
+    pub mask_s: u8,
+    /// S coordinate shift code, per the shift table (bits 3:0).
+    pub shift_s: u8,
+    /// Tile-size upper-left S (`u10.2`), from `Set Tile Size` / the loaders.
+    pub sl: u16,
+    /// Tile-size upper-left T (`u10.2`).
+    pub tl: u16,
+    /// Tile-size lower-right S (`u10.2`).
+    pub sh: u16,
+    /// Tile-size lower-right T (`u10.2`).
+    pub th: u16,
+}
 
 /// RDP state (skeleton).
 ///
 /// Holds the command-FIFO pointers, the current render mode (other-modes),
-/// scissor rectangle, and the color-image / Z-image RDRAM addresses. TMEM and
-/// the per-tile descriptors come with the texture engine in a later phase.
-/// `#[non_exhaustive]`: this render state grows every sprint (TMEM, tiles,
-/// other-modes, the combiner latches are still to come), so adding a field must
-/// not be a breaking change. Construct via [`Rdp::new`]; the workspace never
-/// uses a struct literal.
+/// scissor rectangle, the color-image / Z-image RDRAM addresses, the
+/// texture-image source registers, the eight tile descriptors, and TMEM. The
+/// texel loads and the sampler/combiner that consume this state land in the rest
+/// of the sprint. `#[non_exhaustive]`: this render state grows every sprint
+/// (other-modes and the combiner latches are still to come), so adding a field
+/// must not be a breaking change. Construct via [`Rdp::new`]; the workspace
+/// never uses a struct literal.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Rdp {
@@ -158,10 +220,26 @@ pub struct Rdp {
     /// derives a clock from it, and it does not touch the derive-don't-increment
     /// rule (only `master_ticks` is ever incremented; ADR 0006).
     pub stall: u32,
-    // TODO(T-RDP-03): remaining render state — TMEM (4 KiB), the 8 tile
-    // descriptors, the other-modes word (cycle type, combiner mux, blend mode),
-    // and the combiner/blender latches — arrives with the texture engine and
-    // combiner (Sprint 2/3); see `docs/rdp.md`.
+    /// Texture-image (`Set Texture Image`, 0x3D) format code — the RDRAM source
+    /// for texture loads. The wiki notes this format has no effect on any
+    /// operation (only the tile format matters); stored for completeness.
+    pub tex_image_format: u8,
+    /// Texture-image texel size code (0x3D size\[1:0\]): 4/8/16/32bpp = 0/1/2/3.
+    /// Drives the per-texel address stride during a load.
+    pub tex_image_size: u8,
+    /// Texture-image width in pixels (0x3D width\[9:0\] + 1); the row stride of
+    /// the RDRAM source during a load.
+    pub tex_image_width: u16,
+    /// Texture-image base address in RDRAM (0x3D dramAddress\[23:0\]).
+    pub tex_image_addr: u32,
+    /// The eight tile descriptors (`Set Tile` / `Set Tile Size` / the loaders).
+    pub tiles: [TileDescriptor; 8],
+    /// On-chip texture memory (4 KiB). **Lazily allocated**: `None` until the
+    /// first byte is written, and read as all-zero while `None`. This keeps
+    /// [`Rdp`]'s `Default` cheap, which matters because `Bus::rdp_tick` does a
+    /// `core::mem::take` every RCP step — a `None` placeholder is swapped in with
+    /// no 4 KiB allocation or copy, while the real TMEM box moves by pointer.
+    tmem: Option<alloc::boxed::Box<[u8; TMEM_SIZE]>>,
 }
 
 impl Rdp {
@@ -358,6 +436,17 @@ impl Rdp {
                 self.scissor_lry = (lo & 0xFFF) as u16;
             }
             OP_FILL_RECTANGLE => self.fill_rectangle(hi, lo, bus),
+            OP_SET_TEXTURE_IMAGE => {
+                // Same field layout as Set Color Image: format[55:53] = hi
+                // 23:21, size[52:51] = hi 20:19, width[41:32] = hi 9:0 (minus
+                // one), dramAddress[23:0] = lo 23:0.
+                self.tex_image_format = ((hi >> 21) & 0x7) as u8;
+                self.tex_image_size = ((hi >> 19) & 0x3) as u8;
+                self.tex_image_width = ((hi & 0x3FF) as u16).wrapping_add(1);
+                self.tex_image_addr = lo & 0x00FF_FFFF;
+            }
+            OP_SET_TILE => self.set_tile(hi, lo),
+            OP_SET_TILE_SIZE => self.set_tile_size(hi, lo),
             // TODO(T-31-004): remaining opcodes are recognised and
             // length-consumed by `tick`, but not yet dispatched — an
             // intentional, documented no-op at this stage, not a silent discard.
@@ -450,6 +539,58 @@ impl Rdp {
                 }
             }
         }
+    }
+
+    /// Apply a `Set Tile` (0x35): decode the descriptor at `index` (bits 26:24)
+    /// from the command word. Pure state — no texel is moved (that is the load
+    /// commands). Field layout: format 55:53, size 52:51, line 49:41, TMEM
+    /// address 40:32; then per-axis clamp/mirror/mask/shift with T in bits 19:10
+    /// and S in bits 9:0 (N64brew *…/Commands* §0x35).
+    fn set_tile(&mut self, hi: u32, lo: u32) {
+        let index = ((lo >> 24) & 0x7) as usize;
+        self.tiles[index] = TileDescriptor {
+            format: ((hi >> 21) & 0x7) as u8,
+            size: ((hi >> 19) & 0x3) as u8,
+            line: ((hi >> 9) & 0x1FF) as u16,
+            tmem_addr: (hi & 0x1FF) as u16,
+            palette: ((lo >> 20) & 0xF) as u8,
+            clamp_t: (lo >> 19) & 1 != 0,
+            mirror_t: (lo >> 18) & 1 != 0,
+            mask_t: ((lo >> 14) & 0xF) as u8,
+            shift_t: ((lo >> 10) & 0xF) as u8,
+            clamp_s: (lo >> 9) & 1 != 0,
+            mirror_s: (lo >> 8) & 1 != 0,
+            mask_s: ((lo >> 4) & 0xF) as u8,
+            shift_s: (lo & 0xF) as u8,
+            // Set Tile does not touch the tile-size coords; preserve them.
+            ..self.tiles[index]
+        };
+    }
+
+    /// Apply a `Set Tile Size` (0x32): the clamp/mask/mirror extents for the
+    /// descriptor at `index` (bits 26:24). Upper-left `SL`/`TL` in bits 55:44 /
+    /// 43:32, lower-right `SH`/`TH` in bits 23:12 / 11:0, all `u10.2` (N64brew
+    /// *…/Commands* §0x32).
+    fn set_tile_size(&mut self, hi: u32, lo: u32) {
+        let index = ((lo >> 24) & 0x7) as usize;
+        let tile = &mut self.tiles[index];
+        tile.sl = ((hi >> 12) & 0xFFF) as u16;
+        tile.tl = (hi & 0xFFF) as u16;
+        tile.sh = ((lo >> 12) & 0xFFF) as u16;
+        tile.th = (lo & 0xFFF) as u16;
+    }
+
+    /// Read one byte of TMEM.
+    ///
+    /// `offset` is a **byte** address (0..[`TMEM_SIZE`]), masked into the 4 KiB
+    /// space — *not* the 64-bit-word address that `Set Tile`'s `tmem_addr` /
+    /// `line` use; a word address must be multiplied by 8 first (word 0x100 =
+    /// byte 0x800). An unwritten (lazily-unallocated) TMEM reads as zero.
+    #[must_use]
+    pub fn tmem_byte(&self, offset: usize) -> u8 {
+        self.tmem
+            .as_ref()
+            .map_or(0, |t| t[offset & (TMEM_SIZE - 1)])
     }
 }
 
@@ -1058,5 +1199,138 @@ mod tests {
         rdp.cmd_end = CMD_BASE + 8;
         rdp.tick(&mut bus);
         assert!(bus.mem[0..64].iter().all(|&b| b == 0), "width 0: no write");
+    }
+
+    // ---- T-32-001: texture state (TMEM, tile descriptors, state commands) ----
+
+    /// **TMEM is zero at power-on and unallocated.** The lazy `Option<Box<..>>`
+    /// reads as all-zero while `None`, so a fresh RDP sees a blank TMEM without
+    /// having paid a 4 KiB allocation.
+    #[test]
+    fn tmem_is_zero_and_unallocated_at_power_on() {
+        let rdp = Rdp::new();
+        assert!(rdp.tmem.is_none(), "no TMEM box allocated at power-on");
+        assert_eq!(rdp.tmem_byte(0), 0);
+        assert_eq!(rdp.tmem_byte(0x800), 0, "high half zero too");
+        assert_eq!(rdp.tmem_byte(TMEM_SIZE - 1), 0, "last byte zero");
+    }
+
+    /// **`Set Tile` (0x35) decodes every field into the addressed descriptor.**
+    /// Each field is seeded with a distinct value so a swapped bit range shows
+    /// up as a wrong field, not a coincidental match. Word built here from the
+    /// N64brew field table, independent of the decoder.
+    #[test]
+    fn set_tile_decodes_all_fields() {
+        // format=3 size=2 line=0x1F addr=0x100 | index=5 palette=0xA
+        // clamp_t=1 mirror_t=0 mask_t=7 shift_t=3 | clamp_s=0 mirror_s=1
+        // mask_s=5 shift_s=9
+        let mut rdp = Rdp::new();
+        rdp.set_tile(0x3570_3F00, 0x05A9_CD59);
+        let expected = TileDescriptor {
+            format: 3,
+            size: 2,
+            line: 0x1F,
+            tmem_addr: 0x100,
+            palette: 0xA,
+            clamp_t: true,
+            mirror_t: false,
+            mask_t: 7,
+            shift_t: 3,
+            clamp_s: false,
+            mirror_s: true,
+            mask_s: 5,
+            shift_s: 9,
+            sl: 0,
+            tl: 0,
+            sh: 0,
+            th: 0,
+        };
+        assert_eq!(rdp.tiles[5], expected, "descriptor 5 fully decoded");
+        // Only the addressed descriptor is touched.
+        for (i, t) in rdp.tiles.iter().enumerate() {
+            if i != 5 {
+                assert_eq!(*t, TileDescriptor::default(), "tile {i} untouched");
+            }
+        }
+    }
+
+    /// **`Set Tile Size` (0x32) decodes SL/TL/SH/TH for the addressed
+    /// descriptor** and leaves the format/addressing fields alone.
+    #[test]
+    fn set_tile_size_decodes_coords() {
+        let mut rdp = Rdp::new();
+        // Seed descriptor 2's addressing fields to non-zero first, so the
+        // preservation check is real: if Set Tile Size wrongly cleared them this
+        // catches it, whereas asserting `== 0` on a fresh descriptor could not.
+        rdp.set_tile(0x3570_3F00, 0x02A9_CD59); // index 2: format=3 size=2 line=0x1F addr=0x100
+        // SL=0x123 TL=0x045 | index=2 SH=0x678 TH=0x0AB
+        rdp.set_tile_size(0x3212_3045, 0x0267_80AB);
+        let t = rdp.tiles[2];
+        assert_eq!(
+            (t.sl, t.tl, t.sh, t.th),
+            (0x123, 0x045, 0x678, 0x0AB),
+            "coords updated"
+        );
+        assert_eq!(t.format, 3, "Set Tile Size preserves format");
+        assert_eq!(t.size, 2, "preserves size");
+        assert_eq!(t.line, 0x1F, "preserves line");
+        assert_eq!(t.tmem_addr, 0x100, "preserves tmem_addr");
+    }
+
+    /// **`Set Tile` preserves the tile-size coords** — the two commands write
+    /// disjoint parts of the same descriptor, so a `Set Tile` after a `Set Tile
+    /// Size` must not clear SL/TL/SH/TH (the `..self.tiles[index]` spread).
+    #[test]
+    fn set_tile_preserves_tile_size_coords() {
+        let mut rdp = Rdp::new();
+        rdp.set_tile_size(0x3212_3045, 0x0267_80AB); // seeds tiles[2] coords
+        rdp.set_tile(0x3570_3F00, 0x02A9_CD59); // index bits -> descriptor 2
+        let t = rdp.tiles[2];
+        assert_eq!(t.format, 3, "Set Tile applied");
+        assert_eq!(
+            (t.sl, t.tl, t.sh, t.th),
+            (0x123, 0x045, 0x678, 0x0AB),
+            "tile-size coords survive a later Set Tile"
+        );
+    }
+
+    /// **`Set Texture Image` (0x3D) decodes format/size/width/addr.** Same field
+    /// layout as Set Color Image; width is a field+1 pixel count.
+    #[test]
+    fn set_texture_image_decodes_fields() {
+        // format=4 size=1 width_field=0x13F (-> 0x140) addr=0x654321
+        let mut rdp = Rdp::new();
+        let mut bus = NullBus;
+        rdp.dispatch(OP_SET_TEXTURE_IMAGE, 0x3D88_013F, 0x0065_4321, &mut bus);
+        assert_eq!(rdp.tex_image_format, 4);
+        assert_eq!(rdp.tex_image_size, 1);
+        assert_eq!(rdp.tex_image_width, 0x140, "width is field + 1");
+        assert_eq!(rdp.tex_image_addr, 0x0065_4321);
+    }
+
+    /// **The dispatcher routes 0x35 and 0x32 to the right handlers.** The
+    /// field-level tests call `set_tile` / `set_tile_size` directly; this drives
+    /// the actual `dispatch` entry point, so a mis-wired opcode arm (0x35 sent to
+    /// the size handler, or 0x32 to the tile handler) is caught, not only a
+    /// decode bug. The inputs distinguish the two: `Set Tile` sets `format = 3`
+    /// which `Set Tile Size` must leave alone, and `Set Tile Size` sets coords
+    /// that `Set Tile` does not.
+    #[test]
+    fn dispatch_routes_set_tile_and_set_tile_size() {
+        let mut rdp = Rdp::new();
+        let mut bus = NullBus;
+        rdp.dispatch(OP_SET_TILE, 0x3570_3F00, 0x02A9_CD59, &mut bus); // index 2
+        assert_eq!(rdp.tiles[2].format, 3, "0x35 routed to set_tile");
+        assert_eq!(rdp.tiles[2].line, 0x1F, "and decoded its fields");
+        rdp.dispatch(OP_SET_TILE_SIZE, 0x3212_3045, 0x0267_80AB, &mut bus); // index 2
+        assert_eq!(
+            (rdp.tiles[2].sl, rdp.tiles[2].th),
+            (0x123, 0x0AB),
+            "0x32 routed to set_tile_size"
+        );
+        assert_eq!(
+            rdp.tiles[2].format, 3,
+            "set_tile_size did not clobber the tile format (distinct routing)"
+        );
     }
 }

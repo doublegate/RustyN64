@@ -211,19 +211,57 @@ flips no assertion on its own: the RDP-category tests verify rendered output,
 which needs VI scan-out (T-31-004) and more of the pipeline before a fill becomes
 observable to the suite. Measured, not assumed.
 
+### The texture-state commands (T-32-001)
+
+The RDP gains its texture state — a 4 KiB TMEM and eight tile descriptors — and the
+three commands that describe it without moving any texels. Provenance is N64brew
+*…/Commands* §0x3D/0x35/0x32.
+
+- **`Set Texture Image`** (0x3D) latches the RDRAM source for subsequent loads:
+  `format` (55:53), `size` (52:51), `width` (41:32, field + 1 pixels), and
+  `dramAddress` (23:0) — the same field layout as `Set Color Image`. The wiki notes
+  the texture-image `format` has no effect on any operation (only the tile format
+  matters); it is stored for completeness.
+- **`Set Tile`** (0x35) decodes the descriptor at `index` (26:24): `format` (55:53),
+  `size` (52:51), `line` (49:41, row stride in 64-bit TMEM words), `tmem_addr`
+  (40:32, base in 64-bit words — word 0x100 = byte 0x800), `palette` (23:20, the
+  high half of the TLUT address for CI4 only), and per-axis `clamp`/`mirror`/`mask`/
+  `shift` with **T in bits 19:10** and **S in bits 9:0**. It preserves the tile-size
+  coordinates, which are a disjoint part of the same descriptor.
+- **`Set Tile Size`** (0x32) latches the clamp/mask/mirror extents for the descriptor
+  at `index`: upper-left `SL`/`TL` (55:44 / 43:32) and lower-right `SH`/`TH`
+  (23:12 / 11:0), all `u10.2`.
+
+**TMEM is lazily allocated.** The 4 KiB buffer is an `Option<Box<[u8; 4096]>>` that
+starts `None` (read as all-zero) and is allocated on the first write. This keeps
+`Rdp`'s `Default` cheap, which matters because `Bus::rdp_tick` does a
+`core::mem::take` every RCP step — a `None` placeholder swaps in without a 4 KiB
+allocation or copy, while the real TMEM box moves by pointer. TMEM byte addresses
+mask into the 4 KiB space.
+
+Scope limits, honestly: this ticket is **pure state** — no texel is loaded (that is
+`Load Block`/`Load Tile`/`Load TLUT`, T-32-002/003) and no pixel is sampled (the
+sampler + `Texture Rectangle`, T-32-004). The oracle count stays **93** because
+nothing rendered changes.
+
 ## State
 
-Beyond the skeleton FIFO pointers + image bases (the rest is marked TODO):
+Implemented (the FIFO pointers + image bases, plus the texture state below);
+the rest is still marked TODO:
 
-- **TMEM** — 4 KiB texture memory, up to 8 tiles; with a TLUT (palette) the first
-  2 KiB is the lookup table. Formats: RGBA (16/32-bit), IA, I, CI at
-  4/8/16/32 bpp (`ref-docs/research-report.md` §4).
+- **TMEM** — 4 KiB texture memory (**present**, T-32-001; lazily allocated). With
+  a TLUT (palette) the upper half is the lookup table. Formats: RGBA (16/32-bit),
+  IA, I, CI at 4/8/16/32 bpp (`ref-docs/research-report.md` §4) — decoded by the
+  texel-format engine (T-32-003).
 - **8 tile descriptors** — format, size, line stride, TMEM address, palette,
-  clamp/mirror/wrap + mask/shift per S/T axis.
+  clamp/mirror + mask/shift per S/T axis, and the tile-size coords (**present**,
+  T-32-001). Set by `Set Tile` (0x35) and `Set Tile Size` (0x32).
+- **Texture-image registers** — the RDRAM load source (`Set Texture Image`, 0x3D):
+  format, size, width, address (**present**, T-32-001).
 - **Other-modes** — the big mode word: cycle type, combiner mux selects, blend
-  mode, Z-mode, AA/coverage mode, dither selects, alpha-compare.
-- **Combiner latches** — the two-stage color/alpha mux input selects.
-- **Blender latches** — translucency / fog / AA-edge / dither config.
+  mode, Z-mode, AA/coverage mode, dither selects, alpha-compare. (TODO, Sprint 3.)
+- **Combiner latches** — the two-stage color/alpha mux input selects. (TODO.)
+- **Blender latches** — translucency / fog / AA-edge / dither config. (TODO.)
 - **Scissor rectangle** + the fill/primitive/environment/fog/blend colors.
 
 ## Behavior
