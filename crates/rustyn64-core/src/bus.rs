@@ -28,8 +28,10 @@ use crate::vi::{self, Vi};
 
 /// Expand a 5-bit colour channel to 8 bits, replicating the high bits into the
 /// low so 0x1F maps to 0xFF (not 0xF8) — the standard RGBA5551 → RGBA8 widening.
+/// Masks to 5 bits first, so an out-of-range argument cannot overflow the shift.
 const fn expand5(v5: u8) -> u8 {
-    (v5 << 3) | (v5 >> 2)
+    let v = v5 & 0x1F;
+    (v << 3) | (v >> 2)
 }
 
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
@@ -421,6 +423,10 @@ impl Bus {
     /// copy). `TYPE` 0/1 is blank — returns `(0, 0)` and writes nothing, the
     /// caller keeps a black frame.
     ///
+    /// Returns `(0, 0)` and writes nothing when the VI is blanked, the width or
+    /// height is zero, or `out` is smaller than `width * height * 4` — a caller
+    /// that gets a non-zero size can trust the whole frame was written.
+    ///
     /// **Scope:** a 1:1 scan (no `VI_X_SCALE`/`VI_Y_SCALE` resampling) and no
     /// AA/divot/de-dither post-filter — those are later VI work, recorded as
     /// open residual R-5 in `docs/accuracy-ledger.md`. Byte-exact for the direct
@@ -439,14 +445,17 @@ impl Bus {
         if width == 0 || height == 0 {
             return (0, 0);
         }
+        // Refuse an undersized destination up front rather than write a
+        // truncated frame and claim full dimensions; this also keeps the
+        // per-pixel loop bounds-check-free.
+        if out.len() < (width as usize) * (height as usize) * 4 {
+            return (0, 0);
+        }
         let stride = width * bpp;
         for y in 0..height {
             for x in 0..width {
                 let src = origin.wrapping_add(y * stride).wrapping_add(x * bpp);
                 let dst = ((y * width + x) * 4) as usize;
-                if dst + 4 > out.len() {
-                    return (width, height);
-                }
                 if bpp == 2 {
                     let px = (u16::from(self.rdram_read(src)) << 8)
                         | u16::from(self.rdram_read(src.wrapping_add(1)));
@@ -455,9 +464,8 @@ impl Bus {
                     out[dst + 2] = expand5(((px >> 1) & 0x1F) as u8);
                     out[dst + 3] = if px & 1 == 1 { 0xFF } else { 0 };
                 } else {
-                    for i in 0..4 {
-                        out[dst + i as usize] = self.rdram_read(src.wrapping_add(i));
-                    }
+                    // 32-bit RGBA8888 is a direct big-endian copy.
+                    out[dst..dst + 4].copy_from_slice(&self.rdram_read_u32(src).to_be_bytes());
                 }
             }
         }
@@ -1213,6 +1221,20 @@ mod tests {
         let mut out = alloc::vec![0u8; 16];
         assert_eq!(bus.scanout(&mut out), (0, 0), "VI off: no frame");
         assert!(out.iter().all(|&b| b == 0), "nothing written");
+    }
+
+    /// **An undersized destination is refused up front.** Rather than write a
+    /// truncated frame and claim full dimensions, `scanout` returns `(0, 0)` and
+    /// writes nothing when `out` cannot hold `width * height * 4` bytes.
+    #[test]
+    fn scanout_refuses_an_undersized_buffer() {
+        let mut bus = Bus::new();
+        bus.vi.regs[vi::VI_CTRL as usize] = 3; // 32-bit
+        bus.vi.regs[vi::VI_WIDTH as usize] = 2;
+        bus.vi.regs[vi::VI_V_VIDEO as usize] = 4; // h = 2 -> needs 2*2*4 = 16 bytes
+        let mut out = alloc::vec![0xFFu8; 8]; // too small (< 16)
+        assert_eq!(bus.scanout(&mut out), (0, 0), "undersized: refused");
+        assert!(out.iter().all(|&b| b == 0xFF), "and left untouched");
     }
 }
 
