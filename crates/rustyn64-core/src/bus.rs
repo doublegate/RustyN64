@@ -362,6 +362,15 @@ impl Bus {
         addr >= Self::SP_REGS_BASE && addr < Self::SP_REGS_BASE + 0x20
     }
 
+    /// Base of the DP command registers (`0x0410_0000`): START, END, CURRENT,
+    /// STATUS, then the (unmodelled) CLOCK/BUSY/PIPE/TMEM counters.
+    pub const DP_REGS_BASE: u32 = 0x0410_0000;
+
+    /// Is this one of the eight DP command (`DPC_*`) registers?
+    const fn is_dp_register(addr: u32) -> bool {
+        addr >= Self::DP_REGS_BASE && addr < Self::DP_REGS_BASE + 0x20
+    }
+
     /// Apply a write to the SP register block, performing whatever it starts.
     ///
     /// Two effects can come from one write and they are collected separately:
@@ -623,6 +632,9 @@ impl CpuBus for Bus {
         if Self::is_mi_register(addr) {
             return (self.mi_read(addr) >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_dp_register(addr) {
+            return (self.rdp.dpc_read((addr >> 2) & 7) >> (8 * (3 - (addr & 3)))) as u8;
+        }
         if addr & !3 == Self::SP_PC {
             return (self.rsp.sp.pc() >> (8 * (3 - (addr & 3)))) as u8;
         }
@@ -686,6 +698,9 @@ impl CpuBus for Bus {
         }
         if Self::is_mi_register(addr) {
             return self.mi_read(addr);
+        }
+        if Self::is_dp_register(addr) {
+            return self.rdp.dpc_read((addr >> 2) & 7);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -830,6 +845,10 @@ impl CpuBus for Bus {
         }
         if Self::is_mi_register(addr) {
             self.mi_write(addr, val);
+            return;
+        }
+        if Self::is_dp_register(addr) {
+            self.rdp.dpc_write((addr >> 2) & 7, val);
             return;
         }
         if addr & !3 == Self::SP_PC {

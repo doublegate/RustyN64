@@ -44,6 +44,26 @@ The DP interface registers (`ref-docs/research-report.md` §2): `DPC_START`/
 RDP consumes it; `DPC_STATUS` carries the run/freeze/flush bits. The RDP raises
 the DP interrupt when the command buffer drains (`SYNC_FULL`).
 
+**The `DPC_*` register file is implemented** (`Rdp::dpc_read`/`dpc_write`, wired
+to `0x0410_0000` by the Bus); the rasterizer behind it is still a stub. The
+command-FIFO submission is a **double-latch** that n64-systemtest's `RSP STATUS:
+start-valid` and `RDP START & END REG (masking)` pin exactly:
+
+- `DPC_START`/`DPC_END` writes mask to `0x00FF_FFF8` (a 24-bit, 8-aligned RDRAM
+  address).
+- Writing `DPC_START` latches the address and sets `START_VALID` **only if it
+  was clear** — a second write while valid is *ignored*, so software cannot
+  clobber a queued start.
+- Writing `DPC_END` latches the end, copies the pending start into
+  `DPC_CURRENT`, and clears `START_VALID`. On unfrozen hardware this also starts
+  the RDP; while frozen it only latches, and `END_VALID` stays clear because a
+  frozen FIFO never advances to consume it.
+- `DPC_STATUS` writes are set/clear **commands** (`SET_FREEZE`/`CLEAR_FREEZE`,
+  `SET_XBUS`/`CLEAR_XBUS`), distinct from the status bits read back. `FREEZE`
+  halts `tick`, which is what lets software read and rewrite the registers
+  without the FIFO moving. The FLUSH/TMEM/PIPE/CMD/CLOCK-counter command bits
+  arrive with the FIFO drain.
+
 ## State
 
 Beyond the skeleton FIFO pointers + image bases (the rest is marked TODO):
