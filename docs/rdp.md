@@ -32,8 +32,16 @@ pub struct Rdp {
     pub cmd_end: u32,     // DPC_END
     pub cmd_current: u32, // DPC_CURRENT
     pub status: u32,      // DPC_STATUS (FREEZE, START/END-valid, XBUS, ...)
-    pub color_image: u32, // SET_COLOR_IMAGE base in RDRAM
-    pub z_image: u32,     // SET_Z_IMAGE base in RDRAM
+    pub color_image: u32,        // Set Color Image base in RDRAM
+    pub color_image_size: u8,    // pixel size code: 1=8b, 2=16b, 3=32b (0=4b)
+    pub color_image_format: u8,  // pixel format code (texture-format enum)
+    pub color_image_width: u16,  // width in pixels (field + 1)
+    pub z_image: u32,            // SET_Z_IMAGE base in RDRAM
+    pub fill_color: u32,         // Set Fill Color (FILL-mode colour register)
+    pub scissor_ulx: u16,        // Set Scissor, u10.2 upper-left x
+    pub scissor_uly: u16,        // .. upper-left y
+    pub scissor_lrx: u16,        // .. lower-right x
+    pub scissor_lry: u16,        // .. lower-right y
     pub commands_processed: u64, // retired-work tally (decoded commands)
     pub stall: u32,              // GCLK cycles the pipeline is stalled (sync cmds)
 }
@@ -163,6 +171,42 @@ rasteriser (Phase 3) or the cart/PIF path (Phase 5), not sync handling; the
 `Sync Full` interrupt has no isolated systemtest that was failing on its absence.
 Run: `cargo test -p rustyn64-test-harness --release --test systemtest --
 --ignored`.
+
+### The FILL pipeline (T-31-003)
+
+The dispatcher handles the four state/render commands that let it write solid
+rectangles into the framebuffer — the simplest of the RDP's pipelines. Provenance
+is N64brew *…/Commands* §0x3F/0x37/0x2D/0x36 and *…/Pipeline* §Fill Pipeline.
+
+- **`Set Color Image`** (0x3F) latches the framebuffer base, the pixel `size`
+  (0 = 4-bit, 1 = 8-bit, 2 = 16-bit, 3 = 32-bit), the `format`, and the `width`
+  (encoded field + 1). The row stride is `width * bytes_per_pixel`.
+- **`Set Fill Color`** (0x37) latches the 32-bit FILL colour register.
+- **`Set Scissor`** (0x2D) latches the four `u10.2` bounds. The interlace
+  `field`/`odd` bits are parsed-away (not modelled).
+- **`Fill Rectangle`** (0x36) fills the rectangle ∩ scissor with the fill colour.
+  FILL mode "repeats the 32-bit value verbatim out to memory", which resolves per
+  pixel by size: **32-bit** writes the whole colour (4 bytes, big-endian);
+  **16-bit** writes the upper half for even pixels and the lower half for odd (so
+  memory is still the 32-bit value repeated); **8-bit** writes byte `x & 3`.
+  Coordinates are `u10.2`; FILL floors the upper-left and rounds the lower-right
+  up (a half-open pixel span), and the scissor clips all four edges. A **4-bit**
+  color image is not a valid FILL target (it crashes the real RDP), so the fill
+  is skipped.
+
+Scope limits, honestly: `Fill Rectangle` implements the **FILL-mode** path only —
+the cycle-type gate arrives with `Set Other Modes`, so a 1-/2-cycle rectangle
+(which routes through the blender, not the fill register) is not yet distinguished.
+The exact sub-pixel edge/rounding rules (inclusive-right/exclusive-lower subtleties
+between the rectangle and the scissor) are validated later against Angrylion via
+the ParaLLEl-RDP fuzz suite (Sprint 3); the integer-pixel model here is byte-exact
+for aligned rectangles, which is what the unit tests pin.
+
+**Measured oracle effect:** the n64-systemtest failing-assertion count is
+**unchanged at 93 suite-wide** (917 started), same as `v0.3.0`. The fill pipeline
+flips no assertion on its own: the RDP-category tests verify rendered output,
+which needs VI scan-out (T-31-004) and more of the pipeline before a fill becomes
+observable to the suite. Measured, not assumed.
 
 ## State
 

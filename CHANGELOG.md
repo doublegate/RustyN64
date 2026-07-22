@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the RDP FILL pipeline (Phase 3, T-31-003)
+
+- **The RDP writes solid rectangles into the framebuffer.** `Set Color Image`
+  (0x3F), `Set Fill Color` (0x37), `Set Scissor` (0x2D), and `Fill Rectangle`
+  (0x36) now dispatch, so a FILL-mode rectangle writes the fill colour into RDRAM,
+  clipped to the scissor. Per pixel size: 32-bit writes the whole colour, 16-bit
+  alternates the colour's halves (even = upper, odd = lower), 8-bit writes byte
+  `x & 3` — i.e. the 32-bit fill value repeated verbatim. A 4-bit target is
+  skipped (it crashes the real RDP). Byte-for-byte unit-tested at 8/16/32-bit and
+  for four-edge scissor clipping; the clip and half-selection are mutation-checked.
+- **Scope:** the FILL-mode path only — the cycle-type gate (`Set Other Modes`)
+  and the exact sub-pixel edge rules (validated against Angrylion via the fuzz
+  suite, Sprint 3) are later work. **Oracle:** n64-systemtest unchanged at 93
+  failing suite-wide (same as `v0.3.0`); a fill becomes observable to the suite
+  only once VI scan-out lands (T-31-004).
+
 ### Added — the DP FIFO command decoder (Phase 3, T-31-001)
 
 - **`Rdp::tick` drains the DP FIFO.** It decodes the command at `DPC_CURRENT`,
