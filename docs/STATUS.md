@@ -3,7 +3,8 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.3.0 "Microcode"** — the tag matches the tree.
+**Current release:** **v0.3.0 "Microcode"** — this commit is the v0.3.0 release; the
+`v0.3.0` tag is cut from it on merge to `main`.
 
 **Phases 1 and 2 are complete.** All four exit criteria (two per phase) are met, and each is an
 oracle result with a committed runner rather than a self-assessment:
@@ -20,7 +21,7 @@ The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage
 interrupts, the primary I- and D-caches, the privilege-aware segment map, `Status.RE`, and COP1 on a
 soft-float core.
 
-**Phase 2 (v0.3.0) — both exit criteria met; cut and tagged.** The RSP-category
+**Phase 2 (v0.3.0) — both exit criteria met; released as v0.3.0.** The RSP-category
 `Failed: 0` criterion is **met** (above). The second — *a real graphics
 microcode boots and emits a plausible RDP command list* — is **met** too:
 libdragon's real combined RSPQ+`rdpq` microcode (vendored, `third_party/

@@ -372,7 +372,7 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.3.0 "Microcode"** is the current tag. Both of its Phase 2 cut criteria are **met** —
+**v0.3.0 "Microcode"** is the current release. Both of its Phase 2 cut criteria are **met** —
 `n64-systemtest Failed: 0` on the RSP category, and libdragon's real `rdpq` microcode booting and
 emitting a plausible RDP command list. Phase 1's criteria (n64-systemtest `Failed: 0` on
 CPU/COP0/TLB/COP1 and a 0-diff golden trace against ares) remain met. All are oracle results with
