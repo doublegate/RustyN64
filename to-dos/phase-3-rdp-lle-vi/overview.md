@@ -54,9 +54,10 @@ Out-of-scope:
 ## Sprints
 
 - [Sprint 1 — Command decode, the fill pipeline, and VI scan-out](sprint-1-decode-vi.md) —
-  the shortest path from a command list to a visible frame.
-- Sprint 2 — Texture state, TMEM, and the texel formats.
-  **Status:** stub — refine when Sprint 1 is close to complete.
+  the shortest path from a command list to a visible frame. **Status:** COMPLETE (2026-07-22).
+- [Sprint 2 — Texture state, TMEM, and the texel formats](sprint-2-texture.md) —
+  the state and data path a textured primitive needs, up to a copy-mode Texture Rectangle.
+  **Status:** in progress.
 - Sprint 3 — The colour combiner, the blender, Z/coverage, and the fuzz-suite 0-diff.
   **Status:** stub — refine when Sprint 2 is close to complete.
 
