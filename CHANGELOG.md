@@ -27,7 +27,10 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 - **Scope:** the field cadence is anchored to nominal 60 Hz NTSC (open residual
   **R-6**) — the VI dot clock is off a separate crystal the wiki gives only
   roughly, so the sub-field `H_TOTAL` timing, PAL's 50 Hz, and the interlace
-  `VI_V_INTR` bit-0 quirk are deferred.
+  `VI_V_INTR` bit-0 quirk are deferred. **Oracle:** n64-systemtest unchanged at 93
+  failing (Phase 1 still 0) — the VI interrupt now firing during a run does not
+  regress the CPU categories, and no VI assertion flips yet (needs the masks and
+  the exact timing).
 
 ### Added — VI framebuffer scan-out (Phase 3, T-31-004 part 2)
 
