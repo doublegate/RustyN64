@@ -7,6 +7,7 @@ to enforce. Delete what does not apply and add your own. Override the path with
 the `STYLE_GUIDE` env var in the workflow if you prefer a different location.
 
 ## Priorities (in order)
+
 1. Correctness and data integrity.
 2. Security: validate all external input at boundaries; no secrets in code, logs,
    or error messages; prefer allowlists.
@@ -14,18 +15,21 @@ the `STYLE_GUIDE` env var in the workflow if you prefer a different location.
 4. Tests accompany behavior changes.
 
 ## Conventions
+
 - Conventional Commits (`feat|fix|docs|refactor|test|chore|perf|build|ci`).
 - Match surrounding code style; smallest correct change; reuse existing utilities.
 - No emojis in code, comments, commits, or docs.
 - Public APIs and non-obvious decisions are documented in the same change.
 
 ## What to flag as BLOCKING
+
 - Unvalidated external input reaching a sink (SQL, shell, filesystem, network).
 - Hardcoded credentials or tokens.
 - Breaking changes to a public API or on-disk/wire format without a version bump.
 - Silent failure paths (swallowed errors, ignored return values).
 
 ## What to keep as SUGGESTION / NITPICK
+
 - Naming, structure, and readability.
 - Missing tests for non-critical paths.
 - Performance ideas without a measurement (note: profile before optimizing).

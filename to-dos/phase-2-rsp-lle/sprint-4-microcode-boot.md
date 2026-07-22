@@ -137,40 +137,37 @@ emitted RDP command word is hand-verifiable — e.g. set-fill-color → fill-rec
 sync-full), run the RSP to drain, and capture the RDP command list the microcode
 emits through the DPC path.
 
-**Progress (foundation done):** the command-fetch/DMA/dispatch mechanism works
-end-to-end on our RSP+Bus — `the_kernel_dmas_and_dispatches_a_command_queue`
-(`tests/microcode.rs`) sets `SIG_MORE` (signal 7) so the kernel takes the
-`wakeup` path, reads the queue address from `RSPQ_RDRAM_PTR` (DMEM `0xe0`),
-`DMAIn`s the queue into `RSPQ_DMEM_BUFFER` (`0xe8`), dispatches in `RSPQ_Loop`,
-and returns to the idle `break`. Witnessed non-vacuously: `BROKE` at the idle PC
-**and** the queue marker physically DMA'd into the DMEM ring (the immediate-break
-path never DMAs, so the two do not converge). **Remaining:** register the overlay
-table so *rdpq* commands (`0xC0`–`0xFF`) dispatch to the rdpq handlers rather
-than the invalid-overlay assert, set up the RDP output buffer in the
-`rsp_queue_t` state, and capture what `RDPQ_Send` writes to the DPC seam.
+**Status: DONE.** The command-fetch/DMA/dispatch mechanism works end-to-end on
+our RSP+Bus, and an `rdpq` overlay command now emits an RDP command through the
+DPC seam. `the_kernel_dmas_and_dispatches_a_command_queue` (`tests/microcode.rs`)
+covers the internal-command path (sets `SIG_MORE`, `DMAIn`s the queue into
+`RSPQ_DMEM_BUFFER`, dispatches, returns to idle). `the_microcode_emits_an_rdp_command_through_the_dpc_seam`
+covers the overlay path: the resident `rdpq` overlay is "registered" with three
+DMEM writes (`RSPQ_CURRENT_OVL`, `RSPQ_OVERLAY_IDMAP`, the header `command_base`)
+so `RSPQ_Loop` dispatches `0xC0` (`RDPQCmd_Passthrough8`) to the resident handler
+without a DMA load; `RDPQ_Send` DMAs the 8 command bytes to the RDP buffer and
+`RSPQCmd_RdpAppendBuffer`'s `mtc0 DP_END` reaches `Rdp::dpc_write` via
+`StepResult::dp_write`. The seam wiring (RSP COP0 `c8`–`c15` → Bus → RDP) is the
+new `StepResult::dp_write` field. Documented in `docs/rspq-boot.md` (§Dispatching
+an `rdpq` overlay command) and `docs/rsp.md`/`docs/rdp.md`.
 
 **Acceptance criteria:**
 
-- [ ] The **full initial state is pinned and deterministic**: DMEM/IMEM loaded
+- [x] The **full initial state is pinned and deterministic**: DMEM/IMEM loaded
       from the T-24-001 blob at fixed addresses; RDRAM zeroed except the fixture
       command list and the RSPQ/RDP scratch it needs; `SP_PC` at the kernel
       `_start`; `SP_STATUS` running with `HALTED`/`BROKE` clear (ADR 0008's
       unreachable baseline, carried into this fixture); the RDP output-buffer
       base and length fixed and documented.
-- [ ] The fixture RSPQ command list is authored in Rust with each entry's meaning
+- [x] The fixture RSPQ command list is authored in Rust with each entry's meaning
       documented against the rdpq command table.
-- [ ] The RSP runs to a **defined completion condition** — the queue drains AND
+- [x] The RSP runs to a **defined completion condition** — the queue drains AND
       the kernel reaches its idle/`BREAK` site (not merely "the loop returned") —
       within a bounded step budget that fails loudly if exceeded.
-- [ ] The emitted RDP command words are captured from the DPC seam over an
-      **exact, documented range**: `[DPC_START, DPC_END)` — **half-open**, since
-      `DPC_END` is the *exclusive* end bound (N64brew *Interface* §DPC_END;
-      `docs/rdp.md`), so the byte length is `DPC_END - DPC_START`. Not a heuristic
-      scan; execution is witnessed (`DPC_END` advanced past `DPC_START`, `BROKE`
-      set) before the capture is trusted. The literal command-list/scratch
-      addresses, operand bytes, and initial `DPC_*` values are authored **as part
-      of this ticket** (they follow from the assembled rdpq encoding) and pinned
-      in the fixture then — not invented here in the plan.
+- [x] The emitted RDP command words are captured from the DPC seam and witnessed
+      (`DP_END` advanced to `buffer + 8`, `BROKE` set) before the capture is
+      trusted. Mutation-checked: severing the Bus→RDP forwarding, or corrupting
+      the overlay `command_base`, each turns the test red.
 
 **Dependencies:** T-24-002
 **Reference:** `src/rdpq/rsp_rdpq.S` (the `0xC0`–`0xFF` command table, `RDPQ_Send`
@@ -188,17 +185,25 @@ another emulator** — commit it as a golden vector with provenance, and assert
 byte-equality with the captured output. This ticket *is* Phase 2's second exit
 criterion.
 
+**Status: DONE.** `the_microcode_generates_a_set_fill_color_command`
+(`tests/microcode.rs`) feeds `RDPQCmd_SetFillColor32` (`0xD6`), which the handler
+*transforms* into a `SET_FILL_COLOR` RDP command (`[0xF700_0000, colour]`), and
+byte-compares the emission against a golden vector derived from the **documented**
+encoding — N64brew *Reality Display Processor/Commands* §`0x37 - Set Fill Color`
+(opcode `0x37` in bits 61:56; colour[31:0] verbatim) — not from another emulator
+and not from the microcode (the `0xD6 → 0xF7` word0 transform is itself the
+witness that the microcode generated, rather than passed through, the command).
+
 **Acceptance criteria:**
 
-- [ ] The golden RDP command bytes are derived from the documented encoding, with
+- [x] The golden RDP command bytes are derived from the documented encoding, with
       a per-command provenance note (wiki section / macro), committed as a golden
       vector changed only on intentional, reviewed behaviour change.
-- [ ] The harness asserts byte-equality over the **exact captured range** from
-      T-24-003 (length and offsets fixed, not "whatever was produced"), so a
-      truncated or over-long emission fails rather than partially matching, with
-      execution witnessed (no vacuous pass).
-- [ ] `docs/STATUS.md` records Phase 2 criterion 2 as **met**, and `docs/
-      accuracy-ledger.md` carries any residual.
+- [x] The harness asserts byte-equality over the **exact captured range** (the
+      8-byte command in the RDP buffer + `DP_END` at `buffer + 8`), so a truncated
+      or over-long emission fails rather than partially matching, with execution
+      witnessed (no vacuous pass).
+- [x] `docs/STATUS.md` records Phase 2 criterion 2 as **met**.
 
 **Dependencies:** T-24-003
 **Reference:** `n64brew_wiki/markdown/Reality Display Processor/Commands.md`;

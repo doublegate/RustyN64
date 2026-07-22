@@ -50,6 +50,15 @@ pub struct StepResult {
     /// "clear the line" and "this step said nothing about the line" are the
     /// same value, and the acknowledgement is silently dropped.
     pub interrupt_change: Option<bool>,
+    /// An `MTC0` to a DP command register (`c8`–`c15`), reported as a
+    /// **DPC word offset** (`0`=`DP_START` … `3`=`DP_STATUS`) and the value.
+    ///
+    /// Those COP0 registers *are* the RDP's command registers, but the RSP
+    /// crate may not depend on `rustyn64-rdp` (the crate graph forbids that
+    /// chip→chip edge — `docs/architecture.md`). So the write is reported here
+    /// and `rustyn64-core::Bus` forwards it to `Rdp::dpc_write`, exactly as
+    /// `dma` and `interrupt_change` are carried out by the owner.
+    pub dp_write: Option<(u8, u32)>,
 }
 
 /// Decoded fields, named as the MIPS encoding names them.
@@ -402,15 +411,25 @@ impl Rsp {
     ///
     /// `c0`–`c7` are the SP interface registers, the *same* physical registers
     /// the CPU sees at `0x0404_0000`. `c8`–`c15` are the RDP's command
-    /// registers, which do not exist yet and read zero (Phase 3).
+    /// registers; the RSP holds a [`shadow`](Rsp::dp) so a read sees a prior
+    /// write in the same run (the authoritative copy is in `rustyn64-rdp`).
     fn cop0_read(&mut self, index: u32) -> u32 {
-        if index < 8 { self.sp.read(index) } else { 0 }
+        if index < 8 {
+            self.sp.read(index)
+        } else {
+            self.dp[(index - 8) as usize & 7]
+        }
     }
 
-    /// `MTC0` — write an SP register, possibly starting a DMA.
+    /// `MTC0` — write an SP register (possibly starting a DMA), or a DP command
+    /// register. DP writes update the [`shadow`](Rsp::dp) and are reported via
+    /// [`StepResult::dp_write`] for the Bus to forward to `Rdp::dpc_write`.
     fn cop0_write(&mut self, index: u32, value: u32) -> StepResult {
         let mut out = StepResult::default();
         if index >= 8 {
+            let off = (index - 8) & 7;
+            self.dp[off as usize] = value;
+            out.dp_write = Some((off as u8, value));
             return out;
         }
         if index == sp::reg::STATUS {

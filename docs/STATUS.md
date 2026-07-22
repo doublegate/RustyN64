@@ -12,6 +12,7 @@ runners rather than self-assessments:
 | --- | --- | --- |
 | n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 93 fail suite-wide, all cart/PIF/MI/RDP (Phase 3+) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
 | n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — across 917 tests started, 0 RSP-prefixed failures (the suite-wide total, of which the RSP category was the bulk, fell from 413 to 93); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
+| Real graphics microcode emits an RDP command list (**Phase 2** criterion 2) | **met** — libdragon's combined RSPQ+`rdpq` blob boots, dispatches an `rdpq` overlay command to its resident handler, and emits an RDP command (bytes DMA'd to RDRAM + `DP_END` advanced through the DPC seam) | `cargo test -p rustyn64-test-harness --test microcode` |
 | CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares from the ELF entry | `cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored` |
 
 The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR
@@ -19,13 +20,19 @@ The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage
 interrupts, the primary I- and D-caches, the privilege-aware segment map, `Status.RE`, and COP1 on a
 soft-float core.
 
-**Phase 2 (v0.3.0) — one of two exit criteria met.** The RSP-category
+**Phase 2 (v0.3.0) — both exit criteria met; ready to cut.** The RSP-category
 `Failed: 0` criterion is **met** (above). The second — *a real graphics
-microcode boots and emits a plausible RDP command list* — is **not yet started**
-(needs the microcode-boot harness over libdragon's `rsp_rdpq.S` and RDP
-command-list ingestion). v0.3.0 is **not** cut until both hold. The remaining
-accuracy work is the LLE RDP rasterizer (Phase 3) and cart/PIF (Phase 5). See
-`to-dos/ROADMAP.md`.
+microcode boots and emits a plausible RDP command list* — is now **met** too:
+libdragon's real combined RSPQ+`rdpq` microcode (vendored, `third_party/
+libdragon-rsp/`) boots to its idle break (T-24-002), processes a DMA'd command
+queue (T-24-003 foundation), and an `rdpq` overlay command
+(`RDPQCmd_Passthrough8`) is dispatched to its resident handler and **emits an
+RDP command** — the 8 command bytes are DMA'd to an RDRAM output buffer and
+`DP_END` is advanced through the DPC seam (T-24-003). Witnessed non-vacuously by
+`tests/microcode.rs::the_microcode_emits_an_rdp_command_through_the_dpc_seam`.
+What remains for v0.3.0 is the phase-close ceremony (pre-release gate, annotated
+tag, notes), not more accuracy work. The next accuracy phases are the LLE RDP
+rasterizer (Phase 3) and cart/PIF (Phase 5). See `to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
 workspace compiles and its **386** tests pass. The CPU genuinely executes
@@ -116,7 +123,7 @@ only — an oracle on disk that no gate executes yet.
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
 | RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts (incl. in a taken branch's delay slot), DMA and the register file work. Spec `docs/rsp.md`; regressions in `su::tests` and n64-systemtest `RSP BREAK`/`SP …` | Phase 2 |
 | RSP vector unit (COP2, accumulator, `VRCP`/`VRSQ`) | **implemented** — the full VU: multiplies, accumulating forms, add/sub/carry, compares, the clip compares (`VCL`/`VCH`/`VCR`), `VMRG`/`VRND`/`VMULQ`/`VMACQ`, the reciprocals, the whole vector load/store family, and the reserved "VZERO" opcodes. Spec `docs/rsp.md`; regressions in `vu`'s `compare_tests`/`clip_tests`/`vzero_tests`/… and the n64-systemtest RSP category | Phase 2 |
-| RDP DPC command registers | **implemented** — `DPC_START`/`END`/`CURRENT`/`STATUS` at `0x0410_0000`, the `START_VALID` double-latch + `FREEZE`; the rasterizer behind them is still a stub. Provenance N64brew *Reality Display Processor/Interface*; spec `docs/rdp.md`; regressions in `rustyn64-rdp` tests + n64-systemtest `RSP STATUS: start-valid` | Phase 2 / Phase 3 |
+| RDP DPC command registers | **implemented** — `DPC_START`/`END`/`CURRENT`/`STATUS` at `0x0410_0000`, the `START_VALID` double-latch + `FREEZE`; driven both by the CPU **and** by the RSP microcode's COP0 `c8`–`c15` (routed via `StepResult::dp_write` → `Bus::rsp_tick` → `Rdp::dpc_write`, the RSP not being allowed to name `Rdp`). The rasterizer behind them is still a stub. Provenance N64brew *Reality Display Processor/Interface*; spec `docs/rdp.md`; regressions in `rustyn64-rdp` tests + n64-systemtest `RSP STATUS: start-valid` + `microcode::…emits_an_rdp_command…` | Phase 2 / Phase 3 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
 registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the

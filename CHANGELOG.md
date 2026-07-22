@@ -7,7 +7,26 @@ All notable changes to RustyN64 are documented here. The format is based on
 ## [Unreleased]
 
 The next rung is `v0.3.0 "Microcode"` — the LLE RSP (see
-[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)). **Both** of its exit criteria
+are now met; what remains is the phase-close ceremony (tag + notes).
+
+### Added — the RSP↔RDP command seam; a real microcode emits an RDP command list
+
+**Phase 2's second exit criterion is met:** libdragon's real combined RSPQ+`rdpq`
+microcode (vendored, `third_party/libdragon-rsp/`) boots on the RSP, dispatches an
+`rdpq` overlay command to its resident handler, and **emits a plausible RDP
+command list** — the command bytes are DMA'd to an RDRAM output buffer and
+`DP_END` is advanced through the DPC seam. Two golden cases (T-24-003/004,
+`tests/microcode.rs`): `RDPQCmd_Passthrough8` (raw 8-byte forward) and
+`RDPQCmd_SetFillColor32` (the microcode *generates* a `SET_FILL_COLOR` command,
+byte-compared against N64brew's documented `0x37` encoding).
+
+The RSP's COP0 registers `c8`–`c15` **are** the RDP command registers. Because the
+`rustyn64-rsp` crate may not name `rustyn64-rdp` (the crate-graph rule in
+`docs/architecture.md`), an `MTC0` to those registers is now reported as the new
+`su::StepResult::dp_write`, and `Bus::rsp_tick` forwards it to `Rdp::dpc_write` —
+the same DPC register file the CPU drives at `0x0410_0000`. `Rdp::DPC_ADDR_MASK`
+is now public. Spec: `docs/rspq-boot.md`, `docs/rsp.md`, `docs/rdp.md`.
 
 ## [0.2.0] — 2026-07-21 — "Interpreter"
 

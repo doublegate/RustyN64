@@ -226,6 +226,14 @@ impl Bus {
         if let Some(dma) = out.dma {
             self.sp_dma(dma);
         }
+        if let Some((off, val)) = out.dp_write {
+            // The RSP's COP0 `c8`–`c15` *are* the RDP command registers; the RSP
+            // crate cannot name `Rdp` (crate-graph rule), so it reports the write
+            // as a DPC word offset and the Bus carries it out — the same seam the
+            // CPU uses at `0x0410_0000`. This is how the rdpq microcode's
+            // `mtc0 DP_END` submits a command list to the RDP.
+            self.rdp.dpc_write(u32::from(off), val);
+        }
         self.rcp_steps = self.rcp_steps.wrapping_add(1);
     }
 
