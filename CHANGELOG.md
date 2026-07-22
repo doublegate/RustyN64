@@ -9,6 +9,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — VI scan-position timing and interrupt (Phase 3, T-31-004 part 3)
+
+- **`VI_V_CURRENT` advances and the VI interrupt fires.** `Vi::tick` (called each
+  RCP step) derives the scan half-line from `master_ticks` — `total_halflines %
+  (VI_V_TOTAL + 1)` — and raises `MI_INTR.vi` once per field as `VI_V_INTR` is
+  crossed (counted, not equality-matched, so a step spanning several half-lines
+  cannot skip it); `VI_CTRL.TYPE == 0` suppresses it. This is the vsync signal
+  games wait on. Covered by unit tests (advance/wrap, once-per-field firing,
+  disabled-VI) and a scheduler integration test.
+- **Scope:** the field cadence is anchored to nominal 60 Hz NTSC (open residual
+  **R-6**) — the VI dot clock is off a separate crystal the wiki gives only
+  roughly, so the sub-field `H_TOTAL` timing, PAL's 50 Hz, and the interlace
+  `VI_V_INTR` bit-0 quirk are deferred.
+
 ### Added — VI framebuffer scan-out (Phase 3, T-31-004 part 2)
 
 - **`Bus::scanout` converts the framebuffer to a presentable RGBA8 frame.** It

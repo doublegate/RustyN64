@@ -268,31 +268,29 @@ access lands in the register file. One register has a side effect: **writing
 `VI_V_CURRENT` acknowledges the VI interrupt** (`MI_INTR.vi = false`). Cold-boot
 state is all-zero, so `VI_CTRL.TYPE == 0` and the VI is off.
 
-**Not here yet** (staged for the following VI tickets, called out so the register
-file is not mistaken for the whole VI):
+**The scan position and the VI interrupt are driven by the scheduler**
+(`Vi::tick`, called each RCP step): `VI_V_CURRENT` advances off `master_ticks` —
+`total_halflines % (VI_V_TOTAL + 1)`, one half-line every `MASTER_HZ / 60 /
+(VI_V_TOTAL + 1)` ticks — and a `VI_V_INTR` crossing raises `MI_INTR.vi` once per
+field (counted, not equality-matched, so a step spanning several half-lines cannot
+skip it). `VI_CTRL.TYPE == 0` suppresses the interrupt. The field cadence is
+anchored to nominal 60 Hz NTSC (open residual **R-6**; the exact `H_TOTAL`
+sub-field timing, PAL's 50 Hz, and the interlace `VI_V_INTR` bit-0 quirk are
+deferred). The VI dot clock (VCLK, ≈48.68 MHz NTSC) is the sole fractional-domain
+crystal (`docs/scheduler.md`).
 
-- **`VI_V_CURRENT` advancing** with the scan position and the VI interrupt
-  *firing* at `VI_V_INTR` need the scheduler's fractional VI clock — the VI pixel
-  clock (VCLK, ≈48.68 MHz NTSC) is off a separate crystal, not a rational
-  multiple of `MASTER_HZ` (N64brew *Video Interface* §Clocks; `docs/scheduler.md`,
-  which already names it the sole fractional-accumulator domain). Until then
-  `VI_V_CURRENT` reads back 0.
-- **The scheduler advancing `VI_V_CURRENT`** and raising the VI interrupt at
-  `VI_V_INTR` (above) is what drives scan-out per-frame in a running system; the
-  scan-out *conversion* itself is now implemented (below), but nothing calls it
-  on a schedule yet.
+**Still deferred:**
+
 - **Per-register write masks are not applied** — the registers store the full
-  32-bit value written. This is an open residual (`docs/accuracy-ledger.md`
-  **R-4**): the masks the hardware enforces are pinned against n64-systemtest
-  rather than guessed.
+  32-bit value written (open residual **R-4**); the masks the hardware enforces
+  are pinned against n64-systemtest rather than guessed.
 
-**Measured oracle effect:** the committed n64-systemtest runner
-(`crates/rustyn64-test-harness/tests/systemtest.rs`, the same one every prior
-`Failed: 0` claim uses) reports the suite-wide failing count **unchanged at 93 of
-917 started**, identical to `v0.3.0`. The register file alone flips no assertion,
-because the VI category tests exercise the exact write-masks (R-4, deferred) and a
-`VI_V_CURRENT` that advances (staged) — so this is necessary groundwork, not an
-oracle-visible change on its own.
+**Measured oracle effect:** the committed n64-systemtest runner reports the
+suite-wide failing count **unchanged at 93 of 917**, and Phase 1 stays at 0 —
+confirming the VI interrupt now firing during a run does not regress the CPU/COP0/
+TLB/COP1 categories. No VI-category assertion flips yet: those need the exact
+write-masks (R-4) and the sub-field/interlace timing (R-6), both deferred. Run:
+`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`.
 
 **The scan-out conversion is implemented** (`Bus::scanout`): it reads
 `VI_ORIGIN`/`VI_WIDTH`/`VI_CTRL` and the active region from `VI_V_VIDEO`

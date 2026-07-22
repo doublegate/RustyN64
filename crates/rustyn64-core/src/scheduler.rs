@@ -304,6 +304,12 @@ impl System {
         self.bus.audio_tick();
         // The PI's asynchronous direct-I/O write finalises on this clock.
         self.bus.pi_tick();
+        // The VI scan position advances off `master_ticks` (the one fractional
+        // domain, ADR 0006 / `docs/scheduler.md`); a `VI_V_INTR` crossing raises
+        // the VI line into the MI.
+        if self.bus.vi.tick(self.master_ticks) {
+            self.bus.rcp.mi_intr.vi = true;
+        }
     }
 }
 
@@ -456,5 +462,27 @@ mod tests {
             assert!(now - prev <= RCP_DIVIDER, "an edge was skipped");
             prev = now;
         }
+    }
+
+    /// **A running system raises the VI interrupt as the scan crosses
+    /// `VI_V_INTR`.** With a standard NTSC field (525 half-lines) and the VI on,
+    /// stepping past `per-half-line × V_INTR` master ticks drives `MI_INTR.vi`
+    /// through the scheduler's per-step `Vi::tick` call.
+    #[test]
+    fn a_running_system_raises_the_vi_interrupt_at_v_intr() {
+        use crate::vi::{VI_CTRL, VI_V_INTR, VI_V_TOTAL};
+        let mut sys = System::new(1);
+        sys.bus.vi.regs[VI_V_TOTAL as usize] = 524; // 525 half-lines
+        sys.bus.vi.regs[VI_V_INTR as usize] = 2;
+        sys.bus.vi.regs[VI_CTRL as usize] = 2; // VI on
+        assert!(!sys.bus.rcp.mi_intr.vi, "clear before running");
+        // per-half-line ≈ 5952 ticks; 15_000 is well past half-line 2.
+        while sys.master_ticks() < 15_000 {
+            sys.step_to_next_edge();
+        }
+        assert!(
+            sys.bus.rcp.mi_intr.vi,
+            "the VI interrupt fired during the run"
+        );
     }
 }
