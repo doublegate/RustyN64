@@ -9,6 +9,27 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the DP FIFO command decoder (Phase 3, T-31-001)
+
+- **`Rdp::tick` drains the DP FIFO.** It decodes the command at `DPC_CURRENT`,
+  recognises every opcode `0x00`–`0x3F` from the N64brew command map, and
+  advances the pointer by each command's **full length** — one command per
+  scheduler tick — so a multi-word primitive (a triangle, a texture rectangle)
+  is consumed whole and the stream never desyncs. No opcode is rasterized yet:
+  each command is recognised, its length consumed, and a retired-work counter
+  (`commands_processed`) incremented; dispatch and the fill pipeline follow.
+- **Length rules** (`rustyn64_rdp::command`): one 64-bit word for every command
+  except the variable-length **Fill Triangle** forms (`0x08`–`0x0F`, a 4-word
+  base plus shade/texture/z coefficient blocks selected by the opcode's low
+  three bits) and the two-word **Texture Rectangle** pair (`0x24`/`0x25`).
+  Exhaustively unit-tested across the whole map, and a mixed-list walk asserts
+  the decoder lands `DPC_CURRENT` exactly on `DPC_END`.
+- **Two stall conditions** keep the decoder off invalid data: a command is
+  consumed only once it is present in full (so an incrementally-advanced
+  `DPC_END` that lands mid-command waits for the rest rather than decoding
+  unwritten RDRAM), and `XBUS` mode (DMEM command source, not yet wired) stalls
+  rather than mis-reading RDRAM.
+
 ## [0.3.0] — 2026-07-22 — "Microcode"
 
 **Phase 2 is complete.** The **LLE RSP** runs — the scalar unit, the 8-lane vector

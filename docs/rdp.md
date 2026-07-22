@@ -34,6 +34,7 @@ pub struct Rdp {
     pub status: u32,      // DPC_STATUS (FREEZE, START/END-valid, XBUS, ...)
     pub color_image: u32, // SET_COLOR_IMAGE base in RDRAM
     pub z_image: u32,     // SET_Z_IMAGE base in RDRAM
+    pub commands_processed: u64, // retired-work tally (decoded commands)
 }
 impl Rdp {
     pub const fn dpc_read(&self, offset: u32) -> u32;      // 0x0410_0000 block
@@ -83,6 +84,49 @@ tolerates, but none are driven): the `SET_FLUSH`/`CLR_FLUSH`,
 commands, and the `END_VALID`/`CMD_BUSY`/`PIPE_BUSY`/`CBUF_READY` read bits.
 These need a running transfer to have meaning, so they arrive with the FIFO
 drain and the rasterizer — not with this register file.
+
+### The command decoder (T-31-001)
+
+`Rdp::tick` now drains the FIFO: while `DPC_CURRENT < DPC_END` and the DP is not
+frozen, it reads the command word at `DPC_CURRENT` from RDRAM, decodes the opcode
+(bits 61:56), and advances `DPC_CURRENT` by the command's **full length**. It
+consumes one command per scheduler tick, so the FIFO drains gradually rather than
+in a burst. No opcode is dispatched to a handler yet — every command is
+recognised, its length consumed, and a retired-work counter (`commands_processed`)
+incremented; the rasterizer arrives in the following tickets.
+
+Two stall conditions keep the decoder from acting on data that is not a valid
+command yet:
+
+- **A command is consumed only once it is present in full.** The `rdpq`
+  microcode advances `DPC_END` incrementally as it fills the buffer, so `DPC_END`
+  can land mid-command; if `DPC_END - DPC_CURRENT` is less than the decoded
+  length the decoder stalls, then consumes the command whole once the rest of its
+  words arrive. Consuming a partially-written multi-word primitive would decode
+  against unwritten RDRAM.
+- **`XBUS` stalls the decoder.** When `DPC_STATUS.XBUS` selects DMEM as the
+  command source (not yet wired), the decoder does not fall back to reading
+  RDRAM — that would treat DMEM-bound parameter data as RDRAM opcodes and desync.
+
+Length rules
+(`command::command_len_words`, provenance N64brew *Reality Display
+Processor/Commands*):
+
+- Every command is **one 64-bit word** except the two below — including the
+  no-operation ranges (`0x00`–`0x07`, `0x10`–`0x23`, `0x31`), so an
+  unimplemented or reserved opcode consumes exactly its header and the pointer
+  stays aligned.
+- **Fill Triangle** (`0x08`–`0x0F`): a 4-word base plus optional coefficient
+  blocks. The opcode's low three bits *are* the enable flags — bit 2 shade
+  (+8 words), bit 1 texture (+8), bit 0 z-buffer (+2), appended in that order —
+  the same bits 58/57/56 the command word also names. So `0x08` is 4 words and
+  `0x0F` is 22.
+- **Texture Rectangle** / **Flip** (`0x24`/`0x25`): 2 words.
+
+Commands are read from RDRAM (the `XBUS` bit clear); the `XBUS`/DMEM command
+source is not yet wired, because the `rdpq` microcode that drives the DP today
+DMAs its list to RDRAM. Honouring the DMEM source (per *Edge cases* below)
+arrives with a bus seam for DMEM reads.
 
 ## State
 
