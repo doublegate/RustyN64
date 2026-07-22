@@ -158,6 +158,13 @@ instruction; it raises the MI's SP interrupt only when `INTBREAK` is set. Note
 the RSP can also stop itself by writing `SET_HALT`, and *that* does **not** set
 `BROKE` — the latch records that a `BREAK` executed, not that the core stopped.
 
+**A `BREAK` in a *taken* branch's delay slot halts at the branch target, not
+the sequential address.** The redirect the branch already latched still wins, so
+`beq` (taken) into a `break` leaves PC at the target (`0x1C` for the suite's
+`beq r0,r0,+6`), while the same `break` after an *untaken* branch leaves it
+sequential (`0x8`). Reading the sequential value unconditionally passes the
+plain `BREAK` and untaken cases and fails only the taken one.
+
 `MFC0`/`MTC0` reach `c0`–`c7`, which are the same physical SP registers the CPU
 sees at `0x0404_0000`. `c8`–`c15` are the RDP's and read zero until Phase 3.
 
