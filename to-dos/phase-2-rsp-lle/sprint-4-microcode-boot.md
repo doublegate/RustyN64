@@ -137,6 +137,18 @@ emitted RDP command word is hand-verifiable — e.g. set-fill-color → fill-rec
 sync-full), run the RSP to drain, and capture the RDP command list the microcode
 emits through the DPC path.
 
+**Progress (foundation done):** the command-fetch/DMA/dispatch mechanism works
+end-to-end on our RSP+Bus — `the_kernel_dmas_and_dispatches_a_command_queue`
+(`tests/microcode.rs`) sets `SIG_MORE` (signal 7) so the kernel takes the
+`wakeup` path, reads the queue address from `RSPQ_RDRAM_PTR` (DMEM `0xe0`),
+`DMAIn`s the queue into `RSPQ_DMEM_BUFFER` (`0xe8`), dispatches in `RSPQ_Loop`,
+and returns to the idle `break`. Witnessed non-vacuously: `BROKE` at the idle PC
+**and** the queue marker physically DMA'd into the DMEM ring (the immediate-break
+path never DMAs, so the two do not converge). **Remaining:** register the overlay
+table so *rdpq* commands (`0xC0`–`0xFF`) dispatch to the rdpq handlers rather
+than the invalid-overlay assert, set up the RDP output buffer in the
+`rsp_queue_t` state, and capture what `RDPQ_Send` writes to the DPC seam.
+
 **Acceptance criteria:**
 
 - [ ] The **full initial state is pinned and deterministic**: DMEM/IMEM loaded

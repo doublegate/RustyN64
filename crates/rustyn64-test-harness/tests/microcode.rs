@@ -205,3 +205,89 @@ fn the_microcode_boots_to_its_idle_break() {
         "`li $gp, 0` must have run, overwriting the sentinel"
     );
 }
+
+/// **T-24-003 (foundation): the kernel takes the `wakeup` path, DMAs a command
+/// queue from RDRAM, dispatches it, and returns to idle.**
+///
+/// Unlike T-24-002's immediate break (`SIG_MORE` clear), this sets `SIG_MORE`
+/// (signal 7) so the `bnez` at the entry is taken into `wakeup`: the kernel
+/// reads the RDRAM queue address from `RSPQ_RDRAM_PTR` (DMEM `0xe0`), `DMAIn`s
+/// the queue into the in-DMEM ring `RSPQ_DMEM_BUFFER` (`0xe8`), and dispatches
+/// each command in `RSPQ_Loop`. The queue here is `[0x0000_0000, 0xDEAD_BEEF]`:
+/// the first word is the internal `WaitNewInput` command, so with `SIG_MORE`
+/// now cleared the kernel returns straight to the idle `break` — but the second
+/// word is a marker the DMA must have physically moved into the DMEM ring.
+///
+/// The witness is non-vacuous *and* distinguishes this from T-24-002: reaching
+/// `BROKE` at the idle break proves the kernel ran, and the marker appearing at
+/// `RSPQ_DMEM_BUFFER + 4` proves the `wakeup` DMA actually executed — the
+/// immediate-break path never DMAs, so that word would stay zero.
+///
+/// This is the command-fetch/DMA/dispatch mechanism; dispatching *rdpq overlay*
+/// commands (which then emit RDP commands through the DPC seam) additionally
+/// needs the overlay table registered, and is the remaining T-24-003 work.
+#[test]
+fn the_kernel_dmas_and_dispatches_a_command_queue() {
+    use rustyn64_core::System;
+    use rustyn64_core::rsp::sp;
+
+    /// DMEM offsets of the queue pointer and the in-DMEM command ring (from the
+    /// symbol map: `RSPQ_RDRAM_PTR`, `RSPQ_DMEM_BUFFER`).
+    const RSPQ_RDRAM_PTR: usize = 0xe0;
+    const RSPQ_DMEM_BUFFER: usize = 0xe8;
+    /// `SP_STATUS` write bits: `CLR_HALT` (un-halt) and set signal 7 = `SIG_MORE`.
+    const CLR_HALT: u32 = 1 << 0;
+    const SET_SIG_MORE: u32 = 1 << 24;
+    /// Where the fixture queue lives in RDRAM, and the marker in its word 1.
+    const QUEUE_ADDR: u32 = 0x2000;
+    const MARKER: u32 = 0xDEAD_BEEF;
+    /// The idle `break` parks the PC at 0x18 (see the boot-to-idle test).
+    const IDLE_PC: u32 = 0x18;
+    const MAX_STEPS: usize = 600;
+
+    let mut sys = System::new(0);
+    sys.bus.rsp.dmem[..IMEM_LMA].copy_from_slice(&UCODE[..IMEM_LMA]);
+    let imem_len = UCODE.len() - IMEM_LMA;
+    sys.bus.rsp.imem[..imem_len].copy_from_slice(&UCODE[IMEM_LMA..]);
+
+    // Queue: [WaitNewInput (0x0), marker]. Point the kernel at it.
+    let qa = QUEUE_ADDR as usize;
+    sys.bus.rdram[qa..qa + 4].copy_from_slice(&0u32.to_be_bytes());
+    sys.bus.rdram[qa + 4..qa + 8].copy_from_slice(&MARKER.to_be_bytes());
+    sys.bus.rsp.dmem[RSPQ_RDRAM_PTR..RSPQ_RDRAM_PTR + 4].copy_from_slice(&QUEUE_ADDR.to_be_bytes());
+
+    // Un-halt AND set SIG_MORE so the entry takes `wakeup`, not the idle break.
+    sys.bus.rsp.sp.set_pc(0);
+    sys.bus
+        .rsp
+        .sp
+        .write(sp::reg::STATUS, CLR_HALT | SET_SIG_MORE);
+
+    let mut steps = 0;
+    while !sys.bus.rsp.sp.halted() && steps < MAX_STEPS {
+        sys.bus.rsp_tick();
+        steps += 1;
+    }
+
+    assert!(
+        sys.bus.rsp.sp.broke(),
+        "the kernel must return to its idle break (broke={}, halted={}, pc={:#x}, steps={steps})",
+        sys.bus.rsp.sp.broke(),
+        sys.bus.rsp.sp.halted(),
+        sys.bus.rsp.sp.pc()
+    );
+    assert_eq!(sys.bus.rsp.sp.pc(), IDLE_PC, "returned to the idle break");
+
+    // The DMA must have physically moved the queue into the DMEM ring — the
+    // marker at word 1 is what the immediate-break path (no DMA) would leave zero.
+    let dmaed = u32::from_be_bytes([
+        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 4],
+        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 5],
+        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 6],
+        sys.bus.rsp.dmem[RSPQ_DMEM_BUFFER + 7],
+    ]);
+    assert_eq!(
+        dmaed, MARKER,
+        "the `wakeup` DMA must have moved the queue into RSPQ_DMEM_BUFFER"
+    );
+}
