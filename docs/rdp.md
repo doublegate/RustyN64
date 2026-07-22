@@ -258,7 +258,35 @@ RDRAM stores **9 bits per byte**; the hidden 9th bit holds per-pixel **coverage*
 (`ref-docs/research-report.md` §4, §8). The VI later uses coverage to blend
 silhouette edges. Model the 9th bit as a parallel coverage plane.
 
-### VI scan-out
+### VI registers and scan-out
+
+**The VI register file is implemented** (T-31-004, `rustyn64_core::vi::Vi`, wired
+to `0x0440_0000` by the Bus): the sixteen registers `VI_CTRL`…`VI_STAGED_DATA`,
+read and written through the CPU bus. All-size stores route through the Bus's
+size-blind RCP-internal path (`is_rcp_internal` covers `0x044x_xxxx`), so every
+access lands in the register file. One register has a side effect: **writing
+`VI_V_CURRENT` acknowledges the VI interrupt** (`MI_INTR.vi = false`). Cold-boot
+state is all-zero, so `VI_CTRL.TYPE == 0` and the VI is off.
+
+**Not here yet** (staged for the following VI tickets, called out so the register
+file is not mistaken for the whole VI):
+
+- **`VI_V_CURRENT` advancing** with the scan position and the VI interrupt
+  *firing* at `VI_V_INTR` need the scheduler's fractional VI clock (VCLK is off a
+  different crystal). Until then `VI_V_CURRENT` reads back 0.
+- **Scan-out** (framebuffer → a presentable RGBA buffer, honouring
+  origin/width/scale/type) is the next VI ticket, which is what makes the FILL
+  pipeline observable.
+- **Per-register write masks are not applied** — the registers store the full
+  32-bit value written. Which masks the hardware enforces is recorded against
+  n64-systemtest rather than guessed (see below).
+
+**Measured oracle effect:** the n64-systemtest failing-assertion count is
+**unchanged at 93 suite-wide** (917 started), same as `v0.3.0`. The register file
+alone flips no assertion: the VI tests turn on the exact write-masks (not applied
+yet) and a `VI_V_CURRENT` that advances (staged), so the register block is
+necessary groundwork rather than an oracle-visible change on its own. Measured,
+not assumed.
 
 The VI reads the framebuffer at `VI_ORIGIN` in the format `VI_CONTROL`/
 `VI_STATUS` describe (bpp, AA mode, gamma, dither, divot enable), scales it,

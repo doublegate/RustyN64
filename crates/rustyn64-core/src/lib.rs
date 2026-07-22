@@ -17,6 +17,7 @@ extern crate alloc;
 
 pub mod bus;
 pub mod scheduler;
+pub mod vi;
 
 // Re-export the chip crates (the public surface). Downstream consumers reach
 // the chip types through these aliases (e.g. `rustyn64_core::rustyn64_cpu::Cpu`).
@@ -38,6 +39,7 @@ pub use scheduler::{
     COUNT_DIVIDER, CPU_DIVIDER, CPU_HZ, MASTER_HZ, PHASE_PERIOD, PIF_DIVIDER, RCP_DIVIDER, RCP_HZ,
     SI_DIVIDER, System,
 };
+pub use vi::Vi;
 
 /// Returns the crate version string.
 #[must_use]
