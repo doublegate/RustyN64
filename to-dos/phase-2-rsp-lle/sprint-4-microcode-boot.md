@@ -103,12 +103,24 @@ reaching idle — **no output comparison yet**.
       idle/`BREAK` site), plus a DMEM cell the boot path is known to write.
       Success and never-ran states must not converge (ADR 0008; engineering
       lessons).
-- [ ] `docs/rsp.md` (or a new `docs/rspq-boot.md`) records the boot ABI with
-      source citations.
+- [x] `docs/rspq-boot.md` records the boot ABI with source citations — the
+      `rsp_queue_t` boot-state struct at `RSPQ_DATA_ADDRESS = 8`, which pointers
+      `rspq_start` patches (`rspq.c:519–548`), the SP_STATUS signal set, and
+      `SP_PC = _start`.
+
+**Progress:** the boot ABI is reverse-engineered and documented
+(`docs/rspq-boot.md`); the RSP-drive plumbing is confirmed (`System` +
+`bus.rsp.dmem`/`imem` + `sp.set_pc`/`set_halted`, the same entry the
+n64-systemtest runner uses). Remaining: construct the patched `rsp_queue_t` in
+Rust, provide a terminating fixture command queue in RDRAM, and add the idle
+witness. Deferred rather than rushed — a boot test with a weak or converging
+witness would be worse than none (ADR 0008).
 
 **Dependencies:** T-24-001
-**Reference:** `include/rsp_queue.inc` (`_start` @391, `RSPQ_Loop` @442, the
-`.data` layout @281–362); `src/rspq/rspq.c` architectural overview.
+**Reference:** `docs/rspq-boot.md`; `include/rsp_queue.inc` (`_start` @391,
+`RSPQ_Loop` @442, the `.data` layout @281–362); `src/rspq/rspq.c` `rspq_start`
+(@519) and the `rsp_queue_t` struct (`rspq_internal.h:195`, `RSPQ_DATA_ADDRESS`
+@218).
 **Estimated complexity:** L
 
 ---
