@@ -18,10 +18,12 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   `VI_V_INTR`. The per-half-line step means a call spanning many half-lines cannot
   skip it, and a `VI_V_INTR` beyond the field never fires. `VI_CTRL.TYPE == 0`
   suppresses it, and the position is kept relative so a mid-run `VI_V_TOTAL`
-  change re-bases without a scale jump. This is the vsync signal games wait on;
-  covered by unit tests (advance/wrap, once-per-field firing, disabled-VI,
-  unreachable `VI_V_INTR`, mid-run `VI_V_TOTAL` change) and a scheduler
-  integration test.
+  change re-bases without a scale jump. A `System::reset` rebases the scan
+  timeline (`Vi::reset_scan`) so the interrupt keeps firing across a reset. This
+  is the vsync signal games wait on; covered by unit tests (advance/wrap,
+  once-per-field firing, disabled-VI, unreachable `VI_V_INTR`, mid-run
+  `VI_V_TOTAL` change) and scheduler integration tests (interrupt during a run,
+  and acknowledge → reset → fires again).
 - **Scope:** the field cadence is anchored to nominal 60 Hz NTSC (open residual
   **R-6**) — the VI dot clock is off a separate crystal the wiki gives only
   roughly, so the sub-field `H_TOTAL` timing, PAL's 50 Hz, and the interlace

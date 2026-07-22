@@ -108,6 +108,17 @@ impl Vi {
         }
     }
 
+    /// Rebase the scan timeline to a fresh `master_ticks == 0` (a warm reset),
+    /// clearing the accumulated position and the delta baseline **without**
+    /// touching the programmed registers. Without this, `prev_ticks` would keep
+    /// the pre-reset value and every post-reset delta would saturate to 0 until
+    /// the new run caught up — suppressing the VI interrupt across a reset.
+    pub const fn reset_scan(&mut self) {
+        self.v_current = 0;
+        self.acc = 0;
+        self.prev_ticks = 0;
+    }
+
     /// Total scan half-lines per field (`VI_V_TOTAL + 1`), 1..=1024.
     const fn total_halflines(&self) -> u32 {
         (self.regs[VI_V_TOTAL as usize] & 0x3FF) + 1

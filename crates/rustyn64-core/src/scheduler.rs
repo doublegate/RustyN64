@@ -180,8 +180,12 @@ impl System {
         self.phases = Phases::from_seed(self.seed);
         self.master_ticks = 0;
         self.cpu = Cpu::new();
-        // TODO(T-CORE-03): warm-reset the Bus subsystems (RSP halt, clear DMA)
-        // without zeroing RDRAM — see `docs/scheduler.md`.
+        // The VI scan timeline is keyed off `master_ticks`, so it must rebase to
+        // the new zero — otherwise its delta baseline stays in the old timeline
+        // and the VI interrupt is suppressed until the run catches up.
+        self.bus.vi.reset_scan();
+        // TODO(T-CORE-03): warm-reset the remaining Bus subsystems (RSP halt,
+        // clear DMA) without zeroing RDRAM — see `docs/scheduler.md`.
     }
 
     /// Master ticks elapsed since power-on. The canonical time position.
@@ -483,6 +487,33 @@ mod tests {
         assert!(
             sys.bus.rcp.mi_intr.vi,
             "the VI interrupt fired during the run"
+        );
+    }
+
+    /// **The VI keeps firing after a reset.** A reset zeroes `master_ticks`, so
+    /// the VI scan timeline must rebase (`Vi::reset_scan`) — otherwise its delta
+    /// baseline stays in the old timeline and the interrupt is suppressed until
+    /// the new run catches up. Acknowledge → reset → the next field fires again.
+    #[test]
+    fn a_reset_rebases_the_vi_scan_so_it_fires_again() {
+        use crate::vi::{VI_CTRL, VI_V_INTR, VI_V_TOTAL};
+        let mut sys = System::new(2);
+        sys.bus.vi.regs[VI_V_TOTAL as usize] = 524;
+        sys.bus.vi.regs[VI_V_INTR as usize] = 2;
+        sys.bus.vi.regs[VI_CTRL as usize] = 2;
+        while sys.master_ticks() < 15_000 {
+            sys.step_to_next_edge();
+        }
+        assert!(sys.bus.rcp.mi_intr.vi, "fires before reset");
+        sys.bus.rcp.mi_intr.vi = false; // the CPU would ack via VI_V_CURRENT
+        sys.reset();
+        assert!(!sys.bus.rcp.mi_intr.vi, "clear immediately after reset");
+        while sys.master_ticks() < 15_000 {
+            sys.step_to_next_edge();
+        }
+        assert!(
+            sys.bus.rcp.mi_intr.vi,
+            "fires again after the reset rebases"
         );
     }
 }
