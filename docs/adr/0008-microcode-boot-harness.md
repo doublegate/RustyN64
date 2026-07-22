@@ -19,12 +19,19 @@ shapes a multi-PR effort and pulls in a new toolchain.
 Two constraints from the owner fix the design:
 
 1. **A real graphics microcode**, not a hand-written toy — specifically
-   libdragon's `rdpq`, the only permissively-licensed (Unlicense/public-domain)
-   real N64 graphics microcode.
+   libdragon's `rdpq` (`src/rdpq/rsp_rdpq.S`, Unlicense / public domain per
+   `ref-proj/libdragon/LICENSE.md`, on the vendor-ok list in
+   `ref-proj/README.md`). The claim that it is the *only* vendorable real N64
+   graphics microcode is **reasoned, not exhaustively surveyed**: the stock
+   Nintendo microcodes (F3DEX and kin) are proprietary and cannot be committed,
+   and `ref-proj/README.md`'s licence table lists no other permissively-licensed
+   graphics microcode. If a second one surfaces this line is what to revisit.
 2. **The golden reference is grounded in hardware documentation / datasheets /
    errata — never another emulator's output.** We do not diff against ares,
-   cen64, or parallel-rdp; we diff against the RDP command encoding as the
-   N64brew wiki and libdragon's own `rdpq_macros.h` bit-layout headers define it.
+   cen64, or parallel-rdp; we diff against the RDP command encoding as N64brew
+   *Reality Display Processor/Commands*
+   (`n64brew_wiki/markdown/Reality Display Processor/Commands.md`) and
+   libdragon's own `rdpq_macros.h` bit-layout headers define it.
 
 ### What "boot the real rdpq microcode" actually entails
 
@@ -132,7 +139,14 @@ Each stage is its own PR through the normal ceremony.
   pinned to a commit. Add the assemble step and commit the blob + CI checksum.
   Document the rspq/rdpq boot ABI: the DMEM fields the kernel reads, the
   command-queue layout, and the `RDPQ_Send` → DPC path. Ship a test that boots
-  the microcode and witnesses it reaching idle (no output comparison yet).
+  the microcode and witnesses it reaching idle (no output comparison yet). The
+  witness must have a **defined pre-run baseline** — zero `DPC_END`, `DPC_CURRENT`
+  and the RDP output buffer before the run — and then assert a **specific idle
+  observable** (the RSPQ kernel halts via `BREAK`, so `SP_STATUS.HALTED|BROKE`
+  set with the PC parked at the kernel's idle handler), not merely "the loop
+  returned". Choose that observable so a microcode that never executed fails it:
+  the failure and success states must not converge (the converging-paths hazard,
+  `docs/engineering-lessons.md`).
 - **Stage 2 — feed a command list, capture the output.** Reproduce the boot
   state in Rust, place the fixture RSPQ command list in RDRAM, run to drain, and
   capture the RDP command list the microcode emits through the DPC path.
