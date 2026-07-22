@@ -119,6 +119,19 @@ committed golden (`tests/golden/`, `screenshots/`). Commercial ROMs live in
 baselines are committed. The RDP/VI bit-exactness is graded here against an
 Angrylion reference scan-out.
 
+The **first golden frame** is live (`--test golden_frame`, T-31-005): a synthetic
+RDP FILL command list is decoded, rasterised into a framebuffer, and scanned out
+by the VI to RGBA8, then pinned byte-exact against a committed FNV-1a hash. It
+drives the core through its public API — the command list is written into
+`Bus::rdram`, the DP FIFO is pointed with `bus.rdp.dpc_write`, the VI is
+configured with `CpuBus::write_u32`, then the pipeline is executed with
+`Bus::rdp_tick` and scanned out with `Bus::scanout` — so a regression anywhere on
+the command-decode → FILL → scan-out path fails it. The test also asserts its
+hardcoded golden equals the independently recomputed digest of the expected
+bytes, so a frame-content change that forgets to re-derive the constant cannot
+pass silently. Real-ROM krom/240p goldens through the full CPU→RDP→VI path await
+cartridge boot (Phase 5).
+
 #### Re-blessing a golden requires an external justification
 
 A stored baseline proves output is **unchanged**, never that it is **correct**.

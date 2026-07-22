@@ -108,9 +108,11 @@ upstream `LICENSE` beside it.
 (T-11-006). The **n64-systemtest** ROM runs under the committed `--test
 systemtest` runner and reports a real count (Phase 1 categories `Failed: 0`; RSP
 category `Failed: 0`; 93 suite-wide). The **golden-log** gate (`--test
-golden_log`) replays 50,027 retired records at 0 diff against ares. The rest of
-the corpus (visual goldens, the accuracy battery, commercial ROMs) is staged
-only — an oracle on disk that no gate executes yet.
+golden_log`) replays 50,027 retired records at 0 diff against ares. A fourth,
+the **synthetic visual golden** (`--test golden_frame`, T-31-005), executes the
+FILL → VI scan-out path against a committed frame hash. The rest of the corpus
+(the real-ROM krom/240p visual goldens, the accuracy battery, commercial ROMs)
+is staged only — an oracle on disk that no gate executes yet.
 
 ## What is stubbed (the roadmap)
 
@@ -206,12 +208,13 @@ entropy, threads and unordered collections anywhere in the core.
 | n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** across 917 tests started — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
-| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
+| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | **first frame MET** (T-31-005) — a synthetic RDP FILL list rendered through the full command-decode → FILL → VI scan-out path is pinned byte-exact against a committed golden hash (`--test golden_frame`). Real-ROM krom/240p goldens await cartridge boot (Phase 5) |
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
 nothing about whether the emulator can execute it. Both must be true before a
-gate reports a real number — true today for `basic.z64`, n64-systemtest, and the
-golden log; not yet for the visual goldens and the accuracy battery.
+gate reports a real number — true today for `basic.z64`, n64-systemtest, the
+golden log, and the synthetic `golden_frame`; not yet for the real-ROM visual
+goldens and the accuracy battery.
 
 See `docs/testing-strategy.md` for the oracle and the five test layers.
 
