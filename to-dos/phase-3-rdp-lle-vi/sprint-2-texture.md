@@ -99,18 +99,25 @@ half of the sampler. `Load TLUT` (0x30) quadruples each entry into high TMEM.
 **Scope:** decode RGBA16 (5551), RGBA32 (8888), IA4/IA8/IA16, I4/I8, CI4/CI8 (via TLUT), and
 document YUV16 (decode deferred if no oracle test needs it this sprint).
 
-**Acceptance criteria:**
+**Acceptance criteria (DONE):**
 
-- [ ] `Load TLUT` writes `SH − SL + 1` entries (an **inclusive** count — the typical
-      `(0, 0, count-1, 0)` gives `count` entries), each quadrupled, into the addressed high-TMEM
-      region, and latches `(SL, TL, SH, TH)` into the tile descriptor. The base must be in the
-      **upper** TMEM half (word >= 0x100) **and** aligned to 16 TMEM words (128 bytes): the
-      acceptance test covers a base below 0x100 (rejected) *and* a misaligned high-half base
-      (rejected), not only the lower bound.
-- [ ] A `fetch_texel(tile, s, t) -> [u8; 4]` returns the correct RGBA8888 for each listed format,
+- [x] `Load TLUT` writes `SH − SL + 1` entries (an **inclusive** count — the typical
+      `(0, 0, count-1, 0)` gives `count` entries), each quadrupled, into the addressed TMEM
+      region, and latches `(SL, TL, SH, TH)` into the tile descriptor. **Correction (research):**
+      the base is *not* enforced to the upper half / 128-byte alignment. The ParaLLEl-RDP
+      reference writes to whatever `tmem_addr` points at; "must reside in the upper half, aligned
+      to 16 words" is a **programmer requirement**, not a hardware rejection — the sampler reads
+      the palette from the upper half, so a misplaced TLUT is simply not found. Enforcing a
+      rejection (the earlier criterion, adopted from a review) would invent behaviour the hardware
+      does not have, so it is dropped.
+- [x] A `fetch_texel(tile, s, t) -> [u8; 4]` returns the correct RGBA8888 for each listed format,
       checked against hand-derived values (5→8 bit replication for RGBA16; CI4 uses the descriptor
-      `palette` as the high half of the TLUT address).
-- [ ] The exactness of the widening is pinned by a unit test per format.
+      `palette` as the high half of the TLUT index). RGBA16/32, IA16/8/4, I8/4, CI8/4 covered;
+      **YUV16 deferred** (needs the YUV→RGB conversion, no oracle test needs it this sprint).
+- [x] The exactness of the widening is pinned by unit tests (5/4/3-bit replication, the RGBA32
+      split, the odd-row swap, the TLUT lookup). **Note:** 4-bit *fetch* (I4/IA4/CI4) is done; 4-bit
+      *loading* (nibble Load Tile/Block) remains **R-7** — the decoders read whatever nibbles TMEM
+      holds, seeded directly in the tests.
 
 **Dependencies:** T-32-002
 **Reference:** `docs/rdp.md` §Texel formats; Commands.md 0x30

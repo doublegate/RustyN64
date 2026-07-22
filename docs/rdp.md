@@ -279,16 +279,41 @@ nothing. The supported paths are byte-exact against hand-computed expectations (
 tests). The oracle count stays **93** — a load is observable only once the sampler
 (T-32-004) reads TMEM.
 
+### Load TLUT and the texel-format decoders (T-32-003)
+
+`Load TLUT` (0x30) and `Rdp::fetch_texel` — the palette load and the fetch half of the
+texture pipeline (the clamp/mirror/filter/combiner is T-32-004 / Sprint 3). Decode is
+matched to the ParaLLEl-RDP read layout (`texture.h`, MIT).
+
+- **`Load TLUT`** quadruples each 16-bit texture-image entry into four adjacent TMEM `u16`
+  slots — entry `i` at byte `tmem_addr*8 + i*8` — for an inclusive `(SH>>2) − (SL>>2) + 1`
+  count, and latches the tile size. The base is written wherever `tmem_addr` points: the
+  "upper half, 128-byte aligned" rule is a **programmer requirement**, not a hardware
+  rejection (the sampler reads the palette from the upper half, so a misplaced TLUT is
+  simply not found). Enforcing a rejection would invent behaviour, so it is not done.
+- **`fetch_texel(tile, s, t) -> [u8; 4]`** decodes RGBA16 (5551, 5→8 replication),
+  RGBA32 (from the split TMEM: R,G low half, B,A high half), IA16/IA8/IA4, I8/I4 (alpha =
+  intensity), and CI8/CI4 through the TLUT (CI4 folds `tile.palette` in as the high nibble
+  of the index). The 4-bit formats select the high nibble for even `s`, the low for odd.
+
+**The read convention matches the loads.** TMEM is a natural big-endian byte array, so the
+sampler applies only the odd-row 32-bit-word swap `^= (t & 1) << 2` — the endian twiddles
+ParaLLEl-RDP applies to its host-word storage are intentionally absent on both the load and
+fetch sides. **YUV16** decode is deferred (no oracle test needs it this sprint); **4-bit
+loading** (nibble `Load Tile`/`Load Block`) remains R-7, though 4-bit *fetch* is done. The
+oracle count stays **93** — `fetch_texel` has no runtime caller until the sampler (T-32-004).
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);
 the rest is still marked TODO:
 
-- **TMEM** — 4 KiB texture memory (**present**, T-32-001; lazily allocated), now
+- **TMEM** — 4 KiB texture memory (**present**, T-32-001; lazily allocated),
   **loaded** by `Load Tile` / `Load Block` (T-32-002) with the odd-row swap and the
-  32-bit split. With a TLUT (palette) the upper half is the lookup table. Formats:
-  RGBA (16/32-bit), IA, I, CI at 4/8/16/32 bpp (`ref-docs/research-report.md` §4) —
-  decoded by the texel-format engine (T-32-003).
+  32-bit split, its palettes by `Load TLUT` (T-32-003) into the upper half, and
+  **decoded** to RGBA8888 by `fetch_texel` (T-32-003): RGBA16/32, IA16/8/4, I8/4,
+  CI8/4 (via TLUT). Formats per `ref-docs/research-report.md` §4. YUV16 and 4-bit
+  loading pending (R-7).
 - **8 tile descriptors** — format, size, line stride, TMEM address, palette,
   clamp/mirror + mask/shift per S/T axis, and the tile-size coords (**present**,
   T-32-001). Set by `Set Tile` (0x35) and `Set Tile Size` (0x32).

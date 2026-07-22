@@ -91,10 +91,39 @@ const OP_SYNC_PIPE: u8 = 0x27;
 const OP_SYNC_TILE: u8 = 0x28;
 const OP_SYNC_FULL: u8 = 0x29;
 const OP_SET_SCISSOR: u8 = 0x2D;
+const OP_LOAD_TLUT: u8 = 0x30;
 const OP_SET_TILE_SIZE: u8 = 0x32;
 const OP_LOAD_BLOCK: u8 = 0x33;
 const OP_LOAD_TILE: u8 = 0x34;
 const OP_SET_TILE: u8 = 0x35;
+
+/// TMEM byte offset of the high (palette / split-high) half.
+const TMEM_HIGH: u32 = 0x800;
+
+/// Widen a 5-bit channel to 8 bits by bit-replication (`v<<3 | v>>2`).
+const fn widen5(v: u32) -> u8 {
+    ((v << 3) | (v >> 2)) as u8
+}
+
+/// Widen a 4-bit channel to 8 bits by bit-replication (`v<<4 | v`).
+const fn widen4(v: u32) -> u8 {
+    ((v << 4) | v) as u8
+}
+
+/// Widen a 3-bit channel to 8 bits by bit-replication.
+const fn widen3(v: u32) -> u8 {
+    ((v << 5) | (v << 2) | (v >> 1)) as u8
+}
+
+/// Decode a 16-bit RGBA5551 word to `[R, G, B, A]` (5→8 replication; 1-bit alpha).
+const fn decode_rgba16(w: u32) -> [u8; 4] {
+    [
+        widen5((w >> 11) & 0x1F),
+        widen5((w >> 6) & 0x1F),
+        widen5((w >> 1) & 0x1F),
+        if w & 1 != 0 { 0xFF } else { 0 },
+    ]
+}
 
 /// Maximum texels a single `Load Block` may transfer (N64brew *…/Commands*
 /// §Load Block); a load over this writes nothing into TMEM.
@@ -466,6 +495,7 @@ impl Rdp {
             OP_SET_TILE_SIZE => self.set_tile_size(hi, lo),
             OP_LOAD_TILE => self.load_tile(hi, lo, bus),
             OP_LOAD_BLOCK => self.load_block(hi, lo, bus),
+            OP_LOAD_TLUT => self.load_tlut(hi, lo, bus),
             // TODO(T-31-004): remaining opcodes are recognised and
             // length-consumed by `tick`, but not yet dispatched — an
             // intentional, documented no-op at this stage, not a silent discard.
@@ -759,6 +789,141 @@ impl Rdp {
                 );
             }
         }
+    }
+
+    /// Apply a `Load TLUT` (0x30): load a palette into TMEM. Each 16-bit entry
+    /// from the (16-bit) texture image is **quadrupled** — written to four
+    /// adjacent `u16` slots — so entry `i` occupies 8 bytes at TMEM byte
+    /// `tmem_addr*8 + i*8`. The count is inclusive (`(SH>>2) − (SL>>2) + 1`).
+    ///
+    /// The destination is wherever the tile's `tmem_addr` points; a correct
+    /// program sets it into the upper 2 KiB (byte >= 0x800), aligned to 128 bytes
+    /// (N64brew *…/Commands* §Load TLUT). That is a **programmer requirement, not
+    /// a hardware rejection** — the ParaLLEl-RDP reference writes to the addressed
+    /// location and the sampler reads the palette from the upper half, so a
+    /// misplaced TLUT is simply not found rather than refused. Enforcing a
+    /// rejection here would invent behaviour the hardware does not have.
+    fn load_tlut<B: VideoBus>(&mut self, hi: u32, lo: u32, bus: &B) {
+        let sl = ((hi >> 12) & 0xFFF) >> 2;
+        let sh = ((lo >> 12) & 0xFFF) >> 2;
+        let index = ((lo >> 24) & 0x7) as usize;
+        if sh < sl {
+            return;
+        }
+        let count = sh - sl + 1;
+        let tmem_base = u32::from(self.tiles[index].tmem_addr) * 8;
+        let src_base = self.tex_image_addr.wrapping_add(sl * 2); // 16-bit source
+        for i in 0..count {
+            let src = src_base.wrapping_add(i * 2);
+            let hi_b = bus.rdram_read(src);
+            let lo_b = bus.rdram_read(src.wrapping_add(1));
+            let dst = tmem_base + i * 8;
+            for k in 0..4u32 {
+                self.tmem_write((dst + k * 2) as usize, hi_b);
+                self.tmem_write((dst + k * 2 + 1) as usize, lo_b);
+            }
+        }
+        // Load TLUT also updates the tile size (like the other loads).
+        let tile = &mut self.tiles[index];
+        tile.sl = ((hi >> 12) & 0xFFF) as u16;
+        tile.tl = (hi & 0xFFF) as u16;
+        tile.sh = ((lo >> 12) & 0xFFF) as u16;
+        tile.th = (lo & 0xFFF) as u16;
+    }
+
+    /// Sample one texel from `tile` at tile-relative integer coords `(s, t)`,
+    /// returning RGBA8888. The fetch half of the texture pipeline; the
+    /// clamp/mirror/mask/shift wrapper and the filter/combiner are T-32-004 /
+    /// Sprint 3. Decodes every listed texel format (RGBA16/32, IA16/8/4, I8/4,
+    /// CI8/4 via the TLUT), matched to the ParaLLEl-RDP read layout.
+    ///
+    /// TMEM is read as a natural big-endian byte array with the odd-row
+    /// 32-bit-word swap `^= (t & 1) << 2` — the same convention the loads use, so
+    /// the endian twiddles ParaLLEl-RDP applies to its host-word storage are
+    /// intentionally absent here too. An unsupported format/size is transparent
+    /// black.
+    #[must_use]
+    pub fn fetch_texel(&self, tile: &TileDescriptor, s: u32, t: u32) -> [u8; 4] {
+        let swap = (t & 1) << 2;
+        let base = u32::from(tile.tmem_addr) * 8 + u32::from(tile.line) * 8 * t;
+        match (tile.format, tile.size) {
+            (0, 2) => decode_rgba16(self.tmem_u16((base + s * 2) ^ swap)), // RGBA16
+            (0, 3) => {
+                // RGBA32 split: R,G low half; B,A high half.
+                let bo = ((base + s * 2) & 0x7FF) ^ swap;
+                [
+                    self.tmem_byte(bo as usize),
+                    self.tmem_byte((bo + 1) as usize),
+                    self.tmem_byte((bo + TMEM_HIGH) as usize),
+                    self.tmem_byte((bo + TMEM_HIGH + 1) as usize),
+                ]
+            }
+            (3, 2) => {
+                // IA16: I high byte, A low byte.
+                let w = self.tmem_u16((base + s * 2) ^ swap);
+                let i = (w >> 8) as u8;
+                [i, i, i, (w & 0xFF) as u8]
+            }
+            (3, 1) => {
+                // IA8: I high nibble, A low nibble (each 4->8).
+                let byte = self.tmem_byte(((base + s) ^ swap) as usize);
+                let i = widen4(u32::from(byte) >> 4);
+                [i, i, i, widen4(u32::from(byte) & 0xF)]
+            }
+            (3, 0) => {
+                // IA4: I top 3 bits (3->8), A bottom bit.
+                let nib = self.nibble_at(((base + (s >> 1)) ^ swap) as usize, s);
+                let i = widen3(u32::from(nib) >> 1);
+                [i, i, i, if nib & 1 != 0 { 0xFF } else { 0 }]
+            }
+            (4, 1) => {
+                // I8: intensity in all channels, alpha = intensity.
+                let v = self.tmem_byte(((base + s) ^ swap) as usize);
+                [v, v, v, v]
+            }
+            (4, 0) => {
+                // I4: 4-bit intensity (4->8), alpha = intensity.
+                let v = widen4(u32::from(
+                    self.nibble_at(((base + (s >> 1)) ^ swap) as usize, s),
+                ));
+                [v, v, v, v]
+            }
+            (2, 1) => {
+                // CI8: 8-bit index into the TLUT.
+                let ci = self.tmem_byte((((base + s) & 0x7FF) ^ swap) as usize);
+                self.tlut_lookup(u32::from(ci))
+            }
+            (2, 0) => {
+                // CI4: 4-bit index + tile.palette as the high nibble.
+                let nib = self.nibble_at((((base + (s >> 1)) & 0x7FF) ^ swap) as usize, s);
+                let ci = u32::from(nib) | (u32::from(tile.palette) << 4);
+                self.tlut_lookup(ci)
+            }
+            _ => [0, 0, 0, 0],
+        }
+    }
+
+    /// Read a big-endian `u16` from TMEM at byte offset `b` (both bytes masked
+    /// into the 4 KiB space).
+    fn tmem_u16(&self, b: u32) -> u32 {
+        (u32::from(self.tmem_byte(b as usize)) << 8) | u32::from(self.tmem_byte((b + 1) as usize))
+    }
+
+    /// Select the 4-bit nibble of the TMEM byte at `byte_off` for texel column
+    /// `s`: the high nibble for even `s`, the low nibble for odd `s`.
+    fn nibble_at(&self, byte_off: usize, s: u32) -> u8 {
+        let byte = self.tmem_byte(byte_off);
+        (byte >> ((!s & 1) * 4)) & 0xF
+    }
+
+    /// Look up a TLUT entry by 8-bit index `ci` and decode it as RGBA5551.
+    ///
+    /// Entry `ci` is the quadrupled 16-bit word at TMEM byte `0x800 + ci*8` (the
+    /// four copies are identical after `Load TLUT`, so the first is read). The
+    /// `IA16` TLUT type (Other Modes `tlut_type = 1`) is deferred; RGBA16 is
+    /// assumed.
+    fn tlut_lookup(&self, ci: u32) -> [u8; 4] {
+        decode_rgba16(self.tmem_u16(TMEM_HIGH + ci * 8))
     }
 
     /// Read one byte of TMEM.
@@ -1815,5 +1980,180 @@ mod tests {
             rdp.tmem.is_none(),
             "sh < sl writes nothing rather than a wrapped-width rectangle"
         );
+    }
+
+    // ---- T-32-003: Load TLUT (0x30) and the texel-format decoders ----
+
+    /// Seed a tile descriptor's format/size (and optional palette) for a fetch test.
+    fn tile_fmt(format: u8, size: u8) -> TileDescriptor {
+        TileDescriptor {
+            format,
+            size,
+            line: 1,
+            ..TileDescriptor::default()
+        }
+    }
+
+    /// **`fetch_texel` decodes every supported format.** Each case seeds TMEM
+    /// directly (the load path is tested separately) and asserts the RGBA8888.
+    #[test]
+    fn fetch_texel_decodes_each_format() {
+        let mut rdp = Rdp::new();
+        // RGBA16 (5551): 0xF801 = R=31, G=0, B=0, A=1 -> opaque red.
+        rdp.tmem_write(0, 0xF8);
+        rdp.tmem_write(1, 0x01);
+        assert_eq!(
+            rdp.fetch_texel(&tile_fmt(0, 2), 0, 0),
+            [0xFF, 0, 0, 0xFF],
+            "RGBA16"
+        );
+        // IA16: I=0x80 A=0xFF.
+        assert_eq!(
+            rdp.fetch_texel(&tile_fmt(3, 2), 0, 0),
+            [0xF8, 0xF8, 0xF8, 0x01],
+            "IA16 reads the same two bytes as I/A"
+        );
+
+        // IA8: byte 0x5A -> I=widen4(5)=0x55, A=widen4(0xA)=0xAA.
+        let mut r = Rdp::new();
+        r.tmem_write(0, 0x5A);
+        assert_eq!(
+            r.fetch_texel(&tile_fmt(3, 1), 0, 0),
+            [0x55, 0x55, 0x55, 0xAA],
+            "IA8"
+        );
+        // I8: 0x5A in all channels.
+        assert_eq!(
+            r.fetch_texel(&tile_fmt(4, 1), 0, 0),
+            [0x5A, 0x5A, 0x5A, 0x5A],
+            "I8 alpha = intensity"
+        );
+
+        // IA4: high nibble 0xE (i3=7 -> 0xFF, A = bit0 = 0).
+        let mut n = Rdp::new();
+        n.tmem_write(0, 0xE5);
+        assert_eq!(
+            n.fetch_texel(&tile_fmt(3, 0), 0, 0),
+            [0xFF, 0xFF, 0xFF, 0],
+            "IA4 (high nibble, even s)"
+        );
+        // I4: high nibble 0xE -> widen4(0xE)=0xEE in all channels.
+        assert_eq!(
+            n.fetch_texel(&tile_fmt(4, 0), 0, 0),
+            [0xEE, 0xEE, 0xEE, 0xEE],
+            "I4 alpha = intensity"
+        );
+        // Odd s selects the low nibble (0x5): I4 -> widen4(5)=0x55.
+        assert_eq!(
+            n.fetch_texel(&tile_fmt(4, 0), 1, 0),
+            [0x55, 0x55, 0x55, 0x55],
+            "I4 odd s -> low nibble"
+        );
+    }
+
+    /// **`fetch_texel` decodes RGBA32 from the split TMEM.** R,G come from the low
+    /// half and B,A from the high half (0x800).
+    #[test]
+    fn fetch_texel_rgba32_reads_the_split() {
+        let mut rdp = Rdp::new();
+        rdp.tmem_write(0, 0x11); // R
+        rdp.tmem_write(1, 0x22); // G
+        rdp.tmem_write(0x800, 0x33); // B
+        rdp.tmem_write(0x801, 0x44); // A
+        assert_eq!(
+            rdp.fetch_texel(&tile_fmt(0, 3), 0, 0),
+            [0x11, 0x22, 0x33, 0x44]
+        );
+    }
+
+    /// **`fetch_texel` resolves CI8 and CI4 through the TLUT.** A CI index selects
+    /// a quadrupled RGBA16 entry in the high TMEM half; CI4 folds in the tile
+    /// palette as the high nibble.
+    #[test]
+    fn fetch_texel_ci_through_the_tlut() {
+        // CI8: index 5 -> TLUT entry at 0x800 + 5*8 = 0x828 = 0xF801 (red).
+        let mut rdp = Rdp::new();
+        rdp.tmem_write(0, 5); // the index texel
+        rdp.tmem_write(0x828, 0xF8);
+        rdp.tmem_write(0x829, 0x01);
+        assert_eq!(
+            rdp.fetch_texel(&tile_fmt(2, 1), 0, 0),
+            [0xFF, 0, 0, 0xFF],
+            "CI8 -> TLUT red"
+        );
+
+        // CI4: nibble 5 (high, even s) + palette 3 -> index 0x35 -> entry at
+        // 0x800 + 0x35*8 = 0x9A8 = 0x07C1 (green).
+        let mut c = Rdp::new();
+        c.tmem_write(0, 0x50); // high nibble 5
+        c.tmem_write(0x9A8, 0x07);
+        c.tmem_write(0x9A9, 0xC1);
+        let mut tile = tile_fmt(2, 0);
+        tile.palette = 3;
+        assert_eq!(
+            c.fetch_texel(&tile, 0, 0),
+            [0, 0xFF, 0, 0xFF],
+            "CI4 index = nibble | palette<<4"
+        );
+    }
+
+    /// **`fetch_texel` applies the odd-row swap.** Row 1 reads through the
+    /// `^= (t & 1) << 2` twiddle, so the same TMEM contents sample differently on
+    /// even vs odd rows — matching how the loads wrote them.
+    #[test]
+    fn fetch_texel_odd_row_swap() {
+        let mut rdp = Rdp::new();
+        // I8 tile, line 1 (8 bytes/row). Row 1 texel 0 reads byte (8) ^ 4 = 0xC.
+        rdp.tmem_write(0xC, 0x99);
+        assert_eq!(
+            rdp.fetch_texel(&tile_fmt(4, 1), 0, 1),
+            [0x99, 0x99, 0x99, 0x99],
+            "odd row samples the swapped byte"
+        );
+    }
+
+    /// **`Load TLUT` quadruples each entry into the addressed TMEM region** and
+    /// updates the tile size. Two 16-bit entries land as four adjacent copies each.
+    #[test]
+    fn load_tlut_quadruples_entries() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x104].copy_from_slice(&[0xF8, 0x01, 0x07, 0xC1]); // entry0, entry1
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].tmem_addr = 0x100; // -> byte 0x800 (upper half)
+        rdp.tex_image_addr = 0x100;
+        // SL=0 SH=1 (field 1<<2=4) -> 2 entries.
+        rdp.load_tlut(0x0000_0000, 0x0000_4000, &bus);
+        // Entry 0 quadrupled at 0x800..0x808.
+        for k in 0..4 {
+            assert_eq!(rdp.tmem_byte(0x800 + k * 2), 0xF8, "entry0 copy {k} hi");
+            assert_eq!(rdp.tmem_byte(0x801 + k * 2), 0x01, "entry0 copy {k} lo");
+        }
+        // Entry 1 quadrupled at 0x808..0x810.
+        assert_eq!(rdp.tmem_byte(0x808), 0x07);
+        assert_eq!(rdp.tmem_byte(0x809), 0xC1);
+        assert_eq!(rdp.tmem_byte(0x80E), 0x07, "entry1 4th copy");
+        assert_eq!(rdp.tiles[0].sh, 4, "Load TLUT latches the tile size");
+    }
+
+    /// **The dispatcher routes 0x30 to `load_tlut`.** Drives the FIFO dispatch
+    /// entry so a removed/misrouted arm is caught by an observable TMEM write.
+    #[test]
+    fn dispatch_routes_load_tlut() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x102].copy_from_slice(&[0xAB, 0xCD]);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].tmem_addr = 0x100;
+        rdp.tex_image_addr = 0x100;
+        rdp.dispatch(OP_LOAD_TLUT, 0x0000_0000, 0x0000_0000, &mut bus); // 1 entry
+        assert_eq!(rdp.tmem_byte(0x800), 0xAB, "0x30 routed to load_tlut");
+        assert_eq!(rdp.tmem_byte(0x801), 0xCD);
     }
 }
