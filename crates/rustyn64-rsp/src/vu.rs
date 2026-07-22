@@ -2400,6 +2400,71 @@ mod compare_tests {
     }
 }
 
+/// `VCH` and its `VCL`/`VCR` siblings write `VCC`/`VCO`/`VCE` together per lane.
+/// The expected flags below are computed by hand from **n64-systemtest's**
+/// reference algorithm (`op_vector_arithmetic.rs`), NOT from this code, so they
+/// stay valid under a mutation of the implementation.
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    fn pair(vs: [u16; 8], vt: [u16; 8]) -> Rsp {
+        let mut rsp = Rsp::new();
+        rsp.vu_regs[1] = vs; // vs
+        rsp.vu_regs[0] = vt; // vt
+        rsp
+    }
+
+    /// **`VCH` exercises both branches, the `s == ~t` term, and `VCE`.** With
+    /// the suite's operand mapping (source1 -> vt, source2 -> vs) the reference
+    /// is `i1 = vt`, `i2 = vs`:
+    ///
+    /// - Lane 0 (`vs=5`, `vt=3`, same sign -> *else*): `diff = vs - vt = 2`, so
+    ///   `VCC.hi = (diff>=0) = 1`, `VCO.hi = (diff!=0) = 1`, everything else 0,
+    ///   output `= vt = 3`.
+    /// - Lane 1 (`vs=0xFFFB=-5`, `vt=4`, opposite sign -> *if*): `sum = -1`, so
+    ///   `VCC.lo = (sum<=0) = 1`, `VCO.lo = 1`, `VCE = (sum==-1) = 1`, and
+    ///   critically `VCO.hi = (sum!=0 && vs!=~vt) = (1 && 0) = 0` because
+    ///   `0xFFFB == ~4`; output `= -vt = 0xFFFC`.
+    ///
+    /// Dropping the `s != !t` term flips lane 1's `VCO.hi` on (VCO -> 0x0302);
+    /// collapsing the else-branch `VCO.hi` clears lane 0's (VCO -> 0x0002).
+    #[test]
+    fn vch_writes_the_three_flag_words_per_lane() {
+        let mut rsp = pair([5, 0xFFFB, 0, 0, 0, 0, 0, 0], [3, 0x0004, 0, 0, 0, 0, 0, 0]);
+        assert!(rsp.vu_compute(0x25, 0, 1, 0, 2));
+
+        assert_eq!(
+            rsp.vu_regs[2],
+            [3, 0xFFFC, 0, 0, 0, 0, 0, 0],
+            "selected output"
+        );
+        assert_eq!(rsp.vu_ctrl.vcc, 0xFD02, "VCC: hi=lanes!=1, lo=lane1");
+        assert_eq!(rsp.vu_ctrl.vco, 0x0102, "VCO: hi=lane0, lo=lane1");
+        assert_eq!(rsp.vu_ctrl.vce, 0x02, "VCE: lane1 only (sum == -1)");
+    }
+
+    /// **`VCL` and `VCR` clear `VCO` and `VCE` after they run; `VCH` does not.**
+    /// The whole point of the pair is to *consume* the flags a preceding compare
+    /// left, so a stale `VCO` would corrupt the next multi-precision step.
+    #[test]
+    fn vcl_and_vcr_clear_vco_and_vce_but_vch_does_not() {
+        for op in [0x24u32, 0x26] {
+            let mut rsp = pair([1; 8], [2; 8]);
+            rsp.vu_ctrl.vco = 0xFFFF;
+            rsp.vu_ctrl.vce = 0xFF;
+            assert!(rsp.vu_compute(op, 0, 1, 0, 2));
+            assert_eq!(rsp.vu_ctrl.vco, 0, "op {op:#x} clears VCO");
+            assert_eq!(rsp.vu_ctrl.vce, 0, "op {op:#x} clears VCE");
+        }
+
+        // VCH keeps them: it is the producer, not the consumer.
+        let mut rsp = pair([1; 8], [2; 8]);
+        rsp.vu_compute(0x25, 0, 1, 0, 2);
+        assert_ne!(rsp.vu_ctrl.vco, 0, "VCH leaves VCO set");
+    }
+}
+
 #[cfg(test)]
 mod vrnd_tests {
     use super::*;
