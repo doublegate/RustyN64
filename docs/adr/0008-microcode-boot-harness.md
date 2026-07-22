@@ -1,6 +1,7 @@
 # 0008 — The microcode-boot harness (Phase 2 criterion 2)
 
-Status: **Accepted** (design; implementation staged)
+Status: **Proposed** — accepted on merge of the PR that introduces this file;
+immutable thereafter (design; implementation staged)
 Date: 2026-07-21
 Deciders: repo owner
 Supersedes: none · Superseded by: none
