@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn a_multiword_command_is_consumed_in_one_tick() {
         let mut mem = Vec::new();
-        push_cmd(&mut mem, 0x0E, 20); // Fill Triangle (ST): 20 words
+        push_cmd(&mut mem, 0x0E, 20); // Fill Triangle (shade + texture): 20 words
         let mut bus = SliceBus { mem };
         let mut rdp = Rdp::new();
         rdp.cmd_end = 20 * 8;
