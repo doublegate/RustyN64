@@ -140,13 +140,18 @@ Each stage is its own PR through the normal ceremony.
   Document the rspq/rdpq boot ABI: the DMEM fields the kernel reads, the
   command-queue layout, and the `RDPQ_Send` → DPC path. Ship a test that boots
   the microcode and witnesses it reaching idle (no output comparison yet). The
-  witness must have a **defined pre-run baseline** — zero `DPC_END`, `DPC_CURRENT`
-  and the RDP output buffer before the run — and then assert a **specific idle
-  observable** (the RSPQ kernel halts via `BREAK`, so `SP_STATUS.HALTED|BROKE`
-  set with the PC parked at the kernel's idle handler), not merely "the loop
-  returned". Choose that observable so a microcode that never executed fails it:
-  the failure and success states must not converge (the converging-paths hazard,
-  `docs/engineering-lessons.md`).
+  witness must have a **defined pre-run baseline that is itself unreachable as a
+  pass** — otherwise a no-run path trivially satisfies the post-run assertion and
+  the two states converge (the converging-paths hazard,
+  `docs/engineering-lessons.md`). Concretely: before launch, zero `DPC_END` /
+  `DPC_CURRENT` / the RDP output buffer **and** set `SP_STATUS` to *running*
+  (`HALTED` and `BROKE` clear) with the PC at the kernel entry, not the idle
+  handler. Then launch and assert the **transition**: `BROKE` becomes set and the
+  PC has advanced to the kernel's idle/`BREAK` site. A microcode that never
+  executed stays not-`BROKE` with the PC at entry and fails — so success requires
+  the kernel actually to have run. Stronger still where cheap: also assert a DMEM
+  cell the boot path is known to write, so "ran" is witnessed by an effect, not
+  only by the halt state.
 - **Stage 2 — feed a command list, capture the output.** Reproduce the boot
   state in Rust, place the fixture RSPQ command list in RDRAM, run to drain, and
   capture the RDP command list the microcode emits through the DPC path.
