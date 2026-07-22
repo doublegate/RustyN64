@@ -35,6 +35,7 @@ pub struct Rdp {
     pub color_image: u32, // SET_COLOR_IMAGE base in RDRAM
     pub z_image: u32,     // SET_Z_IMAGE base in RDRAM
     pub commands_processed: u64, // retired-work tally (decoded commands)
+    pub stall: u32,              // GCLK cycles the pipeline is stalled (sync cmds)
 }
 impl Rdp {
     pub const fn dpc_read(&self, offset: u32) -> u32;      // 0x0410_0000 block
@@ -127,6 +128,30 @@ Commands are read from RDRAM (the `XBUS` bit clear); the `XBUS`/DMEM command
 source is not yet wired, because the `rdpq` microcode that drives the DP today
 DMAs its list to RDRAM. Honouring the DMEM source (per *Edge cases* below)
 arrives with a bus seam for DMEM reads.
+
+### The sync commands and the DP interrupt (T-31-002)
+
+The dispatcher (`Rdp::dispatch`, called by `tick` after a command is consumed)
+handles the four synchronisation commands; every other opcode is still a
+recognised no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
+
+- **`Sync Load`** (0x26), **`Sync Pipe`** (0x27), **`Sync Tile`** (0x28) each
+  stall the pipeline for a **fixed, unconditional** number of GCLK cycles — 25,
+  50, and 33 respectively (`SYNC_LOAD_GCLK` / `SYNC_PIPE_GCLK` /
+  `SYNC_TILE_GCLK`). The stall does not wait on an internal signal: the RDP burns
+  the full time whether or not the sync was needed, which is exactly why these
+  are constants rather than conditional waits. Modelled by a `stall` countdown
+  (one GCLK per `tick`, one `tick` = one RCP/GCLK step) that holds the FIFO until
+  it expires. These are documented values, so they live in the code with their
+  citation, not in the accuracy ledger (which is for *undocumented* constants).
+- **`Sync Full`** (0x29) waits for all staged pipeline and memory operations to
+  complete, halts the pipeline counter, and **raises the DP interrupt**
+  (`bus.raise_dp_interrupt()` → `MI_INTR.dp`, asserting IP2 once masked in). With
+  no asynchronous pipeline work modelled yet, staged work is already complete, so
+  the interrupt is raised immediately; a preceding sync stall drains first via
+  the `stall` gate. Hazard (documented, respected rather than papered over):
+  `Sync Full` must be the last command before `DP_END`, and no command may be
+  submitted while it is in progress, or the RDP may hang.
 
 ## State
 

@@ -994,6 +994,29 @@ mod tests {
         bus.rcp.mi_mask.ai = true;
         assert!(CpuBus::poll_irq(&mut bus));
     }
+
+    /// **A `Sync Full` command drives the DP interrupt through to the CPU.** A
+    /// `0x29` command word placed in RDRAM and consumed by `rdp_tick` raises
+    /// `MI_INTR.dp`; once the DP line is masked in it asserts IP2, which is how
+    /// the CPU comes to service the RDP-done interrupt. This is the end-to-end
+    /// path for Phase 3's `Sync Full` — the RDP dispatcher, the `VideoBus` seam,
+    /// the MI line, and the mask, together.
+    #[test]
+    fn a_sync_full_command_drives_the_dp_interrupt_to_ip2() {
+        let mut bus = Bus::new();
+        // A Sync Full command (opcode 0x29 in bits 61:56) at RDRAM 0x100.
+        bus.rdram[0x100] = 0x29;
+        // Point the DP FIFO at it: a single 8-byte command.
+        bus.rdp.dpc_write(0, 0x100); // DPC_START (sets START_VALID)
+        bus.rdp.dpc_write(1, 0x108); // DPC_END  (copies START -> CURRENT)
+
+        assert!(!bus.rcp.mi_intr.dp, "DP line clear before the command runs");
+        bus.rdp_tick();
+        assert!(bus.rcp.mi_intr.dp, "Sync Full raised the DP line");
+
+        bus.rcp.mi_mask.dp = true;
+        assert!(CpuBus::poll_irq(&mut bus), "the masked DP line asserts IP2");
+    }
 }
 
 #[cfg(test)]
