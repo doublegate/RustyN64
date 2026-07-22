@@ -49,11 +49,10 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   and write through the CPU bus. Writing `VI_V_CURRENT` acknowledges the VI
   interrupt (`MI_INTR.vi = false`); cold-boot state is all-zero, so the VI is off
   (`VI_CTRL.TYPE == 0`).
-- **Staged for the follow-up VI tickets:** `VI_V_CURRENT` advancing with the scan
-  position and the interrupt *firing* at `VI_V_INTR` (needs the scheduler's
-  fractional VI clock); framebuffer scan-out (which makes the FILL pipeline
-  observable); and per-register write masks (stored full-width for now, to be
-  pinned against n64-systemtest rather than guessed).
+- **Staged for the follow-up VI tickets:** per-register write masks (stored
+  full-width for now, to be pinned against n64-systemtest rather than guessed).
+  (The scan position, the `VI_V_INTR` interrupt, and framebuffer scan-out landed
+  in parts 2–3, above.)
 
 ### Added — the RDP FILL pipeline (Phase 3, T-31-003)
 

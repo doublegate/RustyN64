@@ -311,8 +311,9 @@ mod tests {
         vi.regs[VI_V_INTR as usize] = 600; // unreachable in either config
         vi.regs[VI_CTRL as usize] = 2;
         let per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 525);
-        assert!(!vi.tick(per_hl * 100)); // advance ~100 half-lines
+        assert!(!vi.tick(per_hl * 100)); // advance exactly 100 half-lines
         let mid = vi.read(VI_V_CURRENT);
+        assert_eq!(mid, 100, "100 half-lines into the 525-line field");
         // Shrink the field; VI_V_INTR (600) is unreachable in both, so no fire.
         vi.regs[VI_V_TOTAL as usize] = 262; // now 263 half-lines
         let per_hl2 = crate::MASTER_HZ / (VI_FIELD_HZ * 263);
@@ -320,10 +321,12 @@ mod tests {
             !vi.tick(per_hl * 100 + per_hl2 * 10),
             "no spurious fire on rebase"
         );
-        assert!(
-            vi.read(VI_V_CURRENT) < 263,
-            "position stays within the new field ({} advanced from {mid})",
-            vi.read(VI_V_CURRENT)
+        // Relative: 10 more half-lines from 100, wrapped at the *new* 263 — an
+        // absolute-time implementation would scale-jump to 60 here instead.
+        assert_eq!(
+            vi.read(VI_V_CURRENT),
+            (mid + 10) % 263,
+            "position continues relative across the field-length change"
         );
     }
 }
