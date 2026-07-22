@@ -186,6 +186,9 @@ impl Rdp {
     /// Apply a `DPC_STATUS` write, whose bits are set/clear *commands* rather
     /// than the status layout read back. Only XBUS and FREEZE are modelled; the
     /// FLUSH/TMEM/PIPE/CMD/CLOCK-counter commands come with the FIFO drain.
+    // TODO(T-31-003): when `SET_FLUSH` (pipeline flush) lands here, it must also
+    // clear `self.stall` — a flush discards in-flight pipeline work, so a
+    // leftover sync-stall countdown must not persist across it.
     const fn dpc_write_status(&mut self, value: u32) {
         const CLEAR_XBUS: u32 = 0x1;
         const SET_XBUS: u32 = 0x2;
@@ -274,6 +277,14 @@ impl Rdp {
     ///   work modelled yet, "staged work" is already complete, so the interrupt
     ///   is raised immediately; a following `Sync Pipe`-style stall would have
     ///   drained first via the `stall` gate above.
+    ///
+    /// On stall resolution: per-command *execution* cost is not modelled yet —
+    /// every command is consumed in a single placeholder `tick` — so the `stall`
+    /// set here is the documented pipeline stall *layered on top of* that one
+    /// consume tick, not a claim about total command latency (the next command
+    /// resumes after `1 + N` ticks). The stall itself is exactly the documented
+    /// N GCLK; exact per-command base timing is deferred to the command-timing
+    /// model.
     fn dispatch<B: VideoBus>(&mut self, opcode: u8, bus: &mut B) {
         match opcode {
             OP_SYNC_LOAD => self.stall = SYNC_LOAD_GCLK,
