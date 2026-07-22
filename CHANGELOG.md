@@ -9,6 +9,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the first golden frame (Phase 3, T-31-005)
+
+- **The Sprint-1 picture path is pinned by a committed golden.** A harness
+  integration test (`tests/golden_frame.rs`) drives an RDP FILL command list into
+  a framebuffer in RDRAM, scans it out through the VI to RGBA8, and asserts the
+  frame is byte-exact and its FNV-1a hash matches a committed golden
+  (`compare_to_golden`) — so any regression in the command decoder, the FILL
+  pipeline, or the VI scan-out changes the frame and fails the test.
+  Mutation-checked (changing the fill colour fails it). The frame comes from a
+  synthetic command stream rather than a commercial ROM (cartridge boot is Phase
+  5); the path from the DP FIFO onward is identical.
+
 ### Changed — the frontend presents the VI scan-out (Phase 3)
 
 - **`EmuCore::produce_frame` now blits the core's framebuffer**, not a

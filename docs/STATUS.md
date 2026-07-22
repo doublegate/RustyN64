@@ -206,7 +206,7 @@ entropy, threads and unordered collections anywhere in the core.
 | n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** across 917 tests started — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
-| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
+| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | **first frame MET** (T-31-005) — a synthetic RDP FILL list rendered through the full command-decode → FILL → VI scan-out path is pinned byte-exact against a committed golden hash (`--test golden_frame`). Real-ROM krom/240p goldens await cartridge boot (Phase 5) |
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
 nothing about whether the emulator can execute it. Both must be true before a
