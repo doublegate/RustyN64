@@ -7,11 +7,13 @@
 //! per-pixel pipeline (the ParaLLEl-RDP / angrylion reference), not a
 //! triangle-list HLE.
 //!
-//! The DP FIFO is **decoded but not yet rasterized**: [`Rdp::tick`] recognises
-//! every command `0x00`–`0x3F` and consumes each one's full length (via
-//! [`command`]), so the stream stays aligned — but no primitive is drawn yet.
-//! The rasterizer proper (edge walking, the texture engine with TMEM, the
-//! combiner/blender, dithering, coverage AA) is the rest of this roadmap phase.
+//! [`Rdp::tick`] decodes the DP FIFO — recognising every command `0x00`–`0x3F`
+//! and consuming each one's full length (via [`command`]) so the stream stays
+//! aligned — and dispatches the sync commands and the **FILL pipeline** (Set
+//! Color Image, Set Fill Color, Set Scissor, Fill Rectangle), which writes solid
+//! rectangles into the framebuffer. The rest of the rasterizer (edge-walked
+//! triangles, the texture engine with TMEM, the combiner/blender, dithering,
+//! coverage AA) is the remainder of this roadmap phase.
 //!
 //! Part of the one-directional chip-crate graph (see `docs/architecture.md`):
 //! this crate depends on **exactly one** chip crate, `rustyn64-cart`, purely for
@@ -88,13 +90,22 @@ const OP_SYNC_LOAD: u8 = 0x26;
 const OP_SYNC_PIPE: u8 = 0x27;
 const OP_SYNC_TILE: u8 = 0x28;
 const OP_SYNC_FULL: u8 = 0x29;
+const OP_SET_SCISSOR: u8 = 0x2D;
+const OP_FILL_RECTANGLE: u8 = 0x36;
+const OP_SET_FILL_COLOR: u8 = 0x37;
+const OP_SET_COLOR_IMAGE: u8 = 0x3F;
 
 /// RDP state (skeleton).
 ///
 /// Holds the command-FIFO pointers, the current render mode (other-modes),
 /// scissor rectangle, and the color-image / Z-image RDRAM addresses. TMEM and
 /// the per-tile descriptors come with the texture engine in a later phase.
+/// `#[non_exhaustive]`: this render state grows every sprint (TMEM, tiles,
+/// other-modes, the combiner latches are still to come), so adding a field must
+/// not be a breaking change. Construct via [`Rdp::new`]; the workspace never
+/// uses a struct literal.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct Rdp {
     /// DP command FIFO start (`DPC_START`).
     pub cmd_start: u32,
@@ -105,10 +116,35 @@ pub struct Rdp {
     /// DP command FIFO status (`DPC_STATUS`): FREEZE, START/END-valid, XBUS,
     /// and (later) the busy/counter bits.
     pub status: u32,
-    /// Color-image (framebuffer) base in RDRAM (`SET_COLOR_IMAGE`).
+    /// Color-image (framebuffer) base in RDRAM (`Set Color Image`, 0x3F).
     pub color_image: u32,
+    /// Color-image pixel size code (`Set Color Image` size\[1:0\]): 0 = 4-bit,
+    /// 1 = 8-bit, 2 = 16-bit, 3 = 32-bit. Bytes-per-pixel derive from it.
+    pub color_image_size: u8,
+    /// Color-image pixel format code (`Set Color Image` format\[2:0\]); the same
+    /// format enumeration as textures. Stored for later pipeline stages — the
+    /// FILL path writes the raw fill value and does not consult it.
+    pub color_image_format: u8,
+    /// Color-image width in pixels (`Set Color Image` width\[9:0\] + 1). The row
+    /// stride is `width * bytes_per_pixel`.
+    pub color_image_width: u16,
     /// Z-image base in RDRAM (`SET_Z_IMAGE`).
     pub z_image: u32,
+    /// FILL-mode colour register (`Set Fill Color`, 0x37): a 32-bit value written
+    /// verbatim to the color image. Its interpretation depends on the pixel size
+    /// — one RGBA32, two RGBA16 (even pixel = upper half, odd = lower), or four
+    /// 8-bit values repeating every four pixels.
+    pub fill_color: u32,
+    /// Scissor rectangle (`Set Scissor`, 0x2D), the four `u10.2` screen
+    /// coordinates that bound every primitive: upper-left (x, y) and lower-right
+    /// (x, y). Pixels outside it are neither processed nor written.
+    pub scissor_ulx: u16,
+    /// Scissor upper-left y (`u10.2`). See [`Rdp::scissor_ulx`].
+    pub scissor_uly: u16,
+    /// Scissor lower-right x (`u10.2`). See [`Rdp::scissor_ulx`].
+    pub scissor_lrx: u16,
+    /// Scissor lower-right y (`u10.2`). See [`Rdp::scissor_ulx`].
+    pub scissor_lry: u16,
     /// Count of commands the FIFO decoder has retired. A **retired-work tally**,
     /// not a cycle position: nothing schedules against it (the residue
     /// invariant governs only `master_ticks`), it is derived from the command
@@ -122,9 +158,10 @@ pub struct Rdp {
     /// derives a clock from it, and it does not touch the derive-don't-increment
     /// rule (only `master_ticks` is ever incremented; ADR 0006).
     pub stall: u32,
-    // TODO(T-31-003): the fill pipeline — TMEM (4 KiB), the 8 tile descriptors,
-    // other-modes bits, the combiner + blend-mode latches, the scissor rect —
-    // see `docs/rdp.md`.
+    // TODO(T-RDP-03): remaining render state — TMEM (4 KiB), the 8 tile
+    // descriptors, the other-modes word (cycle type, combiner mux, blend mode),
+    // and the combiner/blender latches — arrives with the texture engine and
+    // combiner (Sprint 2/3); see `docs/rdp.md`.
 }
 
 impl Rdp {
@@ -228,12 +265,9 @@ impl Rdp {
     /// stream — decoding DMEM commands out of RDRAM would treat parameter data
     /// as opcodes and desync.
     ///
-    /// Dispatch so far (`dispatch`) covers the four sync commands: `Sync
-    /// Load`/`Pipe`/`Tile` set the fixed pipeline stall that gates the next
-    /// command, and `Sync Full` raises the DP interrupt. Everything else is
-    /// still recognised-and-consumed only.
-    // TODO(T-31-003): dispatch the fill pipeline — Set Color Image, Set Fill
-    // Color, Set Scissor, Fill Rectangle — into `color_image`.
+    /// Dispatch so far (`dispatch`) covers the four sync commands and the FILL
+    /// pipeline (Set Color Image, Set Fill Color, Set Scissor, Fill Rectangle).
+    /// Everything else is still recognised-and-consumed only.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
@@ -261,9 +295,12 @@ impl Rdp {
         if self.cmd_end - self.cmd_current < len_bytes {
             return;
         }
+        // The low half of the first command word (every command handled so far
+        // fits in one 64-bit word: opcode + flags in `hi`, payload in `lo`).
+        let word0_lo = bus.rdram_read_u32(self.cmd_current.wrapping_add(4));
         self.cmd_current = self.cmd_current.wrapping_add(len_bytes);
         self.commands_processed = self.commands_processed.wrapping_add(1);
-        self.dispatch(opcode, bus);
+        self.dispatch(opcode, word0_hi, word0_lo, bus);
     }
 
     /// Act on a just-consumed command. Only the sync commands are handled so
@@ -289,21 +326,129 @@ impl Rdp {
     /// resumes after `1 + N` ticks). The stall itself is exactly the documented
     /// N GCLK; exact per-command base timing is deferred to the command-timing
     /// model.
-    fn dispatch<B: VideoBus>(&mut self, opcode: u8, bus: &mut B) {
+    ///
+    /// The FILL-pipeline arms take the command's two 32-bit halves (`hi` =
+    /// RDRAM bits 63:32, `lo` = 31:0). `Fill Rectangle` writes the fill colour
+    /// into the color image, clipped to the scissor — the FILL-mode path (the
+    /// cycle-type gate arrives with `Set Other Modes`, so `Fill Rectangle` is a
+    /// solid FILL fill for now; 1-/2-cycle rectangles route through the blender,
+    /// not this code).
+    fn dispatch<B: VideoBus>(&mut self, opcode: u8, hi: u32, lo: u32, bus: &mut B) {
         match opcode {
             OP_SYNC_LOAD => self.stall = SYNC_LOAD_GCLK,
             OP_SYNC_PIPE => self.stall = SYNC_PIPE_GCLK,
             OP_SYNC_TILE => self.stall = SYNC_TILE_GCLK,
             OP_SYNC_FULL => bus.raise_dp_interrupt(),
-            // TODO(T-31-003): every other opcode is recognised and
+            OP_SET_COLOR_IMAGE => {
+                // format[2:0] = hi 23:21, size[1:0] = hi 20:19, width[9:0] = hi
+                // 9:0 (minus one), dramAddress[23:0] = lo 23:0.
+                self.color_image_format = ((hi >> 21) & 0x7) as u8;
+                self.color_image_size = ((hi >> 19) & 0x3) as u8;
+                self.color_image_width = ((hi & 0x3FF) as u16).wrapping_add(1);
+                self.color_image = lo & 0x00FF_FFFF;
+            }
+            OP_SET_FILL_COLOR => self.fill_color = lo,
+            OP_SET_SCISSOR => {
+                // upper-left x/y = hi 23:12 / 11:0, lower-right x/y = lo 23:12 /
+                // 11:0 (all u10.2). The field/odd interlace bits (lo 25/24) are
+                // not modelled yet.
+                self.scissor_ulx = ((hi >> 12) & 0xFFF) as u16;
+                self.scissor_uly = (hi & 0xFFF) as u16;
+                self.scissor_lrx = ((lo >> 12) & 0xFFF) as u16;
+                self.scissor_lry = (lo & 0xFFF) as u16;
+            }
+            OP_FILL_RECTANGLE => self.fill_rectangle(hi, lo, bus),
+            // TODO(T-31-004): remaining opcodes are recognised and
             // length-consumed by `tick`, but not yet dispatched — an
             // intentional, documented no-op at this stage, not a silent discard.
-            // Handlers arrive per ticket (the fill pipeline — Set Color Image,
-            // Set Fill Color, Set Scissor, Fill Rectangle — is next), and
-            // `docs/rdp.md` is the authoritative list of what is dispatched
-            // versus recognised-only, so a later missing arm is caught against
-            // that spec rather than passing silently here.
+            // Handlers arrive per ticket (VI scan-out, then texture / combiner /
+            // blender), and `docs/rdp.md` is the authoritative list of what is
+            // dispatched versus recognised-only, so a later missing arm is caught
+            // against that spec rather than passing silently here.
             _ => {}
+        }
+    }
+
+    /// Bytes per pixel for the current color-image size, or `None` for the
+    /// 4-bit mode, which cannot be a FILL-mode render target (it would crash the
+    /// real RDP — N64brew *…/Commands* §Set Color Image hazards).
+    const fn color_image_bpp(&self) -> Option<u32> {
+        match self.color_image_size {
+            1 => Some(1), // 8-bit
+            2 => Some(2), // 16-bit
+            3 => Some(4), // 32-bit
+            _ => None,    // 4-bit: crash on the real RDP
+        }
+    }
+
+    /// Render a `Fill Rectangle` in FILL mode: write the 32-bit fill colour into
+    /// the color image over the rectangle, clipped to the scissor.
+    ///
+    /// FILL mode "repeats the 32-bit value verbatim out to memory", which
+    /// resolves per pixel by size (N64brew *…/Commands* §Set Fill Color):
+    /// 32-bit writes the whole colour; 16-bit takes the upper half for even
+    /// pixels and the lower half for odd; 8-bit takes byte `x & 3`. Coordinates
+    /// are `u10.2`; FILL mode floors the upper-left and rounds the lower-right up
+    /// (a half-open pixel span — N64brew *…/Commands* §Fill Rectangle). The exact
+    /// sub-pixel edge rules, and the scissor's inclusive-right/exclusive-lower
+    /// FILL rule, are an **open residual** (`docs/accuracy-ledger.md` R-3):
+    /// byte-exact for aligned rectangles, validated bit-for-bit against Angrylion
+    /// via the ParaLLEl-RDP fuzz suite (Sprint 3) and superseded there if it
+    /// diverges.
+    fn fill_rectangle<B: VideoBus>(&self, hi: u32, lo: u32, bus: &mut B) {
+        let Some(bpp) = self.color_image_bpp() else {
+            return; // 4-bit target: the real RDP crashes; we skip.
+        };
+        // No color image configured yet (width is field+1, so a real Set Color
+        // Image never yields 0). Rendering before it is a documented hazard —
+        // the real RDP writes to an unspecified location — so we write nothing
+        // rather than smear every row onto offset 0 with a zero stride.
+        if self.color_image_width == 0 {
+            return;
+        }
+        // Rectangle: lower-right x/y = hi 23:12 / 11:0, upper-left x/y = lo 23:12
+        // / 11:0 (all u10.2). Floor the upper-left, round the lower-right up.
+        let rx0 = ((lo >> 12) & 0xFFF) >> 2;
+        let ry0 = (lo & 0xFFF) >> 2;
+        let rx1 = (((hi >> 12) & 0xFFF) + 3) >> 2;
+        let ry1 = ((hi & 0xFFF) + 3) >> 2;
+        // Scissor: floor upper-left, round lower-right up.
+        let sx0 = u32::from(self.scissor_ulx) >> 2;
+        let sy0 = u32::from(self.scissor_uly) >> 2;
+        let sx1 = (u32::from(self.scissor_lrx) + 3) >> 2;
+        let sy1 = (u32::from(self.scissor_lry) + 3) >> 2;
+        // Intersection of rectangle and scissor (half-open).
+        let x0 = rx0.max(sx0);
+        let y0 = ry0.max(sy0);
+        let x1 = rx1.min(sx1);
+        let y1 = ry1.min(sy1);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let stride = u32::from(self.color_image_width) * bpp;
+        let color = self.fill_color.to_be_bytes();
+        for y in y0..y1 {
+            let row = self.color_image.wrapping_add(y * stride);
+            for x in x0..x1 {
+                let addr = row.wrapping_add(x * bpp);
+                match bpp {
+                    4 => {
+                        for (i, b) in color.iter().enumerate() {
+                            bus.rdram_write(addr.wrapping_add(i as u32), *b);
+                        }
+                    }
+                    2 => {
+                        // Even pixel: upper 16 bits; odd pixel: lower 16 bits.
+                        let half = if x & 1 == 0 { 0 } else { 2 };
+                        bus.rdram_write(addr, color[half]);
+                        bus.rdram_write(addr.wrapping_add(1), color[half + 1]);
+                    }
+                    // 8-bit: one of four values, repeating every four pixels.
+                    1 => bus.rdram_write(addr, color[(x & 3) as usize]),
+                    // `color_image_bpp` yields only 1, 2, or 4; unreachable.
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -687,5 +832,231 @@ mod tests {
             "interrupt raised only after the stall drains"
         );
         assert_eq!(rdp.commands_processed, 2);
+    }
+
+    // --- The FILL pipeline (T-31-003) ---
+
+    // The command list lives here; the color image is based at RDRAM 0, well
+    // below it, so the two never overlap in the shared test buffer.
+    const CMD_BASE: u32 = 0x4000;
+
+    fn push_word(buf: &mut Vec<u8>, hi: u32, lo: u32) {
+        buf.extend_from_slice(&hi.to_be_bytes());
+        buf.extend_from_slice(&lo.to_be_bytes());
+    }
+
+    // Command builders. Screen coordinates are given in whole pixels; the wire
+    // format is u10.2, so each is shifted left by two.
+    fn set_color_image(format: u32, size: u32, width: u32, addr: u32) -> (u32, u32) {
+        let hi =
+            (u32::from(OP_SET_COLOR_IMAGE) << 24) | (format << 21) | (size << 19) | (width - 1);
+        (hi, addr)
+    }
+    fn set_fill_color(color: u32) -> (u32, u32) {
+        (u32::from(OP_SET_FILL_COLOR) << 24, color)
+    }
+    fn set_scissor(ulx: u32, uly: u32, lrx: u32, lry: u32) -> (u32, u32) {
+        let hi = (u32::from(OP_SET_SCISSOR) << 24) | (ulx << 14) | (uly << 2);
+        let lo = (lrx << 14) | (lry << 2);
+        (hi, lo)
+    }
+    fn fill_rect(ulx: u32, uly: u32, lrx: u32, lry: u32) -> (u32, u32) {
+        let hi = (u32::from(OP_FILL_RECTANGLE) << 24) | (lrx << 14) | (lry << 2);
+        let lo = (ulx << 14) | (uly << 2);
+        (hi, lo)
+    }
+
+    /// Run a command list through the FIFO (color image at RDRAM 0, commands at
+    /// `CMD_BASE`) and return the RDP plus the memory the fill wrote into.
+    fn run_commands(words: &[(u32, u32)]) -> (Rdp, SliceBus) {
+        let mut mem = alloc::vec![0u8; CMD_BASE as usize + words.len() * 8];
+        let mut list = Vec::new();
+        for &(hi, lo) in words {
+            push_word(&mut list, hi, lo);
+        }
+        mem[CMD_BASE as usize..CMD_BASE as usize + list.len()].copy_from_slice(&list);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.cmd_current = CMD_BASE;
+        rdp.cmd_end = CMD_BASE + u32::try_from(list.len()).unwrap();
+        let mut guard = 0;
+        while rdp.cmd_current < rdp.cmd_end && guard < 10_000 {
+            rdp.tick(&mut bus);
+            guard += 1;
+        }
+        (rdp, bus)
+    }
+
+    /// **`Set Color Image` parses format, size, width, and address.** Width is
+    /// the encoded field plus one; the address is masked to 24 bits.
+    #[test]
+    fn set_color_image_parses_its_fields() {
+        let (rdp, _) = run_commands(&[set_color_image(0, 3, 320, 0x0010_0000)]);
+        assert_eq!(rdp.color_image_format, 0);
+        assert_eq!(rdp.color_image_size, 3);
+        assert_eq!(rdp.color_image_width, 320);
+        assert_eq!(rdp.color_image, 0x0010_0000);
+    }
+
+    /// **`Set Fill Color` and `Set Scissor` store their values.**
+    #[test]
+    fn set_fill_color_and_scissor_store_state() {
+        let (rdp, _) = run_commands(&[set_fill_color(0xDEAD_BEEF), set_scissor(2, 3, 6, 7)]);
+        assert_eq!(rdp.fill_color, 0xDEAD_BEEF);
+        assert_eq!(rdp.scissor_ulx, 2 << 2);
+        assert_eq!(rdp.scissor_uly, 3 << 2);
+        assert_eq!(rdp.scissor_lrx, 6 << 2);
+        assert_eq!(rdp.scissor_lry, 7 << 2);
+    }
+
+    /// **A 32-bit FILL writes the whole colour to every pixel**, four bytes
+    /// each, big-endian — the memory is the fill value repeated verbatim.
+    #[test]
+    fn fill_rectangle_32bpp_writes_the_colour_verbatim() {
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 4, 0), // 32-bit, width 4, base 0
+            set_fill_color(0xAABB_CCDD),
+            set_scissor(0, 0, 4, 2),
+            fill_rect(0, 0, 4, 2),
+        ]);
+        // 4 px * 2 rows * 4 bytes = 32 bytes, all AA BB CC DD.
+        for chunk in bus.mem[0..32].chunks_exact(4) {
+            assert_eq!(chunk, [0xAA, 0xBB, 0xCC, 0xDD]);
+        }
+        assert_eq!(bus.mem[32], 0, "nothing written past the rectangle");
+    }
+
+    /// **A 16-bit FILL alternates the colour's halves per pixel** — even pixels
+    /// take the upper 16 bits, odd pixels the lower — so memory is still the
+    /// 32-bit value repeated.
+    #[test]
+    fn fill_rectangle_16bpp_alternates_halves() {
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 2, 4, 0), // 16-bit, width 4
+            set_fill_color(0xAABB_CCDD),
+            set_scissor(0, 0, 4, 1),
+            fill_rect(0, 0, 4, 1),
+        ]);
+        // px0 even -> AABB, px1 odd -> CCDD, px2 -> AABB, px3 -> CCDD.
+        assert_eq!(
+            bus.mem[0..8],
+            [0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xCC, 0xDD]
+        );
+    }
+
+    /// **An 8-bit FILL writes one of the four colour bytes per pixel**, cycling
+    /// every four pixels.
+    #[test]
+    fn fill_rectangle_8bpp_cycles_four_bytes() {
+        let (_, bus) = run_commands(&[
+            set_color_image(4, 1, 4, 0), // 8-bit (I8), width 4
+            set_fill_color(0xAABB_CCDD),
+            set_scissor(0, 0, 4, 1),
+            fill_rect(0, 0, 4, 1),
+        ]);
+        assert_eq!(bus.mem[0..4], [0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    /// **The scissor clips the fill on all four edges.** A rectangle larger than
+    /// the scissor only writes the scissored region; the right and lower edges
+    /// are exclusive, so the boundary pixels just outside stay clear.
+    #[test]
+    fn fill_rectangle_is_clipped_to_the_scissor() {
+        // 32-bit, width 8. Scissor keeps x in [2,6), y in [1,3).
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0x1122_3344),
+            set_scissor(2, 1, 6, 3),
+            fill_rect(0, 0, 8, 4), // larger than the scissor on every side
+        ]);
+        let px = |x: u32, y: u32| {
+            let a = (y * 8 + x) as usize * 4;
+            &bus.mem[a..a + 4]
+        };
+        // Inside the scissor: written.
+        assert_eq!(px(2, 1), [0x11, 0x22, 0x33, 0x44], "inside top-left");
+        assert_eq!(px(5, 2), [0x11, 0x22, 0x33, 0x44], "inside bottom-right");
+        // Outside each edge: clear.
+        assert_eq!(px(1, 1), [0, 0, 0, 0], "left of scissor");
+        assert_eq!(px(6, 1), [0, 0, 0, 0], "right edge exclusive");
+        assert_eq!(px(2, 0), [0, 0, 0, 0], "above scissor");
+        assert_eq!(px(2, 3), [0, 0, 0, 0], "lower edge exclusive");
+    }
+
+    /// **A 4-bit color image is not a FILL target** — the real RDP crashes, so
+    /// the fill is skipped and no memory is written.
+    #[test]
+    fn fill_rectangle_4bit_target_writes_nothing() {
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 0, 4, 0), // 4-bit
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(0, 0, 4, 2),
+            fill_rect(0, 0, 4, 2),
+        ]);
+        assert!(bus.mem[0..16].iter().all(|&b| b == 0), "no fill at 4-bit");
+    }
+
+    /// **Degenerate and empty rectangles write nothing.** An inverted rectangle
+    /// (`ulx > lrx`), an inverted scissor (`ul* > lr*`), and a rectangle disjoint
+    /// from the scissor each yield an empty pixel span, so no pixel is written.
+    /// The span emptiness — not the early-return, which is a redundant fast path
+    /// over Rust's empty `for` ranges — is what these assert.
+    #[test]
+    fn fill_rectangle_degenerate_bounds_write_nothing() {
+        // Inverted rectangle: upper-left past lower-right.
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(0, 0, 8, 4),
+            fill_rect(6, 3, 2, 1), // ulx>lrx, uly>lry
+        ]);
+        assert!(bus.mem[0..128].iter().all(|&b| b == 0), "inverted rect");
+
+        // Inverted scissor: upper-left past lower-right.
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(6, 3, 2, 1), // sulx>slrx, suly>slry
+            fill_rect(0, 0, 8, 4),
+        ]);
+        assert!(bus.mem[0..128].iter().all(|&b| b == 0), "inverted scissor");
+
+        // Rectangle entirely to the left of the scissor: empty intersection.
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0),
+            set_fill_color(0xFFFF_FFFF),
+            set_scissor(4, 0, 8, 4),
+            fill_rect(0, 0, 3, 4), // rx1 = 3 <= scissor sx0 = 4
+        ]);
+        assert!(bus.mem[0..128].iter().all(|&b| b == 0), "disjoint rect");
+    }
+
+    /// **A fill with no configured width writes nothing.** `color_image_width`
+    /// is 0 only before `Set Color Image` (which always yields field + 1 ≥ 1);
+    /// with a valid pixel size but zero width the guard skips the fill rather
+    /// than smearing every row onto offset 0 with a zero stride. Reached here by
+    /// setting the state directly, since the command stream cannot produce it.
+    #[test]
+    fn fill_rectangle_without_a_valid_width_writes_nothing() {
+        let mut mem = alloc::vec![0u8; CMD_BASE as usize + 8];
+        let (hi, lo) = fill_rect(0, 0, 4, 4);
+        mem[CMD_BASE as usize..CMD_BASE as usize + 4].copy_from_slice(&hi.to_be_bytes());
+        mem[CMD_BASE as usize + 4..CMD_BASE as usize + 8].copy_from_slice(&lo.to_be_bytes());
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.color_image_size = 3; // valid 32-bit size, but width left at 0
+        rdp.fill_color = 0xFFFF_FFFF;
+        rdp.scissor_lrx = 4 << 2;
+        rdp.scissor_lry = 4 << 2;
+        rdp.cmd_current = CMD_BASE;
+        rdp.cmd_end = CMD_BASE + 8;
+        rdp.tick(&mut bus);
+        assert!(bus.mem[0..64].iter().all(|&b| b == 0), "width 0: no write");
     }
 }
