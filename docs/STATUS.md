@@ -108,9 +108,11 @@ upstream `LICENSE` beside it.
 (T-11-006). The **n64-systemtest** ROM runs under the committed `--test
 systemtest` runner and reports a real count (Phase 1 categories `Failed: 0`; RSP
 category `Failed: 0`; 93 suite-wide). The **golden-log** gate (`--test
-golden_log`) replays 50,027 retired records at 0 diff against ares. The rest of
-the corpus (visual goldens, the accuracy battery, commercial ROMs) is staged
-only — an oracle on disk that no gate executes yet.
+golden_log`) replays 50,027 retired records at 0 diff against ares. A fourth,
+the **synthetic visual golden** (`--test golden_frame`, T-31-005), executes the
+FILL → VI scan-out path against a committed frame hash. The rest of the corpus
+(the real-ROM krom/240p visual goldens, the accuracy battery, commercial ROMs)
+is staged only — an oracle on disk that no gate executes yet.
 
 ## What is stubbed (the roadmap)
 
@@ -210,8 +212,9 @@ entropy, threads and unordered collections anywhere in the core.
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
 nothing about whether the emulator can execute it. Both must be true before a
-gate reports a real number — true today for `basic.z64`, n64-systemtest, and the
-golden log; not yet for the visual goldens and the accuracy battery.
+gate reports a real number — true today for `basic.z64`, n64-systemtest, the
+golden log, and the synthetic `golden_frame`; not yet for the real-ROM visual
+goldens and the accuracy battery.
 
 See `docs/testing-strategy.md` for the oracle and the five test layers.
 

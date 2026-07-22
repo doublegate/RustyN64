@@ -51,6 +51,14 @@ fn render_fill_frame() -> Vec<u8> {
         bus.rdp_tick();
     }
 
+    // All four commands must have retired within the tick budget. Asserting the
+    // exact retired count makes a timing regression that leaves the FIFO mid-list
+    // a hard, deterministic failure here rather than a silently truncated frame.
+    assert_eq!(
+        bus.rdp.commands_processed, 4,
+        "the four-command FILL list drained within the tick budget"
+    );
+
     // Configure the VI for a 32-bit, 4-wide, 2-line scan-out of FB_ADDR, through
     // the CPU register path (VI regs are crate-private to rustyn64-core).
     CpuBus::write_u32(&mut bus, 0x0440_0000, 3); // VI_CTRL: TYPE = 32-bit
@@ -72,17 +80,21 @@ fn a_fill_rectangle_renders_the_committed_golden_frame() {
     let expected: Vec<u8> = [0xAA, 0xBB, 0xCC, 0xDD].repeat(8);
     assert_eq!(frame, expected, "FILL -> scan-out is byte-exact");
 
-    // ... and its hash matches the committed golden (a regression sentinel).
-    let golden = frame_hash(&expected);
+    // ... and its hash matches the committed golden constant directly. Comparing
+    // against `GOLDEN_FILL_4X2` (not a value recomputed from `expected`) pins the
+    // frame to the committed digest, so the assertion cannot pass by comparing a
+    // fresh hash against itself.
     assert_eq!(
-        compare_to_golden(&frame, golden),
+        compare_to_golden(&frame, GOLDEN_FILL_4X2),
         FrameComparison::Match,
-        "frame hash matches the golden"
+        "frame hash matches the committed golden"
     );
-    // The hardcoded golden must equal the independently-derived one, so a change
-    // to the frame contents that also updates `expected` cannot pass silently.
+    // And the committed constant is itself the true digest of the expected bytes,
+    // so it cannot be stale or arbitrary: a frame-content change that also updates
+    // `expected` must re-derive `GOLDEN_FILL_4X2` here or this fails.
     assert_eq!(
-        golden, GOLDEN_FILL_4X2,
-        "committed golden hash is up to date"
+        frame_hash(&expected),
+        GOLDEN_FILL_4X2,
+        "committed golden hash is the digest of the expected frame"
     );
 }
