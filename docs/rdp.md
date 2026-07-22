@@ -92,9 +92,10 @@ drain and the rasterizer — not with this register file.
 frozen, it reads the command word at `DPC_CURRENT` from RDRAM, decodes the opcode
 (bits 61:56), and advances `DPC_CURRENT` by the command's **full length**. It
 consumes one command per scheduler tick, so the FIFO drains gradually rather than
-in a burst. No opcode is dispatched to a handler yet — every command is
-recognised, its length consumed, and a retired-work counter (`commands_processed`)
-incremented; the rasterizer arrives in the following tickets.
+in a burst. Every command is recognised, its length consumed, and a retired-work
+counter (`commands_processed`) incremented. Dispatch to a handler currently
+covers only the four sync commands (see below); every other opcode is a
+recognised no-op until the rasterizer lands.
 
 Two stall conditions keep the decoder from acting on data that is not a valid
 command yet:
@@ -152,6 +153,14 @@ recognised no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
   the `stall` gate. Hazard (documented, respected rather than papered over):
   `Sync Full` must be the last command before `DP_END`, and no command may be
   submitted while it is in progress, or the RDP may hang.
+
+**Measured oracle effect:** the n64-systemtest failing-assertion count is
+**unchanged at 93 suite-wide** (917 started) — the same as `v0.3.0`. Sync
+dispatch flips no assertion, because every remaining failure needs the RDP
+rasteriser (Phase 3) or the cart/PIF path (Phase 5), not sync handling; the
+`Sync Full` interrupt has no isolated systemtest that was failing on its absence.
+Run: `cargo test -p rustyn64-test-harness --release --test systemtest --
+--ignored`.
 
 ## State
 

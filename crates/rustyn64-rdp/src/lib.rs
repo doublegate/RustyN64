@@ -275,8 +275,9 @@ impl Rdp {
     /// - `Sync Full` (0x29) waits for staged pipeline/memory work to finish,
     ///   then raises the DP interrupt on the MI. With no asynchronous pipeline
     ///   work modelled yet, "staged work" is already complete, so the interrupt
-    ///   is raised immediately; a following `Sync Pipe`-style stall would have
-    ///   drained first via the `stall` gate above.
+    ///   is raised immediately; a *preceding* `Sync Pipe`-style stall would have
+    ///   drained first via the `stall` gate above (the gate is checked before a
+    ///   command is dispatched, so it delays this dispatch, not a later one).
     ///
     /// On stall resolution: per-command *execution* cost is not modelled yet —
     /// every command is consumed in a single placeholder `tick` — so the `stall`
@@ -621,5 +622,24 @@ mod tests {
         // Stall expired: the following command is consumed on the next tick.
         rdp.tick(&mut bus);
         assert_eq!(rdp.commands_processed, 2, "FIFO resumes after the stall");
+    }
+
+    /// **A frozen DP does not burn stall cycles.** The freeze guard is checked
+    /// before the stall countdown, so a non-zero `stall` is held — not
+    /// decremented — while frozen, and resumes counting down only once the DP is
+    /// unfrozen. The plain `a_frozen_dp_does_not_tick` test leaves `stall` at
+    /// zero and so cannot catch a regression that decremented it under freeze.
+    #[test]
+    fn a_frozen_dp_holds_its_stall_countdown() {
+        let mut rdp = Rdp::new();
+        let mut bus = NullBus;
+        rdp.stall = 10;
+        rdp.status = DP_STATUS_FREEZE;
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.stall, 10, "frozen: stall countdown held, not burned");
+
+        rdp.status = 0; // unfreeze
+        rdp.tick(&mut bus);
+        assert_eq!(rdp.stall, 9, "unfrozen: countdown resumes");
     }
 }
