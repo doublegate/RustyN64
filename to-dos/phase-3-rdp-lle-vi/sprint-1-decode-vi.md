@@ -72,8 +72,9 @@ scan the framebuffer out to a presentable buffer.
 
 **Acceptance criteria:**
 
-- [x] Every register reads and writes with hardware semantics. *(Per-register write masks are
-      deferred — ledger R-4; the block is read/write-through today.)*
+- [x] Every register has read/write-through support (a write is stored and reads back). The
+      per-register hardware **write-mask** semantics are deferred — ledger R-4 — so this is not
+      yet full hardware semantics, only store-and-read-back.
 - [x] `VI_V_CURRENT` advances with the scan position and is readable mid-frame.
 - [x] The VI interrupt fires at the `VI_V_INTR` scanline and drives the MI.
 - [x] Scan-out honours origin and width. **The X/Y_SCALE resampling and the AA/divot/de-dither

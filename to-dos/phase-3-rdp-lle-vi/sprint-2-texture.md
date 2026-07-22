@@ -38,10 +38,13 @@ implement the three commands that describe it without moving any texels: `Set Te
 
 **Acceptance criteria:**
 
-- [ ] `Rdp` owns a `[u8; 4096]` TMEM and `[TileDescriptor; 8]`, both reset at power-on.
+- [ ] `Rdp` owns a 4 KiB TMEM and `[TileDescriptor; 8]`, both observably zero/reset at power-on.
+      TMEM storage may be lazily allocated (zero-initialised on first write) rather than an inline
+      `[u8; 4096]`, so the per-tick `core::mem::take` in `Bus::rdp_tick` stays cheap; the observable
+      contract is "reads as zero until written, resets to zero at power-on".
 - [ ] Each of the three commands decodes every field into the right descriptor / texture-image
       register, verified field-by-field by a unit test that seeds a distinguishable value in each.
-- [ ] `Set Tile` writes only the addressed descriptor (index masked to 0..7); the others are
+- [ ] `Set Tile` writes only the addressed descriptor (index masked to `0-7`); the others are
       untouched.
 - [ ] No texel is moved and no framebuffer pixel changes — this ticket is pure state.
 

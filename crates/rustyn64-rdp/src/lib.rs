@@ -128,14 +128,8 @@ pub struct TileDescriptor {
     /// Palette index, the high half of the TLUT address for CI4 tiles only
     /// (bits 23:20).
     pub palette: u8,
-    /// Clamp S when sampling outside the tile (bit 9).
-    pub clamp_s: bool,
-    /// Mirror S on every other wrap (bit 8).
-    pub mirror_s: bool,
-    /// Number of S integer-coordinate bits used for wrap; 0 = all (bits 7:4).
-    pub mask_s: u8,
-    /// S coordinate shift code, per the shift table (bits 3:0).
-    pub shift_s: u8,
+    // T-axis fields precede S-axis, matching the command word's MSB→LSB order
+    // (T in bits 19:10, S in bits 9:0) and the `set_tile` decoder.
     /// Clamp T when sampling outside the tile (bit 19).
     pub clamp_t: bool,
     /// Mirror T on every other wrap (bit 18).
@@ -144,6 +138,14 @@ pub struct TileDescriptor {
     pub mask_t: u8,
     /// T coordinate shift code, per the shift table (bits 13:10).
     pub shift_t: u8,
+    /// Clamp S when sampling outside the tile (bit 9).
+    pub clamp_s: bool,
+    /// Mirror S on every other wrap (bit 8).
+    pub mirror_s: bool,
+    /// Number of S integer-coordinate bits used for wrap; 0 = all (bits 7:4).
+    pub mask_s: u8,
+    /// S coordinate shift code, per the shift table (bits 3:0).
+    pub shift_s: u8,
     /// Tile-size upper-left S (`u10.2`), from `Set Tile Size` / the loaders.
     pub sl: u16,
     /// Tile-size upper-left T (`u10.2`).
@@ -578,8 +580,12 @@ impl Rdp {
         tile.th = (lo & 0xFFF) as u16;
     }
 
-    /// Read one byte of TMEM. `offset` is a byte address, masked into the 4 KiB
-    /// space; an unwritten (lazily-unallocated) TMEM reads as zero.
+    /// Read one byte of TMEM.
+    ///
+    /// `offset` is a **byte** address (0..[`TMEM_SIZE`]), masked into the 4 KiB
+    /// space — *not* the 64-bit-word address that `Set Tile`'s `tmem_addr` /
+    /// `line` use; a word address must be multiplied by 8 first (word 0x100 =
+    /// byte 0x800). An unwritten (lazily-unallocated) TMEM reads as zero.
     #[must_use]
     pub fn tmem_byte(&self, offset: usize) -> u8 {
         self.tmem
