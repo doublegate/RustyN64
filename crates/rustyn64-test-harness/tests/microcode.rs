@@ -179,15 +179,25 @@ fn the_microcode_boots_to_its_idle_break() {
         steps += 1;
     }
 
-    // The transition. `broke()` (not just `halted()`) is what proves the kernel
-    // reached a real `break`: a `SET_HALT` write would halt without it.
+    // The idle `break` (IMEM 0x14) leaves the RSP HALTED and BROKE, with the PC
+    // parked at the sequential address after it (0x18). Asserting `broke()`
+    // rather than only `halted()` is what proves a real `break` — a `SET_HALT`
+    // write halts without it — and pinning the exact PC ties the witness to the
+    // documented idle target rather than "somewhere non-zero".
+    const IDLE_BREAK: u32 = 0x14; // the `break` at IMEM 0x14 (rsp_queue.inc:403)
     assert!(
-        sys.bus.rsp.sp.broke(),
-        "the microcode must reach its idle `break` (BROKE) — halted={}, steps={steps}, PC={:#x}",
+        sys.bus.rsp.sp.halted() && sys.bus.rsp.sp.broke(),
+        "the microcode must reach its idle `break` HALTED+BROKE — halted={}, broke={}, \
+         steps={steps}, PC={:#x}",
         sys.bus.rsp.sp.halted(),
+        sys.bus.rsp.sp.broke(),
         sys.bus.rsp.sp.pc()
     );
-    assert_ne!(sys.bus.rsp.sp.pc(), 0, "the PC must advance off _start");
+    assert_eq!(
+        sys.bus.rsp.sp.pc(),
+        IDLE_BREAK + 4,
+        "the PC must park just past the idle `break`"
+    );
     assert_eq!(
         sys.bus.rsp.su_regs[GP], 0,
         "`li $gp, 0` must have run, overwriting the sentinel"
