@@ -94,11 +94,23 @@ Out-of-scope:
 ## Sprints
 
 - [Sprint 1 — The scalar unit, DMEM/IMEM, and the SP interface](sprint-1-scalar-sp.md) —
-  the RSP boots, DMAs, halts, and interrupts correctly.
+  the RSP boots, DMAs, halts, and interrupts correctly. **Status:** done.
 - Sprint 2 — The vector unit: ISA, accumulator, and the reciprocal tables.
-  **Status:** stub — refine when Sprint 1 is close to complete.
+  **Status:** done — the full VU (multiplies, accumulating forms, compares, the
+  clip compares, `VRND`/`VMULQ`/`VMACQ`, the reciprocals, the reserved opcodes)
+  landed in PRs #41–#42. No separate sprint doc; the work was tracked by PR.
 - Sprint 3 — Vector load/store element addressing and the dual-issue pipeline.
-  **Status:** stub — refine when Sprint 2 is close to complete.
+  **Status:** load/store **done** (#41). Dual-issue timing is **not part of the
+  v0.3.0 cut criterion** — the criterion is "observed depth zero" (#40: there is
+  no cycle counter, and n64-systemtest asserts no dual-issue timing), so it does
+  not block the release — but it remains an **open accuracy item**, deferred to a
+  later phase and consistent with the pipeline-timing limitations noted above. It
+  is not done; it is out of scope for the cut.
+- [Sprint 4 — Booting a real graphics microcode](sprint-4-microcode-boot.md) —
+  Phase 2's **second** exit criterion (the first, RSP category `Failed: 0`, is
+  met). Boots libdragon's real `rdpq` on the RSP and byte-compares the emitted
+  RDP command list against a hardware-doc-derived golden. Design: ADR 0008.
+  **Status:** planned; Stage 1 blocked on the `mips64-elf` toolchain.
 
 ## Dependencies
 
