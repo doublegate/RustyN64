@@ -224,7 +224,7 @@ impl Rdp {
     /// stream — decoding DMEM commands out of RDRAM would treat parameter data
     /// as opcodes and desync.
     ///
-    /// Dispatch so far ([`Rdp::dispatch`]) covers the four sync commands: `Sync
+    /// Dispatch so far (`dispatch`) covers the four sync commands: `Sync
     /// Load`/`Pipe`/`Tile` set the fixed pipeline stall that gates the next
     /// command, and `Sync Full` raises the DP interrupt. Everything else is
     /// still recognised-and-consumed only.
