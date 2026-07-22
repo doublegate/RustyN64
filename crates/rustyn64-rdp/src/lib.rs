@@ -1307,4 +1307,30 @@ mod tests {
         assert_eq!(rdp.tex_image_width, 0x140, "width is field + 1");
         assert_eq!(rdp.tex_image_addr, 0x0065_4321);
     }
+
+    /// **The dispatcher routes 0x35 and 0x32 to the right handlers.** The
+    /// field-level tests call `set_tile` / `set_tile_size` directly; this drives
+    /// the actual `dispatch` entry point, so a mis-wired opcode arm (0x35 sent to
+    /// the size handler, or 0x32 to the tile handler) is caught, not only a
+    /// decode bug. The inputs distinguish the two: `Set Tile` sets `format = 3`
+    /// which `Set Tile Size` must leave alone, and `Set Tile Size` sets coords
+    /// that `Set Tile` does not.
+    #[test]
+    fn dispatch_routes_set_tile_and_set_tile_size() {
+        let mut rdp = Rdp::new();
+        let mut bus = NullBus;
+        rdp.dispatch(OP_SET_TILE, 0x3570_3F00, 0x02A9_CD59, &mut bus); // index 2
+        assert_eq!(rdp.tiles[2].format, 3, "0x35 routed to set_tile");
+        assert_eq!(rdp.tiles[2].line, 0x1F, "and decoded its fields");
+        rdp.dispatch(OP_SET_TILE_SIZE, 0x3212_3045, 0x0267_80AB, &mut bus); // index 2
+        assert_eq!(
+            (rdp.tiles[2].sl, rdp.tiles[2].th),
+            (0x123, 0x0AB),
+            "0x32 routed to set_tile_size"
+        );
+        assert_eq!(
+            rdp.tiles[2].format, 3,
+            "set_tile_size did not clobber the tile format (distinct routing)"
+        );
+    }
 }
