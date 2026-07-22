@@ -113,12 +113,21 @@ emits through the DPC path.
 
 **Acceptance criteria:**
 
+- [ ] The **full initial state is pinned and deterministic**: DMEM/IMEM loaded
+      from the T-24-001 blob at fixed addresses; RDRAM zeroed except the fixture
+      command list and the RSPQ/RDP scratch it needs; `SP_PC` at the kernel
+      `_start`; `SP_STATUS` running with `HALTED`/`BROKE` clear (ADR 0008's
+      unreachable baseline, carried into this fixture); the RDP output-buffer
+      base and length fixed and documented.
 - [ ] The fixture RSPQ command list is authored in Rust with each entry's meaning
       documented against the rdpq command table.
-- [ ] The RSP runs to queue-drain; the emitted RDP command words are captured from
-      the DPC FIFO seam (`DPC_START`/`END`/`CURRENT` + the output buffer).
-- [ ] Execution is witnessed (non-empty output, `DPC_END` advanced) before the
-      capture is trusted.
+- [ ] The RSP runs to a **defined completion condition** — the queue drains AND
+      the kernel reaches its idle/`BREAK` site (not merely "the loop returned") —
+      within a bounded step budget that fails loudly if exceeded.
+- [ ] The emitted RDP command words are captured from the DPC seam over an
+      **exact, documented range** (`DPC_START..DPC_END` in the output buffer), not
+      a heuristic scan; execution is witnessed (`DPC_END` advanced past
+      `DPC_START`, `BROKE` set) before the capture is trusted.
 
 **Dependencies:** T-24-002
 **Reference:** `src/rdpq/rsp_rdpq.S` (the `0xC0`–`0xFF` command table, `RDPQ_Send`
@@ -141,8 +150,10 @@ criterion.
 - [ ] The golden RDP command bytes are derived from the documented encoding, with
       a per-command provenance note (wiki section / macro), committed as a golden
       vector changed only on intentional, reviewed behaviour change.
-- [ ] The harness asserts byte-equality between the emitted and golden streams,
-      with execution witnessed (no vacuous pass).
+- [ ] The harness asserts byte-equality over the **exact captured range** from
+      T-24-003 (length and offsets fixed, not "whatever was produced"), so a
+      truncated or over-long emission fails rather than partially matching, with
+      execution witnessed (no vacuous pass).
 - [ ] `docs/STATUS.md` records Phase 2 criterion 2 as **met**, and `docs/
       accuracy-ledger.md` carries any residual.
 
