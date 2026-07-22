@@ -269,11 +269,13 @@ access lands in the register file. One register has a side effect: **writing
 state is all-zero, so `VI_CTRL.TYPE == 0` and the VI is off.
 
 **The scan position and the VI interrupt are driven by the scheduler**
-(`Vi::tick`, called each RCP step): `VI_V_CURRENT` advances off `master_ticks` —
-`total_halflines % (VI_V_TOTAL + 1)`, one half-line every `MASTER_HZ / 60 /
-(VI_V_TOTAL + 1)` ticks — and a `VI_V_INTR` crossing raises `MI_INTR.vi` once per
-field (counted, not equality-matched, so a step spanning several half-lines cannot
-skip it). `VI_CTRL.TYPE == 0` suppresses the interrupt. The field cadence is
+(`Vi::tick`, called each RCP step): `VI_V_CURRENT` advances one half-line every
+`MASTER_HZ / 60 / (VI_V_TOTAL + 1)` master ticks (accumulating the fractional
+remainder), wrapping at `VI_V_TOTAL + 1`, and raises `MI_INTR.vi` once per field
+when it lands on `VI_V_INTR` — the per-half-line step means a call spanning many
+half-lines cannot skip it, and a `VI_V_INTR` beyond the field never fires.
+`VI_CTRL.TYPE == 0` suppresses the interrupt, and the position is kept relative so
+a mid-run `VI_V_TOTAL` change re-bases without a scale jump. The field cadence is
 anchored to nominal 60 Hz NTSC (open residual **R-6**; the exact `H_TOTAL`
 sub-field timing, PAL's 50 Hz, and the interlace `VI_V_INTR` bit-0 quirk are
 deferred). The VI dot clock (VCLK, ≈48.68 MHz NTSC) is the sole fractional-domain

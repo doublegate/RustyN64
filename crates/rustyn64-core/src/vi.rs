@@ -77,12 +77,16 @@ pub struct Vi {
     /// scan-out and tests, being in this crate, read them directly.
     pub(crate) regs: [u32; VI_REG_COUNT],
     /// The current scan half-line (`VI_V_CURRENT`'s read-back value). Advanced by
-    /// [`Vi::tick`] from `master_ticks`, not software-latched — this is the
-    /// fractional-domain state the scheduler drives (`docs/scheduler.md`).
+    /// [`Vi::tick`] one half-line at a time — this is the fractional-domain state
+    /// the scheduler drives (`docs/scheduler.md`). Kept **relative** (incremented
+    /// and wrapped at `VI_V_TOTAL + 1`) rather than derived from absolute
+    /// `master_ticks`, so a mid-run `VI_V_TOTAL` change re-bases cleanly.
     v_current: u32,
-    /// The total half-line index at the last [`Vi::tick`], so a `VI_V_INTR`
-    /// crossing can be detected across a step that spans several half-lines.
-    last_total_halfline: u64,
+    /// Master ticks accumulated toward the next half-line advance (the fractional
+    /// remainder the scheduler doc calls for).
+    acc: u64,
+    /// The `master_ticks` at the last [`Vi::tick`], to compute the elapsed delta.
+    prev_ticks: u64,
 }
 
 impl Default for Vi {
@@ -99,54 +103,58 @@ impl Vi {
         Self {
             regs: [0; VI_REG_COUNT],
             v_current: 0,
-            last_total_halfline: 0,
+            acc: 0,
+            prev_ticks: 0,
         }
     }
 
-    /// Total scan half-lines per field (`VI_V_TOTAL + 1`).
-    fn total_halflines(&self) -> u64 {
-        u64::from(self.regs[VI_V_TOTAL as usize] & 0x3FF) + 1
+    /// Total scan half-lines per field (`VI_V_TOTAL + 1`), 1..=1024.
+    const fn total_halflines(&self) -> u32 {
+        (self.regs[VI_V_TOTAL as usize] & 0x3FF) + 1
     }
 
-    /// Master ticks per scan half-line, derived from the nominal field rate and
-    /// the programmed `VI_V_TOTAL`. Zero if `V_TOTAL` is unset (no timing).
+    /// Master ticks per scan half-line, from the nominal field rate and the
+    /// programmed `VI_V_TOTAL`. One division (not two) to avoid compounding the
+    /// truncation. Zero-guarded by `total_halflines() >= 1`.
     fn ticks_per_halfline(&self) -> u64 {
-        (crate::MASTER_HZ / VI_FIELD_HZ) / self.total_halflines()
+        crate::MASTER_HZ / (VI_FIELD_HZ * u64::from(self.total_halflines()))
     }
 
-    /// Advance the scan position to `master_ticks` and report whether the VI
-    /// interrupt should fire.
+    /// Advance the scan position by the master ticks elapsed since the last call
+    /// and report whether the VI interrupt should fire.
     ///
-    /// `VI_V_CURRENT` becomes `total_halflines % (V_TOTAL + 1)`, where
-    /// `total_halflines` derives from `master_ticks` and the per-half-line
-    /// period. The interrupt fires when a `VI_V_INTR` half-line is crossed since
-    /// the last tick — counted, not equality-matched, so a step spanning several
-    /// half-lines cannot skip it — and only while the VI is on (`VI_CTRL.TYPE !=
-    /// 0`; N64brew *Video Interface* §`VI_V_INTR`). The scheduler calls this each
-    /// RCP step and raises `MI_INTR.vi` on a `true` return.
-    #[allow(clippy::cast_possible_truncation)] // `total % halflines` < 1024
+    /// `VI_V_CURRENT` advances one half-line every `ticks_per_halfline` master
+    /// ticks (accumulating the fractional remainder), wrapping at `VI_V_TOTAL +
+    /// 1`. The interrupt fires when the position **lands on** `VI_V_INTR` — the
+    /// per-half-line step means no crossing is skipped even when a call spans
+    /// many half-lines — and only while the VI is on (`VI_CTRL.TYPE != 0`;
+    /// N64brew *Video Interface* §`VI_V_INTR`). A `VI_V_INTR` beyond the field
+    /// (`>= VI_V_TOTAL + 1`) is unreachable, so it never fires. The position is
+    /// kept relative, so a mid-run `VI_V_TOTAL` change re-bases without a scale
+    /// jump. The scheduler calls this each RCP step and raises `MI_INTR.vi` on a
+    /// `true` return.
     pub fn tick(&mut self, master_ticks: u64) -> bool {
+        let delta = master_ticks.saturating_sub(self.prev_ticks);
+        self.prev_ticks = master_ticks;
         let per_hl = self.ticks_per_halfline();
+        // No timing until `VI_V_TOTAL` is programmed; prev_ticks is still advanced
+        // above so the pre-setup ticks are not accumulated retroactively.
         if per_hl == 0 {
             return false;
         }
+        self.acc += delta;
         let halflines = self.total_halflines();
-        let total = master_ticks / per_hl;
-        self.v_current = (total % halflines) as u32;
-
+        let v_intr = self.regs[VI_V_INTR as usize] & 0x3FF;
         let on = self.regs[VI_CTRL as usize] & 0x3 != 0;
-        let v_intr = u64::from(self.regs[VI_V_INTR as usize] & 0x3FF);
-        // Count of `k*halflines + v_intr` boundaries at or below a half-line.
-        let boundaries = |hl: u64| {
-            if hl >= v_intr {
-                (hl - v_intr) / halflines + 1
-            } else {
-                0
+        let mut fired = false;
+        while self.acc >= per_hl {
+            self.acc -= per_hl;
+            self.v_current = (self.v_current + 1) % halflines;
+            if on && self.v_current == v_intr {
+                fired = true;
             }
-        };
-        let fire = on && boundaries(total) > boundaries(self.last_total_halfline);
-        self.last_total_halfline = total;
-        fire
+        }
+        fired
     }
 
     /// Read a VI register by word offset within the block (mirrored to 16).
@@ -228,7 +236,7 @@ mod tests {
     fn v_current_advances_with_master_ticks_and_wraps() {
         let mut vi = Vi::new();
         vi.regs[VI_V_TOTAL as usize] = 524; // 525 half-lines
-        let per_hl = (crate::MASTER_HZ / VI_FIELD_HZ) / 525;
+        let per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 525);
         vi.tick(0);
         assert_eq!(vi.read(VI_V_CURRENT), 0);
         vi.tick(per_hl);
@@ -247,7 +255,7 @@ mod tests {
         vi.regs[VI_V_TOTAL as usize] = 524;
         vi.regs[VI_V_INTR as usize] = 2;
         vi.regs[VI_CTRL as usize] = 2; // 16-bit type, VI on
-        let per_hl = (crate::MASTER_HZ / VI_FIELD_HZ) / 525;
+        let per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 525);
         assert!(!vi.tick(0), "before V_INTR: no interrupt");
         assert!(vi.tick(per_hl * 2), "crossing half-line 2 fires");
         assert!(!vi.tick(per_hl * 3), "already fired this field");
@@ -261,8 +269,50 @@ mod tests {
         vi.regs[VI_V_TOTAL as usize] = 524;
         vi.regs[VI_V_INTR as usize] = 2;
         vi.regs[VI_CTRL as usize] = 0; // VI off
-        let per_hl = (crate::MASTER_HZ / VI_FIELD_HZ) / 525;
+        let per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 525);
         assert!(!vi.tick(0));
         assert!(!vi.tick(per_hl * 3), "off: no interrupt even past V_INTR");
+    }
+
+    /// **`VI_V_INTR` beyond the field never fires.** `VI_V_CURRENT` wraps at
+    /// `VI_V_TOTAL + 1`, so an interrupt line the scan can never reach is inert —
+    /// no spurious `v_intr % halflines` phantom.
+    #[test]
+    fn a_v_intr_past_the_field_never_fires() {
+        let mut vi = Vi::new();
+        vi.regs[VI_V_TOTAL as usize] = 262; // 263 half-lines
+        vi.regs[VI_V_INTR as usize] = 300; // > 263: unreachable
+        vi.regs[VI_CTRL as usize] = 2;
+        let per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 263);
+        // Run several full fields; the interrupt must never fire.
+        for k in 1..=(263 * 3) {
+            assert!(!vi.tick(per_hl * k), "unreachable V_INTR never fires");
+        }
+    }
+
+    /// **A mid-run `VI_V_TOTAL` change re-bases cleanly** — because the position
+    /// is relative, changing the field length does not scale-jump the counter or
+    /// spuriously fire; the scan just continues and wraps at the new length.
+    #[test]
+    fn a_mid_run_v_total_change_rebases_without_a_spurious_interrupt() {
+        let mut vi = Vi::new();
+        vi.regs[VI_V_TOTAL as usize] = 524; // 525 half-lines
+        vi.regs[VI_V_INTR as usize] = 600; // unreachable in either config
+        vi.regs[VI_CTRL as usize] = 2;
+        let per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 525);
+        assert!(!vi.tick(per_hl * 100)); // advance ~100 half-lines
+        let mid = vi.read(VI_V_CURRENT);
+        // Shrink the field; VI_V_INTR (600) is unreachable in both, so no fire.
+        vi.regs[VI_V_TOTAL as usize] = 262; // now 263 half-lines
+        let per_hl2 = crate::MASTER_HZ / (VI_FIELD_HZ * 263);
+        assert!(
+            !vi.tick(per_hl * 100 + per_hl2 * 10),
+            "no spurious fire on rebase"
+        );
+        assert!(
+            vi.read(VI_V_CURRENT) < 263,
+            "position stays within the new field ({} advanced from {mid})",
+            vi.read(VI_V_CURRENT)
+        );
     }
 }

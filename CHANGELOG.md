@@ -12,12 +12,16 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 ### Added — VI scan-position timing and interrupt (Phase 3, T-31-004 part 3)
 
 - **`VI_V_CURRENT` advances and the VI interrupt fires.** `Vi::tick` (called each
-  RCP step) derives the scan half-line from `master_ticks` — `total_halflines %
-  (VI_V_TOTAL + 1)` — and raises `MI_INTR.vi` once per field as `VI_V_INTR` is
-  crossed (counted, not equality-matched, so a step spanning several half-lines
-  cannot skip it); `VI_CTRL.TYPE == 0` suppresses it. This is the vsync signal
-  games wait on. Covered by unit tests (advance/wrap, once-per-field firing,
-  disabled-VI) and a scheduler integration test.
+  RCP step) advances the scan half-line one at a time off the elapsed
+  `master_ticks` (accumulating the fractional remainder), wrapping at
+  `VI_V_TOTAL + 1`, and raises `MI_INTR.vi` when the position lands on
+  `VI_V_INTR`. The per-half-line step means a call spanning many half-lines cannot
+  skip it, and a `VI_V_INTR` beyond the field never fires. `VI_CTRL.TYPE == 0`
+  suppresses it, and the position is kept relative so a mid-run `VI_V_TOTAL`
+  change re-bases without a scale jump. This is the vsync signal games wait on;
+  covered by unit tests (advance/wrap, once-per-field firing, disabled-VI,
+  unreachable `VI_V_INTR`, mid-run `VI_V_TOTAL` change) and a scheduler
+  integration test.
 - **Scope:** the field cadence is anchored to nominal 60 Hz NTSC (open residual
   **R-6**) — the VI dot clock is off a separate crystal the wiki gives only
   roughly, so the sub-field `H_TOTAL` timing, PAL's 50 Hz, and the interlace
