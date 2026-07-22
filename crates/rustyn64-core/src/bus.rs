@@ -120,7 +120,8 @@ pub struct Bus {
     pub rsp: Rsp,
     /// The RDP rasterizer.
     pub rdp: Rdp,
-    /// The Video Interface register file (`0x0440_0000`) and scan-out.
+    /// The Video Interface register file (`0x0440_0000`). Scan-out and the
+    /// scheduler-driven scan position are follow-up VI tickets.
     pub vi: Vi,
     /// The Audio Interface.
     pub audio: Audio,
@@ -1074,6 +1075,42 @@ mod tests {
             "writing VI_V_CURRENT acks the interrupt"
         );
         // ... and the write did not latch into V_CURRENT.
+        assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x10), 0);
+    }
+
+    /// **VI registers latch the whole word regardless of store size, and the
+    /// block mirrors every 16 words.** The VI is on the RCP-internal bus, so
+    /// `write_sized` routes 8-/16-/64-bit stores through `write_u32`; a byte read
+    /// recovers the addressed lane; a mirrored address decodes to the same
+    /// register; and a narrow `VI_V_CURRENT` write still acks without latching.
+    #[test]
+    fn vi_accesses_are_size_blind_and_mirrored() {
+        let mut bus = Bus::new();
+        // An 8-bit store to VI_WIDTH (+0x08) latches the shifted register across
+        // the whole word (RCP-internal, size-blind).
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x08, 1, 0x44);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x08),
+            0x4400_0000,
+            "SB latches the shifted register across the whole word"
+        );
+        // A word store (VI_WIDTH = 320 = 0x0000_0140), then a byte read recovers
+        // the addressed lane — the low byte at +0x0B is 0x40.
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x08, 4, 320);
+        assert_eq!(CpuBus::read_u8(&mut bus, Bus::VI_REGS_BASE + 0x0B), 0x40);
+        // A 64-bit store writes its upper word to VI_ORIGIN (+0x04).
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x04, 8, 0x0010_0000_DEAD_BEEF);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x04),
+            0x0010_0000
+        );
+        // The block mirrors every 16 words: +0x40 decodes to VI_CTRL (offset 0).
+        CpuBus::write_u32(&mut bus, Bus::VI_REGS_BASE + 0x40, 0x3);
+        assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE), 0x3);
+        // A narrow (8-bit) VI_V_CURRENT write still acks without latching.
+        bus.rcp.mi_intr.vi = true;
+        CpuBus::write_sized(&mut bus, Bus::VI_REGS_BASE + 0x10, 1, 0x99);
+        assert!(!bus.rcp.mi_intr.vi, "a narrow VI_V_CURRENT write acks");
         assert_eq!(CpuBus::read_u32(&mut bus, Bus::VI_REGS_BASE + 0x10), 0);
     }
 }
