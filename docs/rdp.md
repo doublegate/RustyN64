@@ -244,15 +244,51 @@ Scope limits, honestly: this ticket is **pure state** — no texel is loaded (th
 sampler + `Texture Rectangle`, T-32-004). The oracle count stays **93** because
 nothing rendered changes.
 
+### The TMEM loads (T-32-002)
+
+`Load Tile` (0x34) and `Load Block` (0x33) move texels from the current texture image
+in RDRAM into the tile's TMEM region. The address arithmetic and the swizzle are
+cross-verified against the N64brew wiki (*…/Commands*) and the ParaLLEl-RDP reference
+(MIT — its read-side `texture.h` is the authoritative byte-placement statement).
+
+- **`Load Tile`** copies a rectangle. `SL/TL/SH/TH` are `u10.2`; the `.2` fraction is
+  floored and the span is **inclusive** (`SH − SL + 1` texels per row). The source row
+  stride is the texture image `width`; the destination row stride is the tile's `line`
+  (in 64-bit TMEM words). It updates the descriptor's tile size for rendering.
+- **`Load Block`** streams a linear run. `SL/SH` are `u12.0`, `SH − SL + 1` is the count
+  (inclusive), and a count over **2048** ([`LOAD_BLOCK_MAX_TEXELS`]) writes nothing. The
+  low field is **`dxt`** (`u1.11`): the line index `(word · dxt) >> 11` over each 64-bit
+  TMEM word decides parity.
+
+**The swizzle** (matched to the sampler's read layout):
+
+- **Odd-row 32-bit-word swap** — on an odd row (Load Tile) or odd dxt line (Load Block),
+  the two 32-bit halves of the 64-bit TMEM word swap: `dst ^= 4` on the byte address.
+- **32-bit RGBA split** (Load Tile) — R,G go to the low half of TMEM and B,A to the high
+  half (offset 0x800), stepping two bytes per texel and masking to `0x7FF`. This is the
+  wiki's "32-bit texels have a different TMEM layout".
+- TMEM is allocated on the first write (the lazy `Option<Box<..>>`) via a shared
+  `tmem_write` helper; loads past the 4 KiB end wrap to the start. A degenerate or
+  inverted range (`SH < SL` or `TH < TL`) writes nothing, like every other
+  unsupported path, rather than iterating a wrapped bogus width.
+
+Scope (**open residual R-7**): `Load Tile` covers 8/16/32-bit texels and `Load Block`
+covers 8/16-bit. **4-bit** texels (nibble addressing, pairs with the CI4/I4 decoders in
+T-32-003) and the **32-bit `Load Block` split** are deferred; an unsupported size writes
+nothing. The supported paths are byte-exact against hand-computed expectations (five unit
+tests). The oracle count stays **93** — a load is observable only once the sampler
+(T-32-004) reads TMEM.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);
 the rest is still marked TODO:
 
-- **TMEM** — 4 KiB texture memory (**present**, T-32-001; lazily allocated). With
-  a TLUT (palette) the upper half is the lookup table. Formats: RGBA (16/32-bit),
-  IA, I, CI at 4/8/16/32 bpp (`ref-docs/research-report.md` §4) — decoded by the
-  texel-format engine (T-32-003).
+- **TMEM** — 4 KiB texture memory (**present**, T-32-001; lazily allocated), now
+  **loaded** by `Load Tile` / `Load Block` (T-32-002) with the odd-row swap and the
+  32-bit split. With a TLUT (palette) the upper half is the lookup table. Formats:
+  RGBA (16/32-bit), IA, I, CI at 4/8/16/32 bpp (`ref-docs/research-report.md` §4) —
+  decoded by the texel-format engine (T-32-003).
 - **8 tile descriptors** — format, size, line stride, TMEM address, palette,
   clamp/mirror + mask/shift per S/T axis, and the tile-size coords (**present**,
   T-32-001). Set by `Set Tile` (0x35) and `Set Tile Size` (0x32).

@@ -92,7 +92,24 @@ const OP_SYNC_TILE: u8 = 0x28;
 const OP_SYNC_FULL: u8 = 0x29;
 const OP_SET_SCISSOR: u8 = 0x2D;
 const OP_SET_TILE_SIZE: u8 = 0x32;
+const OP_LOAD_BLOCK: u8 = 0x33;
+const OP_LOAD_TILE: u8 = 0x34;
 const OP_SET_TILE: u8 = 0x35;
+
+/// Maximum texels a single `Load Block` may transfer (N64brew *…/Commands*
+/// §Load Block); a load over this writes nothing into TMEM.
+pub const LOAD_BLOCK_MAX_TEXELS: u32 = 2048;
+
+/// Bytes per texel for a texel-size code, or `None` for 4-bit (`size` 0), which
+/// is sub-byte and needs nibble addressing: 8bpp=1, 16bpp=2, 32bpp=4.
+const fn bytes_per_texel(size: u8) -> Option<u32> {
+    match size {
+        1 => Some(1),
+        2 => Some(2),
+        3 => Some(4),
+        _ => None,
+    }
+}
 const OP_FILL_RECTANGLE: u8 = 0x36;
 const OP_SET_FILL_COLOR: u8 = 0x37;
 const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
@@ -447,6 +464,8 @@ impl Rdp {
             }
             OP_SET_TILE => self.set_tile(hi, lo),
             OP_SET_TILE_SIZE => self.set_tile_size(hi, lo),
+            OP_LOAD_TILE => self.load_tile(hi, lo, bus),
+            OP_LOAD_BLOCK => self.load_block(hi, lo, bus),
             // TODO(T-31-004): remaining opcodes are recognised and
             // length-consumed by `tick`, but not yet dispatched — an
             // intentional, documented no-op at this stage, not a silent discard.
@@ -578,6 +597,168 @@ impl Rdp {
         tile.tl = (hi & 0xFFF) as u16;
         tile.sh = ((lo >> 12) & 0xFFF) as u16;
         tile.th = (lo & 0xFFF) as u16;
+    }
+
+    /// Write one byte into TMEM, allocating the 4 KiB backing box on first use.
+    ///
+    /// `offset` is a byte address, masked into the 4 KiB space (loads past the end
+    /// wrap to the start — N64brew *…/Commands* §Load Tile). This is the single
+    /// allocation seam the load commands share, so `get_or_insert_with` is not
+    /// repeated per command.
+    fn tmem_write(&mut self, offset: usize, byte: u8) {
+        let tmem = self
+            .tmem
+            .get_or_insert_with(|| alloc::boxed::Box::new([0u8; TMEM_SIZE]));
+        tmem[offset & (TMEM_SIZE - 1)] = byte;
+    }
+
+    /// Apply a `Load Tile` (0x34): copy a rectangle of texels from the current
+    /// texture image in RDRAM into the tile's TMEM region, then update the tile
+    /// size for rendering. `SL`/`TL`/`SH`/`TH` (bits 55:44 / 43:32 / 23:12 / 11:0)
+    /// are `u10.2`; the `.2` fraction is floored and the span is **inclusive**
+    /// (`SH − SL + 1` texels per row). Rows advance by the tile's `line` stride.
+    ///
+    /// The TMEM byte placement mirrors the sampler exactly: an **odd-row 32-bit
+    /// word swap** (`dst ^= (t & 1) << 2`) applies to every size, and **32-bit
+    /// RGBA is split** — R,G into the low half of TMEM, B,A into the high half,
+    /// stepping two bytes per texel and masking to `0x7FF`. Both are the read-side
+    /// layout in the ParaLLEl-RDP reference (MIT); see `docs/rdp.md` §TMEM loads.
+    ///
+    /// Scope: 8/16/32-bit texels (`size` 1/2/3). 4-bit (`size` 0) loading needs
+    /// nibble addressing and lands with the CI4/I4 decoders (T-32-003); an
+    /// unsupported size writes nothing (**open residual R-7**).
+    fn load_tile<B: VideoBus>(&mut self, hi: u32, lo: u32, bus: &B) {
+        let index = ((lo >> 24) & 0x7) as usize;
+        let sl = ((hi >> 12) & 0xFFF) >> 2;
+        let tl = (hi & 0xFFF) >> 2;
+        let sh = ((lo >> 12) & 0xFFF) >> 2;
+        let th = (lo & 0xFFF) >> 2;
+        // Reject a degenerate/inverted range the same way as every other unsupported
+        // path (write nothing) rather than letting the `& 0xFFF` wrap produce a large
+        // bogus width/height: `sh < sl` would otherwise iterate ~4095 texels of
+        // garbage. A well-formed load has SL <= SH and TL <= TH.
+        if th < tl || sh < sl {
+            return;
+        }
+        let width = (sh - sl + 1) & 0xFFF;
+        let height = th - tl + 1;
+        if width == 0 {
+            return;
+        }
+        let tile = self.tiles[index];
+        let Some(dst_bpt) = bytes_per_texel(tile.size) else {
+            return; // 4-bit (or unmapped) not loaded here — R-7.
+        };
+        // The texture image should match the tile size (documented hazard). A 4-bit
+        // (or unmapped) source size has no byte stride, so bail rather than fall back
+        // to the tile stride and read out of bounds — R-7.
+        let Some(src_bpt) = bytes_per_texel(self.tex_image_size) else {
+            return;
+        };
+        let split = tile.size == 3; // 32-bit RGBA uses the split TMEM layout.
+        let tmem_base = u32::from(tile.tmem_addr) * 8;
+        let stride = u32::from(tile.line) * 8;
+        let tex_w = u32::from(self.tex_image_width);
+        for t in 0..height {
+            let swap = (t & 1) << 2;
+            for s in 0..width {
+                let src_pixel = (tl + t) * tex_w + (sl + s);
+                let src = self.tex_image_addr.wrapping_add(src_pixel * src_bpt);
+                if split {
+                    // R,G -> low half; B,A -> high half (offset by 0x800). The swap is
+                    // applied per final byte so it stays correct regardless of alignment.
+                    let bo = (tmem_base + stride * t + s * 2) & 0x7FF;
+                    self.tmem_write((bo ^ swap) as usize, bus.rdram_read(src));
+                    self.tmem_write(
+                        ((bo + 1) ^ swap) as usize,
+                        bus.rdram_read(src.wrapping_add(1)),
+                    );
+                    self.tmem_write(
+                        ((bo + 0x800) ^ swap) as usize,
+                        bus.rdram_read(src.wrapping_add(2)),
+                    );
+                    self.tmem_write(
+                        ((bo + 0x801) ^ swap) as usize,
+                        bus.rdram_read(src.wrapping_add(3)),
+                    );
+                } else {
+                    let base = tmem_base + stride * t + s * dst_bpt;
+                    for i in 0..dst_bpt {
+                        // XOR the swap into each final byte address, not the base.
+                        self.tmem_write(
+                            ((base + i) ^ swap) as usize,
+                            bus.rdram_read(src.wrapping_add(i)),
+                        );
+                    }
+                }
+            }
+        }
+        // Load Tile updates the descriptor's tile size for rendering.
+        let tile = &mut self.tiles[index];
+        tile.sl = ((hi >> 12) & 0xFFF) as u16;
+        tile.tl = (hi & 0xFFF) as u16;
+        tile.sh = ((lo >> 12) & 0xFFF) as u16;
+        tile.th = (lo & 0xFFF) as u16;
+    }
+
+    /// Apply a `Load Block` (0x33): stream a linear run of texels from the current
+    /// texture image into the tile's TMEM region. `SL`/`SH` (bits 55:44 / 23:12)
+    /// are `u12.0` integer texels; `SH − SL + 1` is the count (**inclusive**), and
+    /// a count over [`LOAD_BLOCK_MAX_TEXELS`] writes nothing. The low field
+    /// (bits 11:0) is **`dxt`** (`u1.11`): a running counter `T = (word * dxt) >>
+    /// 11` over each 64-bit TMEM word decides line parity, and an odd line swaps
+    /// that word's two 32-bit halves (`dst ^= 4`).
+    ///
+    /// Scope: 8/16-bit texels (`size` 1/2). The 32-bit split path and 4-bit are
+    /// deferred (**open residual R-7**); an unsupported size writes nothing.
+    fn load_block<B: VideoBus>(&mut self, hi: u32, lo: u32, bus: &B) {
+        let index = ((lo >> 24) & 0x7) as usize;
+        let slo = (hi >> 12) & 0xFFF;
+        let tlo = hi & 0xFFF;
+        let shi = (lo >> 12) & 0xFFF;
+        let dxt = lo & 0xFFF;
+        // An inverted range writes nothing (as in `load_tile`); without this an
+        // extreme `shi < slo` (slo >= 2049) wraps into a valid-looking count.
+        if shi < slo {
+            return;
+        }
+        let count = (shi - slo + 1) & 0xFFF;
+        if count == 0 || count > LOAD_BLOCK_MAX_TEXELS {
+            return; // over the limit: nothing written (§Load Block).
+        }
+        let tile = self.tiles[index];
+        let Some(bpt) = bytes_per_texel(tile.size) else {
+            return;
+        };
+        if tile.size == 3 {
+            return; // 32-bit block load (split) deferred — R-7.
+        }
+        // A 4-bit (or unmapped) source size has no byte stride — bail rather than
+        // fall back to the tile stride and read out of bounds (R-7).
+        let Some(src_bpt) = bytes_per_texel(self.tex_image_size) else {
+            return;
+        };
+        let tex_w = u32::from(self.tex_image_width);
+        let src_base = self
+            .tex_image_addr
+            .wrapping_add((tex_w * tlo + slo) * src_bpt);
+        let tmem_base = u32::from(tile.tmem_addr) * 8;
+        for s in 0..count {
+            let src = src_base.wrapping_add(s * src_bpt);
+            let byte_off = s * bpt;
+            // Line parity from the dxt counter over 64-bit TMEM words.
+            let word = byte_off / 8;
+            let line = (word * dxt) >> 11;
+            let swap = (line & 1) << 2;
+            let base = tmem_base + byte_off;
+            for i in 0..bpt {
+                // XOR the swap into each final byte address, not the base.
+                self.tmem_write(
+                    ((base + i) ^ swap) as usize,
+                    bus.rdram_read(src.wrapping_add(i)),
+                );
+            }
+        }
     }
 
     /// Read one byte of TMEM.
@@ -1331,6 +1512,308 @@ mod tests {
         assert_eq!(
             rdp.tiles[2].format, 3,
             "set_tile_size did not clobber the tile format (distinct routing)"
+        );
+    }
+
+    // ---- T-32-002: TMEM loads (Load Tile 0x34, Load Block 0x33) ----
+
+    /// **`Load Tile` copies a 16-bit row and latches the tile size.** Row 0 is
+    /// even, so no odd-row swap applies; the four texels land verbatim, and the
+    /// descriptor's `SL/TL/SH/TH` are updated for rendering.
+    #[test]
+    fn load_tile_16bit_copies_a_row_and_sets_size() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        let src = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        mem[0x100..0x108].copy_from_slice(&src);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 2; // 16-bit
+        rdp.tiles[0].line = 1; // 8 bytes/row
+        rdp.tex_image_size = 2;
+        rdp.tex_image_width = 4;
+        rdp.tex_image_addr = 0x100;
+        // SL=0 TL=0 index=0 SH=3 (field 0xC) TH=0.
+        rdp.load_tile(0x0000_0000, 0x0000_C000, &bus);
+        for (i, &b) in src.iter().enumerate() {
+            assert_eq!(rdp.tmem_byte(i), b, "tmem[{i}]");
+        }
+        assert_eq!(
+            (rdp.tiles[0].sl, rdp.tiles[0].sh),
+            (0, 0xC),
+            "Load Tile latches the tile size"
+        );
+    }
+
+    /// **`Load Tile` applies the odd-row 32-bit-word swap.** Row 1 is odd, so each
+    /// texel's TMEM byte address gains bit 2 (a `^ 4`), swapping the two 32-bit
+    /// halves of the 64-bit word, while row 0 is unswapped.
+    #[test]
+    fn load_tile_swaps_odd_rows() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        let row0 = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7];
+        let row1 = [0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7];
+        mem[0x100..0x108].copy_from_slice(&row0);
+        mem[0x108..0x110].copy_from_slice(&row1);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 2;
+        rdp.tiles[0].line = 1;
+        rdp.tex_image_size = 2;
+        rdp.tex_image_width = 4;
+        rdp.tex_image_addr = 0x100;
+        // SL=0 TL=0 SH=3 TH=1 (field 4) -> 4x2.
+        rdp.load_tile(0x0000_0000, 0x0000_C004, &bus);
+        for (i, &b) in row0.iter().enumerate() {
+            assert_eq!(rdp.tmem_byte(i), b, "row 0 verbatim [{i}]");
+        }
+        // Row 1 base = line*8 = 8; texel s at (8 + s*2) ^ 4.
+        assert_eq!((rdp.tmem_byte(0xC), rdp.tmem_byte(0xD)), (0xB0, 0xB1));
+        assert_eq!((rdp.tmem_byte(0xE), rdp.tmem_byte(0xF)), (0xB2, 0xB3));
+        assert_eq!((rdp.tmem_byte(0x8), rdp.tmem_byte(0x9)), (0xB4, 0xB5));
+        assert_eq!((rdp.tmem_byte(0xA), rdp.tmem_byte(0xB)), (0xB6, 0xB7));
+    }
+
+    /// **`Load Tile` splits a 32-bit texel across TMEM.** R,G go to the low half
+    /// and B,A to the high half (offset 0x800) — the documented 32-bit layout.
+    #[test]
+    fn load_tile_32bit_splits_rg_low_ba_high() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x104].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]); // R G B A
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 3; // 32-bit RGBA
+        rdp.tiles[0].line = 1;
+        rdp.tex_image_size = 3;
+        rdp.tex_image_width = 1;
+        rdp.tex_image_addr = 0x100;
+        rdp.load_tile(0x0000_0000, 0x0000_0000, &bus); // 1x1
+        assert_eq!(rdp.tmem_byte(0), 0x11, "R low half");
+        assert_eq!(rdp.tmem_byte(1), 0x22, "G low half");
+        assert_eq!(rdp.tmem_byte(0x800), 0x33, "B high half");
+        assert_eq!(rdp.tmem_byte(0x801), 0x44, "A high half");
+    }
+
+    /// **`Load Block` streams texels and pins both sides of the 2048 limit.** A
+    /// small 8-bit block copies verbatim (dxt 0 → one line, no swap); a 2049-texel
+    /// load writes nothing, while exactly 2048 loads.
+    #[test]
+    fn load_block_streams_and_enforces_the_limit() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x104].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 1; // 8-bit
+        rdp.tex_image_size = 1;
+        rdp.tex_image_width = 4;
+        rdp.tex_image_addr = 0x100;
+        // SL=0 index=0 SH=3 dxt=0.
+        rdp.load_block(0x0000_0000, 0x0000_3000, &bus);
+        for (i, &b) in [0xDE, 0xAD, 0xBE, 0xEF].iter().enumerate() {
+            assert_eq!(rdp.tmem_byte(i), b, "block[{i}]");
+        }
+
+        // Over the limit (count = 2049): nothing written / allocated.
+        let mut over = Rdp::new();
+        over.tiles[0].size = 1;
+        over.tex_image_size = 1;
+        over.tex_image_width = 4096;
+        over.tex_image_addr = 0x100;
+        over.load_block(0x0000_0000, 0x0080_0000, &bus); // SH field 2048
+        assert!(
+            over.tmem.is_none(),
+            "a 2049-texel load writes nothing (over the 2048 limit)"
+        );
+
+        // Exactly at the limit (count = 2048): loads.
+        let mut edge = Rdp::new();
+        edge.tiles[0].size = 1;
+        edge.tex_image_size = 1;
+        edge.tex_image_width = 4096;
+        edge.tex_image_addr = 0x100;
+        edge.load_block(0x0000_0000, 0x007F_F000, &bus); // SH field 2047 -> 2048 texels
+        assert!(edge.tmem.is_some(), "exactly 2048 texels loads");
+        assert_eq!(edge.tmem_byte(0), 0xDE, "and writes the first texel");
+    }
+
+    /// **`Load Block` uses dxt to swap odd lines.** With `dxt = 0x800` the line
+    /// index `(word * dxt) >> 11` is odd for odd 64-bit words, so the second group
+    /// of four 16-bit texels (word 1) is swapped while the first (word 0) is not.
+    #[test]
+    fn load_block_dxt_swaps_odd_lines() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        // 8 x 16-bit texels = 16 bytes: word 0 = texels 0..4, word 1 = texels 4..8.
+        let data: [u8; 16] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45,
+            0x46, 0x47,
+        ];
+        mem[0x100..0x110].copy_from_slice(&data);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 2; // 16-bit
+        rdp.tex_image_size = 2;
+        rdp.tex_image_width = 8;
+        rdp.tex_image_addr = 0x100;
+        // SL=0 index=0 SH=7 (field 7<<... u12.0 so field=7) dxt=0x800.
+        rdp.load_block(0x0000_0000, 0x0000_7800, &bus);
+        // Word 0 (texels 0..4) unswapped at bytes 0..8.
+        for (i, &b) in data[..8].iter().enumerate() {
+            assert_eq!(rdp.tmem_byte(i), b, "word0[{i}] unswapped");
+        }
+        // Word 1 (texels 4..8) swapped: byte_off (8..16) ^ 4.
+        for (i, &b) in data[8..].iter().enumerate() {
+            assert_eq!(rdp.tmem_byte((8 + i) ^ 4), b, "word1 byte {i} swapped");
+        }
+    }
+
+    /// **An unsupported (4-bit) *tile* size writes nothing.** Isolates the
+    /// destination-size guard: the source is a supported image, so only the
+    /// tile-size (`dst_bpt`) guard stops the load. A silent no-op is invisible to a
+    /// "does not panic" test, so this asserts the *effect*: TMEM is never allocated.
+    #[test]
+    fn load_with_unsupported_tile_size_writes_nothing() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x108].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        // 4-bit tile (size 0), supported source: Load Tile writes nothing.
+        let mut a = Rdp::new();
+        a.tiles[0].size = 0;
+        a.tex_image_size = 2;
+        a.tex_image_width = 4;
+        a.tex_image_addr = 0x100;
+        a.load_tile(0x0000_0000, 0x0000_C000, &bus);
+        assert!(a.tmem.is_none(), "4-bit tile: Load Tile writes nothing");
+        // 4-bit tile: Load Block writes nothing.
+        let mut b = Rdp::new();
+        b.tiles[0].size = 0;
+        b.tex_image_size = 1;
+        b.tex_image_width = 4;
+        b.tex_image_addr = 0x100;
+        b.load_block(0x0000_0000, 0x0000_3000, &bus);
+        assert!(b.tmem.is_none(), "4-bit tile: Load Block writes nothing");
+    }
+
+    /// **An unsupported (4-bit) *source* size writes nothing — independently.** The
+    /// tile size is supported, so only the source-size (`src_bpt`) guard stops the
+    /// load; deleting that guard would read RDRAM at the wrong stride and allocate
+    /// TMEM, failing this test.
+    #[test]
+    fn load_with_unsupported_source_size_writes_nothing() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x108].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut a = Rdp::new();
+        a.tiles[0].size = 2; // supported destination
+        a.tiles[0].line = 1;
+        a.tex_image_size = 0; // 4-bit source (unsupported)
+        a.tex_image_width = 4;
+        a.tex_image_addr = 0x100;
+        a.load_tile(0x0000_0000, 0x0000_C000, &bus);
+        assert!(a.tmem.is_none(), "4-bit source: Load Tile writes nothing");
+        let mut b = Rdp::new();
+        b.tiles[0].size = 1; // supported destination
+        b.tex_image_size = 0; // 4-bit source
+        b.tex_image_width = 4;
+        b.tex_image_addr = 0x100;
+        b.load_block(0x0000_0000, 0x0000_3000, &bus);
+        assert!(b.tmem.is_none(), "4-bit source: Load Block writes nothing");
+    }
+
+    /// **`Load Block` rejects an inverted `SH < SL` range** (like `Load Tile`),
+    /// with valid sizes so only the inverted-range guard prevents the load.
+    #[test]
+    fn load_block_rejects_inverted_range() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x110].copy_from_slice(&[0xFF; 16]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 1;
+        rdp.tex_image_size = 1;
+        rdp.tex_image_width = 8;
+        rdp.tex_image_addr = 0x100;
+        // SL=10 (field 0xA000) SH=2 (field 0x2000), u12.0: shi < slo.
+        rdp.load_block(0x0000_A000, 0x0000_2000, &bus);
+        assert!(rdp.tmem.is_none(), "shi < slo writes nothing");
+    }
+
+    /// **The dispatcher routes 0x34 and 0x33 to the load handlers.** The other
+    /// load tests call `load_tile` / `load_block` directly; this drives the actual
+    /// `dispatch` entry so a removed or mis-wired opcode arm is caught by an
+    /// observable TMEM write, not only a decode bug.
+    #[test]
+    fn dispatch_routes_load_tile_and_load_block() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x104].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut a = Rdp::new();
+        a.tiles[0].size = 2;
+        a.tiles[0].line = 1;
+        a.tex_image_size = 2;
+        a.tex_image_width = 2;
+        a.tex_image_addr = 0x100;
+        a.dispatch(OP_LOAD_TILE, 0x0000_0000, 0x0000_4000, &mut bus); // SH=1 -> 2 texels
+        assert_eq!(
+            (a.tmem_byte(0), a.tmem_byte(1)),
+            (0x11, 0x22),
+            "0x34 routed to load_tile"
+        );
+        let mut b = Rdp::new();
+        b.tiles[0].size = 1;
+        b.tex_image_size = 1;
+        b.tex_image_width = 4;
+        b.tex_image_addr = 0x100;
+        b.dispatch(OP_LOAD_BLOCK, 0x0000_0000, 0x0000_3000, &mut bus); // SH=3 -> 4 texels
+        assert_eq!(b.tmem_byte(0), 0x11, "0x33 routed to load_block");
+    }
+
+    /// **An inverted range writes nothing.** `SH < SL` (like `TH < TL`) is a
+    /// degenerate command; without the guard the `& 0xFFF` wrap would iterate a
+    /// large bogus width. Asserts the effect: TMEM stays unallocated.
+    #[test]
+    fn load_tile_rejects_inverted_range() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x110].copy_from_slice(&[0xFF; 16]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 2;
+        rdp.tiles[0].line = 1;
+        rdp.tex_image_size = 2;
+        rdp.tex_image_width = 8;
+        rdp.tex_image_addr = 0x100;
+        // SL=10 (field 10<<2=0x28) SH=2 (field 2<<2=8): sh < sl.
+        rdp.load_tile(0x0002_8000, 0x0000_8000, &bus);
+        assert!(
+            rdp.tmem.is_none(),
+            "sh < sl writes nothing rather than a wrapped-width rectangle"
         );
     }
 }

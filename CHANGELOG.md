@@ -9,6 +9,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — RDP TMEM loads: Load Tile and Load Block (Phase 3, T-32-002)
+
+- **The RDP now moves texels from RDRAM into TMEM.** `Load Tile` (0x34) copies an
+  inclusive `SH − SL + 1` rectangle at the tile's `line` stride; `Load Block`
+  (0x33) streams a linear run, enforcing the 2048-texel limit (over it writes
+  nothing) and deriving line parity from the `dxt` (u1.11) counter. Both apply the
+  **odd-row 32-bit-word swap** (`dst ^= 4`), and `Load Tile` implements the
+  **32-bit RGBA split** (R,G to the low half of TMEM, B,A to the high half). The
+  address arithmetic and swizzle are cross-verified against the N64brew wiki and
+  the ParaLLEl-RDP reference (MIT). TMEM is allocated on first write via a shared
+  `tmem_write` helper. Five unit tests pin the byte layout. Scope (ledger R-7):
+  8/16/32-bit `Load Tile`, 8/16-bit `Load Block`; 4-bit and the 32-bit `Load
+  Block` split are deferred. Oracle unchanged at 93 (a load is observable only
+  once the sampler reads TMEM, T-32-004).
+
 ### Added — RDP texture state: TMEM, tile descriptors, state commands (Phase 3, T-32-001)
 
 - **The RDP gains its texture state and the three commands that describe it.**

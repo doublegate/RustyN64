@@ -69,20 +69,21 @@ copies a rectangle; `Load Block` (0x33) streams a linear run with the dxt odd-li
   64-bit TMEM word; when it crosses 1 the current line is odd and its two 32-bit halves are
   swapped on load. Loads past TMEM end wrap to the start.
 
-**Acceptance criteria:**
+**Acceptance criteria (DONE — 8/16/32-bit `Load Tile`, 8/16-bit `Load Block`; 4-bit and the
+32-bit `Load Block` split deferred to ledger R-7):**
 
-- [ ] `Load Tile` copies the exact rectangle into TMEM at the tile's address and `line` stride,
-      byte-for-byte against a hand-computed expectation.
-- [ ] `Load Block` streams `SH − SL` texels and applies the dxt odd-line 32-bit swap. On a load
+- [x] `Load Tile` copies the exact rectangle into TMEM at the tile's address and `line` stride,
+      byte-for-byte against a hand-computed expectation (incl. the odd-row 32-bit-word swap and
+      the 32-bit R/G-low, B/A-high split).
+- [x] `Load Block` streams `SH − SL` texels and applies the dxt odd-line 32-bit swap. On a load
       over 2048 texels it writes nothing: N64brew *…/Commands* §Load Block states such a load
       "fail\[s\]" with nothing written into TMEM — this is the documented source, and the
       over-limit path is asserted separately and re-checked against the fuzz oracle in Sprint 3
-      (if the hardware truly does a partial write, the fuzz result supersedes this). **Pin both
-      sides of the boundary**: exactly 2048 texels loads fully, 2049 writes nothing (guards an
-      off-by-one in the limit check).
-- [ ] Both update the descriptor's tile size as documented.
-- [ ] A property test: a Load Tile followed by reading TMEM at the mapped address round-trips the
-      source bytes for 4/8/16/32-bit texel sizes.
+      (if the hardware truly does a partial write, the fuzz result supersedes this). **Both
+      sides of the boundary pinned**: exactly 2048 texels loads fully, 2049 writes nothing.
+- [x] Both update the descriptor's tile size as documented (`Load Tile` latches `SL/TL/SH/TH`).
+- [x] Byte-round-trip is pinned for 8/16/32-bit texel sizes. **4-bit is deferred** (nibble
+      addressing, lands with the CI4/I4 decoders in T-32-003) — ledger **R-7**.
 
 **Dependencies:** T-32-001
 **Reference:** `docs/rdp.md` §TMEM loads; Commands.md 0x34/0x33
