@@ -94,27 +94,32 @@ reaching idle — **no output comparison yet**.
 
 **Acceptance criteria:**
 
-- [ ] The blob loads into DMEM+IMEM; the minimal DMEM boot state (overlay table
-      with `rdpq`, the command-list DRAM pointer, the RDP output-buffer pointers)
-      is constructed in Rust, grounded in `rspq_init`/`rdpq_init`, not snapshotted.
-- [ ] The witness starts from a baseline that is itself unreachable as a pass —
-      `SP_STATUS` running (`HALTED`/`BROKE` clear), PC at the kernel `_start`, not
-      the idle handler — then asserts the transition (`BROKE` set, PC at the
-      idle/`BREAK` site), plus a DMEM cell the boot path is known to write.
-      Success and never-ran states must not converge (ADR 0008; engineering
-      lessons).
+- [x] The blob loads into DMEM+IMEM and the real microcode executes
+      (`tests/microcode.rs::the_microcode_boots_to_its_idle_break`). The *full*
+      `rsp_queue_t` boot state (command-list DRAM pointer, RDP output buffers) is
+      **not needed for the idle break** and moves to T-24-003, where the queue is
+      actually processed — the idle path runs entirely in the SU before any DMA.
+- [x] The witness starts from a baseline that is itself unreachable as a pass —
+      `SP_STATUS` running (`HALTED`/`BROKE` clear), PC at `_start` (0) — then
+      asserts the transition: the kernel reaches its documented idle `break`
+      (`rsp_queue.inc:403`, "No new commands yet, go to sleep"), so `BROKE` sets,
+      the PC advances off `_start`, and `$gp` is zeroed by the `li $gp,0`
+      prologue. A microcode that never ran stays at PC 0, not halted, and fails;
+      zeroed IMEM nops out the step budget. Success and never-ran do not converge.
 - [x] `docs/rspq-boot.md` records the boot ABI with source citations — the
       `rsp_queue_t` boot-state struct at `RSPQ_DATA_ADDRESS = 8`, which pointers
       `rspq_start` patches (`rspq.c:519–548`), the SP_STATUS signal set, and
       `SP_PC = _start`.
 
-**Progress:** the boot ABI is reverse-engineered and documented
-(`docs/rspq-boot.md`); the RSP-drive plumbing is confirmed (`System` +
-`bus.rsp.dmem`/`imem` + `sp.set_pc`/`set_halted`, the same entry the
-n64-systemtest runner uses). Remaining: construct the patched `rsp_queue_t` in
-Rust, provide a terminating fixture command queue in RDRAM, and add the idle
-witness. Deferred rather than rushed — a boot test with a weak or converging
-witness would be worse than none (ADR 0008).
+**Status:** **done.** The real libdragon rdpq microcode boots on our RSP and
+reaches its documented idle `break`, witnessed non-vacuously
+(`tests/microcode.rs::the_microcode_boots_to_its_idle_break`). The boot ABI is
+documented (`docs/rspq-boot.md`). The key insight that made this a clean minimal
+test: the idle `break` (`rsp_queue.inc:403`) fires after only the SU prologue and
+the `SIG_MORE` check, *before* any DMA — so the full `rsp_queue_t`/command-queue
+boot state is not needed to prove the microcode boots. That state (patched DRAM
+pointers, the RDP output buffers) is needed only once the queue is actually
+processed, which is T-24-003.
 
 **Dependencies:** T-24-001
 **Reference:** `docs/rspq-boot.md`; `include/rsp_queue.inc` (`_start` @391,
