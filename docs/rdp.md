@@ -31,11 +31,14 @@ pub struct Rdp {
     pub cmd_start: u32,   // DPC_START
     pub cmd_end: u32,     // DPC_END
     pub cmd_current: u32, // DPC_CURRENT
+    pub status: u32,      // DPC_STATUS (FREEZE, START/END-valid, XBUS, ...)
     pub color_image: u32, // SET_COLOR_IMAGE base in RDRAM
     pub z_image: u32,     // SET_Z_IMAGE base in RDRAM
 }
 impl Rdp {
-    pub fn tick<B: VideoBus>(&mut self, bus: &mut B); // drain part of DP FIFO
+    pub const fn dpc_read(&self, offset: u32) -> u32;      // 0x0410_0000 block
+    pub const fn dpc_write(&mut self, offset: u32, v: u32);
+    pub fn tick<B: VideoBus>(&mut self, bus: &mut B);      // drain part of DP FIFO
 }
 ```
 
@@ -45,24 +48,29 @@ RDP consumes it; `DPC_STATUS` carries the run/freeze/flush bits. The RDP raises
 the DP interrupt when the command buffer drains (`SYNC_FULL`).
 
 **The `DPC_*` register file is implemented** (`Rdp::dpc_read`/`dpc_write`, wired
-to `0x0410_0000` by the Bus); the rasterizer behind it is still a stub. The
-command-FIFO submission is a **double-latch** that n64-systemtest's `RSP STATUS:
-start-valid` and `RDP START & END REG (masking)` pin exactly:
+to `0x0410_0000` by the Bus); the rasterizer behind it is still a stub. Provenance
+for every rule below is the N64brew wiki, *Reality Display Processor/Interface*
+(`n64brew_wiki/markdown/Reality Display Processor/Interface.md`), cross-checked
+against n64-systemtest's `RSP STATUS: start-valid` and `RDP START & END REG
+(masking)`. The submission is a **double-latch**:
 
-- `DPC_START`/`DPC_END` writes mask to `0x00FF_FFF8` (a 24-bit, 8-aligned RDRAM
-  address).
-- Writing `DPC_START` latches the address and sets `START_VALID` **only if it
-  was clear** — a second write while valid is *ignored*, so software cannot
-  clobber a queued start.
-- Writing `DPC_END` latches the end, copies the pending start into
-  `DPC_CURRENT`, and clears `START_VALID`. On unfrozen hardware this also starts
-  the RDP; while frozen it only latches, and `END_VALID` stays clear because a
-  frozen FIFO never advances to consume it.
-- `DPC_STATUS` writes are set/clear **commands** (`SET_FREEZE`/`CLEAR_FREEZE`,
-  `SET_XBUS`/`CLEAR_XBUS`), distinct from the status bits read back. `FREEZE`
-  halts `tick`, which is what lets software read and rewrite the registers
-  without the FIFO moving. The FLUSH/TMEM/PIPE/CMD/CLOCK-counter command bits
-  arrive with the FIFO drain.
+- `DPC_START`/`DPC_END` writes mask to `0x00FF_FFF8` — a 24-bit, 8-aligned RDRAM
+  address (*Interface* §DPC_START/§DPC_END, `START[23:0]`/`END[23:0]`).
+- Writing `DPC_START` latches the address and sets `START_VALID` (the wiki's
+  `START_PENDING`) **only if it was clear** — a second write while valid is
+  *ignored*, so software cannot clobber a queued start.
+- Writing `DPC_END` latches the end, then branches on `START_VALID` (*Interface*
+  §DPC_END): if **set**, it is a fresh transfer, so the pending start is copied
+  into `DPC_CURRENT` and `START_VALID` clears; if **clear**, it is an
+  *incremental* transfer that continues from `DPC_CURRENT`, which is therefore
+  left alone (rewinding it would reprocess already-consumed commands). On
+  unfrozen hardware the transfer also runs; while frozen only the latch happens.
+- `DPC_STATUS` writes are set/clear **commands** (`SET_FREEZE`=0x8/`CLEAR_FREEZE`
+  =0x4, `SET_XBUS`=0x2/`CLEAR_XBUS`=0x1), distinct from the status bits read back
+  (*Interface* §DPC_STATUS write layout). `FREEZE` (read bit 1) halts `tick`,
+  which is what lets software read and rewrite the registers without the FIFO
+  moving. The FLUSH/TMEM/PIPE/CMD/CLOCK-counter command bits arrive with the
+  FIFO drain.
 
 ## State
 

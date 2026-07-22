@@ -104,15 +104,19 @@ impl Rdp {
 
     /// Write a DP command register (word offsets as in [`Rdp::dpc_read`]).
     ///
-    /// The FIFO uses a double-latch that n64-systemtest's `RSP STATUS:
-    /// start-valid` pins exactly:
+    /// The FIFO uses a double-latch pinned by n64-systemtest's `RSP STATUS:
+    /// start-valid` and documented in the N64brew wiki (*Reality Display
+    /// Processor Interface*, the `DPC_END` section):
     ///
     /// - Writing `DPC_START` latches the (masked) address and sets `START_VALID`
     ///   **only if it was clear** — a second write while valid is ignored.
-    /// - Writing `DPC_END` latches the end address, copies the pending start
-    ///   into `DPC_CURRENT`, and clears `START_VALID`. On unfrozen hardware this
-    ///   also starts the RDP; while frozen it only latches, and `END_VALID`
-    ///   stays clear because a frozen FIFO never advances to consume it.
+    /// - Writing `DPC_END` latches the end address, then branches on
+    ///   `START_VALID` (the wiki's `START_PENDING`): if **set**, this is a fresh
+    ///   transfer — copy the pending start into `DPC_CURRENT` and clear
+    ///   `START_VALID`. If **clear**, it is an *incremental* transfer that
+    ///   continues from the current position, so `DPC_CURRENT` is left alone
+    ///   (rewinding it would reprocess already-consumed commands). On unfrozen
+    ///   hardware the transfer also runs; while frozen only the latch happens.
     pub const fn dpc_write(&mut self, offset: u32, value: u32) {
         match offset & 7 {
             0 => {
@@ -123,8 +127,10 @@ impl Rdp {
             }
             1 => {
                 self.cmd_end = value & DPC_ADDR_MASK;
-                self.cmd_current = self.cmd_start;
-                self.status &= !DP_STATUS_START_VALID;
+                if self.status & DP_STATUS_START_VALID != 0 {
+                    self.cmd_current = self.cmd_start;
+                    self.status &= !DP_STATUS_START_VALID;
+                }
             }
             3 => self.dpc_write_status(value),
             _ => {}
@@ -257,6 +263,25 @@ mod tests {
             "END_VALID clear while frozen"
         );
         assert_eq!(rdp.dpc_read(2), 0x1238, "CURRENT = START");
+    }
+
+    /// **An END-only write is an incremental transfer: `CURRENT` is not
+    /// rewound.** With `START_VALID` clear (the first transfer already
+    /// consumed), writing a new END extends the buffer from where the DMA
+    /// stopped — reloading `CURRENT` from `START` would reprocess commands
+    /// already transferred (N64brew *Interface*, `DPC_END`: "If `START_PENDING`
+    /// is 0, the write is considered an incremental transfer").
+    #[test]
+    fn an_end_only_write_extends_without_rewinding_current() {
+        let mut rdp = Rdp::new();
+        rdp.dpc_write(3, 0x8); // freeze
+        rdp.dpc_write(0, 0x1000); // START
+        rdp.dpc_write(1, 0x1000); // END consumes START -> START_VALID clear
+        rdp.cmd_current = 0x1000; // pretend the transfer reached the end
+
+        rdp.dpc_write(1, 0x1040); // incremental END, no new START
+        assert_eq!(rdp.dpc_read(1), 0x1040, "END extended");
+        assert_eq!(rdp.dpc_read(2), 0x1000, "CURRENT not rewound to START");
     }
 
     /// **A frozen DP does not advance the FIFO**, so registers stay put even
