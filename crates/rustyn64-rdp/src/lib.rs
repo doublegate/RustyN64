@@ -295,6 +295,14 @@ impl Rdp {
             OP_SYNC_PIPE => self.stall = SYNC_PIPE_GCLK,
             OP_SYNC_TILE => self.stall = SYNC_TILE_GCLK,
             OP_SYNC_FULL => bus.raise_dp_interrupt(),
+            // TODO(T-31-003): every other opcode is recognised and
+            // length-consumed by `tick`, but not yet dispatched — an
+            // intentional, documented no-op at this stage, not a silent discard.
+            // Handlers arrive per ticket (the fill pipeline — Set Color Image,
+            // Set Fill Color, Set Scissor, Fill Rectangle — is next), and
+            // `docs/rdp.md` is the authoritative list of what is dispatched
+            // versus recognised-only, so a later missing arm is caught against
+            // that spec rather than passing silently here.
             _ => {}
         }
     }
