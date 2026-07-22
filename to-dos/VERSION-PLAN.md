@@ -7,11 +7,12 @@ against at every rung.
 
 ## Where this project actually is
 
-**RustyN64 has never cut a GitHub release.** `git tag -l` returns nothing, and the repository
-itself is only days old. Unlike the point at which RustySNES's plan was written — where a large
-amount of working emulation had accumulated inside one perpetual `[Unreleased]` section — almost
-nothing is implemented here yet. The workspace compiles, CI is green on stubs, and the Bus and
-scheduler are real; every chip is an LLE-shaped no-op.
+**RustyN64 has cut three releases so far** — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
+(Phase 1, the complete VR4300), and `v0.3.0` "Microcode" (Phase 2, the LLE RSP + real graphics
+microcode emitting an RDP command list). Unlike the point at which RustySNES's plan was written —
+where a large amount of working emulation had accumulated inside one perpetual `[Unreleased]`
+section — this ladder was written *forwards* from an empty tree. The VR4300 and RSP now execute;
+the RDP rasteriser, AI, and cart boot are still LLE-shaped stubs (Phases 3–5).
 
 That difference matters for how this ladder should be read. RustySNES's plan was written
 *backwards* from a large body of shipped work that needed sequencing into tags. This one is
