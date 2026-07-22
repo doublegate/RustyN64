@@ -23,6 +23,12 @@ MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-200000}" # truncate very large diffs (~200 KB)
 STYLE_GUIDE="${STYLE_GUIDE:-.github/agy-review.md}"  # repo-relative; loaded if present
                                            # (dedicated name -- avoids colliding with GEMINI.md/AGENTS.md)
 CONV_DIR="${CONV_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
+# The SQLite fallback reads the newest conversation .db from a SHARED per-user
+# directory, so on a runner that also handles concurrent jobs or interactive agy
+# sessions it can surface an unrelated PR's (or a private local) conversation.
+# Off by default for that reason; the PTY path is the normal route. Opt in with
+# AGY_SQLITE_FALLBACK=1 on a dedicated single-purpose runner.
+AGY_SQLITE_FALLBACK="${AGY_SQLITE_FALLBACK:-0}"
 LOG="${RUNNER_TEMP:-/tmp}/agy-review.log"
 MARKER="<!-- antigravity-pr-review -->"
 
@@ -34,7 +40,10 @@ REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY not set}"
 # --- resolve the PR number from the triggering event --------------------------
 case "${GITHUB_EVENT_NAME:-}" in
   pull_request|pull_request_target)
-    PR="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+    # `// empty` so a missing field yields "" rather than the string "null",
+    # which would slip past the -n check below and fail obscurely in `gh pr diff`.
+    PR="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+    [ -n "$PR" ] || { log "no PR number in event payload; skipping"; exit 0; }
     ;;
   issue_comment)
     is_pr="$(jq -r '.issue.pull_request // empty' "$GITHUB_EVENT_PATH")"
@@ -110,7 +119,9 @@ if command -v unbuffer >/dev/null 2>&1; then
 else
   log "unbuffer not found; falling back to script(1)"
   raw="$(mktemp)"
-  AGY_BIN="$AGY_BIN" script -qfec "$here/_agy_print.sh '$prompt_file' ${flags[*]}" "$raw" >/dev/null 2>>"$LOG" || true
+  # Single-quote "$here" inside the command string so a workspace path with
+  # spaces stays one token for the shell that script(1) spawns.
+  AGY_BIN="$AGY_BIN" script -qfec "'$here'/_agy_print.sh '$prompt_file' ${flags[*]}" "$raw" >/dev/null 2>>"$LOG" || true
   col -b < "$raw" > "$out_file"
 fi
 
@@ -121,10 +132,13 @@ tr -d '\r' < "$out_file" > "$out_file.clean" && mv "$out_file.clean" "$out_file"
 #     (belt-and-suspenders for issue #76 on hosts where the PTY trick still
 #     yields nothing). The schema is NOT officially documented and can change
 #     between agy versions -- inspect with `sqlite3 <db> .schema` and adjust.
-if ! have_text "$out_file"; then
-  log "print output empty; trying SQLite conversation fallback"
+if ! have_text "$out_file" && [ "$AGY_SQLITE_FALLBACK" = 1 ]; then
+  log "print output empty; trying SQLite conversation fallback (opt-in)"
   if command -v sqlite3 >/dev/null 2>&1 && [ -d "$CONV_DIR" ]; then
-    db="$(ls -t "$CONV_DIR"/*.db 2>/dev/null | head -1 || true)"
+    # Only consider a db modified in the last two minutes, to reduce (not
+    # eliminate) the risk of picking up an unrelated conversation.
+    db="$(find "$CONV_DIR" -maxdepth 1 -name '*.db' -mmin -2 -printf '%T@ %p\n' 2>/dev/null \
+          | sort -rn | head -1 | cut -d' ' -f2- || true)"
     if [ -n "${db:-}" ]; then
       for q in \
         "SELECT text FROM messages WHERE role='assistant' ORDER BY rowid DESC LIMIT 1;" \
