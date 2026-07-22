@@ -277,9 +277,10 @@ file is not mistaken for the whole VI):
   multiple of `MASTER_HZ` (N64brew *Video Interface* §Clocks; `docs/scheduler.md`,
   which already names it the sole fractional-accumulator domain). Until then
   `VI_V_CURRENT` reads back 0.
-- **`VI_V_CURRENT` firing / the scheduler tick** (above) is what drives scan-out
-  per-frame in a running system; the scan-out *conversion* itself is now
-  implemented (below), but nothing calls it on a schedule yet.
+- **The scheduler advancing `VI_V_CURRENT`** and raising the VI interrupt at
+  `VI_V_INTR` (above) is what drives scan-out per-frame in a running system; the
+  scan-out *conversion* itself is now implemented (below), but nothing calls it
+  on a schedule yet.
 - **Per-register write masks are not applied** — the registers store the full
   32-bit value written. This is an open residual (`docs/accuracy-ledger.md`
   **R-4**): the masks the hardware enforces are pinned against n64-systemtest
@@ -312,6 +313,14 @@ The full scan-out (with scaling and the filters) must be **bit-exact with
 Angrylion** — ParaLLEl-RDP reimplemented it to that standard
 (`ref-docs/research-report.md` §4); R-5 tracks the gap. `Bus::scanout` has no
 per-frame driver yet — the scheduler tick that calls it lands with `V_CURRENT`.
+
+**Oracle effect:** not measured for this change, and it cannot change the count:
+`Bus::scanout` is a pure conversion method with **no runtime driver** — nothing in
+the run loop calls it during an n64-systemtest run — so it is unreachable by the
+suite. The suite-wide failing count therefore stands at 93 (from T-31-004 pt 1's
+measurement). The scan-out is graded instead by the harness golden frame
+(T-31-005) and, for the deferred scaling/filters, the ParaLLEl-RDP fuzz suite
+(R-5).
 
 ## Edge cases and gotchas
 

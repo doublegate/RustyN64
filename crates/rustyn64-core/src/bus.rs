@@ -1203,24 +1203,38 @@ mod tests {
         assert_eq!(&out[0..4], &[0xAA, 0xBB, 0xCC, 0xDD], "direct 32-bit copy");
         assert_eq!(&out[12..16], &[0x99, 0xAA, 0xBB, 0xCC]);
 
-        // 16-bit RGBA5551: 0xFFFF = white opaque, 0x0001 = black opaque.
-        bus.rdram[fb..fb + 2].copy_from_slice(&[0xFF, 0xFF]);
-        bus.rdram[fb + 2..fb + 4].copy_from_slice(&[0x00, 0x01]);
+        // 16-bit RGBA5551, non-uniform channels so component order and the
+        // field shifts are exercised: 0x0887 -> R=1,G=2,B=3,A=1 = [08,10,18,FF];
+        // 0x0886 is the same colour with alpha 0 = [08,10,18,00].
+        bus.rdram[fb..fb + 2].copy_from_slice(&0x0887u16.to_be_bytes());
+        bus.rdram[fb + 2..fb + 4].copy_from_slice(&0x0886u16.to_be_bytes());
         bus.vi.regs[vi::VI_CTRL as usize] = 2;
         bus.vi.regs[vi::VI_V_VIDEO as usize] = 2; // h = 1
         let mut out16 = alloc::vec![0u8; 2 * 4];
         assert_eq!(bus.scanout(&mut out16), (2, 1));
-        assert_eq!(&out16[0..4], &[0xFF, 0xFF, 0xFF, 0xFF], "0xFFFF -> white");
-        assert_eq!(&out16[4..8], &[0x00, 0x00, 0x00, 0xFF], "0x0001 -> black");
+        assert_eq!(
+            &out16[0..4],
+            &[0x08, 0x10, 0x18, 0xFF],
+            "distinct channels, A=1"
+        );
+        assert_eq!(&out16[4..8], &[0x08, 0x10, 0x18, 0x00], "same colour, A=0");
     }
 
-    /// **A blanked VI (`TYPE == 0`, the power-on default) scans out nothing.**
+    /// **A blanked VI scans out nothing.** With a non-zero sentinel in the
+    /// destination, both blank types (`TYPE == 0`, the power-on default, and
+    /// `TYPE == 1`) leave it untouched — a zero-filled buffer would pass even if
+    /// the blank path erroneously wrote zeroes.
     #[test]
     fn scanout_is_blank_when_the_vi_is_off() {
-        let bus = Bus::new();
-        let mut out = alloc::vec![0u8; 16];
-        assert_eq!(bus.scanout(&mut out), (0, 0), "VI off: no frame");
-        assert!(out.iter().all(|&b| b == 0), "nothing written");
+        for blank_type in [0u32, 1] {
+            let mut bus = Bus::new();
+            bus.vi.regs[vi::VI_CTRL as usize] = blank_type;
+            bus.vi.regs[vi::VI_WIDTH as usize] = 2;
+            bus.vi.regs[vi::VI_V_VIDEO as usize] = 4;
+            let mut out = alloc::vec![0xA5u8; 16];
+            assert_eq!(bus.scanout(&mut out), (0, 0), "TYPE {blank_type}: no frame");
+            assert!(out.iter().all(|&b| b == 0xA5), "sentinel untouched");
+        }
     }
 
     /// **An undersized destination is refused up front.** Rather than write a
