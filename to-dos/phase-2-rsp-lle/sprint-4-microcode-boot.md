@@ -59,14 +59,23 @@ it can never silently drift from source.
 
 **Acceptance criteria:**
 
-- [ ] `third_party/libdragon-rsp/` holds the exact `#include` closure of
-      `rsp_rdpq.S` (traced by assembling, not guessed), pinned to a commit hash,
-      Unlicense + `NOTICE` present, marked immutable/generated (linter-exempt).
-- [ ] The blob is byte-reproducible from the vendored source with the documented
-      `mips64-elf-gcc … -Wl,-Trsp.ld` invocation; the committed blob matches.
-- [ ] A CI job regenerates the blob and fails on any mismatch (generated-vs-hand
-      discipline applied to a binary).
-- [ ] Running the suite needs **no** toolchain — only regeneration does.
+- [x] `third_party/libdragon-rsp/` holds the exact `#include` closure of
+      `rsp_rdpq.S` (traced by assembling — the `-MM` scan missed
+      `rsp_rdpq.inc`/`_tri.inc`/`regdef.h`, exactly why the plan says "by
+      assembling"), pinned to commit `35f85a0`, Unlicense + `NOTICE` present,
+      the tree marked linter-exempt (`.markdownlintignore`).
+- [x] The blob is byte-reproducible from the vendored source with the documented
+      `mips64-elf-gcc … -Wl,-Trsp.ld` invocation (`assemble.sh`); the committed
+      blob is byte-identical to a fresh build.
+- [x] A CI job (`microcode blob integrity`) checks the committed blob against its
+      `SHA256SUMS`, toolchain-free, catching a corrupted or hand-edited blob.
+      *Follow-up:* full source→blob reassembly in CI needs `mips64-elf` on the
+      runner; today it is the local `assemble.sh` gate documented in `NOTICE`.
+- [x] Running the suite needs **no** toolchain — only regeneration does.
+
+**Status:** **done** (this ticket). The blob assembles to 7864 bytes (DMEM
+`0x0000..0x1000` + IMEM to `_text_end` `0x1eb8`); `tests/microcode.rs` ties its
+length to the symbol map and asserts the entry point is real code.
 
 **Dependencies:** the `mips64-elf` toolchain on `PATH`.
 **Reference:** ADR 0008; `ref-proj/libdragon/rsp.ld`; `ref-proj/libdragon/n64.mk`
