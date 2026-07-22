@@ -277,9 +277,9 @@ file is not mistaken for the whole VI):
   multiple of `MASTER_HZ` (N64brew *Video Interface* §Clocks; `docs/scheduler.md`,
   which already names it the sole fractional-accumulator domain). Until then
   `VI_V_CURRENT` reads back 0.
-- **Scan-out** (framebuffer → a presentable RGBA buffer, honouring
-  origin/width/scale/type) is the next VI ticket, which is what makes the FILL
-  pipeline observable.
+- **`VI_V_CURRENT` firing / the scheduler tick** (above) is what drives scan-out
+  per-frame in a running system; the scan-out *conversion* itself is now
+  implemented (below), but nothing calls it on a schedule yet.
 - **Per-register write masks are not applied** — the registers store the full
   32-bit value written. This is an open residual (`docs/accuracy-ledger.md`
   **R-4**): the masks the hardware enforces are pinned against n64-systemtest
@@ -293,21 +293,25 @@ because the VI category tests exercise the exact write-masks (R-4, deferred) and
 `VI_V_CURRENT` that advances (staged) — so this is necessary groundwork, not an
 oracle-visible change on its own.
 
-**Scan-out (target behaviour — not yet implemented).** The remainder of this
-section is the *spec* for the scan-out ticket above, not a description of current
-code. The VI will read the framebuffer at `VI_ORIGIN` in the format `VI_CONTROL`/
-`VI_STATUS` describe (bpp, AA mode, gamma, dither, divot enable), scale it, apply
-post-filters, and stream to the DAC (`ref-docs/research-report.md` §4):
+**The scan-out conversion is implemented** (`Bus::scanout`): it reads
+`VI_ORIGIN`/`VI_WIDTH`/`VI_CTRL` and the active region from `VI_V_VIDEO`
+(`(V_END − V_START)` half-lines → lines), and converts the framebuffer to RGBA8 —
+**16-bit RGBA5551** (each 5-bit channel widened to 8 by replicating the high bits,
+the 1-bit alpha to 0/255) and **32-bit RGBA8888** (a direct copy). `TYPE` 0/1 is
+blank. What is **not** applied yet is the geometry and the analog post-filters —
+an open residual (`docs/accuracy-ledger.md` **R-5**):
 
+- **`VI_X_SCALE`/`VI_Y_SCALE` resampling** — the scan is currently 1:1.
 - **Anti-aliasing** — blends silhouette edges using the per-pixel coverage bit.
 - **Divot filter** — removes 1-pixel AA artifacts on silhouette edges via the
   median of three neighbours.
 - **De-dither** — examines 8 neighbours to undo the RDP's ordered ("magic
   square") dither; applied only on full-coverage pixels.
-- Output is 320×240 or 640×480 (NTSC), up to 32-bit color.
 
-The scan-out must be **bit-exact with Angrylion** too — ParaLLEl-RDP reimplemented
-it to that standard (`ref-docs/research-report.md` §4).
+The full scan-out (with scaling and the filters) must be **bit-exact with
+Angrylion** — ParaLLEl-RDP reimplemented it to that standard
+(`ref-docs/research-report.md` §4); R-5 tracks the gap. `Bus::scanout` has no
+per-frame driver yet — the scheduler tick that calls it lands with `V_CURRENT`.
 
 ## Edge cases and gotchas
 
