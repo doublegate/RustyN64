@@ -9,6 +9,14 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — the frontend presents the VI scan-out (Phase 3)
+
+- **`EmuCore::produce_frame` now blits the core's framebuffer**, not a
+  placeholder gradient: it calls `Bus::scanout` each frame and presents the
+  RGBA8 result, falling back to a black frame at the default resolution while the
+  VI is off (cold boot / no ROM). The "first picture" display loop —
+  RDP FILL → framebuffer → VI scan-out → frontend blit — is now closed.
+
 ### Added — VI scan-position timing and interrupt (Phase 3, T-31-004 part 3)
 
 - **`VI_V_CURRENT` advances and the VI interrupt fires.** `Vi::tick` (called each

@@ -5,13 +5,14 @@
 //! the drained audio, and the per-frame controller latch. Run-ahead and rate
 //! control are orchestrated above this, never inside the core's synthesis.
 //!
-//! # v0.1 SKELETON
+//! # Video source
 //!
-//! The core has no VI scanout yet (the RDP is a roadmap stub), so the video
-//! framebuffer here is a frontend-side placeholder filled with a deterministic
-//! test pattern derived from the frame counter. When the LLE RDP + VI lands, the
-//! framebuffer source swaps to the core's scanout buffer; nothing else here
-//! changes shape.
+//! The presented frame comes from the core's VI scan-out: `produce_frame` calls
+//! [`rustyn64_core::Bus::scanout`], which converts the framebuffer at `VI_ORIGIN`
+//! to RGBA8 (the LLE RDP/VI path). While the VI is off or unconfigured (cold
+//! boot / no ROM), scan-out reports `(0, 0)` and a black frame at the default
+//! resolution is shown. Audio is still a frontend-side placeholder until the
+//! AI/RSP drain lands.
 
 use rustyn64_core::System;
 
@@ -170,22 +171,23 @@ impl EmuCore {
         &self.system
     }
 
-    /// SKELETON: synthesize a deterministic placeholder framebuffer.
+    /// Scan the core's framebuffer out into the presented frame.
     ///
-    /// A slowly-scrolling gradient keyed off the frame counter — proves the
-    /// blit path end-to-end. Replaced wholesale by the RDP/VI scanout copy when
-    /// LLE rasterization lands.
+    /// `Bus::scanout` reads the VI registers and converts the framebuffer at
+    /// `VI_ORIGIN` to RGBA8 (the LLE RDP/VI path). It returns `(0, 0)` while the
+    /// VI is off or unconfigured — the cold-boot / no-ROM state — in which case a
+    /// black frame at the default resolution is presented. A reported geometry
+    /// larger than the backing store also falls back rather than overrun it.
     fn produce_frame(&mut self) {
-        let (w, h) = (self.frame.w, self.frame.h);
-        let t = (self.frames & 0xFF) as u8;
-        for y in 0..h {
-            for x in 0..w {
-                let i = ((y * w + x) * 4) as usize;
-                self.frame.rgba[i] = (x as u8).wrapping_add(t);
-                self.frame.rgba[i + 1] = (y as u8).wrapping_add(t);
-                self.frame.rgba[i + 2] = t;
-                self.frame.rgba[i + 3] = 0xFF;
-            }
+        let (w, h) = self.system.bus.scanout(&mut self.frame.rgba);
+        if w == 0 || h == 0 || w > FB_MAX_W || h > FB_MAX_H {
+            self.frame.w = FB_DEFAULT_W;
+            self.frame.h = FB_DEFAULT_H;
+            let n = (FB_DEFAULT_W * FB_DEFAULT_H * 4) as usize;
+            self.frame.rgba[..n].fill(0);
+        } else {
+            self.frame.w = w;
+            self.frame.h = h;
         }
     }
 
@@ -225,5 +227,21 @@ mod tests {
         let emu = EmuCore::new(0);
         assert_eq!(emu.frame().w, FB_DEFAULT_W);
         assert_eq!(emu.frame().h, FB_DEFAULT_H);
+    }
+
+    /// With no ROM the VI is off, so `Bus::scanout` returns `(0, 0)` and
+    /// `produce_frame` presents a black frame at the default resolution — the
+    /// wiring falls back rather than blitting stale/garbage memory.
+    #[test]
+    fn produce_frame_falls_back_to_black_when_the_vi_is_off() {
+        let mut emu = EmuCore::new(0);
+        emu.run_frame();
+        assert_eq!(emu.frame().w, FB_DEFAULT_W);
+        assert_eq!(emu.frame().h, FB_DEFAULT_H);
+        let n = (FB_DEFAULT_W * FB_DEFAULT_H * 4) as usize;
+        assert!(
+            emu.frame().rgba[..n].iter().all(|&b| b == 0),
+            "black frame while the VI is off"
+        );
     }
 }
