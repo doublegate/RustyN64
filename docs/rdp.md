@@ -268,7 +268,9 @@ cross-verified against the N64brew wiki (*…/Commands*) and the ParaLLEl-RDP re
   half (offset 0x800), stepping two bytes per texel and masking to `0x7FF`. This is the
   wiki's "32-bit texels have a different TMEM layout".
 - TMEM is allocated on the first write (the lazy `Option<Box<..>>`) via a shared
-  `tmem_write` helper; loads past the 4 KiB end wrap to the start.
+  `tmem_write` helper; loads past the 4 KiB end wrap to the start. A degenerate or
+  inverted range (`SH < SL` or `TH < TL`) writes nothing, like every other
+  unsupported path, rather than iterating a wrapped bogus width.
 
 Scope (**open residual R-7**): `Load Tile` covers 8/16/32-bit texels and `Load Block`
 covers 8/16-bit. **4-bit** texels (nibble addressing, pairs with the CI4/I4 decoders in

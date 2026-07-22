@@ -633,10 +633,14 @@ impl Rdp {
         let tl = (hi & 0xFFF) >> 2;
         let sh = ((lo >> 12) & 0xFFF) >> 2;
         let th = (lo & 0xFFF) >> 2;
-        if th < tl {
+        // Reject a degenerate/inverted range the same way as every other unsupported
+        // path (write nothing) rather than letting the `& 0xFFF` wrap produce a large
+        // bogus width/height: `sh < sl` would otherwise iterate ~4095 texels of
+        // garbage. A well-formed load has SL <= SH and TL <= TH.
+        if th < tl || sh < sl {
             return;
         }
-        let width = (sh.wrapping_sub(sl).wrapping_add(1)) & 0xFFF;
+        let width = (sh - sl + 1) & 0xFFF;
         let height = th - tl + 1;
         if width == 0 {
             return;
@@ -645,9 +649,12 @@ impl Rdp {
         let Some(dst_bpt) = bytes_per_texel(tile.size) else {
             return; // 4-bit (or unmapped) not loaded here — R-7.
         };
-        // The texture image should match the tile size (documented hazard); use
-        // its own texel size for the source stride so a matched load is exact.
-        let src_bpt = bytes_per_texel(self.tex_image_size).unwrap_or(dst_bpt);
+        // The texture image should match the tile size (documented hazard). A 4-bit
+        // (or unmapped) source size has no byte stride, so bail rather than fall back
+        // to the tile stride and read out of bounds — R-7.
+        let Some(src_bpt) = bytes_per_texel(self.tex_image_size) else {
+            return;
+        };
         let split = tile.size == 3; // 32-bit RGBA uses the split TMEM layout.
         let tmem_base = u32::from(tile.tmem_addr) * 8;
         let stride = u32::from(tile.line) * 8;
@@ -658,16 +665,30 @@ impl Rdp {
                 let src_pixel = (tl + t) * tex_w + (sl + s);
                 let src = self.tex_image_addr.wrapping_add(src_pixel * src_bpt);
                 if split {
-                    // R,G -> low half; B,A -> high half (offset by 0x800).
-                    let bo = ((tmem_base + stride * t + s * 2) & 0x7FF) ^ swap;
-                    self.tmem_write(bo as usize, bus.rdram_read(src));
-                    self.tmem_write((bo + 1) as usize, bus.rdram_read(src.wrapping_add(1)));
-                    self.tmem_write((bo + 0x800) as usize, bus.rdram_read(src.wrapping_add(2)));
-                    self.tmem_write((bo + 0x801) as usize, bus.rdram_read(src.wrapping_add(3)));
+                    // R,G -> low half; B,A -> high half (offset by 0x800). The swap is
+                    // applied per final byte so it stays correct regardless of alignment.
+                    let bo = (tmem_base + stride * t + s * 2) & 0x7FF;
+                    self.tmem_write((bo ^ swap) as usize, bus.rdram_read(src));
+                    self.tmem_write(
+                        ((bo + 1) ^ swap) as usize,
+                        bus.rdram_read(src.wrapping_add(1)),
+                    );
+                    self.tmem_write(
+                        ((bo + 0x800) ^ swap) as usize,
+                        bus.rdram_read(src.wrapping_add(2)),
+                    );
+                    self.tmem_write(
+                        ((bo + 0x801) ^ swap) as usize,
+                        bus.rdram_read(src.wrapping_add(3)),
+                    );
                 } else {
-                    let dst = ((tmem_base + stride * t + s * dst_bpt) & 0xFFF) ^ swap;
+                    let base = tmem_base + stride * t + s * dst_bpt;
                     for i in 0..dst_bpt {
-                        self.tmem_write((dst + i) as usize, bus.rdram_read(src.wrapping_add(i)));
+                        // XOR the swap into each final byte address, not the base.
+                        self.tmem_write(
+                            ((base + i) ^ swap) as usize,
+                            bus.rdram_read(src.wrapping_add(i)),
+                        );
                     }
                 }
             }
@@ -696,7 +717,12 @@ impl Rdp {
         let tlo = hi & 0xFFF;
         let shi = (lo >> 12) & 0xFFF;
         let dxt = lo & 0xFFF;
-        let count = (shi.wrapping_sub(slo).wrapping_add(1)) & 0xFFF;
+        // An inverted range writes nothing (as in `load_tile`); without this an
+        // extreme `shi < slo` (slo >= 2049) wraps into a valid-looking count.
+        if shi < slo {
+            return;
+        }
+        let count = (shi - slo + 1) & 0xFFF;
         if count == 0 || count > LOAD_BLOCK_MAX_TEXELS {
             return; // over the limit: nothing written (§Load Block).
         }
@@ -707,7 +733,11 @@ impl Rdp {
         if tile.size == 3 {
             return; // 32-bit block load (split) deferred — R-7.
         }
-        let src_bpt = bytes_per_texel(self.tex_image_size).unwrap_or(bpt);
+        // A 4-bit (or unmapped) source size has no byte stride — bail rather than
+        // fall back to the tile stride and read out of bounds (R-7).
+        let Some(src_bpt) = bytes_per_texel(self.tex_image_size) else {
+            return;
+        };
         let tex_w = u32::from(self.tex_image_width);
         let src_base = self
             .tex_image_addr
@@ -720,9 +750,13 @@ impl Rdp {
             let word = byte_off / 8;
             let line = (word * dxt) >> 11;
             let swap = (line & 1) << 2;
-            let dst = (tmem_base + byte_off) ^ swap;
+            let base = tmem_base + byte_off;
             for i in 0..bpt {
-                self.tmem_write((dst + i) as usize, bus.rdram_read(src.wrapping_add(i)));
+                // XOR the swap into each final byte address, not the base.
+                self.tmem_write(
+                    ((base + i) ^ swap) as usize,
+                    bus.rdram_read(src.wrapping_add(i)),
+                );
             }
         }
     }
@@ -1644,5 +1678,63 @@ mod tests {
         for (i, &b) in data[8..].iter().enumerate() {
             assert_eq!(rdp.tmem_byte((8 + i) ^ 4), b, "word1 byte {i} swapped");
         }
+    }
+
+    /// **An unsupported (4-bit) texel size writes nothing.** Both loads bail on a
+    /// `size` of 0 (ledger R-7) — a silent no-op is invisible to a "does not
+    /// panic" test, so this asserts the *effect*: TMEM is never allocated. Source
+    /// bytes are present, so a load that ran would allocate and write.
+    #[test]
+    fn load_with_unsupported_size_writes_nothing() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x108].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        // 4-bit tile (size 0): Load Tile writes nothing.
+        let mut a = Rdp::new();
+        a.tiles[0].size = 0;
+        a.tex_image_size = 0;
+        a.tex_image_width = 4;
+        a.tex_image_addr = 0x100;
+        a.load_tile(0x0000_0000, 0x0000_C000, &bus);
+        assert!(a.tmem.is_none(), "4-bit Load Tile allocates/writes nothing");
+        // 4-bit tile: Load Block writes nothing.
+        let mut b = Rdp::new();
+        b.tiles[0].size = 0;
+        b.tex_image_size = 0;
+        b.tex_image_width = 4;
+        b.tex_image_addr = 0x100;
+        b.load_block(0x0000_0000, 0x0000_3000, &bus);
+        assert!(
+            b.tmem.is_none(),
+            "4-bit Load Block allocates/writes nothing"
+        );
+    }
+
+    /// **An inverted range writes nothing.** `SH < SL` (like `TH < TL`) is a
+    /// degenerate command; without the guard the `& 0xFFF` wrap would iterate a
+    /// large bogus width. Asserts the effect: TMEM stays unallocated.
+    #[test]
+    fn load_tile_rejects_inverted_range() {
+        let mut mem = alloc::vec![0u8; 0x200];
+        mem[0x100..0x110].copy_from_slice(&[0xFF; 16]);
+        let bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 2;
+        rdp.tiles[0].line = 1;
+        rdp.tex_image_size = 2;
+        rdp.tex_image_width = 8;
+        rdp.tex_image_addr = 0x100;
+        // SL=10 (field 10<<2=0x28) SH=2 (field 2<<2=8): sh < sl.
+        rdp.load_tile(0x0002_8000, 0x0000_8000, &bus);
+        assert!(
+            rdp.tmem.is_none(),
+            "sh < sl writes nothing rather than a wrapped-width rectangle"
+        );
     }
 }
