@@ -145,14 +145,16 @@ recognised no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
   (one GCLK per `tick`, one `tick` = one RCP/GCLK step) that holds the FIFO until
   it expires. These are documented values, so they live in the code with their
   citation, not in the accuracy ledger (which is for *undocumented* constants).
-- **`Sync Full`** (0x29) waits for all staged pipeline and memory operations to
-  complete, halts the pipeline counter, and **raises the DP interrupt**
-  (`bus.raise_dp_interrupt()` → `MI_INTR.dp`, asserting IP2 once masked in). With
-  no asynchronous pipeline work modelled yet, staged work is already complete, so
-  the interrupt is raised immediately; a preceding sync stall drains first via
-  the `stall` gate. Hazard (documented, respected rather than papered over):
-  `Sync Full` must be the last command before `DP_END`, and no command may be
-  submitted while it is in progress, or the RDP may hang.
+- **`Sync Full`** (0x29) **raises the DP interrupt** (`bus.raise_dp_interrupt()`
+  → `MI_INTR.dp`, asserting IP2 once masked in) — the only part of the command
+  implemented. On hardware it also waits for all staged pipeline/memory work and
+  halts the pipeline counter; **neither is modelled** (there is no asynchronous
+  pipeline work yet, and no pipeline counter), so the interrupt is raised as soon
+  as the command is dispatched, after any *preceding* sync stall drains via the
+  `stall` gate. The documented hazards — `Sync Full` must be the last command
+  before `DP_END`, and no command may be submitted while it is in progress, or
+  the RDP hangs — are **not yet enforced**: the FIFO drain does not reproduce the
+  hang, so software that violates them will not fault here.
 
 **Measured oracle effect:** the n64-systemtest failing-assertion count is
 **unchanged at 93 suite-wide** (917 started) — the same as `v0.3.0`. Sync

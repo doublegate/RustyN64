@@ -186,9 +186,10 @@ impl Rdp {
     /// Apply a `DPC_STATUS` write, whose bits are set/clear *commands* rather
     /// than the status layout read back. Only XBUS and FREEZE are modelled; the
     /// FLUSH/TMEM/PIPE/CMD/CLOCK-counter commands come with the FIFO drain.
-    // TODO(T-31-003): when `SET_FLUSH` (pipeline flush) lands here, it must also
+    // TODO(T-RDP-01): when `SET_FLUSH` (pipeline flush) lands here, it must also
     // clear `self.stall` — a flush discards in-flight pipeline work, so a
-    // leftover sync-stall countdown must not persist across it.
+    // leftover sync-stall countdown must not persist across it. Subsystem-scoped
+    // (pre-ticket) rather than T-31-003, which is the fill pipeline, not flush.
     const fn dpc_write_status(&mut self, value: u32) {
         const CLEAR_XBUS: u32 = 0x1;
         const SET_XBUS: u32 = 0x2;
@@ -272,12 +273,14 @@ impl Rdp {
     ///   a fixed, unconditional number of GCLK cycles (25/50/33) — the RDP waits
     ///   the full time whether or not the sync was needed, which is why the
     ///   stall is a constant and not a wait on an internal signal.
-    /// - `Sync Full` (0x29) waits for staged pipeline/memory work to finish,
-    ///   then raises the DP interrupt on the MI. With no asynchronous pipeline
-    ///   work modelled yet, "staged work" is already complete, so the interrupt
-    ///   is raised immediately; a *preceding* `Sync Pipe`-style stall would have
-    ///   drained first via the `stall` gate above (the gate is checked before a
-    ///   command is dispatched, so it delays this dispatch, not a later one).
+    /// - `Sync Full` (0x29) **raises the DP interrupt** (`raise_dp_interrupt`) —
+    ///   the only part of the command implemented. On hardware it first waits for
+    ///   all staged pipeline/memory work and halts the pipeline counter; neither
+    ///   is modelled (there is no asynchronous pipeline work yet, and no pipeline
+    ///   counter), so the interrupt is raised as soon as the command is
+    ///   dispatched. A *preceding* sync stall still delays this dispatch via the
+    ///   `stall` gate above (checked before a command is dispatched), so a queued
+    ///   stall drains before the interrupt fires.
     ///
     /// On stall resolution: per-command *execution* cost is not modelled yet —
     /// every command is consumed in a single placeholder `tick` — so the `stall`
