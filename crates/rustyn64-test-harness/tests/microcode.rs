@@ -45,6 +45,12 @@ fn sym(name: &str) -> usize {
     panic!("symbol `{name}` not found in microcode/symbols.txt");
 }
 
+/// Byte offset of `command_base` within the overlay header
+/// (`RSPQ_OH_CMDBASE`, `third_party/libdragon-rsp/include/rsp_queue.inc:113`).
+/// It has no linker symbol of its own — the header base `_ovl_data_start` does —
+/// so the field offset is named here rather than repeated as a bare `+ 14`.
+const OVL_HEADER_CMDBASE: usize = 14;
+
 #[test]
 fn the_blob_layout_matches_the_linker_symbol_map() {
     let data_start = sym("_data_start");
@@ -388,7 +394,7 @@ fn the_microcode_emits_an_rdp_command_through_the_dpc_seam() {
     for hi in RDPQ_OVL_ID..=0xF {
         sys.bus.rsp.dmem[idmap + usize::from(hi)] = RDPQ_OVL_ID;
     }
-    let cmd_base_off = sym("_ovl_data_start") + 14;
+    let cmd_base_off = sym("_ovl_data_start") + OVL_HEADER_CMDBASE;
     sys.bus.rsp.dmem[cmd_base_off..cmd_base_off + 2].copy_from_slice(&COMMAND_BASE.to_be_bytes());
 
     // --- Seed the RDP dynamic-buffer state RDPQ_Send reads (DMEM). ---
@@ -518,7 +524,7 @@ fn the_microcode_generates_a_set_fill_color_command() {
     for hi in RDPQ_OVL_ID..=0xF {
         sys.bus.rsp.dmem[idmap + usize::from(hi)] = RDPQ_OVL_ID;
     }
-    let cmd_base_off = sym("_ovl_data_start") + 14;
+    let cmd_base_off = sym("_ovl_data_start") + OVL_HEADER_CMDBASE;
     sys.bus.rsp.dmem[cmd_base_off..cmd_base_off + 2].copy_from_slice(&COMMAND_BASE.to_be_bytes());
     // 32-bit target so the fill colour is forwarded, not down-converted to 16-bit.
     sys.bus.rsp.dmem[sym("RDPQ_TARGET_BITDEPTH")] = TARGET_32BIT;
