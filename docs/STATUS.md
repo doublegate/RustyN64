@@ -10,7 +10,8 @@ runners rather than self-assessments:
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 250 fail suite-wide, all RSP/RCP and cart (Phase 2 and later) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 93 fail suite-wide, all cart/PIF/MI/RDP (Phase 3+) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
+| n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — 0 RSP-prefixed failures (was ~413 at Phase 1 close); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
 | CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares from the ELF entry | `cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored` |
 
 The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage pipeline (ADR
@@ -18,7 +19,13 @@ The VR4300 is complete: the canonical 187.5 MHz clock (ADR 0006), the five-stage
 interrupts, the primary I- and D-caches, the privilege-aware segment map, `Status.RE`, and COP1 on a
 soft-float core.
 
-The remaining accuracy work is the LLE RSP and RDP (Phases 2-3). See `to-dos/ROADMAP.md`.
+**Phase 2 (v0.3.0) — one of two exit criteria met.** The RSP-category
+`Failed: 0` criterion is **met** (above). The second — *a real graphics
+microcode boots and emits a plausible RDP command list* — is **not yet started**
+(needs the microcode-boot harness over libdragon's `rsp_rdpq.S` and RDP
+command-list ingestion). v0.3.0 is **not** cut until both hold. The remaining
+accuracy work is the LLE RDP rasterizer (Phase 3) and cart/PIF (Phase 5). See
+`to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
 workspace compiles and its **386** tests pass. The CPU genuinely executes
@@ -104,8 +111,9 @@ n64-systemtest ROM cannot report a count until COP0/COP1/exceptions land
 | VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
 | CPU golden-log 0-diff | **done** (T-HARNESS-01) — `tests/golden/n64-systemtest.log`, captured from ares at the ELF entry; gate is `--test golden_log` | Phase 1 |
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
-| RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts, DMA and the register file work | Phase 2 |
-| RSP vector unit (COP2, accumulator, `VRCP`/`VRSQ`) | stub — COP2 retires inertly | Phase 2, Sprint 2 |
+| RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts (incl. in a taken branch's delay slot), DMA and the register file work | Phase 2 |
+| RSP vector unit (COP2, accumulator, `VRCP`/`VRSQ`) | **implemented** — the full VU: multiplies, accumulating forms, add/sub/carry, compares, the clip compares (`VCL`/`VCH`/`VCR`), `VMRG`/`VRND`/`VMULQ`/`VMACQ`, the reciprocals, the whole vector load/store family, and the reserved "VZERO" opcodes | Phase 2 |
+| RDP DPC command registers | **implemented** — `DPC_START`/`END`/`CURRENT`/`STATUS` at `0x0410_0000`, the `START_VALID` double-latch + `FREEZE`; the rasterizer behind them is still a stub | Phase 2 / Phase 3 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
 registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the
@@ -184,7 +192,8 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | **yes** — `tests/golden/n64-systemtest.log`, captured from a patched ares | **MET: 0 diff** over 50,027 retired records |
-| n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. 250 assertions still fail suite-wide, down from 413 once the RSP scalar unit landed; the remainder are the RSP **vector** unit (Sprint 2), the cart/PIF (Phase 5), the RDP (Phase 3) and the MI's RDRAM repeat mode |
+| n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. 93 assertions still fail suite-wide, down from 413; **none are RSP-prefixed** (the RSP category is Phase 2's criterion and is now 0), leaving the cart/PIF (Phase 5), the RDP rasterizer (Phase 3) and the MI's RDRAM repeat mode |
+| n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | not started |
