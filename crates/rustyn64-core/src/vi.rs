@@ -67,8 +67,11 @@ pub const VI_REG_COUNT: usize = 16;
 /// The Video Interface register file (the `0x0440_0000` block).
 #[derive(Debug, Clone)]
 pub struct Vi {
-    /// The sixteen 32-bit registers, indexed by word offset.
-    pub regs: [u32; VI_REG_COUNT],
+    /// The sixteen 32-bit registers, indexed by word offset. `pub(crate)` so
+    /// every external access goes through [`Vi::read`]/[`Vi::write`] — which is
+    /// where the `VI_V_CURRENT` side effect (and future write masks) live; the
+    /// scan-out and tests, being in this crate, read them directly.
+    pub(crate) regs: [u32; VI_REG_COUNT],
 }
 
 impl Default for Vi {
@@ -89,8 +92,8 @@ impl Vi {
 
     /// Read a VI register by word offset within the block (mirrored to 16).
     #[must_use]
-    pub const fn read(&self, offset: u32) -> u32 {
-        self.regs[(offset & 0xF) as usize]
+    pub const fn read(&self, word_offset: u32) -> u32 {
+        self.regs[(word_offset & 0xF) as usize]
     }
 
     /// Write a VI register by word offset. Returns `true` iff this write should
@@ -100,8 +103,8 @@ impl Vi {
     /// `VI_V_CURRENT` is not otherwise latched here: its value reflects the scan
     /// position, which the scheduler will drive; a software write only clears
     /// the interrupt.
-    pub const fn write(&mut self, offset: u32, value: u32) -> bool {
-        let idx = (offset & 0xF) as usize;
+    pub const fn write(&mut self, word_offset: u32, value: u32) -> bool {
+        let idx = (word_offset & 0xF) as usize;
         if idx == VI_V_CURRENT as usize {
             return true;
         }
@@ -146,6 +149,10 @@ mod tests {
             vi.read(VI_V_CURRENT),
             0,
             "the written value is not latched into V_CURRENT"
+        );
+        assert_eq!(
+            vi.regs[VI_V_CURRENT as usize], 0,
+            "and nothing reached the backing storage either"
         );
     }
 }
