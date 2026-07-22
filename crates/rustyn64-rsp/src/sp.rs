@@ -155,6 +155,14 @@ impl SpRegs {
         self.status & STATUS_HALTED != 0
     }
 
+    /// Has a `BREAK` executed since `BROKE` was last cleared? Distinct from
+    /// [`Self::halted`]: a `SET_HALT` write halts without setting `BROKE`, so a
+    /// consumer that wants "the microcode reached a `break`" must check this.
+    #[must_use]
+    pub const fn broke(&self) -> bool {
+        self.status & STATUS_BROKE != 0
+    }
+
     /// Latch `BROKE`. Set by a `BREAK` and cleared only by a `CLR_BROKE` write:
     /// it remembers that a break happened, independently of run state.
     pub const fn set_broke(&mut self, broke: bool) {

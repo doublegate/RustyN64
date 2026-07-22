@@ -119,3 +119,89 @@ fn the_entry_point_is_real_code_and_the_data_section_is_populated() {
         "the .data section [{data_start:#x}, {data_end:#x}) must be populated (overlay table + header)"
     );
 }
+
+/// **T-24-002: the real microcode boots and reaches its idle `break`.**
+///
+/// The RSPQ kernel entry (`rsp_queue.inc:391`) is `li $gp, 0; mfc0 t0,
+/// SP_STATUS; andi t0, SIG_MORE; bnez wakeup; …; break`. With `SIG_MORE` clear
+/// at boot (which `rspq_start` sets, `rspq.c:548`), the branch is not taken and
+/// the kernel falls through to `break` — its documented idle state
+/// ("No new commands yet, go to sleep"). That path runs entirely in the SU
+/// before any DMA, so no command queue or Bus state is needed to witness it.
+///
+/// The baseline is *unreachable as a pass* (ADR 0008): the RSP starts **running**
+/// (`HALTED`/`BROKE` clear) with the PC at `_start` (0). The test then asserts
+/// the transition — it halts via `BROKE`, the PC has advanced off `_start`, and
+/// `$gp` was zeroed by the prologue. A microcode that never executed stays at
+/// PC 0, not halted, and fails.
+#[test]
+fn the_microcode_boots_to_its_idle_break() {
+    use rustyn64_core::System;
+
+    /// `$gp` — the register the prologue zeroes (`rsp_dmem_buf_ptr`).
+    const GP: usize = 28;
+    /// A generous bound: the SU-only path to the idle `break` is a handful of
+    /// instructions, so anything near this many steps means it never got there.
+    const MAX_BOOT_STEPS: usize = 1000;
+    /// A sentinel `$gp` distinct from the prologue's result, so the zero-check
+    /// below is only satisfied if `li $gp, 0` actually executed (not vacuously
+    /// true because the register file starts zeroed).
+    const GP_SENTINEL: u32 = 0xDEAD_BEEF;
+    /// The idle `break` sits at IMEM `0x14` (`rsp_queue.inc:403`); the PC parks
+    /// at the sequential address after it.
+    const IDLE_BREAK: u32 = 0x14;
+
+    assert!(
+        UCODE.len() >= IMEM_LMA,
+        "the blob must be at least one full DMEM ({IMEM_LMA:#x}) long"
+    );
+
+    let mut sys = System::new(0);
+    sys.bus.rsp.dmem[..IMEM_LMA].copy_from_slice(&UCODE[..IMEM_LMA]);
+    let imem_len = UCODE.len() - IMEM_LMA;
+    sys.bus.rsp.imem[..imem_len].copy_from_slice(&UCODE[IMEM_LMA..]);
+
+    // Unreachable-as-pass baseline: running (not halted, not broke), PC at
+    // `_start`, `$gp` holding a sentinel. The idle path is taken only when
+    // `SP_STATUS.SIG_MORE` is clear, which `System::new` leaves it — asserted
+    // here so the precondition is explicit rather than an unstated default.
+    sys.bus.rsp.su_regs[GP] = GP_SENTINEL;
+    sys.bus.rsp.sp.set_pc(0);
+    sys.bus.rsp.sp.set_halted(false);
+    assert!(!sys.bus.rsp.sp.halted(), "baseline: the RSP starts running");
+    assert!(!sys.bus.rsp.sp.broke(), "baseline: BROKE is clear");
+    assert_eq!(
+        sys.bus.rsp.sp.status() & 0x4000,
+        0,
+        "baseline requires SIG_MORE (0x4000) clear so the kernel takes the idle path"
+    );
+
+    let mut steps = 0;
+    while !sys.bus.rsp.sp.halted() && steps < MAX_BOOT_STEPS {
+        sys.bus.rsp.tick();
+        steps += 1;
+    }
+
+    // The idle `break` (IMEM 0x14) leaves the RSP HALTED and BROKE, with the PC
+    // parked at the sequential address after it (0x18). Asserting `broke()`
+    // rather than only `halted()` is what proves a real `break` — a `SET_HALT`
+    // write halts without it — and pinning the exact PC ties the witness to the
+    // documented idle target rather than "somewhere non-zero".
+    assert!(
+        sys.bus.rsp.sp.halted() && sys.bus.rsp.sp.broke(),
+        "the microcode must reach its idle `break` HALTED+BROKE — halted={}, broke={}, \
+         steps={steps}, PC={:#x}",
+        sys.bus.rsp.sp.halted(),
+        sys.bus.rsp.sp.broke(),
+        sys.bus.rsp.sp.pc()
+    );
+    assert_eq!(
+        sys.bus.rsp.sp.pc(),
+        IDLE_BREAK + 4,
+        "the PC must park just past the idle `break`"
+    );
+    assert_eq!(
+        sys.bus.rsp.su_regs[GP], 0,
+        "`li $gp, 0` must have run, overwriting the sentinel"
+    );
+}
