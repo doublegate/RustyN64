@@ -48,8 +48,14 @@ RDP consumes it; `DPC_STATUS` carries the run/freeze/flush bits. The RDP raises
 the DP interrupt when the command buffer drains (`SYNC_FULL`).
 
 **The `DPC_*` register file is implemented** (`Rdp::dpc_read`/`dpc_write`, wired
-to `0x0410_0000` by the Bus); the rasterizer behind it is still a stub. Provenance
-for every rule below is the N64brew wiki, *Reality Display Processor/Interface*
+to `0x0410_0000` by the Bus); the rasterizer behind it is still a stub. It has
+**two drivers**: the CPU at `0x0410_0000`, and the RSP microcode's COP0 `c8`–`c15`
+(the RSP reports each `MTC0` as `StepResult::dp_write` and `Bus::rsp_tick`
+forwards it here — the RSP crate cannot name `Rdp`; see `docs/rsp.md`). The `rdpq`
+microcode's `RSPQCmd_RdpAppendBuffer` reaching this file via `mtc0 DP_END` is what
+"emits a plausible RDP command list" (Phase 2 criterion 2, T-24-003), witnessed
+by `test-harness/tests/microcode.rs::the_microcode_emits_an_rdp_command…`.
+Provenance for every rule below is the N64brew wiki, *Reality Display Processor/Interface*
 (`n64brew_wiki/markdown/Reality Display Processor/Interface.md`), cross-checked
 against n64-systemtest's `RSP STATUS: start-valid` and `RDP START & END REG
 (masking)`. The submission is a **double-latch**:

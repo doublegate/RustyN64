@@ -62,7 +62,7 @@ pub const DP_STATUS_START_VALID: u32 = 0x400;
 
 /// The `DPC_START`/`DPC_END` register mask: a 24-bit, 8-byte-aligned RDRAM
 /// address (n64-systemtest's `RDP START & END REG (masking)`).
-const DPC_ADDR_MASK: u32 = 0x00FF_FFF8;
+pub const DPC_ADDR_MASK: u32 = 0x00FF_FFF8;
 
 /// RDP state (skeleton).
 ///

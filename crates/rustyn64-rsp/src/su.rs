@@ -50,6 +50,17 @@ pub struct StepResult {
     /// "clear the line" and "this step said nothing about the line" are the
     /// same value, and the acknowledgement is silently dropped.
     pub interrupt_change: Option<bool>,
+    /// An `MTC0` to a DP command register (`c8`–`c15`), reported as a
+    /// **DPC word offset** `0`–`7` (`0`=`DP_START`, `1`=`DP_END`,
+    /// `2`=`DP_CURRENT`, `3`=`DP_STATUS`, `4`–`7` the clock/busy counters) and
+    /// the value.
+    ///
+    /// Those COP0 registers *are* the RDP's command registers, but the RSP
+    /// crate may not depend on `rustyn64-rdp` (the crate graph forbids that
+    /// chip→chip edge — `docs/architecture.md`). So the write is reported here
+    /// and `rustyn64-core::Bus` forwards it to `Rdp::dpc_write`, exactly as
+    /// `dma` and `interrupt_change` are carried out by the owner.
+    pub dp_write: Option<(u8, u32)>,
 }
 
 /// Decoded fields, named as the MIPS encoding names them.
@@ -400,18 +411,36 @@ impl Rsp {
 
     /// `MFC0` — read an SP register, or a DP register.
     ///
-    /// `c0`–`c7` are the SP interface registers, the *same* physical registers
-    /// the CPU sees at `0x0404_0000`. `c8`–`c15` are the RDP's command
-    /// registers, which do not exist yet and read zero (Phase 3).
+    /// The `MFC0`/`MTC0` `rd` field is 5 bits, but the RSP has only **sixteen**
+    /// COP0 registers: `c0`–`c7` are the SP interface registers (the *same*
+    /// physical registers the CPU sees at `0x0404_0000`), and `c8`–`c15` are the
+    /// RDP's command registers, held in a [`shadow`](Rsp::dp) so a read sees a
+    /// prior write in the same run (the authoritative copy is in `rustyn64-rdp`).
+    /// `c16`–`c31` do not exist — they must **not** alias into `c8`–`c15` (that
+    /// would let a stray `MFC0 c16` read `DP_START`), so they read zero.
     fn cop0_read(&mut self, index: u32) -> u32 {
-        if index < 8 { self.sp.read(index) } else { 0 }
+        match index {
+            0..=7 => self.sp.read(index),
+            8..=15 => self.dp[(index - 8) as usize],
+            _ => 0,
+        }
     }
 
-    /// `MTC0` — write an SP register, possibly starting a DMA.
+    /// `MTC0` — write an SP register (possibly starting a DMA), or a DP command
+    /// register. DP writes update the [`shadow`](Rsp::dp) and are reported via
+    /// [`StepResult::dp_write`] for the Bus to forward to `Rdp::dpc_write`.
+    /// `c16`–`c31` do not exist and are ignored (see [`Self::cop0_read`]).
     fn cop0_write(&mut self, index: u32, value: u32) -> StepResult {
         let mut out = StepResult::default();
-        if index >= 8 {
-            return out;
+        match index {
+            8..=15 => {
+                let off = (index - 8) as u8;
+                self.dp[off as usize] = value;
+                out.dp_write = Some((off, value));
+                return out;
+            }
+            16..=31 => return out,
+            _ => {}
         }
         if index == sp::reg::STATUS {
             // Both directions propagate. The RSP acknowledging its own
@@ -675,7 +704,36 @@ mod tests {
         let v = rsp.cop0_read(sp::reg::STATUS);
         assert_ne!(v & sp::STATUS_SIG0, 0, "MFC0 sees the signal bit");
 
-        // c8 and above are the RDP's, which do not exist yet.
+        // c8–c15 are the RDP's; the shadow starts zeroed.
         assert_eq!(rsp.cop0_read(9), 0);
+    }
+
+    /// `MTC0`/`MFC0` to `c8`–`c15` reach the DP shadow and report the write; the
+    /// non-existent `c16`–`c31` must **not** alias back into `c8`–`c15`.
+    #[test]
+    fn cop0_dp_registers_do_not_alias_beyond_c15() {
+        let mut rsp = Rsp::new();
+
+        // c9 = DP_END -> shadow[1], reported as offset 1.
+        let out = rsp.cop0_write(9, 0xABCD_0000);
+        assert_eq!(out.dp_write, Some((1, 0xABCD_0000)));
+        assert_eq!(
+            rsp.cop0_read(9),
+            0xABCD_0000,
+            "MFC0 reads the shadowed write"
+        );
+
+        // c16/c24 do not exist: writing them must neither report a DP write nor
+        // disturb any shadow register (the `(index-8) & 7` bug wrapped c16->c8).
+        let before = rsp.dp;
+        for idx in [16, 24, 31] {
+            let out = rsp.cop0_write(idx, 0xDEAD_BEEF);
+            assert_eq!(out.dp_write, None, "c{idx} is not a DP register");
+            assert_eq!(rsp.cop0_read(idx), 0, "c{idx} reads zero");
+        }
+        assert_eq!(
+            rsp.dp, before,
+            "c16–c31 writes must not touch the DP shadow"
+        );
     }
 }

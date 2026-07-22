@@ -84,12 +84,42 @@ wakeup:  ...                        # fetch + DMA the queue, then RSPQ_Loop
   `SP_PC = _start`, `SIG_MORE` clear, and the RSP un-halted. **No `rsp_queue_t`
   patching, command queue, or Bus/RDRAM state is required.** The `break` lands at
   IMEM `0x14`.
-- **Full bring-up (T-24-003, next).** To actually *process* a command list, the
-  CPU writes it to RDRAM, patches the `rsp_queue_t` DRAM pointers (above), sets
-  `SIG_MORE`, and un-halts. The kernel then takes `wakeup`, DMAs the queue into
-  the DMEM ring, and dispatches through `rspq_ovl_table` into `RSPQ_Loop`
-  (`:442`). Only this scope needs the patched boot state and a `System`-level run
-  with RDRAM.
+- **Full bring-up (T-24-003, implemented).** To actually *process* a command
+  list, the CPU writes it to RDRAM, patches the `rsp_queue_t` DRAM pointers
+  (above), sets `SIG_MORE`, and un-halts. The kernel then takes `wakeup`, DMAs
+  the queue into the DMEM ring, and dispatches through `rspq_ovl_table` into
+  `RSPQ_Loop` (`:442`). This scope needs the patched boot state and a
+  `System`-level run with RDRAM. Two tests cover it:
+  `the_kernel_dmas_and_dispatches_a_command_queue` (an *internal* command —
+  `WaitNewInput`, overlay 0) and `the_microcode_emits_an_rdp_command_through_the_dpc_seam`
+  (an *`rdpq` overlay* command that emits an RDP command; see below).
+
+## Dispatching an `rdpq` overlay command without a DMA load (T-24-003)
+
+Overlay 0 (internal commands, high nibble 0) dispatches with no extra state. An
+`rdpq` command (`0xC0`–`0xFF`) normally makes `RSPQ_Loop` (`rsp_queue.inc:472`)
+DMA the overlay's code+data in from RDRAM (`rspq_load_overlay`, `:536`). But our
+blob is the **combined** kernel+`rdpq` image (ADR 0008), so the `rdpq` handler
+code is *already resident* in IMEM — we only need the kernel to believe `rdpq` is
+the currently-loaded overlay, so the `bne ovl_index, current_ovl` at `:489` skips
+the load and jumps to the resident handler. That is exactly what libdragon's
+`rspq_overlay_register_internal` (`src/rspq/rspq.c:800`) sets up; three DMEM
+writes reproduce it (no `System`-level `rspq_init` needed):
+
+| DMEM symbol | Value | Source |
+| --- | --- | --- |
+| `RSPQ_CURRENT_OVL` | `0xC` | reloaded each dispatch (`:472`); `RDPQ_OVL_ID = 0xC<<28` (`rdpq.h:159`) |
+| `RSPQ_OVERLAY_IDMAP[0xC..=0xF]` | `0xC` | `rspq.c:851`; read at `:476` by high nibble |
+| `_ovl_data_start + 14` (`command_base`) | `id<<5` = `0x180` | `rspq.c:858`; `sub cmd_index, command_base` at `:493` ⇒ command 0 = `RDPQCmd_Passthrough8` |
+
+`RDPQCmd_Passthrough8` (`rsp_rdpq.S:135`) then forwards its two command words to
+the RDP: `RDPQ_Write8` stages them, `RDPQ_Send` (`rsp_rdpq.inc:60`) DMAs them to
+`RDPQ_CURRENT` in RDRAM, and `RSPQCmd_RdpAppendBuffer` (`rsp_queue.inc:819`) runs
+`mtc0 a0, COP0_DP_END`. That `MTC0` is the RSP↔RDP seam — it reaches the DPC via
+`StepResult::dp_write` → `Bus::rsp_tick` → `Rdp::dpc_write` (`docs/rsp.md`,
+`docs/rdp.md`). The test seeds the dynamic-buffer state `RDPQ_Send` reads
+(`RDPQ_CURRENT`, `RDPQ_SENTINEL`, `RDPQ_DYNAMIC_BUFFERS`) so the buffer has room,
+and witnesses both the command bytes in RDRAM and `DP_END` advanced past them.
 
 ## Witnessing the minimal boot (the T-24-002 test)
 

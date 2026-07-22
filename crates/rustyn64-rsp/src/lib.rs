@@ -68,6 +68,13 @@ pub struct Rsp {
     /// The SP interface registers, shared by the CPU's memory-mapped window and
     /// the RSP's own COP0 -- one set of physical registers, so one field.
     pub sp: sp::SpRegs,
+    /// Shadow of the eight DP command registers (COP0 `c8`–`c15` =
+    /// `DP_START`/`END`/`CURRENT`/`STATUS`/…), so an `MFC0` reads back what a
+    /// prior `MTC0` in the same run wrote. The authoritative copy lives in
+    /// `rustyn64-rdp`; the Bus forwards each write there (`StepResult::dp_write`)
+    /// and this shadow is the RSP-local view — which is why reads of DP state the
+    /// RDP mutated on its own are not yet reflected here (Phase 3).
+    pub dp: [u32; 8],
     /// The VU's three control registers (`VCO`, `VCC`, `VCE`).
     pub vu_ctrl: vu::Control,
     /// The reciprocal unit's staging latches (`DIVIN`/`DIVOUT`/`DIVDP`).
@@ -101,6 +108,7 @@ impl Rsp {
             dmem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
             imem: alloc::boxed::Box::new([0; SP_MEM_SIZE]),
             sp: sp::SpRegs::new(),
+            dp: [0; 8],
             vu_ctrl: vu::Control {
                 vco: 0,
                 vcc: 0,

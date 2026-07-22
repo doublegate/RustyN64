@@ -169,7 +169,16 @@ fails only the taken one — which is why both directions are pinned in
 `su::tests`.
 
 `MFC0`/`MTC0` reach `c0`–`c7`, which are the same physical SP registers the CPU
-sees at `0x0404_0000`. `c8`–`c15` are the RDP's and read zero until Phase 3.
+sees at `0x0404_0000`. `c8`–`c15` **are** the RDP's command registers
+(`DP_START`/`END`/`CURRENT`/`STATUS`/…). Because the RSP crate may not depend on
+`rustyn64-rdp` (the crate graph permits only `rustyn64-rdp → rustyn64-cart`,
+`docs/architecture.md`), an `MTC0` to `c8`–`c15` is *reported* — it updates the
+RSP-local shadow (`Rsp::dp`, so an `MFC0` reads back a same-run write) and is
+surfaced as [`StepResult::dp_write`], which `Bus::rsp_tick` forwards to
+`Rdp::dpc_write` — the identical seam the CPU drives at `0x0410_0000`. This is
+how the `rdpq` microcode's `mtc0 DP_END` submits an RDP command list (T-24-003).
+An `MFC0` of DP state the RDP mutated on its own is not yet reflected in the
+shadow (Phase 3, when the RSP polls `DP_STATUS` on the buffer-switch path).
 
 ## Behavior
 
