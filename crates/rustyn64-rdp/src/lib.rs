@@ -102,9 +102,10 @@ const OP_SET_TILE: u8 = 0x35;
 /// TMEM byte offset of the high (palette / split-high) half.
 const TMEM_HIGH: u32 = 0x800;
 
-/// Sign-extend the low 16 bits of `v` to `i32` (for the `s5.10` `DsDx`/`DtDy`).
+/// Sign-extend the low 16 bits of `v` to `i32` (for the `s10.5` `S`/`T` and the
+/// `s5.10` `DsDx`/`DtDy`). `v as i16` already keeps only the low 16 bits.
 const fn sext16(v: u32) -> i32 {
-    (v & 0xFFFF) as i16 as i32
+    v as i16 as i32
 }
 
 /// Wrap one raw texture coordinate (`s10.5` fixed point) into a tile-relative
@@ -114,19 +115,20 @@ const fn sext16(v: u32) -> i32 {
 /// left by `16−code`), subtract `SL<<3`, take the integer part (`>>5`), then
 /// mirror-on-alternate-spans and mask to `mask` bits (`mask == 0` = no wrap).
 fn wrap_coord(coord: i32, shift: u8, mask: u8, mirror: bool, lo: u16) -> i32 {
+    let shift = shift.min(15); // the hardware shift field is 4 bits (0..15)
     let c = coord.clamp(-0x8000, 0x7FFF);
     let shifted = if shift <= 10 {
         c >> shift
     } else {
-        // Left shift by (16 − shift), 16-bit-truncated (sign-preserving).
-        c.wrapping_shl(32 - u32::from(shift)) >> 16
+        // Left shift by (16 − shift), truncated to 16 bits (sign-preserving).
+        i32::from((c as i16).wrapping_shl(u32::from(16 - shift)))
     };
     let mut s = (shifted - (i32::from(lo) << 3)) >> 5;
     let mask = mask.min(10); // hardware caps the mask width at 10
     if mask != 0 {
         let m = 1i32 << mask;
-        if mirror {
-            s ^= (s & m).wrapping_sub(1).max(0);
+        if mirror && s & m != 0 {
+            s ^= m - 1; // reflect on odd mask-sized spans
         }
         s &= m - 1;
     }
@@ -671,8 +673,10 @@ impl Rdp {
         // Word 1: texture start (s10.5) + increments (s5.10).
         let w1_hi = bus.rdram_read_u32(cmd_base.wrapping_add(8));
         let w1_lo = bus.rdram_read_u32(cmd_base.wrapping_add(12));
-        let s_start = ((w1_hi >> 16) & 0xFFFF) as i32;
-        let t_start = (w1_hi & 0xFFFF) as i32;
+        // S/T are signed s10.5 (a scrolled/wrapped tile can start negative), so
+        // sign-extend like DsDx/DtDy — a plain mask would read bit 15 as +32768.
+        let s_start = sext16(w1_hi >> 16);
+        let t_start = sext16(w1_hi);
         let dsdx = sext16(w1_lo >> 16);
         let dtdy = sext16(w1_lo);
 
@@ -2345,6 +2349,14 @@ mod tests {
         assert_eq!(wrap_coord(5 << 5, 0, 2, true, 0), 2, "mirrored");
         // Right shift (code 1) halves the coordinate before the texel divide.
         assert_eq!(wrap_coord(4 << 5, 1, 0, false, 0), 2, "shift code 1 = >>1");
+        // Left shift (code 12 = left by 4): coord 0x10 -> 0x100 -> texel 8.
+        assert_eq!(wrap_coord(0x10, 12, 0, false, 0), 8, "shift code 12 = <<4");
+        // A negative coordinate stays negative through the left shift.
+        assert_eq!(
+            wrap_coord(-0x10, 12, 0, false, 0),
+            -8,
+            "left shift preserves sign"
+        );
     }
 
     /// **A copy-mode Texture Rectangle round-trips a texture.** `Load Tile` loads a
