@@ -826,8 +826,14 @@ pub const fn quantize_x(x: i32) -> i32 {
 /// X-samples sit at sub-pixel fractions that alternate by Y-subpixel — `{0, 4}`
 /// for Y-subpixels 0/2 and `{2, 6}` for 1/3 — the RDP's diamond sample pattern
 /// (`coverage.h:31-44` `u16x4(0, 4, 2, 6)`). A sample is covered when it lies in
-/// the half-open span `[xleft, xright)` of its Y-subpixel. Bit `Ysub + 4·Xsample`
-/// is set when covered; the popcount ([`u8::count_ones`]) is the coverage count (0–8).
+/// the half-open span `[xleft, xright)` of its Y-subpixel.
+///
+/// **Bit layout.** The oracle's `clip_x0 * (1,2,4,8) + clip_x1 * (16,32,64,128)`
+/// packs the two X-samples of each Y-subpixel into adjacent bits — bit
+/// `2·Ysub + Xsample` — so the mask reads (LSB→MSB) `Y0X0 Y0X1 Y1X0 Y1X1 Y2X0
+/// Y2X1 Y3X0 Y3X1`, *not* all-X0 then all-X1. Bit 0 is therefore the top-left
+/// sample (Y-subpixel 0, X-sample 0), which is the one the AA-off path tests.
+/// The popcount ([`u8::count_ones`]) is the coverage count (0–8) regardless of order.
 ///
 /// See [`quantize_x`] for the domain of `xleft`/`xright` and why this has no
 /// runtime caller yet.
@@ -4253,6 +4259,7 @@ mod tests {
             | (1 << 6)     // image_read_en
             | (1 << 5)     // z_update_en
             | (1 << 4)     // z_compare_en
+            | (1 << 3)     // aa_enable
             | 1; // alpha_compare_en
         rdp.set_other_modes(hi, lo);
         let om = rdp.other_modes;
@@ -4281,6 +4288,7 @@ mod tests {
         assert!(om.image_read_en);
         assert!(om.z_update_en);
         assert!(om.z_compare_en);
+        assert!(om.aa_enable);
         assert!(om.alpha_compare_en);
     }
 
@@ -5235,9 +5243,32 @@ mod tests {
         assert_eq!(compute_coverage([0; 4], [800; 4], 5).count_ones(), 8);
         // Fully outside: right edge behind the pixel.
         assert_eq!(compute_coverage([800; 4], [0; 4], 5), 0x00);
-        // Left edge cutting the pixel at sub-pixel 43: samples {0,2} out, {4,6} in.
+        // Left edge at sub-pixel 43: each Y-subpixel's low X-sample (offset 0 or 2)
+        // is outside and its high sample (4 or 6) inside, so every Y-subpixel keeps
+        // its odd bit only -> 0xAA.
         let mask = compute_coverage([43; 4], [800; 4], 5);
         assert_eq!(mask, 0xAA, "high sample of each Y-subpixel covered");
         assert_eq!(mask.count_ones(), 4);
+    }
+
+    /// **The mask bit layout is `2·Ysub + Xsample`, and the X-sample offsets
+    /// alternate by Y-subpixel.** Covering only Y-subpixel 0 sets bits `{0, 1}`
+    /// (`0x03`), proving the two X-samples of a Y-subpixel occupy adjacent bits.
+    /// A uniform left edge at sub-pixel `41` then discriminates the diamond
+    /// offsets: pixel 5's samples are at `{40, 44}` for Y-subpixels 0/2 and
+    /// `{42, 46}` for 1/3, so 0/2 lose their offset-0 sample (`40 < 41`) while 1/3
+    /// keep both — mask `0xEE`. (Hand-computed against `coverage.h:31-44`.)
+    #[test]
+    fn compute_coverage_bit_layout_and_diamond_offsets() {
+        // Only Y-subpixel 0's span is valid; the others are poisoned (inverted).
+        let only_y0 = compute_coverage([0, 800, 800, 800], [800, 0, 0, 0], 5);
+        assert_eq!(only_y0, 0x03, "Y-subpixel 0 occupies bits 0 and 1");
+        // Uniform left edge at 41: 0/2 (offsets 0,4) drop offset 0; 1/3 (offsets 2,6) keep both.
+        let mask = compute_coverage([41; 4], [800; 4], 5);
+        assert_eq!(
+            mask, 0xEE,
+            "Y0/Y2 lose their offset-0 sample; Y1/Y3 keep both"
+        );
+        assert_eq!(mask.count_ones(), 6);
     }
 }

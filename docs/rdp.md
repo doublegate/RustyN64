@@ -523,7 +523,9 @@ and `span_setup.comp`, the pure primitives ahead of wiring them into the rasteri
 - **`compute_coverage`.** For a pixel column, tests the two X-samples of each of the 4 Y-subpixels
   against that Y-subpixel's `[xleft, xright)` span. The X-sample offsets alternate by Y-subpixel —
   `{0, 4}` for Y-subpixels 0/2, `{2, 6}` for 1/3 — the RDP's diamond pattern. Returns the 8-bit mask
-  (bit `Ysub + 4·Xsample`); its popcount is the coverage count (0–8).
+  packed as bit `2·Ysub + Xsample` (the oracle's `clip_x0*(1,2,4,8) + clip_x1*(16,32,64,128)` — the
+  two X-samples of each Y-subpixel land in adjacent bits, so the order is `Y0X0 Y0X1 Y1X0 Y1X1 …`,
+  and bit 0 is the top-left sample). Its popcount is the coverage count (0–8).
 - **`aa_enable`.** `Set Other Modes` bit 3 is now decoded. With AA off the RDP draws a pixel only
   when the first sub-sample (bit 0, the top-left) is covered.
 
