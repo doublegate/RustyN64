@@ -70,7 +70,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
@@ -99,7 +99,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
       # rustdoc builds the whole workspace including the frontend, so the
       # alsa/udev headers its build scripts need must be present.
@@ -120,7 +120,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: thumbv7em-none-eabihf
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features
