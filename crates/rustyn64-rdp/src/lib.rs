@@ -201,6 +201,43 @@ const fn combine_dz(dz: i32) -> i32 {
     if m >= 0 { 1 << m } else { 0 }
 }
 
+/// Interpolate the per-pixel depth (18-bit UNORM, `0..=0x3_FFFF`) for pixel
+/// `(x, y)` from the triangle's z-coefficients — a faithful port of ParaLLEl-RDP's
+/// `interpolate_z` (`interpolation.h`) for the full-coverage, `do_offset == false`
+/// case (sub-pixel coverage snapping is the deferred R-9 residual).
+///
+/// `z_base`/`dzdx`/`dzde` are the `s15.16` z-coefficient and its per-x / per-major-
+/// edge deltas; `major_x` is the `s15.16` major-edge x at this scanline (its
+/// integer part is the interpolation origin, its `xfrac` aligns to the edge);
+/// `y_base` is the top scanline. 32-bit wrapping matches the reference's `int`
+/// arithmetic; the final `clamp_z` bounds the result to the depth range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "major_x fields and the clamped result are within range for the casts"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "dzdx / dzde are the N64 RDP's own z-coefficient names"
+)]
+fn interpolate_z(
+    z_base: i32,
+    dzdx: i32,
+    dzde: i32,
+    major_x: i64,
+    y: i32,
+    y_base: i32,
+    x: i32,
+) -> i32 {
+    let base_x = (major_x >> 16) as i32;
+    let xfrac = ((major_x >> 8) & 0xff) as i32;
+    let mut z = z_base.wrapping_add(dzde.wrapping_mul(y.wrapping_sub(y_base)));
+    z = ((z & !0x1ff).wrapping_sub(xfrac.wrapping_mul((dzdx >> 8) & !1))) & !0x3ff;
+    z = z.wrapping_add(dzdx.wrapping_mul(x.wrapping_sub(base_x)));
+    // Snap (full coverage: the first-subpixel xoff/yoff terms are 0).
+    let snapped = ((z >> 10) << 2) >> 5;
+    snapped.clamp(0, 0x3_FFFF)
+}
+
 /// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
 /// the 0x80 bias, sign-extend to 9 bits, add the bias back (ParaLLEl-RDP
 /// `special_expand`, `combiner.h`). The multiplier C uses a plain [`sext9`].
@@ -536,6 +573,22 @@ pub struct DepthResult {
     pub blend_shift: [u8; 2],
     /// The (possibly interpenetrating-reduced) coverage count carried forward.
     pub coverage_count: i32,
+}
+
+/// The decoded per-triangle depth setup for the per-pixel path: the `s15.16`
+/// z-coefficient and its per-x / per-major-edge deltas, plus the primitive `dz`
+/// (linear) and `dz_compressed` (4-bit stored form) for the test and writeback.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(
+    clippy::similar_names,
+    reason = "dzdx / dzde / dz are the N64 RDP's own z-coefficient names"
+)]
+struct ZTriSetup {
+    z_base: i32,
+    dzdx: i32,
+    dzde: i32,
+    dz: i32,
+    dz_compressed: i32,
 }
 
 /// One cycle of the colour combiner.
@@ -1253,6 +1306,18 @@ impl Rdp {
         let yh_base = yh & !3;
         let width = i32::from(self.color_image_width);
         let stride = (width as u32).wrapping_mul(bpp);
+
+        // Per-pixel depth path (T-33-004 PR-B part 2a): active when the command
+        // carries z-coefficients (bit 56, the opcode's low bit) and `Set Other
+        // Modes` enables the depth test or update. The z-suffix follows the 4-word
+        // base plus the shade (bit 58) and texture (bit 57) blocks, in that order.
+        let z_setup = if self.other_modes.z_compare_en || self.other_modes.z_update_en {
+            Self::decode_triangle_z(hi, cmd_base, bus)
+        } else {
+            None
+        };
+        let y_base = yh >> 2;
+
         for line in start_line..=end_line {
             let mut span_l = i32::MAX;
             let mut span_r = i32::MIN;
@@ -1292,8 +1357,111 @@ impl Rdp {
             let row_addr = self
                 .color_image
                 .wrapping_add((line as u32).wrapping_mul(stride));
-            for x in x0..=x1 {
-                self.fill_pixel(row_addr, x as u32, bpp, bus);
+            let Some(z) = z_setup else {
+                for x in x0..=x1 {
+                    self.fill_pixel(row_addr, x as u32, bpp, bus);
+                }
+                continue;
+            };
+            // The major-edge x at this scanline (s15.16), the interpolation origin.
+            let major_x = i64::from(xh) + i64::from(line * 4 - yh_base) * i64::from(dxhdy);
+            self.depth_span(row_addr, x0, x1, line, bpp, major_x, y_base, &z, bus);
+        }
+    }
+
+    /// Decode the z-coefficient suffix of a `Fill Triangle` — present when bit 56
+    /// (the opcode's low bit) is set. The suffix follows the 4-word base plus the
+    /// shade (bit 58, +8 words) and texture (bit 57, +8 words) blocks, in that
+    /// order; each field is `s15.16`. Returns `None` when there is no z-suffix.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "the s15.16 z-coefficients are the raw command bits reinterpreted as signed"
+    )]
+    #[allow(
+        clippy::similar_names,
+        reason = "dzdx / dzde are the N64 RDP's own z-coefficient names"
+    )]
+    fn decode_triangle_z<B: VideoBus>(hi: u32, cmd_base: u32, bus: &B) -> Option<ZTriSetup> {
+        if (hi >> 24) & 1 == 0 {
+            return None;
+        }
+        let has_shade = (hi >> 26) & 1 != 0;
+        let has_tex = (hi >> 25) & 1 != 0;
+        let zoff = (4 + 8 * u32::from(has_shade) + 8 * u32::from(has_tex)) * 8;
+        let za = cmd_base.wrapping_add(zoff);
+        let z_base = bus.rdram_read_u32(za) as i32;
+        let dzdx = bus.rdram_read_u32(za.wrapping_add(4)) as i32;
+        let dzde = bus.rdram_read_u32(za.wrapping_add(8)) as i32;
+        // `dzdy` (za + 12) is the 4th z-suffix word; it feeds only the sub-pixel
+        // snap (part 2c), so the per-scanline path here uses `dzde` and leaves it.
+        //
+        // Primitive dz for the stored value and the test tolerance: the integer
+        // depth gradient (first cut — the exact setup derivation is R-9/R-12).
+        // `saturating_abs` avoids the `i32::MIN.abs()` overflow panic on the
+        // unvalidated RDRAM coefficients.
+        let dz = dzdx.saturating_abs().max(dzde.saturating_abs()) >> 16;
+        Some(ZTriSetup {
+            z_base,
+            dzdx,
+            dzde,
+            dz,
+            dz_compressed: dz_compress(dz).min(0xf),
+        })
+    }
+
+    /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
+    /// for each pixel, interpolate the depth, test it against the Z buffer, and —
+    /// only if it passes — write the colour and (when `z_update`) the depth. Coverage
+    /// is full (`8`) here; sub-pixel edge coverage is the deferred R-9 residual.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "an internal rasteriser span helper; a struct would only relocate the parameters"
+    )]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "x and line are >= 0 within a clipped span"
+    )]
+    #[allow(
+        clippy::similar_names,
+        reason = "mem_z / mem_dz mirror the memory depth/dz pair they hold"
+    )]
+    fn depth_span<B: VideoBus>(
+        &self,
+        row_addr: u32,
+        x0: i32,
+        x1: i32,
+        line: i32,
+        bpp: u32,
+        major_x: i64,
+        y_base: i32,
+        z: &ZTriSetup,
+        bus: &mut B,
+    ) {
+        let yu = line as u32;
+        for x in x0..=x1 {
+            let z_px = interpolate_z(z.z_base, z.dzdx, z.dzde, major_x, line, y_base, x);
+            let xu = x as u32;
+            let (mem_z, mem_dz) = self.zbuffer_read(xu, yu, bus);
+            let dinp = DepthInputs {
+                current_depth: mem_z,
+                current_dz: mem_dz,
+                current_coverage: 0,
+                z_compare: self.other_modes.z_compare_en,
+                z_mode: self.other_modes.z_mode,
+                force_blend: false,
+                aa_enable: false,
+            };
+            let dr = Self::depth_test(z_px, z.dz, z.dz_compressed, 8, &dinp);
+            if dr.depth_pass {
+                self.fill_pixel(row_addr, xu, bpp, bus);
+                if self.other_modes.z_update_en {
+                    #[allow(
+                        clippy::cast_sign_loss,
+                        clippy::cast_possible_truncation,
+                        reason = "dz_compressed is clamped to 0..=0xf in decode_triangle_z"
+                    )]
+                    self.zbuffer_write(xu, yu, z_px, z.dz_compressed as u8, bus);
+                }
             }
         }
     }
@@ -3930,5 +4098,93 @@ mod tests {
         assert_eq!(dz, 0xB, "full 4-bit dz survives via halfword + hidden bits");
         // A different pixel is untouched (independent entry).
         assert_eq!(rdp.zbuffer_read(4, 2, &bus), (0, 0));
+    }
+
+    /// **`interpolate_z` matches the hand-computed ParaLLEl-RDP snap.** A flat depth
+    /// (`z_base = 0x0800_0000`, no gradient) snaps to `0x4000`; a pure horizontal
+    /// gradient (`dzdx = 1.0`) advances `4 · 0x1_0000` over four pixels, which the
+    /// `>> 10 << 2 >> 5` snap folds to `0x20`.
+    #[test]
+    fn interpolate_z_matches_hand_computed() {
+        assert_eq!(interpolate_z(0x0800_0000, 0, 0, 0, 0, 0, 0), 0x4000);
+        assert_eq!(interpolate_z(0, 0x0001_0000, 0, 0, 0, 0, 4), 0x20);
+        // A negative (below-near-plane) depth clamps to 0.
+        assert_eq!(interpolate_z(-0x0001_0000, 0, 0, 0, 0, 0, 0), 0);
+    }
+
+    /// **A Z-buffered triangle occludes a farther one and yields to a nearer one.**
+    /// The first-ever depth-tested rendering: three overlapping right triangles into
+    /// a Z buffer pre-cleared to the far plane, with flat depths `z_px` 0x4000 (near),
+    /// 0x8000 (far), 0x2000 (nearer). The near draws (vs the cleared buffer), the far
+    /// is **rejected** (stays the near colour), and the nearer **overwrites** — so the
+    /// test discriminates both the accept and reject paths of `depth_test`.
+    #[test]
+    fn depth_tested_triangle_occludes_farther_and_yields_to_nearer() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        // Pre-clear the Z buffer to the far plane (compressed 0x3FFF → z 0x3FFFF).
+        for b in &mut bus.mem[0x400..0x500] {
+            *b = 0xFF;
+        }
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3; // 32-bit
+        rdp.color_image_width = 8;
+        rdp.z_image = 0x400;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.other_modes.z_compare_en = true;
+        rdp.other_modes.z_update_en = true;
+        rdp.other_modes.z_mode = 0; // opaque
+
+        // Draw the same staircase triangle (as the flat-fill test) at each cmd_base,
+        // now as the Z-buffered variant (opcode 0x09), with a flat z-suffix (z_base
+        // only; dzdx/dzde/dzdy = 0). The command word matches the flat-fill test with
+        // the z-flag bit (56) set → hi 0x0980_0010.
+        let draw = |bus: &mut ZBufBus, rdp: &mut Rdp, base: usize, z_base: u32, color: u32| {
+            bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+            bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+            bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+            bus.mem[base + 0x20..base + 0x24].copy_from_slice(&z_base.to_be_bytes()); // z_base
+            rdp.fill_color = color;
+            rdp.dispatch(0x09, 0x0980_0010, 0x0010_0000, base as u32, bus);
+        };
+        let px = |bus: &ZBufBus, x: usize, row: usize| -> u32 {
+            let a = 0x200 + row * 32 + x * 4;
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
+        };
+
+        draw(&mut bus, &mut rdp, 0x600, 0x0800_0000, 0x1111_1111); // near  (z_px 0x4000)
+        assert_eq!(px(&bus, 2, 0), 0x1111_1111, "near draws vs cleared buffer");
+        draw(&mut bus, &mut rdp, 0x700, 0x1000_0000, 0x2222_2222); // far   (z_px 0x8000)
+        assert_eq!(
+            px(&bus, 2, 0),
+            0x1111_1111,
+            "far is occluded (depth rejects)"
+        );
+        assert_eq!(px(&bus, 2, 3), 0x1111_1111);
+        draw(&mut bus, &mut rdp, 0x800, 0x0400_0000, 0x3333_3333); // nearer(z_px 0x2000)
+        assert_eq!(
+            px(&bus, 2, 0),
+            0x3333_3333,
+            "nearer overwrites (depth accepts)"
+        );
+    }
+
+    /// **`decode_triangle_z` does not panic on an `i32::MIN` gradient.** The z-suffix
+    /// is unvalidated RDRAM; a `dzdx`/`dzde` of `0x8000_0000` would overflow `.abs()`.
+    /// `saturating_abs` keeps it total.
+    #[test]
+    fn decode_triangle_z_survives_i32_min_gradient() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x100],
+            hidden: alloc::vec![0u8; 0x80],
+        };
+        // z-flag set (bit 24), no shade/tex -> z-suffix at cmd_base + 0x20; put
+        // i32::MIN at dzdx (za + 4 = 0x24).
+        bus.mem[0x24..0x28].copy_from_slice(&0x8000_0000u32.to_be_bytes());
+        assert!(Rdp::decode_triangle_z(1 << 24, 0, &bus).is_some());
     }
 }
