@@ -1567,7 +1567,9 @@ impl Rdp {
     }
 
     /// Byte address of the 16-bit Z-buffer entry for pixel `(x, y)`: entries are
-    /// 16-bit, the row stride is `color_image_width` entries, based at `z_image`.
+    /// 16-bit, based at `z_image`. The row stride reuses `color_image_width` — the
+    /// N64 RDP addresses the depth buffer with the *colour* buffer's width (there is
+    /// no separate depth-image width register), so the two buffers share a geometry.
     fn zbuffer_addr(&self, x: u32, y: u32) -> u32 {
         let index = y
             .wrapping_mul(u32::from(self.color_image_width))
