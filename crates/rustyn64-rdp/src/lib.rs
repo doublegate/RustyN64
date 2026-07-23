@@ -4695,7 +4695,7 @@ mod tests {
         bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
         bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
         // Shade block at +0x20 (8 words). Texture block at +0x60: s.i = 1 -> column 1.
-        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&((0x0001u32 << 16) | 0).to_be_bytes());
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&(0x0001u32 << 16).to_be_bytes());
         // opcode 0x0E = shade (bit 58) + texture (bit 57); hi = 0x0880_0010 | (1<<26) | (1<<25).
         rdp.dispatch(0x0E, 0x0E80_0010, 0x0010_0000, base as u32, &mut bus);
 
