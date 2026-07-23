@@ -4655,4 +4655,56 @@ mod tests {
         );
         assert_eq!(tex.de, [0, 0], "de reads word4/word6 (both zero here)");
     }
+
+    /// **A shaded + textured triangle (0x0E) reads the texture block past the 8-word
+    /// shade block.** The shade block is 8 words, so the texture block sits at
+    /// `+0x60`. The texture coordinate there selects texel column 1 (green); if the
+    /// texture offset were wrong (e.g. a 16-word shade assumption → `+0xA0`), it would
+    /// read zeros and sample column 0 (red) instead. The green result pins `+0x60`.
+    #[test]
+    fn shaded_and_textured_triangle_reads_texture_past_shade() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3;
+        rdp.color_image_width = 8;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.tiles[0].format = 0;
+        rdp.tiles[0].size = 2;
+        // texel (0,0) = red 0xF801, texel (1,0) = green 0x07C1.
+        rdp.tmem_write(0, 0xF8);
+        rdp.tmem_write(1, 0x01);
+        rdp.tmem_write(2, 0x07);
+        rdp.tmem_write(3, 0xC1);
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 1, // texel0
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 1,
+        };
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        // Shade block at +0x20 (8 words). Texture block at +0x60: s.i = 1 -> column 1.
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&((0x0001u32 << 16) | 0).to_be_bytes());
+        // opcode 0x0E = shade (bit 58) + texture (bit 57); hi = 0x0880_0010 | (1<<26) | (1<<25).
+        rdp.dispatch(0x0E, 0x0E80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        let color =
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
+        assert_eq!(
+            color, 0x00FF_00FF,
+            "texel column 1 (green) — texture read at +0x60"
+        );
+    }
 }
