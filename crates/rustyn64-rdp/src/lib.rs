@@ -641,9 +641,11 @@ pub struct BlendCycle {
 /// The `Set Other Modes` (0x2F) render-mode state the blender and cycle control
 /// need.
 ///
-/// Coverage/alpha-compare/dither and the full Z model are decoded here but the
-/// blend equation only uses the cycle type, the two blend cycles, and
-/// `force_blend` so far (**open residual R-11**).
+/// Coverage, RGB dither, and alpha-compare are decoded here and now applied
+/// (dither on both pixel paths; alpha-compare gates the write on both). The
+/// remaining decoded-but-unused fields — the AA-edge divider LUT, the
+/// interpenetrating-Z blend-shift, `color_on_cvg`, and coverage write-back — are
+/// the **open residual R-11**.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -4578,6 +4580,59 @@ mod tests {
         assert!(!rdp.alpha_compare_passes(0x7F));
         assert!(rdp.alpha_compare_passes(0x80));
         assert!(rdp.alpha_compare_passes(0xFF));
+    }
+
+    /// **Alpha-compare suppresses the Z-write on the depth path.** A z-suffixed
+    /// shaded triangle with alpha-compare on and `z_compare` off (depth always
+    /// passes, so alpha is the only gate). With a flat shade alpha **below** the
+    /// threshold every pixel is rejected, so the Z buffer stays at its cleared value;
+    /// **above** the threshold the pixels draw and write Z. A mutant that drops the
+    /// alpha-compare `continue` in `depth_span` (Z-writing rejected pixels) fails the
+    /// first assertion — the check the colour-only `alpha_compare_z_16` vector cannot
+    /// make (it reads only the colour framebuffer).
+    #[test]
+    fn alpha_compare_suppresses_zwrite_on_depth_path() {
+        let render = |shade_alpha: u32| -> u16 {
+            let mut bus = ZBufBus {
+                mem: alloc::vec![0u8; 0x1000],
+                hidden: alloc::vec![0u8; 0x800],
+            };
+            let mut rdp = Rdp::new();
+            rdp.color_image = 0x200;
+            rdp.color_image_size = 2; // 16-bit
+            rdp.color_image_width = 8;
+            rdp.z_image = 0x400;
+            rdp.blend_color = 0x0000_0080; // alpha-compare threshold 0x80
+            rdp.scissor_lrx = 8 << 2;
+            rdp.scissor_lry = 8 << 2;
+            rdp.other_modes.alpha_compare_en = true;
+            rdp.other_modes.z_update_en = true;
+            rdp.other_modes.z_compare_en = false; // depth always passes; alpha is the only gate
+            // Shade-passthrough combiner: cyc1 rgb_d = shade (4), a_d = shade alpha (4).
+            rdp.combine.cyc1 = CombineCycle {
+                rgb_a: 0,
+                rgb_b: 0,
+                rgb_c: 0,
+                rgb_d: 4,
+                a_a: 0,
+                a_b: 0,
+                a_c: 0,
+                a_d: 4,
+            };
+            let base = 0x600usize;
+            bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+            bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+            bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // dxmdy = 1.0
+            // Shade int-base (base + 0x20/0x24): R=0xFF, G=B=0, A = shade_alpha.
+            bus.mem[base + 0x20..base + 0x24].copy_from_slice(&(0xFFu32 << 16).to_be_bytes());
+            bus.mem[base + 0x24..base + 0x28].copy_from_slice(&(shade_alpha & 0xFF).to_be_bytes());
+            // z-suffix after the 4-word base + 8-word shade block = base + 0x60.
+            bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes());
+            rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
+            rdp.zbuffer_read(2, 1, &bus).0
+        };
+        assert_eq!(render(0x40), 0, "alpha-rejected pixel does not write Z");
+        assert_ne!(render(0xC0), 0, "alpha-passing pixel writes Z");
     }
 
     /// **`Set Blend Color` / `Set Fog Color` latch their RGBA8888 registers.**
