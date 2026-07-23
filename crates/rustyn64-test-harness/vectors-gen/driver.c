@@ -522,8 +522,31 @@ static const uint32_t V13_TEX_RECT_OFFSET_16[] = {
     0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 DtDy=1.0
 };
 
+// V14: a COPY-mode Texture Rectangle of a full **8x8** texture (64 texels, tile
+// line = 2 64-bit words per row) 1:1-blitted into an 8x8 colour image. Exercises the
+// load + blit at a larger scale than the small vectors — the full tile stride, all
+// eight rows, and the odd-row TMEM swap across a bigger surface. The texture is an
+// RGBA5551 gradient (R = 4x, G = 4y) filled at run time into `tex8x8` (below).
+static const uint32_t V14_TEX_RECT_8X8_16[] = {
+    0x2F2000F0u, 0x00000000u, // Set Other Modes: COPY, dither off
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000000u, // Set Tile 0: 16-bit, line 2 (64-bit words), tmem 0
+    0x32000000u, 0x0001C01Cu, // Set Tile Size: SL0 TL0 SH7 TH7 (8x8, u10.2 = 0x1C)
+    0x34000000u, 0x0001C01Cu, // Load Tile: SL0 TL0 SH7 TH7 -> 8x8 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x2401C01Cu, 0x00000000u, // Texture Rectangle: XL=7 YL=7 tile0 XH0 YH0
+    0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 DtDy=1.0
+};
+static uint16_t tex8x8[64];
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
+    // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
+    for (uint32_t y = 0; y < 8; y++)
+        for (uint32_t x = 0; x < 8; x++)
+            tex8x8[y * 8 + x] =
+                (uint16_t)(((x * 4u) << 11) | ((y * 4u) << 6) | 1u);
 
     Vector v1 = {"fill_rect_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V1_FILL_RECT_16) / 4, V1_FILL_RECT_16};
@@ -579,6 +602,11 @@ int main(int argc, char **argv) {
                   sizeof(V13_TEX_RECT_OFFSET_16) / 4, V13_TEX_RECT_OFFSET_16,
                   0x3000, 8, TEX4X2_RAMP};
     if (emit_vector(&v13, out_dir)) return 1;
+
+    Vector v14 = {"tex_rect_8x8_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V14_TEX_RECT_8X8_16) / 4, V14_TEX_RECT_8X8_16,
+                  0x3000, 64, tex8x8};
+    if (emit_vector(&v14, out_dir)) return 1;
 
     return 0;
 }

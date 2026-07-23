@@ -337,3 +337,15 @@ fn tex_rect_offset_16_matches_angrylion() {
         include_bytes!("vectors/tex_rect_offset_16.rvec"),
     );
 }
+
+/// A COPY-mode Texture Rectangle of a full **8×8** texture (64 texels) 1:1-blitted
+/// into an 8×8 colour image — exercises the copy load + blit at a larger scale than
+/// the small vectors: the full tile stride (`line = 2`), all eight rows, and the
+/// odd-row TMEM swap across a bigger surface. The texture is an RGBA5551 gradient.
+#[test]
+fn tex_rect_8x8_16_matches_angrylion() {
+    assert_matches(
+        "tex_rect_8x8_16",
+        include_bytes!("vectors/tex_rect_8x8_16.rvec"),
+    );
+}
