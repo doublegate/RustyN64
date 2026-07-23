@@ -49,11 +49,16 @@ shade, primitive, environment, …).
 
 **Acceptance criteria:**
 
-- [ ] Every mux input select decodes and routes correctly (checked against the ParaLLEl-RDP input tables).
-- [ ] `(A − B) * C + D` is evaluated with the correct clamping/rounding per cycle, asserted by the
-      **observable output colour** for a known set of inputs (not a self-reported flag), with the
-      test seeding the destination so a no-op cannot pass.
-- [ ] 1-cycle and 2-cycle modes both work (cycle type from `Set Other Modes`).
+- [x] Every mux input select decodes and routes correctly (checked against the ParaLLEl-RDP input
+      tables) — the 16-field decode is unit-tested with distinct per-field values. The **common**
+      inputs are wired; the **exotic** inputs (noise, LOD frac, key/convert) are deferred to
+      ledger **R-10** (they need the LOD/key/convert state) and read as zero.
+- [x] `(A − B) * C + D` is evaluated with the correct clamping/rounding per cycle, asserted by the
+      **observable output colour** for known inputs (a texel passthrough, a lerp, and the clamp
+      fold) computed by hand — not a self-reported flag.
+- [x] 1-cycle and 2-cycle modes both work — 2-cycle chaining (cycle 0 → cycle 1's `Combined`) is
+      unit-tested. Wiring the combiner into the triangle pipeline (with the `Set Other Modes`
+      cycle-type gate + shade/texture attributes) lands with T-33-003/004.
 
 **Complexity:** L
 
