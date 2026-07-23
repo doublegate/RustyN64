@@ -50,6 +50,23 @@ pub trait RdramBus {
             self.rdram_read(addr.wrapping_add(3)),
         ])
     }
+
+    /// Read the RDRAM "hidden" bits for the 16-bit halfword at `addr` — the 9th
+    /// bit RDRAM carries per byte, which the RDP Z-buffer uses for the low 2 bits
+    /// of the per-pixel `dz`. Returns the 2-bit value (`0..=3`).
+    ///
+    /// Default returns 0, so an impl that does not model the hidden bits behaves
+    /// as if they read back clear (which is also the power-on state).
+    fn rdram_read_hidden(&self, addr: u32) -> u8 {
+        let _ = addr;
+        0
+    }
+
+    /// Write the RDRAM hidden bits (`0..=3`) for the halfword at `addr`. Default
+    /// no-op for impls that do not model them.
+    fn rdram_write_hidden(&mut self, addr: u32, val: u8) {
+        let _ = (addr, val);
+    }
 }
 
 /// On-cartridge non-volatile save backend type.

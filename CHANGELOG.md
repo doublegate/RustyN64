@@ -20,6 +20,22 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the Z-buffer storage and RDRAM hidden bits (Phase 3, T-33-004 PR-B part 1)
+
+- **The RDP can read and write the Z buffer, including the RDRAM hidden bits.**
+  Each Z pixel is 18 bits: `Rdp::zbuffer_write` compresses the depth, packs the
+  14-bit result into bits 15:2 of the 16-bit RDRAM halfword with `dz`'s high two
+  bits in 1:0, and stores `dz`'s low two bits in the RDRAM **hidden ("9th") bits**;
+  `zbuffer_read` reverses it — byte-exact against ParaLLEl-RDP's `store_vram_depth`/
+  `load_vram_depth`. To carry those low `dz` bits accurately, `RdramBus` gains
+  `rdram_read_hidden`/`rdram_write_hidden` (default no-op, so non-Z bus impls are
+  unaffected), and the Bus backs them with a lazily-allocated store (one 2-bit value
+  per 16-bit halfword — allocated only once Z-buffered rendering writes to it).
+  Validated by a Bus hidden-bit round-trip and a full-`dz` Z-buffer round-trip (a
+  `dz` whose low bits survive only via the hidden path). Scope (ledger R-12): the
+  coverage accumulator and the per-pixel combiner→blender→depth routing land in PR-B
+  part 2 (closing R-9). No runtime caller yet, so the oracle stays 93.
+
 ### Added — the Z-buffer machinery (Phase 3, T-33-004 PR-A)
 
 - **The RDP has a depth codec, per-pixel depth test, and depth-source commands.**

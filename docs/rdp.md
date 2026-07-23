@@ -431,10 +431,22 @@ ParaLLEl-RDP (MIT, `z_encode.h`, `depth_test.h`).
   (0x2E) latches the `z`/`dz` used when `Set Other Modes` `z_source_sel` selects primitive depth (the
   only depth source for rectangle commands).
 
-Scope (**open residual R-12**): the Z-buffer **RDRAM read/write** (the 18-bit-per-pixel "hidden bit"
-storage format), **coverage accumulation** at edges, and the actual **per-pixel routing** of
-combiner→blender→depth in the triangle rasteriser land in PR-B (which also closes the R-9 flat-fill).
-`depth_test`/the codec have no runtime caller yet; the oracle stays **93**.
+### The Z-buffer storage (T-33-004, PR-B part 1)
+
+The Z-buffer read/write and the RDRAM **hidden ("9th") bits** those entries need. Each Z pixel is 18
+bits: `zbuffer_write` compresses the depth (`z_compress`), packs the 14-bit result into bits 15:2 of the
+16-bit halfword with `dz`'s **high** two bits in 1:0, and stores `dz`'s **low** two bits in the hidden
+bits; `zbuffer_read` reverses it. Byte-exact against ParaLLEl-RDP's `store_vram_depth`/`load_vram_depth`.
+
+- **The hidden bits.** RDRAM carries a 9th bit per byte (see *Behavior*, above). `RdramBus` gains
+  `rdram_read_hidden`/`rdram_write_hidden` (default no-op, so non-Z impls are unaffected); the Bus backs
+  them with a lazily-allocated array (one 2-bit value per 16-bit halfword), so only Z-buffered rendering
+  pays for it. Validated by a Bus round-trip test and a full-`dz` Z-buffer round-trip (a `dz` whose low
+  bits only survive via the hidden path).
+
+Scope (**open residual R-12**): **coverage accumulation** at edges and the actual **per-pixel routing**
+of combiner→blender→depth in the triangle rasteriser land in PR-B part 2 (which closes the R-9
+flat-fill). `depth_test`/`zbuffer_*` have no runtime caller yet; the oracle stays **93**.
 
 ## State
 
