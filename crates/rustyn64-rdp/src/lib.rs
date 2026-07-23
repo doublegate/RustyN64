@@ -808,11 +808,11 @@ const SPAN_X_POISON_RIGHT: i32 = i32::MIN;
 
 /// The minimum of the four per-Y-subpixel left edges (parallel-rdp `span_setup.comp` `min4`).
 fn min4(v: &[i32; COVERAGE_SUBPIXELS]) -> i32 {
-    v.iter().copied().min().unwrap_or(0)
+    v[0].min(v[1]).min(v[2]).min(v[3])
 }
 /// The maximum of the four per-Y-subpixel right edges (`span_setup.comp` `max4`).
 fn max4(v: &[i32; COVERAGE_SUBPIXELS]) -> i32 {
-    v.iter().copied().max().unwrap_or(0)
+    v[0].max(v[1]).max(v[2]).max(v[3])
 }
 
 /// Quantise a signed edge X to the 3-fraction-bit sub-pixel domain used by
@@ -1659,12 +1659,14 @@ impl Rdp {
                 } else {
                     i64::from(xl) + i64::from(y - ym) * i64::from(dxldy)
                 };
-                let major_x = (major >> 16) as i32;
-                let minor_x = (minor >> 16) as i32;
+                // Whole-pixel edges for the union span (distinct from the scanline
+                // interpolation origin `major_x` computed after the sub-loop).
+                let major_px = (major >> 16) as i32;
+                let minor_px = (minor >> 16) as i32;
                 let (xl_i, xr_i) = if flip {
-                    (major_x, minor_x)
+                    (major_px, minor_px)
                 } else {
-                    (minor_x, major_x)
+                    (minor_px, major_px)
                 };
                 if xl_i > xr_i {
                     continue;
@@ -1731,7 +1733,7 @@ impl Rdp {
                         x,
                     );
                     if subpixel {
-                        match self.pixel_coverage(&xleft, &xright, x) {
+                        match self.pixel_coverage(xleft, xright, x) {
                             Some(cov) => color[3] = cov << 5,
                             None => continue,
                         }
@@ -1963,11 +1965,11 @@ impl Rdp {
     /// The coverage-weighted AA blend and the other `cvg_dest` modes are slice 2c-2.
     fn pixel_coverage(
         &self,
-        xleft: &[i32; COVERAGE_SUBPIXELS],
-        xright: &[i32; COVERAGE_SUBPIXELS],
+        xleft: [i32; COVERAGE_SUBPIXELS],
+        xright: [i32; COVERAGE_SUBPIXELS],
         x: i32,
     ) -> Option<u8> {
-        let mask = compute_coverage(*xleft, *xright, x);
+        let mask = compute_coverage(xleft, xright, x);
         if mask == 0 || (!self.other_modes.aa_enable && (mask & 1) == 0) {
             return None;
         }
