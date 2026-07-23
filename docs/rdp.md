@@ -383,6 +383,32 @@ arithmetic, the 16-field decode, the mux, and the 2-cycle chaining are unit-test
 hand-computed values. `combine` has no runtime caller until the triangle pipeline routes through
 it (with shade/texture attributes and the cycle-type gate); the oracle stays **93**.
 
+### The blender (T-33-003)
+
+`Set Other Modes` (0x2F) and the divide-free blend `(P * a0 + M * (a1 + 1)) >> 5` — the per-pixel
+translucency/fog stage that follows the combiner, cross-verified against the N64brew wiki and
+ParaLLEl-RDP (MIT, `shaders/blender.h`).
+
+- **Decode.** The single command word carries the render mode: the cycle type (bits 53:52), the
+  two blender cycles' `P/A/M/B` selects (bits 31:16, MSB-first, 2 bits each), `force_blend`, the
+  Z-test/update enables and Z-mode, the coverage-destination mode, `image_read_en`, and the
+  alpha-compare enable — all decoded into `OtherModes` so nothing silently reads as its default,
+  even though the blend equation consumes only the subset below today. `Set Blend Color` (0x39)
+  and `Set Fog Color` (0x38) latch the two colour registers the blender can select.
+- **The equation.** Per channel, `P * a0 + M * (a1 + 1)` then `>> 5`, where `P`/`M` select an RGB
+  triple (pixel/memory/blend/fog) and `a0 = A >> 3`, `a1 = B >> 3` map the 8-bit alpha selects to
+  the 5-bit blend weights. The `+ 1` on the `M` term is real hardware. This is the divide-free
+  form the RDP uses for every non-anti-aliased-edge pixel.
+- **Cycles.** 1-cycle mode evaluates blend cycle 0 alone; 2-cycle mode feeds cycle 0's RGB back
+  as the pixel colour into cycle 1 (the alpha selects are unchanged between cycles).
+
+Scope (**open residual R-11**): the anti-aliased-edge divider LUT, the memory-alpha
+interpenetrating-Z blend-shift path, alpha-compare, dither, the `color_on_cvg` divide interaction,
+and the coverage write-back are decoded-but-unused until the triangle pipeline routes through the
+blender with real framebuffer/coverage/Z (T-33-004). The decode, the no-divide equation, the
+input muxes, and the 2-cycle chaining are unit-tested against hand-computed values. `blend` has no
+runtime caller yet; the oracle stays **93**.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);
@@ -399,10 +425,14 @@ the rest is still marked TODO:
   T-32-001). Set by `Set Tile` (0x35) and `Set Tile Size` (0x32).
 - **Texture-image registers** — the RDRAM load source (`Set Texture Image`, 0x3D):
   format, size, width, address (**present**, T-32-001).
-- **Other-modes** — the big mode word: cycle type, combiner mux selects, blend
-  mode, Z-mode, AA/coverage mode, dither selects, alpha-compare. (TODO, Sprint 3.)
-- **Combiner latches** — the two-stage color/alpha mux input selects. (TODO.)
-- **Blender latches** — translucency / fog / AA-edge / dither config. (TODO.)
+- **Other-modes** — the big mode word: cycle type, the two blend cycles' `P/A/M/B`
+  selects, `force_blend`, Z-mode + Z enables, coverage-dest mode, `image_read_en`,
+  alpha-compare (**present**, T-33-003, via `Set Other Modes` 0x2F). The dither and
+  AA/coverage-accumulate details are still Sprint-3 residual R-11.
+- **Combiner latches** — the two-stage color/alpha mux input selects (**present**,
+  T-33-002, via `Set Combine Mode` 0x3C).
+- **Blender latches** — the `P/A/M/B` selects + blend/fog colour registers
+  (**present**, T-33-003). AA-edge / dither config is R-11.
 - **Scissor rectangle** + the fill/primitive/environment/fog/blend colors.
 
 ## Behavior

@@ -244,6 +244,48 @@ fn alpha_input_c(sel: u8, inp: &CombinerInputs) -> i16 {
     }
 }
 
+/// The blender's `P`/`M` colour select: which RGB triple feeds one blend term
+/// (N64brew *…/Blender*). 0 = pixel (combiner output), 1 = memory (framebuffer),
+/// 2 = blend-colour register, 3 = fog-colour register.
+fn blend_rgb_input(sel: u8, inp: &BlendInputs) -> [u8; 3] {
+    let [r, g, b, _] = match sel & 0x3 {
+        1 => inp.memory,
+        2 => inp.blend_color,
+        3 => inp.fog,
+        _ => inp.pixel,
+    };
+    [r, g, b]
+}
+
+/// The blender's `A` (1b) alpha weight: 0 = pixel alpha, 1 = fog alpha,
+/// 2 = shade alpha, 3 = zero (N64brew *…/Blender*).
+fn blend_a_input(sel: u8, inp: &BlendInputs) -> u8 {
+    match sel & 0x3 {
+        1 => inp.fog[3],
+        2 => inp.shade_alpha,
+        3 => 0,
+        _ => inp.pixel[3],
+    }
+}
+
+/// The blender's `B` (2b) alpha weight: 0 = `1 − A`, 1 = memory alpha (framebuffer
+/// coverage), 2 = one (0xFF), 3 = zero (N64brew *…/Blender*).
+///
+/// The `1 − A` case is the one's complement of the **already-selected `A` weight**,
+/// not of pixel alpha specifically — the ParaLLEl-RDP constant is named
+/// `INV_PIXEL_ALPHA` but computes `~a0` (`blender.h:106`), so `A` selecting fog or
+/// shade alpha makes `B` their complement too. `a0_full` is that resolved `A` weight
+/// **before** the `>> 3` (the complement is taken on the full 8-bit value, then both
+/// weights are shifted — `blender.h:106` vs `:112`).
+fn blend_b_input(sel: u8, inp: &BlendInputs, a0_full: u8) -> u8 {
+    match sel & 0x3 {
+        1 => inp.memory[3],
+        2 => 0xFF,
+        3 => 0,
+        _ => !a0_full,
+    }
+}
+
 /// Wrap one raw texture coordinate (`s10.5` fixed point) into a tile-relative
 /// integer texel, applying the tile's shift, tile-origin subtraction, mirror, and
 /// mask — the COPY-mode order (no clamp). Matches the ParaLLEl-RDP reference
@@ -310,13 +352,77 @@ const fn bytes_per_texel(size: u8) -> Option<u32> {
         _ => None,
     }
 }
+const OP_SET_OTHER_MODES: u8 = 0x2F;
 const OP_FILL_RECTANGLE: u8 = 0x36;
 const OP_SET_FILL_COLOR: u8 = 0x37;
+const OP_SET_FOG_COLOR: u8 = 0x38;
+const OP_SET_BLEND_COLOR: u8 = 0x39;
 const OP_SET_PRIM_COLOR: u8 = 0x3A;
 const OP_SET_ENV_COLOR: u8 = 0x3B;
 const OP_SET_COMBINE_MODE: u8 = 0x3C;
 const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
 const OP_SET_COLOR_IMAGE: u8 = 0x3F;
+
+/// One cycle of the blender: the `P`/`M` colour selects and the `A`/`B` alpha
+/// selects for `P * A + M * (B + 1)` (`Set Other Modes`, 0x2F). Each is 2-bit.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BlendCycle {
+    /// `P` (1a) colour select: 0 pixel, 1 memory, 2 blend, 3 fog.
+    pub p: u8,
+    /// `A` (1b) alpha select: 0 pixel-alpha, 1 fog-alpha, 2 shade-alpha, 3 zero.
+    pub a: u8,
+    /// `M` (2a) colour select (same table as `P`).
+    pub m: u8,
+    /// `B` (2b) alpha select: 0 `1−A`, 1 memory-alpha, 2 one, 3 zero.
+    pub b: u8,
+}
+
+/// The `Set Other Modes` (0x2F) render-mode state the blender and cycle control
+/// need.
+///
+/// Coverage/alpha-compare/dither and the full Z model are decoded here but the
+/// blend equation only uses the cycle type, the two blend cycles, and
+/// `force_blend` so far (**open residual R-11**).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these are independent hardware mode bits from Set Other Modes, not a state machine"
+)]
+pub struct OtherModes {
+    /// Cycle type: 0 = 1-cycle, 1 = 2-cycle, 2 = copy, 3 = fill.
+    pub cycle_type: u8,
+    /// The two blender cycles (cycle 0 chains into cycle 1 in 2-cycle mode).
+    pub blend: [BlendCycle; 2],
+    /// Force the no-divide blend form even on the final cycle.
+    pub force_blend: bool,
+    /// Read the framebuffer (memory) colour into the blend.
+    pub image_read_en: bool,
+    /// Coverage write-back mode: 0 clamp, 1 wrap, 2 full, 3 save.
+    pub cvg_dest: u8,
+    /// Z test / update enables and the Z mode (T-33-004 consumes these).
+    pub z_compare_en: bool,
+    /// Z-buffer update enable.
+    pub z_update_en: bool,
+    /// Z mode: 0 opaque, 1 interpenetrating, 2 transparent, 3 decal.
+    pub z_mode: u8,
+    /// Alpha-compare enable (gates the pixel write; R-11).
+    pub alpha_compare_en: bool,
+}
+
+/// The resolved per-pixel blender input colours (each RGBA8888).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BlendInputs {
+    /// The combiner's output ("pixel colour").
+    pub pixel: [u8; 4],
+    /// The framebuffer's current colour (memory), with coverage in its alpha.
+    pub memory: [u8; 4],
+    /// The blend-colour register (`Set Blend Color`, 0x39).
+    pub blend_color: [u8; 4],
+    /// The fog-colour register (`Set Fog Color`, 0x38).
+    pub fog: [u8; 4],
+    /// The interpolated shade alpha.
+    pub shade_alpha: u8,
+}
 
 /// One cycle of the colour combiner.
 ///
@@ -511,10 +617,16 @@ pub struct Rdp {
     pub tiles: [TileDescriptor; 8],
     /// The colour-combiner configuration (`Set Combine Mode`, 0x3C).
     pub combine: CombineMode,
+    /// The render-mode / blender configuration (`Set Other Modes`, 0x2F).
+    pub other_modes: OtherModes,
     /// The primitive colour, RGBA8888 (`Set Prim Color`, 0x3A).
     pub prim_color: u32,
     /// The environment colour, RGBA8888 (`Set Env Color`, 0x3B).
     pub env_color: u32,
+    /// The blend colour, RGBA8888 (`Set Blend Color`, 0x39).
+    pub blend_color: u32,
+    /// The fog colour, RGBA8888 (`Set Fog Color`, 0x38).
+    pub fog_color: u32,
     /// On-chip texture memory (4 KiB). **Lazily allocated**: `None` until the
     /// first byte is written, and read as all-zero while `None`. This keeps
     /// [`Rdp`]'s `Default` cheap, which matters because `Bus::rdp_tick` does a
@@ -711,6 +823,9 @@ impl Rdp {
             OP_SET_FILL_COLOR => self.fill_color = lo,
             OP_SET_PRIM_COLOR => self.prim_color = lo,
             OP_SET_ENV_COLOR => self.env_color = lo,
+            OP_SET_BLEND_COLOR => self.blend_color = lo,
+            OP_SET_FOG_COLOR => self.fog_color = lo,
+            OP_SET_OTHER_MODES => self.set_other_modes(hi, lo),
             OP_SET_COMBINE_MODE => self.set_combine_mode(hi, lo),
             OP_SET_SCISSOR => {
                 // upper-left x/y = hi 23:12 / 11:0, lower-right x/y = lo 23:12 /
@@ -1119,6 +1234,101 @@ impl Rdp {
             inp.combined = Self::combine_cycle(self.combine.cyc0, &inp);
         }
         Self::combine_cycle(self.combine.cyc1, &inp)
+    }
+
+    /// Decode `Set Other Modes` (0x2F) into [`OtherModes`]. The blend selects and
+    /// the cycle-control / Z / coverage flags all live in this one word; only the
+    /// subset the blender and cycle control consume today is used, but the full
+    /// layout is decoded so nothing silently reads as its `Default` (N64brew
+    /// *…/Commands* §0x2F, cross-checked against parallel-rdp `rdp_common.hpp`).
+    ///
+    /// `hi` is command bits 63:32 and `lo` bits 31:0. The blend selects pack two
+    /// cycles into `lo` bits 31:16 (`P0 P1 A0 A1 M0 M1 B0 B1`, MSB-first, 2 bits
+    /// each); the cycle type is `hi` bits 53:52.
+    fn set_other_modes(&mut self, hi: u32, lo: u32) {
+        self.other_modes = OtherModes {
+            cycle_type: ((hi >> 20) & 0x3) as u8,
+            blend: [
+                BlendCycle {
+                    p: ((lo >> 30) & 0x3) as u8,
+                    a: ((lo >> 26) & 0x3) as u8,
+                    m: ((lo >> 22) & 0x3) as u8,
+                    b: ((lo >> 18) & 0x3) as u8,
+                },
+                BlendCycle {
+                    p: ((lo >> 28) & 0x3) as u8,
+                    a: ((lo >> 24) & 0x3) as u8,
+                    m: ((lo >> 20) & 0x3) as u8,
+                    b: ((lo >> 16) & 0x3) as u8,
+                },
+            ],
+            force_blend: (lo >> 14) & 1 != 0,
+            image_read_en: (lo >> 6) & 1 != 0,
+            cvg_dest: ((lo >> 8) & 0x3) as u8,
+            z_compare_en: (lo >> 4) & 1 != 0,
+            z_update_en: (lo >> 5) & 1 != 0,
+            z_mode: ((lo >> 10) & 0x3) as u8,
+            alpha_compare_en: lo & 1 != 0,
+        };
+    }
+
+    /// Evaluate one blender cycle: `(P * a0 + M * (a1 + 1)) >> 5`, the divide-free
+    /// form the hardware uses whenever the result is not an anti-aliased edge
+    /// (N64brew *…/Blender*; parallel-rdp `shaders/blender.h`). `a0 = A >> 3` and
+    /// `a1 = B >> 3` map the 8-bit alpha selects to the 5-bit blend weights, and
+    /// the `+ 1` on the `M` term is real hardware, not a rounding fudge.
+    ///
+    /// The colour selects (`P`, `M`) pick an RGB triple; the alpha selects (`A`,
+    /// `B`) pick a scalar weight — `B`'s `1 − A` case complements the resolved `A`
+    /// weight, so `A` is computed first and handed to `blend_b_input`. The result
+    /// is masked to 8 bits, **not** clamped: the reference casts through `u8` and
+    /// re-masks (`blender.h:142`), so an over-range blend wraps exactly as hardware
+    /// does — software is expected to keep `a0 + a1 + 1 ≈ 32`.
+    ///
+    /// The final-cycle early-return fast paths (opaque passthrough, `color_on_cvg`),
+    /// the anti-aliased divider path, alpha-compare, dither, and Z are **open
+    /// residual R-11**; `blend_cycle` always takes the no-divide branch for now.
+    #[must_use]
+    pub fn blend_cycle(cycle: BlendCycle, inp: &BlendInputs) -> [u8; 3] {
+        let p = blend_rgb_input(cycle.p, inp);
+        let m = blend_rgb_input(cycle.m, inp);
+        let a0_full = blend_a_input(cycle.a, inp);
+        let a0 = u32::from(a0_full >> 3);
+        let a1 = u32::from(blend_b_input(cycle.b, inp, a0_full) >> 3);
+        let mut out = [0u8; 3];
+        for (ch, o) in out.iter_mut().enumerate() {
+            let blended = u32::from(p[ch]) * a0 + u32::from(m[ch]) * (a1 + 1);
+            *o = ((blended >> 5) & 0xFF) as u8;
+        }
+        out
+    }
+
+    /// Evaluate the whole blender for a pixel: blend cycle 0 alone in 1-cycle
+    /// mode, or cycle 0's RGB fed back as the pixel colour into cycle 1 in
+    /// 2-cycle mode (N64brew *…/Blender*).
+    ///
+    /// Only `pixel.rgb` chains between cycles — **`pixel.a` is deliberately left
+    /// unchanged**, so both cycles' `A`/`B` alpha selects see the original combiner
+    /// alpha. This matches the reference, which reassigns `pixel_color.rgb` only
+    /// before the second `blender()` call (parallel-rdp `memory_interfacing.h:536`);
+    /// the blender produces no alpha of its own (`blender.h` returns `u8x3`).
+    ///
+    /// **Precondition: only valid for cycle types 0 (1-cycle) and 1 (2-cycle).** Copy
+    /// (2) and Fill (3) bypass the blender on hardware — the pixel comes straight from
+    /// the texel copy / fill register — so the pixel pipeline (T-33-004) must gate on
+    /// `cycle_type` and not route those modes through here. This method is not given a
+    /// fabricated Copy/Fill result, because the honest contract is "not called", not
+    /// "called and returns something"; for cycle type 0 it correctly runs cycle 0 once.
+    #[must_use]
+    pub fn blend(&self, mut inp: BlendInputs) -> [u8; 3] {
+        if self.other_modes.cycle_type == 1 {
+            let rgb0 = Self::blend_cycle(self.other_modes.blend[0], &inp);
+            inp.pixel[0] = rgb0[0];
+            inp.pixel[1] = rgb0[1];
+            inp.pixel[2] = rgb0[2];
+            return Self::blend_cycle(self.other_modes.blend[1], &inp);
+        }
+        Self::blend_cycle(self.other_modes.blend[0], &inp)
     }
 
     /// Apply a `Set Tile` (0x35): decode the descriptor at `index` (bits 26:24)
@@ -3064,5 +3274,148 @@ mod tests {
         // Alpha also chains: cycle0 passes texel0's alpha (44) to Combined, and
         // cycle1's D = combined-alpha (C = lod-frac = 0), so the output is 44.
         assert_eq!(out[3], 44, "2-cycle chains alpha");
+    }
+
+    // ---- T-33-003: the blender ----
+
+    /// **`Set Other Modes` (0x2F) decodes every field the blender uses.** Each is
+    /// seeded distinctly in its own bit range so a swapped range surfaces as a
+    /// wrong select — the two blend cycles interleave `P0 P1 A0 A1 M0 M1 B0 B1`.
+    #[test]
+    fn set_other_modes_decodes_fields() {
+        let mut rdp = Rdp::new();
+        let hi = 1 << 20; // cycle_type = 1 (2-cycle)
+        let lo = (2 << 30) // P0
+            | (3 << 28)    // P1
+            | (1 << 26)    // A0
+            | (2 << 24)    // A1
+            | (3 << 22)    // M0
+            | (1 << 20)    // M1
+            | (2 << 18)    // B0
+            | (3 << 16)    // B1
+            | (1 << 14)    // force_blend
+            | (2 << 10)    // z_mode
+            | (1 << 8)     // cvg_dest
+            | (1 << 6)     // image_read_en
+            | (1 << 5)     // z_update_en
+            | (1 << 4)     // z_compare_en
+            | 1; // alpha_compare_en
+        rdp.set_other_modes(hi, lo);
+        let om = rdp.other_modes;
+        assert_eq!(om.cycle_type, 1);
+        assert_eq!(
+            om.blend[0],
+            BlendCycle {
+                p: 2,
+                a: 1,
+                m: 3,
+                b: 2
+            }
+        );
+        assert_eq!(
+            om.blend[1],
+            BlendCycle {
+                p: 3,
+                a: 2,
+                m: 1,
+                b: 3
+            }
+        );
+        assert!(om.force_blend);
+        assert_eq!(om.z_mode, 2);
+        assert_eq!(om.cvg_dest, 1);
+        assert!(om.image_read_en);
+        assert!(om.z_update_en);
+        assert!(om.z_compare_en);
+        assert!(om.alpha_compare_en);
+    }
+
+    /// **`Set Blend Color` / `Set Fog Color` latch their RGBA8888 registers.**
+    #[test]
+    fn set_blend_and_fog_color_latch() {
+        let mut bus = SliceBus {
+            mem: alloc::vec![0u8; 0x100],
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.dispatch(OP_SET_BLEND_COLOR, 0, 0x1122_3344, 0, &mut bus);
+        rdp.dispatch(OP_SET_FOG_COLOR, 0, 0x5566_7788, 0, &mut bus);
+        assert_eq!(rdp.blend_color, 0x1122_3344);
+        assert_eq!(rdp.fog_color, 0x5566_7788);
+    }
+
+    /// **`(P * a0 + M * (a1 + 1)) >> 5` matches the hand-computed no-divide blend.**
+    /// `P = pixel`, `M = memory`, `A = pixel-alpha` (128 → a0 = 16), `B = one`
+    /// (0xFF → a1 = 31): ch0 = 100·16 + 10·32 = 1920 → 60; ch1 → 95; ch2 → 130.
+    #[test]
+    fn blend_cycle_matches_hand_computed() {
+        let cycle = BlendCycle {
+            p: 0,
+            a: 0,
+            m: 1,
+            b: 2,
+        };
+        let inp = BlendInputs {
+            pixel: [100, 150, 200, 128],
+            memory: [10, 20, 30, 40],
+            ..BlendInputs::default()
+        };
+        assert_eq!(Rdp::blend_cycle(cycle, &inp), [60, 95, 130]);
+    }
+
+    /// **Two-cycle mode chains cycle 0's RGB into cycle 1's pixel input.** Cycle 0
+    /// blends pixel⊕fog → [93,93,93]; cycle 1 re-blends that against fog with
+    /// `B = zero` → [90,90,90], which differs from cycle 0 alone — proving the
+    /// chain feeds forward rather than re-reading the original pixel.
+    #[test]
+    fn blend_two_cycle_chains() {
+        let mut rdp = Rdp::new();
+        rdp.other_modes.cycle_type = 1;
+        rdp.other_modes.blend[0] = BlendCycle {
+            p: 0,
+            a: 0,
+            m: 3,
+            b: 2,
+        };
+        rdp.other_modes.blend[1] = BlendCycle {
+            p: 0,
+            a: 0,
+            m: 3,
+            b: 3,
+        };
+        let inp = BlendInputs {
+            pixel: [80, 80, 80, 0xFF],
+            fog: [16, 16, 16, 0xFF],
+            ..BlendInputs::default()
+        };
+        // Cycle 0 alone would give [93,93,93]; the chained result is [90,90,90].
+        assert_eq!(
+            Rdp::blend_cycle(rdp.other_modes.blend[0], &inp),
+            [93, 93, 93]
+        );
+        assert_eq!(rdp.blend(inp), [90, 90, 90], "2-cycle chains forward");
+    }
+
+    /// **The `B = 1 − A` select complements the *resolved* `A`, not pixel alpha.**
+    /// `A` selects fog alpha (0xFF → a0 = 31) and `B` selects `1 − A`, so
+    /// `a1 = (~0xFF) >> 3 = 0` and `a1 + 1 = 1`: `100·31 + 10·1 = 3110 → 97`.
+    /// Pixel alpha is 0x00 here, so the old `!pixel_alpha` bug would use
+    /// `a1 = (~0x00) >> 3 = 31` → `100·31 + 10·32 = 3420 → 106`; asserting 97
+    /// fails against that regression (ParaLLEl-RDP `blender.h:106`, `~a0`).
+    #[test]
+    fn blend_inv_alpha_complements_selected_a_not_pixel() {
+        let cycle = BlendCycle {
+            p: 0,
+            a: 1,
+            m: 1,
+            b: 0,
+        };
+        let inp = BlendInputs {
+            pixel: [100, 100, 100, 0x00],
+            memory: [10, 10, 10, 40],
+            fog: [0, 0, 0, 0xFF],
+            ..BlendInputs::default()
+        };
+        assert_eq!(Rdp::blend_cycle(cycle, &inp), [97, 97, 97]);
     }
 }

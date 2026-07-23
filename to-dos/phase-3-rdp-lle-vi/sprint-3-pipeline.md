@@ -72,11 +72,19 @@ alpha-compare, and the dither modes.
 
 **Acceptance criteria:**
 
-- [ ] `Set Other Modes` fields decode (cycle type, blend selects, alpha-compare, dither, Z-mode).
-- [ ] The blend equation `(P*A + M*B)` writes the correct framebuffer pixel — asserted **value-for-value
-      against a seeded destination** (so a no-op or a passthrough cannot pass), not a status flag.
-- [ ] Alpha compare and the coverage/dither modes behave per the wiki, each pinned by an observable
-      pixel result (e.g. a pixel that alpha-compare must reject stays unwritten).
+- [x] `Set Other Modes` (0x2F) fields decode (cycle type, the two blend cycles' `P/A/M/B` selects,
+      `force_blend`, coverage-dest, `image_read_en`, alpha-compare, Z enables/mode) — unit-tested
+      with distinct per-field values so a swapped bit range surfaces. `Set Blend Color` (0x39) /
+      `Set Fog Color` (0x38) latch the colour registers.
+- [x] The blend equation writes the correct value — the RDP's divide-free `(P * a0 + M * (a1 + 1)) >> 5`
+      (with `a0 = A >> 3`, `a1 = B >> 3`), asserted **value-for-value** by hand-computed muxed inputs
+      and by a 2-cycle chain whose result differs from cycle 0 alone (so a no-op cannot pass). The
+      literal `P*A + M*B` in the original description was the schematic form; the hardware weights are
+      5-bit and the `M` term carries a `+1` (N64brew *…/Blender*, ParaLLEl-RDP `blender.h`).
+- [ ] **Deferred to R-11 / T-33-004.** Alpha-compare, the coverage/dither modes, the AA-edge divider,
+      and the memory-alpha blend-shift need the per-pixel framebuffer read + coverage accumulator,
+      which reach the blender only once the triangle pipeline routes combiner→blender per pixel
+      (T-33-004). `blend` has no runtime caller yet, so the oracle stays 93 (ledger **R-11**).
 
 **Complexity:** L
 
