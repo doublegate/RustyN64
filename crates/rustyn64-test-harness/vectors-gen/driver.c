@@ -83,7 +83,9 @@ static void engine_init(void) {
 // Write one 32-bit command word into RDRAM. 32-bit access has no byte-swap XOR,
 // so a host u32 stored at word index (addr>>2) is read back verbatim by the RDP.
 static void rdram_put_word(uint32_t byte_addr, uint32_t word) {
-    if (byte_addr + 4 > RDRAM_SIZE) {
+    // `byte_addr > RDRAM_SIZE - 4`, not `byte_addr + 4 > RDRAM_SIZE`, so a
+    // near-UINT32_MAX address cannot wrap past the check.
+    if (byte_addr > RDRAM_SIZE - 4) {
         fprintf(stderr, "rdram_put_word: address 0x%X out of bounds\n", byte_addr);
         exit(1);
     }
@@ -197,12 +199,12 @@ static const uint32_t V1_FILL_RECT_16[] = {
     0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
 };
 
-// V2: a FILL-mode Fill Triangle (0x08) — a left-major right triangle with a
-// vertical left edge at x=2 and a hypotenuse widening 1 px/row over rows 0-3,
-// filled green. This is where RustyN64's whole-pixel union approximation should
-// diverge from Angrylion's exact sub-pixel coverage (the oracle for slice 2c).
-// The 4-u64-word (8-u32) edge-coefficient block matches RustyN64's flat-fill test
-// geometry: yl=ym=16, yh=0, flip=1, xh=xm=2.0, dxmdy=0.25.
+// V2: a FILL-mode Fill Triangle (0x08) — a left-major triangle with a vertical
+// left edge at x=2 and a hypotenuse of slope DxMDy=0.25 px per *pixel* row over
+// rows 0-3, filled green. Angrylion renders a near-vertical line (right edge only
+// reaches x~2.75); this vector caught RustyN64's 4x edge-slope bug (ledger R-14),
+// which draws a staircase instead. The 4-u64-word (8-u32) edge-coefficient block
+// matches RustyN64's flat-fill test geometry: yl=ym=16, yh=0, flip=1, xh=xm=2.0.
 static const uint32_t V2_FILL_TRI_16[] = {
     0x2F300000u, 0x00000000u, // Set Other Modes: cycle_type = FILL
     0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000

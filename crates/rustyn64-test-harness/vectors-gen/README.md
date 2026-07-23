@@ -25,10 +25,18 @@ and must not be vendored into this MIT / Apache-2.0 project (see
 - **Not committed:** Angrylion itself (fetched into the gitignored `ref-proj/`
   tree) and the built `driver` binary.
 
+## Provenance (pin this to reproduce the corpus)
+
+The committed vectors were generated against **`angrylion-rdp-plus` commit
+`31bdb1f0a79dd726017a38432540c6b5db0fa117`** (the revision the `ref-proj/parallel-rdp`
+submodule pins). Angrylion is deterministic, so regenerating at that commit reproduces the
+goldens byte-for-byte; a *different* Angrylion revision could shift them, which would be a
+reviewed golden change, not a silent one.
+
 ## Regenerating the vectors
 
 ```sh
-# 1. Fetch the oracle into the gitignored ref-proj tree (once).
+# 1. Fetch the oracle into the gitignored ref-proj tree (once), at the pinned commit above.
 git -C ../../../ref-proj/parallel-rdp submodule update --init --depth 1 angrylion-rdp-plus
 
 # 2. Build the generator (needs a C/C++ toolchain + pthreads; no Vulkan/OpenGL).

@@ -163,8 +163,11 @@ that links only Angrylion's CPU-only `n64video.c` + `parallel.cpp` (no Vulkan/Op
 command list into RDRAM, calls `n64video_process_list()`, and reads the framebuffer back. Vectors are
 hand-authored command lists (deterministic, `parallel=false`), not randomised. The `.rvec` container
 (9×u32 BE header + command bytes + golden framebuffer) lives under `tests/vectors/`; the golden pixels
-are stored raw big-endian at small resolutions (196 B for the 8×8 vectors — well within budget, no
-compression/LFS needed yet). See `vectors-gen/README.md`.
+are stored raw big-endian at small resolutions (the 8×8 vectors are 204–228 B each — well within
+budget, no compression/LFS needed yet). **Reproducibility:** the corpus was generated against Angrylion
+(`angrylion-rdp-plus`) pinned at commit `31bdb1f0a79dd726017a38432540c6b5db0fa117`; a different
+Angrylion revision could shift the goldens, so that commit is the recorded provenance. See
+`vectors-gen/README.md`.
 
 **Acceptance criteria:**
 
