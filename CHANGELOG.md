@@ -20,6 +20,33 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Fixed — FILL Fill Rectangle lower-right edge is inclusive (Phase 3, R-3)
+
+- **`Fill Rectangle` now draws its lower-right boundary pixel**, matching the
+  Angrylion oracle. The rasteriser previously used a half-open span with a
+  `(coord + 3) >> 2` ceil on the lower-right, which dropped the final row and
+  column of a rectangle whose lower-right lands on an integer pixel boundary. The
+  RDP convention is **inclusive** of the pixel containing the lower-right
+  coordinate, and in FILL/COPY mode the low two bits of `yl` are forced set
+  (`yl | 3`) so the last scanline fills whole. The scissor still clips with an
+  exclusive lower-right. Found by the new seeded-fuzz corpus and pinned by a
+  mutation-checked unit test.
+
+### Added — seeded-fuzz conformance corpus (Phase 3, T-33-005)
+
+- **A reproducible fuzz generator and curated corpus** now expand the Angrylion
+  conformance gate beyond hand-authored vectors. `vectors-gen/driver.c` gained a
+  `--fuzz <dir> <seed> <count>` mode (a SplitMix64-seeded generator over RDP
+  families RustyN64 already models byte-exactly), and the Rust harness gained a
+  `curate_fuzz_candidates` dev-tool (replays a candidate batch and partitions it
+  into pass/fail) plus a `fuzz_corpus_matches_angrylion` gate that replays every
+  committed vector under `tests/vectors/fuzz/`. Only candidates that already match
+  the oracle are committed, so an unmodelled corner is dropped rather than baked
+  in. The first family — **48 random FILL rectangles** (seed `0x1234`) sweeping
+  colour, image size, rectangle position, and scissor — is committed and passes;
+  it is what surfaced the lower-right edge bug above. The corpus is reproducible
+  (regenerating from the seed is byte-identical).
+
 ### Added — combiner primitive-colour mux conformance vector (Phase 3)
 
 - **The combiner primitive-colour mux is now validated against Angrylion.** A new

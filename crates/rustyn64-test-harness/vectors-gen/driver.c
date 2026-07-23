@@ -639,7 +639,73 @@ static const uint32_t V19_PRIM_COMBINER_32[] = {
     SHADE_BLOCK_FLAT(0x11, 0x22, 0x33, 0xFF), // distinct shade (must NOT appear)
 };
 
+// ---- Seeded fuzz generator (SplitMix64) ----
+//
+// A reproducible pseudo-random corpus: the seed and this generator's source fully
+// determine every emitted vector, so the committed goldens can be regenerated
+// bit-for-bit (`./driver --fuzz <dir> <seed> <count>`). Only families whose RDP
+// paths RustyN64 already models byte-exactly are generated here; the Rust side
+// *curates* (replays each candidate and keeps only oracle-matching ones), so a
+// generated config that trips an unmodelled corner is dropped, never committed.
+// The generator stays deliberately conservative: correctness of the corpus is the
+// invariant, breadth is grown family by family.
+static uint64_t g_rng;
+static uint64_t sm64(void) {
+    g_rng += 0x9E3779B97F4A7C15ull;
+    uint64_t z = g_rng;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+// Uniform in [lo, hi] inclusive.
+static uint32_t rng_range(uint32_t lo, uint32_t hi) {
+    return lo + (uint32_t)(sm64() % (uint64_t)(hi - lo + 1u));
+}
+
+// FILL-mode Fill Rectangle family (16-bit): a random fill colour, image size, and
+// aligned rectangle. FILL writes the colour verbatim to covered pixels and leaves
+// the rest zero, which RustyN64 reproduces byte-exactly (ledger R-3), so every
+// member matches the oracle. Coordinates are integer (`* 4` into the .2 fixed
+// point) — no sub-pixel edge, which is the one FILL corner not yet modelled.
+static int fuzz_fill_rect(int idx, const char *out_dir) {
+    uint32_t w = rng_range(4, 12), h = rng_range(4, 12);
+    uint32_t rx0 = rng_range(0, w - 1), rx1 = rng_range(rx0 + 1, w);
+    uint32_t ry0 = rng_range(0, h - 1), ry1 = rng_range(ry0 + 1, h);
+    uint16_t c = (uint16_t)rng_range(0, 0xFFFF);
+    uint32_t fill_lo = ((uint32_t)c << 16) | c;
+    uint32_t words[] = {
+        0x2F300000u, 0x00000000u,                  // Set Other Modes: FILL
+        0x3F100000u | (w - 1u), 0x00001000u,       // Set Color Image: 16-bit
+        0x37000000u, fill_lo,                      // Set Fill Color
+        0x2D000000u, ((w * 4u) << 12) | (h * 4u),  // Set Scissor (0,0)-(w,h)
+        0x36000000u | ((rx1 * 4u) << 12) | (ry1 * 4u), // Fill Rectangle: lower-right
+        ((rx0 * 4u) << 12) | (ry0 * 4u),           //   upper-left
+    };
+    char name[64];
+    snprintf(name, sizeof(name), "fz_fill_%03d", idx);
+    Vector v = {name, 0x2000, 0x1000, w, h, 2, sizeof(words) / 4, words, 0, 0, NULL};
+    return emit_vector(&v, out_dir);
+}
+
+// Emit a reproducible fuzz corpus of `count` candidate vectors from `seed`.
+static int emit_fuzz(const char *out_dir, uint64_t seed, int count) {
+    g_rng = seed;
+    for (int i = 0; i < count; i++) {
+        if (fuzz_fill_rect(i, out_dir)) return 1;
+    }
+    fprintf(stderr, "fuzz: emitted %d candidate(s) from seed %llu\n", count,
+            (unsigned long long)seed);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    // Fuzz mode: `./driver --fuzz <out_dir> <seed> <count>` emits a reproducible
+    // candidate corpus (curated on the Rust side) instead of the fixed vectors.
+    if (argc >= 5 && strcmp(argv[1], "--fuzz") == 0) {
+        uint64_t seed = strtoull(argv[3], NULL, 0);
+        int count = atoi(argv[4]);
+        return emit_fuzz(argv[2], seed, count);
+    }
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
     for (uint32_t y = 0; y < 8; y++)
