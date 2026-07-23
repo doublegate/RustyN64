@@ -183,11 +183,10 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       RGBA8888 colour path). **Finding:** the default **dither is ON** (RGB dither mode 0 = "magic"),
       so non-extreme colours vary per pixel — dither must be disabled in vectors (Set Other Modes hi
       bits 7:4 = `1111` → `0x2F0000F0`) until dither is implemented (a 2c residual). The 2c sub-pixel
-      coverage
-      is now wired for both the shaded/textured **and depth** 1-/2-cycle paths (inclusion + coverage
-      write-back); remaining: the interpenetration-Z coverage, the AA-edge blend, other `cvg_dest`
-      modes, alpha-compare, dither. NB: constructing shade+z / textured vectors requires the FULL
-      16-u32 shade block — a short block silently misaligns the z-suffix and Angrylion renders blank.
+      coverage is now wired for both the shaded/textured **and depth** 1-/2-cycle paths (inclusion +
+      coverage write-back); remaining: the interpenetration-Z coverage, the AA-edge blend, other
+      `cvg_dest` modes, alpha-compare, dither. NB: constructing shade+z / textured vectors requires the
+      FULL 16-u32 shade block — a short block silently misaligns the z-suffix and Angrylion renders blank.
       The first triangle vector caught
       the 4× edge-slope bug (ledger **R-14**), now **fixed** — the slopes are pre-shifted `>> 2` at
       decode and the affected triangle unit-test goldens were corrected against the oracle. Next:
