@@ -489,9 +489,14 @@ This applies standalone and combined with the depth test. Validated by a hand-co
   `fetch_texel` and runs the combiner (with any shade). Works standalone and with shade/depth.
 
 Validated by a textured-triangle test that samples a loaded RGBA16 texel through a texel-passthrough
-combiner. Scope (**open residual R-13**): the **perspective divide** (the `W` reciprocal LUT) and the
-exact tile shift/clamp/mask for triangle coordinates are the next slice; the flat-coordinate case is
-scale-independent and correct. The oracle stays **93**.
+combiner.
+
+**Perspective-correct texturing.** When `Set Other Modes` `persp_tex_en` (bit 51) is set, `interpolate_st`
+interpolates `S`/`T`/`W` and runs the hardware perspective divide — a faithful port of ParaLLEl-RDP's
+`perspective_divide` (the 64-entry reciprocal LUT, the normalisation shift, the out-of-bounds
+saturation, the `w <= 0` carry, the 17-bit clamp), validated by a hand-computed `perspective_divide`
+test. Scope (**open residual R-13**): the exact tile shift/clamp/mask for triangle coordinates and the
+LOD/`texel1` path remain for the conformance pass. The oracle stays **93**.
 
 ## State
 
