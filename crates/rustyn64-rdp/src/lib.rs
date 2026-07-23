@@ -1472,10 +1472,9 @@ impl Rdp {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "blend_shift is 0..=4 for in-domain dz: the z_compare branch clamps \
-                  both bounds; the else branch mirrors the oracle's upper-only min \
-                  (depth_test.h:136 vs :57-58), where an out-of-4-bit dz_compressed \
-                  wraps exactly as the reference's u8() cast does"
+        reason = "dz_compressed is clamped to 0..=0xf up front, so both blend_shift \
+                  branches (clamp(0,4) and min(0xf - dz_compressed, 4)) yield 0..=4 \
+                  before the u8 cast — the DepthResult invariant holds"
     )]
     #[allow(
         clippy::similar_names,
@@ -1492,14 +1491,21 @@ impl Rdp {
         let blend_en;
         let coverage_wrap;
         let mut blend_shift = [0u8; 2];
-        // The stored dz is a 4-bit field; mask it so `dz_decompress`'s `1 << dz`
-        // can never shift past 31 even if a caller left junk in the upper bits.
-        let current_dz = i32::from(inp.current_dz & 0xf);
+        // Sanitize every input to its hardware domain up front, so the shifts and
+        // sums below are bounded for any `i32`/`u8` a caller passes (`depth_test` is
+        // public and the pipeline that will call it clamps identically — the oracle
+        // clamps `z` to the 18-bit range in `clamping.h`, and `current_dz`/
+        // `current_depth`/`dz_compressed` are 4-/14-/4-bit storage fields).
+        let z = z.clamp(0, 0x3_FFFF); // 18-bit UNORM depth
+        let dz = dz.clamp(0, 0x3_FFFF); // depth-range delta (non-negative)
+        let dz_compressed = dz_compressed.clamp(0, 0xf); // 4-bit log2, as `0xf - …` assumes
+        let current_depth = inp.current_depth & 0x3FFF; // 14-bit stored z
+        let current_dz = i32::from(inp.current_dz & 0xf); // 4-bit stored dz
 
         if inp.z_compare {
-            let memory_z = z_decompress(inp.current_depth);
+            let memory_z = z_decompress(current_depth);
             let mut memory_dz = dz_decompress(current_dz);
-            let precision_factor = (i32::from(inp.current_depth) >> 11) & 0xf;
+            let precision_factor = (i32::from(current_depth) >> 11) & 0xf;
             let mut coplanar = false;
 
             blend_shift[0] = (dz_compressed - current_dz).clamp(0, 4) as u8;
@@ -3802,24 +3808,29 @@ mod tests {
         assert!(Rdp::depth_test(0x3_FF00, 0, 0, 1, &inp).depth_pass);
     }
 
-    /// **Out-of-domain inputs do not panic.** A `current_dz` with junk in the upper
-    /// bits (masked to 4 bits before `1 << dz`) and a large per-pixel `dz` (whose
-    /// `combine_dz` path is guarded against a `1 << -1`) must not shift-overflow.
-    /// Without the masks/guard this panics in a debug build.
+    /// **Out-of-domain inputs are sanitized, not panicked on.** Every argument here
+    /// is outside its hardware domain — a `current_depth`/`current_dz` with junk in
+    /// the upper bits, a negative `z`, a huge `dz`, an out-of-4-bit `dz_compressed`.
+    /// The boundary clamps/masks bound them all, so the shifts (`1 << dz`,
+    /// `combine_dz`, `combined_dz << 3`) and the `z ± combined_dz` sums stay in
+    /// range. Without the sanitization this panics in a debug build.
     #[test]
     fn depth_test_out_of_domain_inputs_do_not_panic() {
         let inp = DepthInputs {
-            current_depth: 0x3000,
-            current_dz: 200, // upper bits set; masked to 8
+            current_depth: 0xFFFF, // masked to 14 bits
+            current_dz: 200,       // masked to 4 bits (→ 8)
             current_coverage: 0,
             z_compare: true,
             z_mode: 0,
             force_blend: false,
             aa_enable: false,
         };
-        // A negative dz makes `dz | memory_dz` negative, driving combine_dz's
-        // find_msb to -1 — the `1 << -1` the guard prevents. dz_compressed 20 is
-        // also out of its 4-bit domain. The call just has to return, not panic.
-        let _ = Rdp::depth_test(0x1000, -1, 20, 1, &inp);
+        // Negative z (clamped to 0), a large dz (clamped to the 18-bit range, so
+        // combine_dz << 3 stays bounded), and dz_compressed 20 (clamped to 0xf).
+        let r = Rdp::depth_test(-5, 0x7FFF_FFFF, 20, 1, &inp);
+        assert!(
+            r.blend_shift[0] <= 4 && r.blend_shift[1] <= 4,
+            "invariant holds"
+        );
     }
 }
