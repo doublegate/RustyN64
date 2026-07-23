@@ -674,11 +674,8 @@ static int fuzz_fill_rect(int idx, const char *out_dir) {
     uint32_t ry0 = rng_range(0, h - 1), ry1 = rng_range(ry0 + 1, h);
     uint16_t c = (uint16_t)rng_range(0, 0xFFFF);
     uint32_t fill_lo = ((uint32_t)c << 16) | c;
-    // The scissor is the full image so the rectangle's own edges determine the
-    // fill extent. A separate scissor-clip sweep is deferred: adding one surfaced a
-    // distinct divergence in the *scissor* lower-right rounding (the existing
-    // `fill_rectangle_is_clipped_to_the_scissor` unit test asserts an exclusive
-    // scissor that has never been oracle-checked), which is its own investigation.
+    // The scissor is the full image so the rectangle's own edges determine the fill
+    // extent (the `fillrect` family). The `scissor` family below varies the scissor.
     uint32_t words[] = {
         0x2F300000u, 0x00000000u,                  // Set Other Modes: FILL
         0x3F100000u | (w - 1u), 0x00001000u,       // Set Color Image: 16-bit
@@ -693,13 +690,48 @@ static int fuzz_fill_rect(int idx, const char *out_dir) {
     return emit_vector(&v, out_dir);
 }
 
-// Emit a reproducible fuzz corpus of `count` candidate vectors from `seed`.
-static int emit_fuzz(const char *out_dir, uint64_t seed, int count) {
+// FILL-mode Fill Rectangle with an INDEPENDENT scissor sub-rect that often clips
+// the rectangle. This exercises the asymmetric scissor lower-right (ledger R-15):
+// the X bound is inclusive of its boundary pixel, the Y bound is exclusive. The
+// scissor upper-left is in the first half of the image and its lower-right past it,
+// so the clip lands inside the drawn region for most members.
+static int fuzz_scissor(int idx, const char *out_dir) {
+    uint32_t w = rng_range(4, 12), h = rng_range(4, 12);
+    uint32_t rx0 = rng_range(0, w - 1), rx1 = rng_range(rx0 + 1, w);
+    uint32_t ry0 = rng_range(0, h - 1), ry1 = rng_range(ry0 + 1, h);
+    uint32_t sx0 = rng_range(0, w / 2), sy0 = rng_range(0, h / 2);
+    uint32_t sx1 = rng_range(sx0 + 1, w), sy1 = rng_range(sy0 + 1, h);
+    uint16_t c = (uint16_t)rng_range(0, 0xFFFF);
+    uint32_t fill_lo = ((uint32_t)c << 16) | c;
+    uint32_t words[] = {
+        0x2F300000u, 0x00000000u,                  // Set Other Modes: FILL
+        0x3F100000u | (w - 1u), 0x00001000u,       // Set Color Image: 16-bit
+        0x37000000u, fill_lo,                      // Set Fill Color
+        0x2D000000u | ((sx0 * 4u) << 12) | (sy0 * 4u), // Set Scissor: upper-left
+        ((sx1 * 4u) << 12) | (sy1 * 4u),           //   lower-right
+        0x36000000u | ((rx1 * 4u) << 12) | (ry1 * 4u), // Fill Rectangle: lower-right
+        ((rx0 * 4u) << 12) | (ry0 * 4u),           //   upper-left
+    };
+    char name[64];
+    snprintf(name, sizeof(name), "fz_scis_%03d", idx);
+    Vector v = {name, 0x2000, 0x1000, w, h, 2, sizeof(words) / 4, words, 0, 0, NULL};
+    return emit_vector(&v, out_dir);
+}
+
+// Emit a reproducible fuzz corpus of `count` candidates from `seed` in `family`.
+static int emit_fuzz(const char *out_dir, uint64_t seed, int count, const char *family) {
     g_rng = seed;
-    for (int i = 0; i < count; i++) {
-        if (fuzz_fill_rect(i, out_dir)) return 1;
+    int (*gen)(int, const char *) = fuzz_fill_rect;
+    if (strcmp(family, "scissor") == 0) {
+        gen = fuzz_scissor;
+    } else if (strcmp(family, "fillrect") != 0) {
+        fprintf(stderr, "fuzz: unknown family '%s' (want fillrect|scissor)\n", family);
+        return 1;
     }
-    fprintf(stderr, "fuzz: emitted %d candidate(s) from seed %llu\n", count,
+    for (int i = 0; i < count; i++) {
+        if (gen(i, out_dir)) return 1;
+    }
+    fprintf(stderr, "fuzz: emitted %d '%s' candidate(s) from seed %llu\n", count, family,
             (unsigned long long)seed);
     return 0;
 }
@@ -724,7 +756,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "--fuzz: invalid count '%s' (want 1..100000)\n", argv[4]);
             return 1;
         }
-        return emit_fuzz(argv[2], seed, (int)count);
+        const char *family = (argc >= 6) ? argv[5] : "fillrect";
+        return emit_fuzz(argv[2], seed, (int)count, family);
     }
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).

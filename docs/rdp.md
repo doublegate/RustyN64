@@ -191,19 +191,23 @@ is N64brew *…/Commands* §0x3F/0x37/0x2D/0x36 and *…/Pipeline* §Fill Pipeli
   memory is still the 32-bit value repeated); **8-bit** writes byte `x & 3`.
   Coordinates are `u10.2`; FILL floors the upper-left and draws through the pixel
   that **contains** the lower-right coordinate (inclusive), with the FILL/COPY
-  `yl | 3` rule forcing the last scanline to fill whole. The **scissor** clips all
-  four edges with an **exclusive** lower-right. A **4-bit** color image is not a
-  valid FILL target (it crashes the real RDP), so the fill is skipped.
+  `yl | 3` rule forcing the last scanline to fill whole. The **scissor** clip is
+  **asymmetric**: its X lower-right is **inclusive** of the boundary pixel (but a
+  rectangle entirely at or past the scissor's right edge draws nothing), while its Y
+  lower-right is **exclusive**. A **4-bit** color image is not a valid FILL target
+  (it crashes the real RDP), so the fill is skipped.
 
 Scope limits, honestly: `Fill Rectangle` implements the **FILL-mode** path only —
 the cycle-type gate arrives with `Set Other Modes`, so a 1-/2-cycle rectangle
 (which routes through the blender, not the fill register) is not yet distinguished.
-The **integer-coordinate** edge rule (inclusive lower-right + `yl | 3`, exclusive
-scissor) is now **oracle-validated** against Angrylion by the seeded-fuzz corpus
-(`tests/vectors/fuzz/`, 48 random FILL rectangles) and a mutation-checked unit test
-— the fuzz gate is what caught the earlier half-open off-by-one (`docs/accuracy-ledger.md`
-**R-3**). What remains open there: **sub-pixel** (fractional-coordinate) rect edges,
-which the whole-pixel fuzz does not exercise.
+The **integer-coordinate** edge rules — the rectangle's inclusive lower-right +
+`yl | 3` (**R-3**) and the scissor's asymmetric inclusive-X / exclusive-Y clip with
+the `allover` guard (**R-15**) — are **oracle-validated** against Angrylion by the
+seeded-fuzz corpus (`tests/vectors/fuzz/`, 48 FILL rectangles + 48 scissor-clip
+rectangles) and mutation-checked unit tests; the fuzz gate is what caught both the
+half-open rectangle off-by-one and the scissor asymmetry (`docs/accuracy-ledger.md`).
+What remains open: **sub-pixel** (fractional-coordinate) rect/scissor edges, which
+the whole-pixel fuzz does not exercise.
 
 **Measured oracle effect:** the n64-systemtest failing-assertion count is
 **unchanged at 93 suite-wide** (917 started), same as `v0.3.0`. The fill pipeline

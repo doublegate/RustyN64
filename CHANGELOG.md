@@ -20,6 +20,21 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Fixed — FILL scissor clip is asymmetric (Phase 3, R-15)
+
+- **The FILL-mode scissor now clips with the RDP's asymmetric lower-right.** The X
+  bound is **inclusive** of the pixel containing `scissor.xl` (matching the
+  rectangle edge), except that a rectangle lying entirely at or past the scissor's
+  right edge draws nothing (the `allover` guard). The Y bound stays **exclusive**
+  (scanlines at or past `scissor.yl` are dropped) — the asymmetry the RDP shows
+  because FILL/COPY forces the *rectangle's* `yl | 3` while the scissor's `yl` is
+  raw. The previous code clipped both bounds exclusively, dropping the scissor's
+  inclusive right column. Found and pinned by a new 48-vector scissor-clip fuzz
+  family; the self-authored `fill_rectangle_is_clipped_to_the_scissor` unit test
+  (which had asserted an unverified *exclusive* X edge) was corrected against the
+  oracle. A hard width clamp keeps the inclusive X bound from spilling past the
+  framebuffer stride.
+
 ### Fixed — FILL Fill Rectangle lower-right edge is inclusive (Phase 3, R-3)
 
 - **`Fill Rectangle` now draws its lower-right boundary pixel**, matching the
@@ -42,10 +57,11 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   into pass/fail) plus a `fuzz_corpus_matches_angrylion` gate that replays every
   committed vector under `tests/vectors/fuzz/`. Only candidates that already match
   the oracle are committed, so an unmodelled corner is dropped rather than baked
-  in. The first family — **48 random FILL rectangles** (seed `0x1234`) sweeping
-  fill colour, image size, and rectangle position (the scissor is the full image,
-  so the rectangle's own edges determine the extent) — is committed and passes; it
-  is what surfaced the lower-right edge bug above. The corpus is reproducible
+  in. Two families are committed (**96 vectors**): **48 FILL rectangles** (seed
+  `0x1234`, full-image scissor — surfaced the R-3 rectangle-edge bug) and **48
+  scissor-clip rectangles** (seed `0x5c15`, an independent scissor sub-rect —
+  surfaced the R-15 asymmetric-scissor bug). Both are selected via the generator's
+  family argument (`--fuzz <dir> <seed> <count> [fillrect|scissor]`), reproducible
   (regenerating from the seed is byte-identical), and the `--fuzz` arguments are
   validated (a malformed seed/count fails loudly rather than emitting nothing).
 
