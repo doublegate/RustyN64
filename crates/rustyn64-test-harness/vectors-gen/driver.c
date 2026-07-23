@@ -505,6 +505,23 @@ static const uint32_t V12_TEX_RECT_COPY_16[] = {
     0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 (0x1000) DtDy=1.0 (0x400)
 };
 
+// V13: a COPY-mode Texture Rectangle blitted to an OFFSET position — the same 4x2
+// texture as V12, but 1:1-blitted into the (2,2)..(5,3) sub-rectangle of an 8x8
+// colour image (the rest stays background 0). Exercises the destination positioning
+// (XH/YH != 0) and the scissor interaction that the origin blit did not. Still 1:1
+// (DsDx = 4.0, DtDy = 1.0) 16-bit, so RustyN64's supported copy path applies.
+static const uint32_t V13_TEX_RECT_OFFSET_16[] = {
+    0x2F2000F0u, 0x00000000u, // Set Other Modes: COPY, dither off
+    0x3D100003u, 0x00003000u, // Set Texture Image: 16-bit, width 4, addr 0x3000
+    0x35100200u, 0x00000000u, // Set Tile 0: 16-bit, line 1, tmem 0
+    0x32000000u, 0x0000C004u, // Set Tile Size: SL0 TL0 SH3 TH1 (4x2)
+    0x34000000u, 0x0000C004u, // Load Tile: SL0 TL0 SH3 TH1 -> 4x2 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x2401400Cu, 0x00008008u, // Texture Rectangle: XL=5 YL=3 tile0 XH=2 YH=2
+    0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 DtDy=1.0
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -557,6 +574,11 @@ int main(int argc, char **argv) {
                   sizeof(V12_TEX_RECT_COPY_16) / 4, V12_TEX_RECT_COPY_16,
                   0x3000, 8, TEX4X2_RAMP};
     if (emit_vector(&v12, out_dir)) return 1;
+
+    Vector v13 = {"tex_rect_offset_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V13_TEX_RECT_OFFSET_16) / 4, V13_TEX_RECT_OFFSET_16,
+                  0x3000, 8, TEX4X2_RAMP};
+    if (emit_vector(&v13, out_dir)) return 1;
 
     return 0;
 }

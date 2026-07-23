@@ -162,7 +162,11 @@ directly** — a standalone ~200-line MIT driver (`crates/rustyn64-test-harness/
 that links only Angrylion's CPU-only `n64video.c` + `parallel.cpp` (no Vulkan/OpenGL/Granite), pokes a
 command list into RDRAM, calls `n64video_process_list()`, and reads the framebuffer back. Vectors are
 hand-authored command lists (deterministic, `parallel=false`), not randomised. The `.rvec` container
-(9×u32 BE header + command bytes + golden framebuffer) lives under `tests/vectors/`; the golden pixels
+lives under `tests/vectors/` in two layouts (see `vectors-gen/README.md`): **v1** is a 9×u32 BE header
++ command bytes + golden framebuffer; **v2** adds two header words (`preload_addr`, `preload_len` → 11
+u32) and a **preload region** (a texture written to RDRAM before the command list, for `Load Tile`) between
+the header and the command bytes. A vector with no preload is emitted as v1, so pre-preload vectors stay
+byte-identical. The golden pixels
 are stored raw big-endian at small resolutions (the 8×8 vectors are 204–228 B each — well within
 budget, no compression/LFS needed yet). **Reproducibility:** the corpus was generated against Angrylion
 (`angrylion-rdp-plus`) pinned at commit `31bdb1f0a79dd726017a38432540c6b5db0fa117`; a different
@@ -176,9 +180,10 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (11 vectors
-      passing + 1 ignored WIP):** `tex_rect_copy_16` (COPY-mode Texture Rectangle — the **first texture
-      path validated against Angrylion**, clean because copy mode bypasses the combiner/texel pipeline),
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (12 vectors
+      passing + 1 ignored WIP):** `tex_rect_copy_16` + `tex_rect_offset_16` (COPY-mode Texture Rectangle,
+      1:1 origin and offset blits — the **first texture path validated against Angrylion**, clean because
+      copy mode bypasses the combiner/texel pipeline; non-1:1/Flip/8-32bit copy need RustyN64 impl first),
       `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16`,
       `fill_tri_frac_16` (FILL rounds), `shade_tri_frac_16` (1-cycle sub-pixel coverage),
       `shade_depth_tri_frac_16` (the depth path applies the same coverage), `shade_tri_32` (32-bit
