@@ -540,11 +540,12 @@ static const uint32_t V14_TEX_RECT_8X8_16[] = {
 };
 static uint16_t tex8x8[64];
 
-// V15: a MAGNIFIED COPY-mode Texture Rectangle probe — an 8-texel texture (fully
-// loaded, so no unloaded-TMEM read) blitted into an 8x1 image with DsDx = 2.0
-// (0.5 texel/pixel). RustyN64 steps this per-pixel (clean 2x magnification); the
-// real RDP uses a 4-pixels-per-cycle sub-texel selection (R-8). This probe checks
-// whether they agree for the simple magnify case.
+// V15: a MAGNIFIED COPY-mode Texture Rectangle — an 8-texel texture (fully loaded,
+// so no unloaded-TMEM read) blitted into an 8x1 image with DsDx = 2.0 (0.5
+// texel/pixel). The RDP copies 4 pixels per cycle (reading 4 consecutive texels
+// from a 64-bit TMEM word, the base advancing DsDx*4 texels/cycle), so a 2x magnify
+// reads texels 0,1,2,3,2,3,4,5 — NOT the naive per-pixel 0,0,1,1,2,2,3,3. RustyN64
+// now models this (ledger R-8) and matches the golden below byte-for-byte.
 static const uint16_t TEX8X1_RAMP[8] = {
     0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, 0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u,
 };

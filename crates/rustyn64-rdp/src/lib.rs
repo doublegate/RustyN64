@@ -1513,7 +1513,9 @@ impl Rdp {
         let dtdy = sext16(w1_lo);
 
         let tile = self.tiles[tile_idx];
-        // Only the 16-bit -> 16-bit copy is wired (R-8); Flip too.
+        // Only the 16-bit -> 16-bit copy is wired (R-8): both the 1:1 and the non-1:1
+        // 4-pixels-per-cycle cases now model correctly, but `Flip` (0x25), 8/32-bit,
+        // and TLUT copy are still unsupported and draw nothing.
         if flip || tile.size != 2 || self.color_image_size != 2 || self.color_image_width == 0 {
             return;
         }
