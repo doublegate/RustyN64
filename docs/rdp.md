@@ -333,6 +333,33 @@ fetch sides. **YUV16** decode is deferred (no oracle test needs it this sprint);
 loading** (nibble `Load Tile`/`Load Block`) remains R-7, though 4-bit *fetch* is done. The
 oracle count stays **93** — `fetch_texel` has no runtime caller until the sampler (T-32-004).
 
+### The flat-fill triangle rasteriser (T-33-001)
+
+The first Sprint-3 ticket and the foundation every later per-pixel ticket renders through:
+the edge-walked triangle. `Fill Triangle` (0x08) and its shade/texture/Z variants
+(0x09–0x0F) are decoded and rasterised, cross-verified against the N64brew wiki and the
+ParaLLEl-RDP reference (MIT, `interpolate_x`).
+
+- **Decode.** `yh/ym/yl` are `s11.2` (four sub-scanlines per pixel); the three edge base
+  X's (`xh/xm/xl`) are `s11.16` and their slopes (`dxhdy/dxmdy/dxldy`) `s13.16`, read from the
+  command's words 1–3 via the multi-word `cmd_base` seam. The `lmajor`/flip bit (55) selects
+  the fill direction. The opcode's low three bits are `shade:texture:zbuffer` (shade = bit 58,
+  texture = bit 57, zbuffer = bit 56), appending +8/+8/+2 coefficient words that `tick`
+  already length-consumes.
+- **Edge-walk.** For each scanline's four sub-scanlines, the edge X is
+  `x0 + (y − yh_base) * slope`; the major edge `H` (yh→yl) provides one span bound and the
+  active minor edge (`M` above `ym`, `L` below) the other, `flip` deciding which is left. The
+  span is reduced to whole pixels (`>> 16`), scissor-clipped, and filled with the FILL-mode
+  colour (via the shared `fill_pixel`, the same write as `Fill Rectangle`).
+
+Scope (**open residual R-9**): this is a **flat fill** in FILL cycle mode — the sub-pixel
+coverage (ParaLLEl-RDP's `quantize_x` sticky-bit edge and the `do_offset` latch) and the
+shade/texture/Z attribute interpolation are deferred; the 0x09–0x0F variants fill flat, their
+coefficient words length-consumed only. The combiner (T-33-002), blender (T-33-003), and
+Z/coverage (T-33-004) then colour the triangle; the whole is graded bit-exact against the
+ParaLLEl-RDP conformance vectors (T-33-005). Validated here by a right-triangle golden pinning
+the edge-walk and the fixed-point decode. Oracle unchanged at **93**.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);

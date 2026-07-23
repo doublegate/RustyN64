@@ -28,11 +28,14 @@ interpolated attributes. This is the foundation every later ticket renders throu
 
 **Acceptance criteria:**
 
-- [ ] The base triangle (0x08) fills the correct pixels (major/minor edge span walk, left/right-major),
-      byte-exact against a hand-computed small triangle.
-- [ ] The shade (0x0A/0x0E…), texture (0x09/0x0D…), and Z (0x0B…) coefficient blocks are decoded and
-      interpolated per pixel; the multi-word length matches `command_len_words`.
-- [ ] Scissor clipping applies; the `lmajor` flag selects the walk direction.
+- [x] The base triangle (0x08) fills the correct pixels (major/minor edge span walk, left/right-major),
+      byte-exact against a hand-computed right triangle (`fill_triangle_flat_fills_a_right_triangle`).
+- [ ] The shade (bit 58 → 0x0C–0x0F), texture (bit 57 → 0x0A/0x0B/0x0E/0x0F), and Z (bit 56 →
+      0x09/0x0B/0x0D/0x0F) coefficient blocks are decoded and interpolated per pixel; the multi-word
+      length matches `command_len_words`. **Deferred to R-9** — the variants flat-fill for now
+      (coefficient words length-consumed only); attribute interpolation lands with the combiner
+      (T-33-002) and Z (T-33-004). *(The earlier flag map here was wrong; corrected above.)*
+- [x] Scissor clipping applies; the `lmajor` flag selects the walk direction.
 
 **Complexity:** XL
 
