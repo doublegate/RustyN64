@@ -429,7 +429,7 @@ combiner and do not dither), and is validated byte-for-byte against Angrylion by
 conformance vector. Noise dither (mode 2) reads the magic cell for now (**R-10** — no noise source).
 
 Scope (**open residual R-11 / R-9**): the anti-aliased-edge divider LUT, the memory-alpha
-interpenetrating-Z blend-shift path, alpha-compare, the `color_on_cvg` divide interaction,
+interpenetrating-Z blend-shift path, the `color_on_cvg` divide interaction,
 and the coverage write-back remain decoded-but-unused — they need the sub-pixel coverage
 accumulator (slice 2c). The decode, the no-divide equation, the input muxes, the 2-cycle chaining,
 and now the memory-read wiring are unit/integration-tested against hand-computed values; the
@@ -557,9 +557,10 @@ span, which is correct (FILL renders "without subpixel accuracy"). Validated aga
 fractional left edge excludes a column and whose right edge leaves a column partially covered).
 The **depth path** applies the same coverage (`depth_span` takes the edges too; `shade_depth_tri_frac_16`
 renders identically to `shade_tri_frac_16` against Angrylion). **Ordered RGB dither is wired**
-(T-33-004 2c, `dither_tri_32` — see the blender section). Scope (**open residual R-9**): the
-coverage-weighted **interpenetration Z** path, the **AA-edge blend**, the other `cvg_dest` modes,
-and **alpha-compare** are not wired. The oracle stays **93**.
+(T-33-004 2c, `dither_tri_32` — see the blender section). **Alpha-compare is wired** on both the
+no-Z and depth paths (R-11, `alpha_compare_16` / `alpha_compare_z_16`). Scope (**open residual
+R-9**): the coverage-weighted **interpenetration Z** path, the **AA-edge blend**, and the other
+`cvg_dest` modes are not wired. The oracle stays **93**.
 
 ### The conformance gate (T-33-005)
 

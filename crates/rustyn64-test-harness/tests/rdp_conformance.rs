@@ -363,6 +363,19 @@ fn alpha_compare_16_matches_angrylion() {
     );
 }
 
+/// **Alpha-compare on the depth path.** The same shade-alpha ramp + `0x80` threshold
+/// as `alpha_compare_16`, but on a z-suffixed triangle (op 0x0D) with `z_update` on
+/// and `z_compare` off — so every pixel passes the depth test and alpha-compare is
+/// the sole gate. The colour equals the no-Z case (low-alpha columns killed), which
+/// guards that `depth_span` applies alpha-compare and skips the killed pixels' write.
+#[test]
+fn alpha_compare_z_16_matches_angrylion() {
+    assert_matches(
+        "alpha_compare_z_16",
+        include_bytes!("vectors/alpha_compare_z_16.rvec"),
+    );
+}
+
 /// A **magnified** COPY-mode Texture Rectangle (`DsDx = 2.0`, 0.5 texel/pixel). The
 /// RDP copies **4 pixels per cycle**: within a cycle it reads 4 consecutive texels
 /// (`base..base+3` from a 64-bit TMEM word) and the base advances by `DsDx × 4`
