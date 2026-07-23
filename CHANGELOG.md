@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — RDP texel-format decoders and Load TLUT (Phase 3, T-32-003)
+
+- **The RDP decodes texels and loads palettes.** `Rdp::fetch_texel(tile, s, t)`
+  returns RGBA8888 for RGBA16/32, IA16/8/4, I8/4, and CI8/4 (through the TLUT,
+  with CI4 folding the tile palette in as the high index nibble) — the fetch half
+  of the texture pipeline. `Load TLUT` (0x30) quadruples each 16-bit entry into
+  high TMEM. Decode is matched to the ParaLLEl-RDP read layout: TMEM is a natural
+  big-endian byte array with only the odd-row `^= (t & 1) << 2` swap (no host-word
+  endian twiddles, consistent with the loads). Six unit tests pin the per-format
+  widening, the RGBA32 split, the odd-row swap, the TLUT lookup, and dispatch
+  routing. YUV16 and 4-bit *loading* remain deferred (R-7); 4-bit *fetch* is done.
+  The `Load TLUT` base is written wherever `tmem_addr` points (the upper-half /
+  alignment rule is a programmer requirement, not a hardware rejection — enforcing
+  one would invent behaviour). Oracle unchanged at 93 (`fetch_texel` has no runtime
+  caller until the sampler, T-32-004).
+
 ### Added — RDP TMEM loads: Load Tile and Load Block (Phase 3, T-32-002)
 
 - **The RDP now moves texels from RDRAM into TMEM.** `Load Tile` (0x34) copies an
