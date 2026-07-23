@@ -55,7 +55,21 @@ fn parse(bytes: &[u8]) -> Vector<'_> {
     let cmd_addr = u32_at(24);
     let cmd_len = u32_at(28) as usize;
     let fb_len = u32_at(32) as usize;
-    assert_eq!(fb_len, (width * height * bpp) as usize, "fb_len mismatch");
+    assert!(
+        bpp == 2 || bpp == 4,
+        "unsupported bpp {bpp} (expected 2 or 4)"
+    );
+    assert_eq!(
+        cmd_len % 4,
+        0,
+        "command length is not a whole number of words"
+    );
+    // Checked so an implausible header can't silently wrap the pixel count.
+    let expected_fb = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(bpp as usize))
+        .expect("framebuffer dimensions overflow");
+    assert_eq!(fb_len, expected_fb, "fb_len mismatch");
     assert!(
         bytes.len() >= hdr + cmd_len + fb_len,
         "truncated .rvec: header declares more payload than the file holds"
@@ -78,6 +92,13 @@ fn replay(v: &Vector<'_>) -> Vec<u8> {
     let mut bus = Bus::new();
     // Load the command list into RDRAM verbatim (big-endian words, as generated).
     let base = v.cmd_addr as usize;
+    let fb = v.fb_addr as usize;
+    let fb_len = (v.width * v.height * v.bpp) as usize;
+    assert!(
+        base + v.cmds.len() <= bus.rdram.len() && fb + fb_len <= bus.rdram.len(),
+        "vector addresses exceed RDRAM ({} bytes)",
+        bus.rdram.len()
+    );
     bus.rdram[base..base + v.cmds.len()].copy_from_slice(v.cmds);
 
     // Point the DP FIFO at the list and drain it (one command per tick).
@@ -90,8 +111,6 @@ fn replay(v: &Vector<'_>) -> Vec<u8> {
         bus.rdp_tick();
     }
 
-    let fb = v.fb_addr as usize;
-    let fb_len = (v.width * v.height * v.bpp) as usize;
     bus.rdram[fb..fb + fb_len].to_vec()
 }
 

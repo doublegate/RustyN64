@@ -104,11 +104,19 @@ static void wr(const void *buf, size_t n, FILE *f) {
 // Read a 16-bit framebuffer pixel (RGBA5551) as its logical N64 value.
 static uint16_t read_fb16(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w) {
     uint32_t idx16 = (fb_addr >> 1) + y * w + x;
+    if (idx16 >= RDRAM_SIZE / 2) {
+        fprintf(stderr, "read_fb16: pixel out of RDRAM bounds\n");
+        exit(1);
+    }
     return ((const uint16_t *)g_rdram)[idx16 ^ 1]; // WORD_ADDR_XOR
 }
 // Read a 32-bit framebuffer pixel (RGBA8888) as its logical N64 value (0xRRGGBBCC).
 static uint32_t read_fb32(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w) {
     uint32_t idx32 = (fb_addr >> 2) + y * w + x;
+    if (idx32 >= RDRAM_SIZE / 4) {
+        fprintf(stderr, "read_fb32: pixel out of RDRAM bounds\n");
+        exit(1);
+    }
     return ((const uint32_t *)g_rdram)[idx32]; // no XOR at 32-bit
 }
 
