@@ -9,6 +9,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the flat-fill triangle rasteriser (Phase 3, T-33-001)
+
+- **The RDP rasterises triangles.** `Fill Triangle` (0x08) and its shade/texture/Z
+  variants (0x09–0x0F) are decoded and flat-filled: the three edges (major `H`
+  yh→yl, minor `M` yh→ym, minor `L` ym→yl) are walked per sub-scanline
+  (`s11.2` Y, `s11.16` X, `s13.16` slopes), the span between the major edge and
+  the active minor edge is reduced to whole pixels and scissor-clipped, and the
+  FILL-mode colour is written — the foundation every later per-pixel ticket
+  renders through. `lmajor`/flip selects the fill direction. The edge-walk and
+  the fixed-point decode are cross-verified against the N64brew wiki and
+  ParaLLEl-RDP (MIT) and pinned by a right-triangle golden. Scope (ledger R-9):
+  flat fill only — the sub-pixel coverage and the shade/texture/Z attribute
+  interpolation are deferred to T-33-002…005 (the combiner/blender/Z and the
+  conformance fuzz); the 0x09–0x0F coefficient words are length-consumed only.
+  Oracle unchanged at 93.
+
 ### Added — the first textured picture: copy-mode Texture Rectangle (Phase 3, T-32-004)
 
 - **The RDP draws a texture.** `Texture Rectangle` (0x24) blits a tile into the
