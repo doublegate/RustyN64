@@ -20,6 +20,20 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — conformance corpus: Gouraud-gradient vector + generator macros (Phase 3, T-33-005)
+
+- **The conformance corpus grows to 10 vectors, and the generator is hardened
+  against the short-block bug.** A new `shade_grad_tri_32` vector is the first to
+  exercise shade *interpolation* (not a flat colour): a Gouraud gradient with a
+  per-x red delta (`dx.R = -0x10`/pixel) and a per-major-edge green delta
+  (`de.G = +0x08`/scanline). It passes byte-for-byte against Angrylion, validating
+  `interpolate_shade` (base + dx + de, i16 snap) against the oracle for the first
+  time. The vector generator (`vectors-gen/driver.c`) gains command-block macros —
+  `SHADE_BLOCK` / `SHADE_BLOCK_FLAT` / `Z_SUFFIX` — that expand to the exact word
+  count, so a triangle's shade/z attribute block can no longer be written too short
+  (which silently misaligns the following blocks and makes Angrylion render a blank
+  frame). The existing nine vectors regenerate byte-identically after the refactor.
+
 ### Added — ordered RGB dither (Phase 3, T-33-004 2c)
 
 - **The rasteriser now applies the RDP's ordered RGB dither.** After the combiner
