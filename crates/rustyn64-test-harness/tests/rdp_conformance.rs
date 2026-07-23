@@ -167,3 +167,14 @@ fn fill_tri_wide_16_matches_angrylion() {
         include_bytes!("vectors/fill_tri_wide_16.rvec"),
     );
 }
+
+/// A right-major triangle with a **negative** minor-edge slope (`DxMDy = -1.0`),
+/// so the edge leans left — exercises sign-extension and the arithmetic `>> 2`
+/// (rounds toward −∞) on the R-14 fix.
+#[test]
+fn fill_tri_neg_16_matches_angrylion() {
+    assert_matches(
+        "fill_tri_neg_16",
+        include_bytes!("vectors/fill_tri_neg_16.rvec"),
+    );
+}

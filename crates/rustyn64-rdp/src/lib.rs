@@ -795,6 +795,11 @@ const fn unpack_rgba5551(p: u16) -> [u8; 4] {
 /// (parallel-rdp `coverage.h` `SUBPIXELS`).
 pub const COVERAGE_SUBPIXELS: usize = 4;
 
+/// `log2` of the 4 sub-scanlines per pixel row: the triangle edge slopes are dx
+/// per **pixel** row but the edge-walk steps per **quarter**-pixel, so each slope
+/// is pre-shifted `>> SUB_SCANLINE_SHIFT` at decode (ledger R-14).
+const SUB_SCANLINE_SHIFT: i32 = 2;
+
 /// Quantise a signed edge X to the 3-fraction-bit sub-pixel domain used by
 /// [`compute_coverage`], with the RDP sticky bit.
 ///
@@ -1554,10 +1559,11 @@ impl Rdp {
         // §Edge Coefficients: "change in x per change in y", with `yh/ym/yl` in
         // `s11.2` *screen* pixels). The edge-walk below advances the edge per
         // Y-subpixel — `y = line*4 + sub` is in **quarter-pixel** units — so each
-        // slope is pre-shifted `>> 2` to a per-quarter-pixel step (parallel-rdp
-        // `span_setup.comp:167`, where `setup.dxhdy = raw >> 2`). Omitting this
-        // advanced every edge 4× too fast (ledger R-14, caught by the T-33-005
-        // conformance gate against Angrylion).
+        // slope is pre-shifted `>> SUB_SCANLINE_SHIFT` to a per-quarter-pixel step
+        // (parallel-rdp `span_setup.comp:167`, where `setup.dxhdy = raw >> 2`).
+        // Omitting this advanced every edge 4× too fast (ledger R-14, caught by the
+        // T-33-005 conformance gate against Angrylion). The arithmetic shift rounds
+        // a negative slope toward −∞, matching the hardware (`fill_tri_neg_16`).
         let xl = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(8)) & 0x0FFF_FFFF,
             28,
@@ -1565,7 +1571,7 @@ impl Rdp {
         let dxldy = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(12)) & 0x3FFF_FFFF,
             30,
-        ) >> 2;
+        ) >> SUB_SCANLINE_SHIFT;
         let xh = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(16)) & 0x0FFF_FFFF,
             28,
@@ -1573,7 +1579,7 @@ impl Rdp {
         let dxhdy = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(20)) & 0x3FFF_FFFF,
             30,
-        ) >> 2;
+        ) >> SUB_SCANLINE_SHIFT;
         let xm = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(24)) & 0x0FFF_FFFF,
             28,
@@ -1581,7 +1587,7 @@ impl Rdp {
         let dxmdy = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(28)) & 0x3FFF_FFFF,
             30,
-        ) >> 2;
+        ) >> SUB_SCANLINE_SHIFT;
 
         // Scissor in integer pixels (u10.2 -> pixel).
         let sx0 = i32::from(self.scissor_ulx) >> 2;

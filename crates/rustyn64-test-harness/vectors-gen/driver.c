@@ -240,6 +240,22 @@ static const uint32_t V3_FILL_TRI_WIDE_16[] = {
     0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
 };
 
+// V4: a right-major Fill Triangle with a NEGATIVE minor-edge slope — the left
+// edge leans left as y increases (DxMDy = -1.0), the right edge vertical at x=5.
+// Exercises sign-extension + the arithmetic `>> 2` (rounds toward -inf) on a
+// negative slope against Angrylion. The 30-bit slope field for -1.0 is
+// 0x3FFF0000 (two's complement of 0x10000 in bits 29:0).
+static const uint32_t V4_FILL_TRI_NEG_16[] = {
+    0x2F300000u, 0x00000000u, // Set Other Modes: cycle_type = FILL
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x08000020u, 0x00200000u, // op=0x08, lft=0 (right-major), yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL = 0, DxLDy = 0
+    0x00050000u, 0x00000000u, // XH = 5.0 (right edge), DxHDy = 0
+    0x00050000u, 0x3FFF0000u, // XM = 5.0 (left edge), DxMDy = -1.0
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -254,6 +270,10 @@ int main(int argc, char **argv) {
     Vector v3 = {"fill_tri_wide_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V3_FILL_TRI_WIDE_16) / 4, V3_FILL_TRI_WIDE_16};
     if (emit_vector(&v3, out_dir)) return 1;
+
+    Vector v4 = {"fill_tri_neg_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V4_FILL_TRI_NEG_16) / 4, V4_FILL_TRI_NEG_16};
+    if (emit_vector(&v4, out_dir)) return 1;
 
     return 0;
 }
