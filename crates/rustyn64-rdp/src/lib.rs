@@ -118,6 +118,9 @@ const fn sext(v: u32, bits: u32) -> i32 {
 }
 
 /// Sign-extend the low 9 bits of `x` (the combiner's `bitfieldExtract(x, 0, 9)`).
+///
+/// Only bits 0–8 are used: the `<< 23` shifts bit 8 to the sign position and the
+/// arithmetic `>> 23` fills from it, so any higher bits of `x` are discarded.
 const fn sext9(x: i32) -> i32 {
     (x << 23) >> 23
 }
@@ -3058,5 +3061,8 @@ mod tests {
         let out = rdp.combine(inp, true);
         // RGB is cycle0's texel0 passed through cycle1's Combined.
         assert_eq!(&out[0..3], &[11, 22, 33], "2-cycle chains RGB");
+        // Alpha also chains: cycle0 passes texel0's alpha (44) to Combined, and
+        // cycle1's D = combined-alpha (C = lod-frac = 0), so the output is 44.
+        assert_eq!(out[3], 44, "2-cycle chains alpha");
     }
 }
