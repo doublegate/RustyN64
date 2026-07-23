@@ -444,9 +444,25 @@ bits; `zbuffer_read` reverses it. Byte-exact against ParaLLEl-RDP's `store_vram_
   pays for it. Validated by a Bus round-trip test and a full-`dz` Z-buffer round-trip (a `dz` whose low
   bits only survive via the hidden path).
 
-Scope (**open residual R-12**): **coverage accumulation** at edges and the actual **per-pixel routing**
-of combiner→blender→depth in the triangle rasteriser land in PR-B part 2 (which closes the R-9
-flat-fill). `depth_test`/`zbuffer_*` have no runtime caller yet; the oracle stays **93**.
+### The first depth-tested triangle (T-33-004, PR-B part 2a)
+
+The first per-pixel pipeline: `Fill Z-Buffered Triangle` (opcode bit 56) decodes the z-coefficient
+suffix (`z`/`dzdx`/`dzde`, `s15.16`) via `decode_triangle_z`, and — when `Set Other Modes` enables the
+depth test or update — `depth_span` runs the real per-pixel path instead of the flat fill.
+
+- **Interpolate.** `interpolate_z` computes each pixel's 18-bit depth from the z-coefficients and the
+  major-edge x — a faithful port of ParaLLEl-RDP's `interpolate_z` snap (`interpolation.h`) for the
+  full-coverage, `do_offset == false` case (sub-pixel snapping is R-9).
+- **Test and write.** `depth_test` compares the interpolated depth against the Z-buffer entry
+  (`zbuffer_read`); only passing pixels write colour, and `zbuffer_write` stores the new depth when
+  `z_update` is set. This is `depth_test`/`zbuffer_*`'s first runtime caller.
+
+Validated by an occluding-triangles test (a nearer triangle draws, a farther one is rejected, a
+nearer-still one overwrites — both accept and reject paths) and a hand-computed `interpolate_z` test.
+
+Scope (**open residual R-9/R-12**): the colour is still the FILL register (the combiner→blender routing
+is part 2b, which closes R-9); coverage is full (sub-pixel edge coverage is part 2c); the `dz`
+derivation is a first cut. The oracle stays **93** (no systemtest ROM drives rendering yet).
 
 ## State
 
