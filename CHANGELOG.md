@@ -20,6 +20,21 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — sub-pixel coverage on the depth path (Phase 3, T-33-004 2c)
+
+- **Depth-tested 1-/2-cycle triangles now apply sub-pixel coverage too.** `depth_span`
+  takes the per-Y-subpixel edges and gates each pixel with `pixel_coverage`
+  (skipping an uncovered pixel before the Z read/write) and stores the coverage in
+  the pixel alpha — identical to the no-Z shaded path. Verified byte-for-byte
+  against Angrylion by a new `shade_depth_tri_frac_16` vector (the same fractional
+  triangle as `shade_tri_frac_16` but with a z-suffix and `z_update`: it renders
+  identically, confirming the depth path applies the same coverage). 7 conformance
+  vectors now pass. The self-asserted depth/blend unit tests were updated to a drawn
+  interior pixel (the degenerate top vertex is AA-excluded) and to check the
+  combiner/blend RGB (the alpha now holds coverage). Scope (ledger R-9): the
+  coverage-weighted interpenetration Z path, the AA-edge blend, and the other
+  `cvg_dest` modes remain. Oracle 93.
+
 ### Added — sub-pixel coverage on 1-/2-cycle triangles (Phase 3, T-33-004 2c)
 
 - **1-cycle/2-cycle triangles now rasterise with sub-pixel coverage.** The

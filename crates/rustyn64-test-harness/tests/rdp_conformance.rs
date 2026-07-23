@@ -206,3 +206,14 @@ fn shade_tri_frac_16_matches_angrylion() {
         include_bytes!("vectors/shade_tri_frac_16.rvec"),
     );
 }
+
+/// The same 1-cycle fractional triangle with a **z-suffix** (`z_update` on): the
+/// depth path applies the identical sub-pixel coverage as the no-Z shaded path, so
+/// column 2 is excluded and column 6 partial. Guards `depth_span`'s coverage wiring.
+#[test]
+fn shade_depth_tri_frac_16_matches_angrylion() {
+    assert_matches(
+        "shade_depth_tri_frac_16",
+        include_bytes!("vectors/shade_depth_tri_frac_16.rvec"),
+    );
+}
