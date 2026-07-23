@@ -509,6 +509,34 @@ saturation, the `w <= 0` carry, the 17-bit clamp), validated by a hand-computed 
 test. Scope (**open residual R-13**): the exact tile shift/clamp/mask for triangle coordinates and the
 LOD/`texel1` path remain for the conformance pass. The oracle stays **93**.
 
+### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
+
+The RDP anti-aliases by sampling 8 sub-positions per pixel (4 Y-subpixels × 2 X-samples) against the
+triangle's edges and counting how many fall inside — a bit-exact port of parallel-rdp `coverage.h`
+and `span_setup.comp`, the pure primitives ahead of wiring them into the rasteriser.
+
+- **`quantize_x`.** Snaps a `s.16` edge X to the 3-fraction-bit (`s.3`) coverage domain with the RDP
+  sticky bit: any discarded fraction bit forces the low output bit set, so a truncated-but-nonzero
+  coordinate never lands exactly on a sub-pixel boundary — which is what keeps the half-open `<` /
+  `>=` edge tests exact. (parallel-rdp's `setup.xh` is `s.15` and quantises with `>> 12`; our raw
+  command edges are `s.16`, one fraction bit wider, so `>> 13` — the same `s.3` result.)
+- **`compute_coverage`.** For a pixel column, tests the two X-samples of each of the 4 Y-subpixels
+  against that Y-subpixel's `[xleft, xright)` span. The X-sample offsets alternate by Y-subpixel —
+  `{0, 4}` for Y-subpixels 0/2, `{2, 6}` for 1/3 — the RDP's diamond pattern. Returns the 8-bit mask
+  (bit `Ysub + 4·Xsample`); its popcount is the coverage count (0–8).
+- **`aa_enable`.** `Set Other Modes` bit 3 is now decoded. With AA off the RDP draws a pixel only
+  when the first sub-sample (bit 0, the top-left) is covered.
+
+Both primitives are pinned by hand-computed unit tests derived from the oracle's arithmetic
+(full/partial/empty masks, the sticky bit, the negative-coordinate arithmetic shift), **not** from
+this port's own output. Scope (**open residual R-9**): the rasteriser still unions the four
+sub-scanlines into a whole-pixel bounding span, so `compute_coverage` has no runtime caller yet —
+wiring the exact rule changes every triangle's edge pixels (the AA-off top-left-sample test kills a
+degenerate top row the union drew), so the pixel-inclusion rewrite and its re-derived goldens land
+with the coverage integration, validated against the ParaLLEl-RDP conformance vectors (T-33-005). The
+coverage-weighted AA blend and the `cvg_dest` write-back are the remaining slice-2c residual. The
+oracle stays **93**.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);

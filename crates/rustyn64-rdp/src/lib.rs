@@ -670,6 +670,9 @@ pub struct OtherModes {
     pub alpha_compare_en: bool,
     /// Perspective-correct texturing (bit 51): divide the interpolated `S`/`T` by `W`.
     pub persp_tex_en: bool,
+    /// Anti-aliasing enable (bit 3): sub-pixel edge coverage governs which edge
+    /// pixels draw and enables the edge blend (N64brew *…/Commands* §0x2F bit 3).
+    pub aa_enable: bool,
 }
 
 /// The resolved per-pixel blender input colours (each RGBA8888).
@@ -786,6 +789,74 @@ const fn unpack_rgba5551(p: u16) -> [u8; 4] {
         ((b << 3) | (b >> 2)) as u8,
         if p & 1 != 0 { 0xFF } else { 0 },
     ]
+}
+
+/// The number of Y-subpixels the RDP samples per scanline for coverage
+/// (parallel-rdp `coverage.h` `SUBPIXELS`).
+pub const COVERAGE_SUBPIXELS: usize = 4;
+
+/// Quantise a signed edge X to the 3-fraction-bit sub-pixel domain used by
+/// [`compute_coverage`], with the RDP sticky bit.
+///
+/// Any discarded fraction bit forces the low output bit set, so a
+/// truncated-but-nonzero coordinate never snaps exactly onto a sub-pixel
+/// boundary — this is what makes the half-open `<` / `>=` edge tests in
+/// [`compute_coverage`] bit-exact (parallel-rdp `span_setup.comp:60-66`).
+///
+/// **Fixed-point domain.** parallel-rdp's `setup.xh` is `s.15` (its `base_x =
+/// xh >> 15`), so it quantises with `>> 12` to reach the `s.3` coverage domain.
+/// Our edge values are the raw command `s.16` (`major >> 16` is the pixel), one
+/// fraction bit wider, so we shift `>> 13` and take the sticky bit over the low
+/// 13 discarded bits — the same 3-fraction-bit result.
+///
+/// This and [`compute_coverage`] are the sub-pixel coverage primitives (T-33-004
+/// slice 2c); the rasteriser's edge-walk still unions the four sub-scanlines into
+/// a whole-pixel bounding span (**open residual R-9**) until the coverage
+/// integration lands, so these have no runtime caller yet.
+#[must_use]
+pub const fn quantize_x(x: i32) -> i32 {
+    let sticky = (x & 0x1FFF != 0) as i32;
+    (x >> 13) | sticky
+}
+
+/// The 8-bit sub-pixel coverage mask for integer pixel column `x`, given the
+/// per-Y-subpixel left/right span edges (each `s.3`, from [`quantize_x`]).
+///
+/// The RDP samples 4 Y-subpixels × 2 X-samples = 8 sub-positions. The two
+/// X-samples sit at sub-pixel fractions that alternate by Y-subpixel — `{0, 4}`
+/// for Y-subpixels 0/2 and `{2, 6}` for 1/3 — the RDP's diamond sample pattern
+/// (`coverage.h:31-44` `u16x4(0, 4, 2, 6)`). A sample is covered when it lies in
+/// the half-open span `[xleft, xright)` of its Y-subpixel. Bit `Ysub + 4·Xsample`
+/// is set when covered; the popcount ([`u8::count_ones`]) is the coverage count (0–8).
+///
+/// See [`quantize_x`] for the domain of `xleft`/`xright` and why this has no
+/// runtime caller yet.
+#[must_use]
+pub fn compute_coverage(
+    xleft: [i32; COVERAGE_SUBPIXELS],
+    xright: [i32; COVERAGE_SUBPIXELS],
+    x: i32,
+) -> u8 {
+    // The four lanes carry X-sample offsets {0, 4, 2, 6}; `xshift = (x << 3) + offset`.
+    let base = x << 3;
+    let xshift = [base, base + 4, base + 2, base + 6];
+    // `.xxyy` / `.zzww`: lanes 0-3 test Y-subpixels {0,0,1,1} then {2,2,3,3}.
+    let ysub_lo = [0usize, 0, 1, 1];
+    let ysub_hi = [2usize, 2, 3, 3];
+    let mut clip = 0u8;
+    let mut lane = 0;
+    while lane < COVERAGE_SUBPIXELS {
+        let lo = ysub_lo[lane];
+        if xshift[lane] < xleft[lo] || xshift[lane] >= xright[lo] {
+            clip |= 1 << lane;
+        }
+        let hi = ysub_hi[lane];
+        if xshift[lane] < xleft[hi] || xshift[lane] >= xright[hi] {
+            clip |= 1 << (lane + 4);
+        }
+        lane += 1;
+    }
+    !clip
 }
 
 /// One cycle of the colour combiner.
@@ -1552,9 +1623,9 @@ impl Rdp {
                     continue;
                 }
                 // Union the four sub-scanline spans into one bounding span for the
-                // pixel row — a flat-fill approximation; true per-sub-scanline
-                // coverage (partial edge pixels) lands with the sub-pixel edge rule
-                // and coverage (T-33-004 / the conformance fuzz, R-9).
+                // pixel row — a flat-fill approximation; the exact per-sub-scanline
+                // coverage ([`compute_coverage`]) replaces this in the coverage
+                // integration (T-33-004 slice 2c / the conformance fuzz, R-9).
                 span_l = span_l.min(xleft);
                 span_r = span_r.max(xright);
             }
@@ -2000,6 +2071,7 @@ impl Rdp {
             z_mode: ((lo >> 10) & 0x3) as u8,
             alpha_compare_en: lo & 1 != 0,
             persp_tex_en: (hi >> 19) & 1 != 0, // command bit 51
+            aa_enable: (lo >> 3) & 1 != 0,     // command bit 3
         };
     }
 
@@ -5126,5 +5198,46 @@ mod tests {
             color, 0x7F7F_00F0,
             "shade alpha 0x80 drives a 50/50 blend; combiner alpha 0xF0 only rides in the output byte"
         );
+    }
+
+    /// **`quantize_x` maps `s.16` edge X to the `s.3` coverage domain with the
+    /// sticky bit.** An integer pixel `p` maps to `p << 3` (`p·8`); any discarded
+    /// fraction bit forces the low bit set so the coordinate stays strictly inside
+    /// the half-open span. Negative coordinates arithmetic-shift toward −∞.
+    #[test]
+    fn quantize_x_maps_to_subpixel_domain_with_sticky() {
+        assert_eq!(quantize_x(5 << 16), 40, "pixel 5 -> 5*8");
+        // Pixel 5 + a small fraction (0x1000, below sub-pixel resolution): 40 | sticky.
+        assert_eq!(
+            quantize_x((5 << 16) | 0x1000),
+            41,
+            "sticky bit forces the LSB"
+        );
+        // Exactly half a pixel: sub-pixel offset 4 within pixel 5, no discarded bits.
+        assert_eq!(quantize_x((5 << 16) | (1 << 15)), 44, "pixel 5.5 -> 44");
+        assert_eq!(
+            quantize_x(-(3 << 16)),
+            -24,
+            "pixel -3 -> -24 (arithmetic shift)"
+        );
+    }
+
+    /// **`compute_coverage` yields a full mask for an interior pixel and a partial
+    /// mask at an edge.** With the left edge quantised to sub-pixel `43` (between
+    /// X-samples 2 and 4), pixel 5's samples at offsets `{0, 2}` fall outside and
+    /// `{4, 6}` inside, so the four Y-subpixels each cover their high sample only:
+    /// mask `0xAA`, count 4. A fully-enclosed pixel is `0xFF` (8); a fully-excluded
+    /// one is `0` (hand-computed against `coverage.h:31-44`).
+    #[test]
+    fn compute_coverage_full_partial_and_empty() {
+        // Fully inside: left edge at 0, right edge far away.
+        assert_eq!(compute_coverage([0; 4], [800; 4], 5), 0xFF);
+        assert_eq!(compute_coverage([0; 4], [800; 4], 5).count_ones(), 8);
+        // Fully outside: right edge behind the pixel.
+        assert_eq!(compute_coverage([800; 4], [0; 4], 5), 0x00);
+        // Left edge cutting the pixel at sub-pixel 43: samples {0,2} out, {4,6} in.
+        let mask = compute_coverage([43; 4], [800; 4], 5);
+        assert_eq!(mask, 0xAA, "high sample of each Y-subpixel covered");
+        assert_eq!(mask.count_ones(), 4);
     }
 }

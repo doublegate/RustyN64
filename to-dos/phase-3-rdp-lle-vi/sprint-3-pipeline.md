@@ -120,9 +120,19 @@ storage + coverage + per-pixel pipeline routing), per the split-large-tickets ru
             (`interpolate_st` + `fetch_texel`, non-perspective and perspective divide), and the
             **memory-read blender** (`read_pixel` + `blend`, gated on `force_blend`) all wired per
             pixel; closes the R-9 flat-fill for shaded/textured/translucent triangles.
-      - [ ] **part 2c** — sub-pixel coverage accumulator (`quantize_x` sticky-bit edge rounding), the
+      - [~] **part 2c** — sub-pixel coverage accumulator (`quantize_x` sticky-bit edge rounding), the
             coverage-driven AA blend + `cvg_dest` write-back, primitive-depth `z_source_sel`, and
             alpha-compare/dither. Feeds the conformance gate (T-33-005).
+            - [x] **2c-coverage primitives** — `compute_coverage` (4×2 diamond-sample 8-bit mask) +
+                  `quantize_x` (`s.16`→`s.3` sticky snap) + `aa_enable` decode, a bit-exact port of
+                  `coverage.h`/`span_setup.comp`, pinned by hand-computed unit tests. No runtime
+                  caller yet (rasteriser still unions sub-scanlines) — the exact-inclusion rewrite
+                  changes every triangle's edge pixels, so its re-derived goldens are validated
+                  against the T-33-005 conformance vectors, not hand-derived expectations.
+            - [ ] **inclusion rewrite** — replace the union-bbox span with per-Y-subpixel edges +
+                  `compute_coverage` pixel gating; re-derive the affected triangle goldens.
+            - [ ] AA-edge blend (coverage-weighted `uBlenderDividerLUT`), `cvg_dest` write-back,
+                  `z_source_sel` prim-depth, alpha-compare, dither.
 
 **Complexity:** L
 
