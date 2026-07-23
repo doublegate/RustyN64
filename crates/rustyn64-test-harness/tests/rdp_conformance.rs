@@ -225,3 +225,18 @@ fn shade_depth_tri_frac_16_matches_angrylion() {
 fn shade_tri_32_matches_angrylion() {
     assert_matches("shade_tri_32", include_bytes!("vectors/shade_tri_32.rvec"));
 }
+
+/// A 1-cycle shaded triangle into a **32-bit RGBA8888** colour image with the RDP's
+/// default **magic ordered dither ON** (`Set Other Modes` RGB dither mode 0). The
+/// flat shade `0x112233` is dithered per pixel by the 4×4 magic matrix: a channel
+/// rounds up to the next 5-bit level (`(c & 0xf8) + 8`) where the matrix cell is
+/// below the channel's low 3 bits, so interior pixels vary (e.g. `0x112238`,
+/// `0x182838`) rather than staying flat. Guards the `apply_rgb_dither` path against
+/// the Angrylion `rgb_dither` reference.
+#[test]
+fn dither_tri_32_matches_angrylion() {
+    assert_matches(
+        "dither_tri_32",
+        include_bytes!("vectors/dither_tri_32.rvec"),
+    );
+}

@@ -673,6 +673,11 @@ pub struct OtherModes {
     /// Anti-aliasing enable (bit 3): sub-pixel edge coverage governs which edge
     /// pixels draw and enables the edge blend (N64brew *…/Commands* §0x2F bit 3).
     pub aa_enable: bool,
+    /// RGB dither mode (bits 39:38): 0 magic, 1 bayer, 2 noise, 3 off. Applied
+    /// to the combined RGB per pixel before write-back (N64brew *…/Commands*
+    /// §0x2F; parallel-rdp `dither.c`). Modes 0/1 dither; 2 (noise, **R-10**)
+    /// currently reads the magic cell; 3 never rounds up (dither off).
+    pub rgb_dither_mode: u8,
 }
 
 /// The resolved per-pixel blender input colours (each RGBA8888).
@@ -883,6 +888,56 @@ pub fn compute_coverage(
         lane += 1;
     }
     !clip
+}
+
+/// The RDP's 4×4 "magic" ordered-dither matrix (parallel-rdp/angrylion `dither.c`).
+#[rustfmt::skip]
+const DITHER_MAGIC: [u8; 16] = [
+    0, 6, 1, 7,
+    4, 2, 5, 3,
+    3, 5, 2, 4,
+    7, 1, 6, 0,
+];
+/// The RDP's 4×4 "bayer" ordered-dither matrix (`dither.c`).
+#[rustfmt::skip]
+const DITHER_BAYER: [u8; 16] = [
+    0, 4, 1, 5,
+    4, 0, 5, 1,
+    3, 7, 2, 6,
+    7, 3, 6, 2,
+];
+
+/// The 3-bit RGB dither value for pixel `(x, y)` under the RGB dither mode
+/// (`Set Other Modes` bits 39:38): 0 magic, 1 bayer, 2 noise (**R-10**, read as
+/// the magic cell for now), 3 "constant 7" — which never rounds up, i.e. dither
+/// off. (parallel-rdp `dither.c` `get_dither_noise`.)
+fn rgb_dither_value(mode: u8, x: u32, y: u32) -> i32 {
+    let idx = ((y & 3) * 4 + (x & 3)) as usize;
+    match mode {
+        // Mode 2 (noise) intentionally reuses the magic matrix pending a real
+        // noise source (**R-10**); a per-pixel noise value replaces this then.
+        0 | 2 => i32::from(DITHER_MAGIC[idx]),
+        1 => i32::from(DITHER_BAYER[idx]),
+        _ => 7, // 3: constant 7 -> no dithering
+    }
+}
+
+/// Apply the RDP's ordered RGB dither to a colour (`dither.c` `rgb_dither`): each
+/// channel rounds up to the next 5-bit level `(c & 0xf8) + 8` (saturating at 255)
+/// **iff** the dither value is less than the channel's low 3 bits, else it is left
+/// unchanged. Alpha is untouched. `dith` is the shared 3-bit value (matrix cell).
+fn apply_rgb_dither(rgb: [u8; 4], dith: i32) -> [u8; 4] {
+    let channel = |c: u8| -> u8 {
+        let c = i32::from(c);
+        let rounded = if c > 247 { 255 } else { (c & 0xF8) + 8 };
+        // `replacesign` is all-ones when `dith < (c & 7)`, selecting the rounded value.
+        let replacesign = (dith - (c & 7)) >> 31;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        {
+            (c + ((rounded - c) & replacesign)) as u8
+        }
+    };
+    [channel(rgb[0]), channel(rgb[1]), channel(rgb[2]), rgb[3]]
 }
 
 /// One cycle of the colour combiner.
@@ -1744,6 +1799,7 @@ impl Rdp {
                             None => continue,
                         }
                     }
+                    self.dither_pixel(&mut color, x as u32, line as u32);
                     Self::write_pixel(row_addr, x as u32, bpp, color, bus);
                 }
             } else {
@@ -1983,6 +2039,22 @@ impl Rdp {
         Some(((mask.count_ones() - 1) & 7) as u8)
     }
 
+    /// Apply the ordered RGB dither to a combined pixel colour in place, mirroring
+    /// Angrylion's `rgb_dither`. Dither is part of the 1-/2-cycle pixel pipeline
+    /// only (FILL/COPY bypass the combiner), and RGB dither mode 3 is "off" — both
+    /// return early. Alpha is untouched. `(x, y)` index the 4×4 dither matrix
+    /// (**R-10**: noise mode 2 reads the magic cell for now).
+    fn dither_pixel(&self, color: &mut [u8; 4], x: u32, y: u32) {
+        // FILL/COPY bypass the combiner, and mode 3 ("off") never rounds up — both
+        // are the common case, so skip the per-pixel work outright rather than run
+        // it to a no-op result.
+        if self.other_modes.cycle_type >= 2 || self.other_modes.rgb_dither_mode == 3 {
+            return;
+        }
+        let dith = rgb_dither_value(self.other_modes.rgb_dither_mode, x, y);
+        *color = apply_rgb_dither(*color, dith);
+    }
+
     /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
     /// for each pixel, interpolate the depth, test it against the Z buffer, and —
     /// only if it passes — write the colour and (when `z_update`) the depth.
@@ -2077,6 +2149,7 @@ impl Rdp {
                     if let Some(c) = pixel_cov {
                         color[3] = c << 5;
                     }
+                    self.dither_pixel(&mut color, xu, yu);
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
                 } else {
                     self.fill_pixel(row_addr, xu, bpp, bus);
@@ -2192,6 +2265,7 @@ impl Rdp {
             alpha_compare_en: lo & 1 != 0,
             persp_tex_en: (hi >> 19) & 1 != 0, // command bit 51
             aa_enable: (lo >> 3) & 1 != 0,     // command bit 3
+            rgb_dither_mode: ((hi >> 6) & 0x3) as u8, // command bits 39:38
         };
     }
 
@@ -4360,7 +4434,8 @@ mod tests {
     #[test]
     fn set_other_modes_decodes_fields() {
         let mut rdp = Rdp::new();
-        let hi = 1 << 20; // cycle_type = 1 (2-cycle)
+        let hi = (1 << 20) // cycle_type = 1 (2-cycle)
+            | (1 << 6); // rgb_dither_mode = 1 (bayer), command bits 39:38
         let lo = (2 << 30) // P0
             | (3 << 28)    // P1
             | (1 << 26)    // A0
@@ -4406,6 +4481,41 @@ mod tests {
         assert!(om.z_compare_en);
         assert!(om.aa_enable);
         assert!(om.alpha_compare_en);
+        assert_eq!(om.rgb_dither_mode, 1);
+    }
+
+    /// **The magic-matrix RGB dither matches Angrylion's `rgb_dither` cell-for-cell.**
+    /// Verified against the `dither_tri_32` oracle: for the flat shade `0x112233`
+    /// (low 3 bits R=1 G=2 B=3), a channel rounds up to `(c & 0xf8) + 8` exactly
+    /// where the matrix cell is **strictly less than** that channel's low 3 bits.
+    /// - Cell 5 (magic `(2,1)`): 5 ≥ 1,2,3 → no channel rounds → `0x112233`.
+    /// - Cell 2 (magic `(2,2)`): 2 < 3 only → B rounds → `0x112238`.
+    /// - Cell 0 (magic `(3,3)`): 0 < 1,2,3 → all round → `0x182838`.
+    ///
+    /// A mutation of the round-up predicate or the matrix contents changes at least
+    /// one of these, so the test fails without the exact Angrylion behaviour.
+    #[test]
+    fn rgb_dither_matches_angrylion_magic_matrix() {
+        // The magic matrix is indexed `(y & 3) * 4 + (x & 3)`.
+        assert_eq!(rgb_dither_value(0, 1, 2), 5); // (x=1,y=2)
+        assert_eq!(rgb_dither_value(0, 2, 2), 2); // (x=2,y=2)
+        assert_eq!(rgb_dither_value(0, 3, 3), 0); // (x=3,y=3)
+
+        let shade = [0x11, 0x22, 0x33, 0xFF];
+        assert_eq!(apply_rgb_dither(shade, 5), [0x11, 0x22, 0x33, 0xFF]);
+        assert_eq!(apply_rgb_dither(shade, 2), [0x11, 0x22, 0x38, 0xFF]);
+        assert_eq!(apply_rgb_dither(shade, 0), [0x18, 0x28, 0x38, 0xFF]);
+
+        // Dither mode 3 ("off") returns a constant 7, which never rounds up.
+        assert_eq!(rgb_dither_value(3, 0, 0), 7);
+        assert_eq!(apply_rgb_dither(shade, 7), shade);
+
+        // The 5-bit saturation: a channel already at the top level stays put, and a
+        // dither-invariant channel (low 3 bits zero) is never touched.
+        assert_eq!(
+            apply_rgb_dither([0xFF, 0xF8, 0x00, 0x00], 0),
+            [0xFF, 0xF8, 0x00, 0x00]
+        );
     }
 
     /// **`Set Blend Color` / `Set Fog Color` latch their RGBA8888 registers.**
@@ -5165,6 +5275,7 @@ mod tests {
         rdp.other_modes.z_compare_en = true;
         rdp.other_modes.z_update_en = true;
         rdp.other_modes.force_blend = true; // -> depth_test sets blend_en
+        rdp.other_modes.rgb_dither_mode = 3; // dither off: isolate the blend under test
         rdp.other_modes.blend[0] = BlendCycle {
             p: 0,
             a: 0,
@@ -5255,6 +5366,7 @@ mod tests {
         rdp.other_modes.z_compare_en = true;
         rdp.other_modes.z_update_en = true;
         rdp.other_modes.force_blend = true;
+        rdp.other_modes.rgb_dither_mode = 3; // dither off: isolate the blend under test
         rdp.other_modes.blend[0] = BlendCycle {
             p: 0,
             a: 0,
@@ -5325,6 +5437,7 @@ mod tests {
         rdp.other_modes.z_compare_en = true;
         rdp.other_modes.z_update_en = true;
         rdp.other_modes.force_blend = true;
+        rdp.other_modes.rgb_dither_mode = 3; // dither off: isolate the blend under test
         rdp.other_modes.blend[0] = BlendCycle {
             p: 0,
             a: 2, // shade alpha -- the input under test

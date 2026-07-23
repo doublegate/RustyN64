@@ -20,6 +20,23 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — ordered RGB dither (Phase 3, T-33-004 2c)
+
+- **The rasteriser now applies the RDP's ordered RGB dither.** After the combiner
+  (and blender), each pixel's RGB is dithered by the 4×4 ordered matrix selected by
+  `Set Other Modes` — magic (mode 0, the hardware default), bayer (mode 1), or off
+  (mode 3, "constant 7"). `apply_rgb_dither` is a bit-exact port of Angrylion
+  `dither.c` `rgb_dither`: a channel rounds up to the next 5-bit level
+  (`(c & 0xf8) + 8`, saturating at 255) exactly where the matrix cell is below the
+  channel's low 3 bits. It runs on both the no-Z and depth pixel paths in 1-/2-cycle
+  mode (FILL/COPY bypass the combiner and do not dither). Verified byte-for-byte
+  against Angrylion by a new `dither_tri_32` conformance vector (magic dither over a
+  flat `0x112233` shade, where interior pixels dither to `0x112238`/`0x182838`); 9
+  conformance vectors now pass. Noise dither (mode 2) reads the magic cell for now
+  (ledger R-10 — no noise source). Scope (ledger R-9/R-11): the AA-edge blend, the
+  interpenetrating-Z blend-shift, the other `cvg_dest` modes, and alpha-compare
+  remain. Oracle 93.
+
 ### Added — sub-pixel coverage on the depth path (Phase 3, T-33-004 2c)
 
 - **Depth-tested 1-/2-cycle triangles now apply sub-pixel coverage too.** `depth_span`

@@ -413,8 +413,17 @@ ParaLLEl-RDP (MIT, `shaders/blender.h`).
   with memory. A translucent-triangle integration test proves a 50/50 blend of red over a green
   background reaches `0x7F7F00` (plain red would mean the memory read never happened).
 
+**Ordered RGB dither is now wired** (T-33-004 2c): after the combiner (and blender), each pixel's RGB
+is dithered by the RDP's 4×4 ordered matrix — magic (`Set Other Modes` RGB dither mode 0, the
+hardware default), bayer (mode 1), or off (mode 3, "constant 7"). `apply_rgb_dither` is a bit-exact
+port of Angrylion `dither.c` `rgb_dither`: a channel rounds up to the next 5-bit level
+(`(c & 0xf8) + 8`, saturating at 255) exactly where the matrix cell is below the channel's low 3
+bits. It runs on both the no-Z and depth pixel paths in 1-/2-cycle mode (FILL/COPY bypass the
+combiner and do not dither), and is validated byte-for-byte against Angrylion by the `dither_tri_32`
+conformance vector. Noise dither (mode 2) reads the magic cell for now (**R-10** — no noise source).
+
 Scope (**open residual R-11 / R-9**): the anti-aliased-edge divider LUT, the memory-alpha
-interpenetrating-Z blend-shift path, alpha-compare, dither, the `color_on_cvg` divide interaction,
+interpenetrating-Z blend-shift path, alpha-compare, the `color_on_cvg` divide interaction,
 and the coverage write-back remain decoded-but-unused — they need the sub-pixel coverage
 accumulator (slice 2c). The decode, the no-divide equation, the input muxes, the 2-cycle chaining,
 and now the memory-read wiring are unit/integration-tested against hand-computed values; the
@@ -541,9 +550,10 @@ span, which is correct (FILL renders "without subpixel accuracy"). Validated aga
 `fill_tri_frac_16` (FILL rounds a fractional edge) and `shade_tri_frac_16` (a 1-cycle triangle whose
 fractional left edge excludes a column and whose right edge leaves a column partially covered).
 The **depth path** applies the same coverage (`depth_span` takes the edges too; `shade_depth_tri_frac_16`
-renders identically to `shade_tri_frac_16` against Angrylion). Scope (**open residual R-9**): the
+renders identically to `shade_tri_frac_16` against Angrylion). **Ordered RGB dither is wired**
+(T-33-004 2c, `dither_tri_32` — see the blender section). Scope (**open residual R-9**): the
 coverage-weighted **interpenetration Z** path, the **AA-edge blend**, the other `cvg_dest` modes,
-**alpha-compare**, and **dither** are not wired. The oracle stays **93**.
+and **alpha-compare** are not wired. The oracle stays **93**.
 
 ### The conformance gate (T-33-005)
 
@@ -585,12 +595,13 @@ the rest is still marked TODO:
   format, size, width, address (**present**, T-32-001).
 - **Other-modes** — the big mode word: cycle type, the two blend cycles' `P/A/M/B`
   selects, `force_blend`, Z-mode + Z enables, coverage-dest mode, `image_read_en`,
-  alpha-compare (**present**, T-33-003, via `Set Other Modes` 0x2F). The dither and
+  alpha-compare, RGB dither mode (**present**, T-33-003/T-33-004, via `Set Other
+  Modes` 0x2F). The **RGB dither is wired** (magic/bayer, `dither_tri_32`); the
   AA/coverage-accumulate details are still Sprint-3 residual R-11.
 - **Combiner latches** — the two-stage color/alpha mux input selects (**present**,
   T-33-002, via `Set Combine Mode` 0x3C).
 - **Blender latches** — the `P/A/M/B` selects + blend/fog colour registers
-  (**present**, T-33-003). AA-edge / dither config is R-11.
+  (**present**, T-33-003). RGB dither is wired (T-33-004 2c); the AA-edge config is R-11.
 - **Depth registers** — the Z-buffer base (`Set Depth Image` 0x3E) and the primitive
   `z`/`dz` (`Set Primitive Depth` 0x2E) (**present**, T-33-004 PR-A). The Z-buffer
   RDRAM read/write and coverage accumulation are R-12 (PR-B).
