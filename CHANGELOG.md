@@ -20,6 +20,21 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — composite multi-primitive golden frame (Phase 3, toward T-33-006)
+
+- **A composite "first picture" golden frame** now pins a multi-primitive scene end
+  to end. Where the Sprint-1 golden (`golden_frame.rs`) rendered a single FILL
+  rectangle, `composite_frame.rs` drives a small scene — a FILL-mode blue background
+  plus a 1-cycle red shaded triangle drawn over it — through the RDP and the VI
+  scan-out, and pins the 8×8 RGBA8 result against a committed golden hash. It
+  exercises the Sprint-3 rasteriser features (FILL, cycle-type switching, the
+  combiner, sub-pixel-coverage shaded triangles) composed into one frame, asserts
+  the frame contains both background and foreground pixels (a genuine picture, not a
+  flat fill), and renders the scene twice to prove bit-identical output
+  (determinism, ADR 0004). This is a synthetic command stream, not a commercial ROM
+  (cartridge boot is Phase 5), so it is a step toward T-33-006 rather than its full
+  real-ROM criterion.
+
 ### Added — cvg_dest = full coverage write-back (Phase 3, R-9)
 
 - **The `cvg_dest = full` coverage write-back mode is now modelled.** `pixel_coverage`
