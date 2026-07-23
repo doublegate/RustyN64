@@ -20,6 +20,27 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — sub-pixel coverage on 1-/2-cycle triangles (Phase 3, T-33-004 2c)
+
+- **1-cycle/2-cycle triangles now rasterise with sub-pixel coverage.** The
+  edge-walk computes per-Y-subpixel `s.3` edges (`quantize_x`), and each pixel's
+  coverage is evaluated with `compute_coverage`: with anti-aliasing off a pixel
+  draws only when its top-left sub-sample is inside the span (so a fractional
+  edge correctly excludes a barely-touched column), and the coverage count is
+  stored in the pixel's alpha/coverage bits (`(count − 1) & 7`, the `cvg_dest`
+  clamp write-back). FILL/COPY mode is unchanged — it rounds to whole pixels
+  (the wiki: "without subpixel accuracy"), which the whole-pixel span already
+  matches. Verified byte-for-byte against Angrylion by two new conformance
+  vectors: `fill_tri_frac_16` (FILL-mode fractional edges round to whole pixels)
+  and `shade_tri_frac_16` (a 1-cycle shaded triangle whose fractional left edge
+  excludes column 2 and whose right edge leaves column 6 *partially* covered —
+  `0xf800` vs the fully-covered `0xf801`). The self-asserted shaded/textured unit
+  tests were updated: the degenerate top vertex is now excluded by the AA-off
+  rule, and the stored alpha holds coverage, so they check the combiner RGB at a
+  drawn interior pixel. Scope (ledger R-9): the depth path, the coverage-weighted
+  AA-edge blend, the other `cvg_dest` modes, alpha-compare, and dither remain.
+  Oracle 93.
+
 ### Fixed — the 4× triangle edge-slope bug (Phase 3, ledger R-14)
 
 - **Triangle edges now advance at the correct rate.** `triangle_fill` was

@@ -800,6 +800,21 @@ pub const COVERAGE_SUBPIXELS: usize = 4;
 /// is pre-shifted `>> SUB_SCANLINE_SHIFT` at decode (ledger R-14).
 const SUB_SCANLINE_SHIFT: i32 = 2;
 
+/// Left-edge poison for a sub-scanline outside the triangle: larger than any real
+/// `s.3` edge, so every X-sample tests as clipped and `min4` ignores it.
+const SPAN_X_POISON_LEFT: i32 = i32::MAX;
+/// Right-edge poison (mirror of [`SPAN_X_POISON_LEFT`]).
+const SPAN_X_POISON_RIGHT: i32 = i32::MIN;
+
+/// The minimum of the four per-Y-subpixel left edges (parallel-rdp `span_setup.comp` `min4`).
+fn min4(v: &[i32; COVERAGE_SUBPIXELS]) -> i32 {
+    v.iter().copied().min().unwrap_or(0)
+}
+/// The maximum of the four per-Y-subpixel right edges (`span_setup.comp` `max4`).
+fn max4(v: &[i32; COVERAGE_SUBPIXELS]) -> i32 {
+    v.iter().copied().max().unwrap_or(0)
+}
+
 /// Quantise a signed edge X to the 3-fraction-bit sub-pixel domain used by
 /// [`compute_coverage`], with the RDP sticky bit.
 ///
@@ -1619,9 +1634,20 @@ impl Rdp {
         let has_color = shade_setup.is_some() || tex_setup.is_some();
         let y_base = yh >> 2;
 
+        // 1-/2-cycle mode rasterises with sub-pixel coverage; FILL/COPY mode
+        // (`cycle_type >= 2`) rounds to whole pixels (N64brew *…/Commands*: FILL is
+        // "without subpixel accuracy"), which the union span already models exactly.
+        let subpixel = self.other_modes.cycle_type < 2;
+        // Sub-pixel scissor bounds (`s.3`): the raw `s10.2` scissor is one fraction
+        // bit narrower, so `<< 1` lifts it (parallel-rdp `span_setup.comp:196`).
+        let sc_lo = i32::from(self.scissor_ulx) << 1;
+        let sc_hi = i32::from(self.scissor_lrx) << 1;
         for line in start_line..=end_line {
             let mut span_l = i32::MAX;
             let mut span_r = i32::MIN;
+            // Per-Y-subpixel `s.3` edges for the sub-pixel coverage path.
+            let mut xleft = [SPAN_X_POISON_LEFT; COVERAGE_SUBPIXELS];
+            let mut xright = [SPAN_X_POISON_RIGHT; COVERAGE_SUBPIXELS];
             for sub in 0..4 {
                 let y = line * 4 + sub;
                 if y < yh || y >= yl {
@@ -1635,23 +1661,37 @@ impl Rdp {
                 };
                 let major_x = (major >> 16) as i32;
                 let minor_x = (minor >> 16) as i32;
-                let (xleft, xright) = if flip {
+                let (xl_i, xr_i) = if flip {
                     (major_x, minor_x)
                 } else {
                     (minor_x, major_x)
                 };
-                if xleft > xright {
+                if xl_i > xr_i {
                     continue;
                 }
-                // Union the four sub-scanline spans into one bounding span for the
-                // pixel row — a flat-fill approximation; the exact per-sub-scanline
-                // coverage ([`compute_coverage`]) replaces this in the coverage
-                // integration (T-33-004 slice 2c / the conformance fuzz, R-9).
-                span_l = span_l.min(xleft);
-                span_r = span_r.max(xright);
+                // The union bounding span (FILL / COPY / depth paths).
+                span_l = span_l.min(xl_i);
+                span_r = span_r.max(xr_i);
+                // Sub-pixel edges (`s.3`, sticky-bit snapped) for the coverage path:
+                // quantise the `s.16` major/minor and clamp to the scissor.
+                let (raw_l, raw_r) = if flip { (major, minor) } else { (minor, major) };
+                #[allow(clippy::cast_possible_truncation)]
+                let el = quantize_x(sext(raw_l as u32, 27)).clamp(sc_lo, sc_hi);
+                #[allow(clippy::cast_possible_truncation)]
+                let er = quantize_x(sext(raw_r as u32, 27)).clamp(sc_lo, sc_hi);
+                if (el >> 1) <= (er >> 1) {
+                    xleft[sub as usize] = el;
+                    xright[sub as usize] = er;
+                }
             }
-            let x0 = span_l.max(sx0).max(0);
-            let x1 = span_r.min(sx1).min(width - 1);
+            let (x0, x1) = if subpixel {
+                (
+                    (min4(&xleft) >> 3).max(0),
+                    (max4(&xright) >> 3).min(width - 1),
+                )
+            } else {
+                (span_l.max(sx0).max(0), span_r.min(sx1).min(width - 1))
+            };
             if x0 > x1 {
                 continue;
             }
@@ -1676,13 +1716,13 @@ impl Rdp {
                     bus,
                 );
             } else if has_color {
-                // The no-Z path (a triangle with no z-suffix): write the combiner colour
-                // directly. The memory-read blender lives only on the depth path
-                // (`depth_span`) for now, so `_shade_alpha` is unused here — a force-blend
-                // triangle without a Z buffer is a slice-2c gap (T-33-004, ledger R-9/R-11).
+                // The no-Z path (a triangle with no z-suffix): the combiner colour.
+                // In 1-/2-cycle mode each pixel's sub-pixel coverage gates the write
+                // and is stored in the pixel alpha (the AA/`cvg_dest` write-back); the
+                // memory-read blender still lives only on the depth path (R-9/R-11).
                 #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
                 for x in x0..=x1 {
-                    let (color, _shade_alpha) = self.combined_color(
+                    let (mut color, _shade_alpha) = self.combined_color(
                         shade_setup.as_ref(),
                         tex_setup.as_ref(),
                         major_x,
@@ -1690,6 +1730,12 @@ impl Rdp {
                         y_base,
                         x,
                     );
+                    if subpixel {
+                        match self.pixel_coverage(&xleft, &xright, x) {
+                            Some(cov) => color[3] = cov << 5,
+                            None => continue,
+                        }
+                    }
                     Self::write_pixel(row_addr, x as u32, bpp, color, bus);
                 }
             } else {
@@ -1903,6 +1949,30 @@ impl Rdp {
             self.combine(inp, self.other_modes.cycle_type == 1),
             shade_alpha,
         )
+    }
+
+    /// The stored coverage value (`0..=7`) for pixel column `x` under sub-pixel
+    /// coverage, or `None` when the pixel is not drawn.
+    ///
+    /// A zero mask kills the pixel. With anti-aliasing off, only the first
+    /// sub-sample (mask bit 0 — the top-left) matters, so a pixel whose top-left
+    /// sample is outside the span is dropped (parallel-rdp `shading.h:171-178`). The
+    /// stored coverage is the `COVERAGE_CLAMP` no-blend write-back `(count - 1) & 7`
+    /// (`coverage.h`), which packs into the pixel's alpha/coverage bits — full
+    /// coverage (count 8) stores 7, so the RGBA5551 alpha bit (`cov >> 2`) is set.
+    /// The coverage-weighted AA blend and the other `cvg_dest` modes are slice 2c-2.
+    fn pixel_coverage(
+        &self,
+        xleft: &[i32; COVERAGE_SUBPIXELS],
+        xright: &[i32; COVERAGE_SUBPIXELS],
+        x: i32,
+    ) -> Option<u8> {
+        let mask = compute_coverage(*xleft, *xright, x);
+        if mask == 0 || (!self.other_modes.aa_enable && (mask & 1) == 0) {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)] // count_ones() is 1..=8 here
+        Some(((mask.count_ones() - 1) & 7) as u8)
     }
 
     /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
@@ -4794,8 +4864,16 @@ mod tests {
             let a = 0x200 + row * 32 + x * 4;
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
         };
-        assert_eq!(px(&bus, 2, 0), 0x1122_33FF, "shaded, not the FILL colour");
-        assert_eq!(px(&bus, 5, 3), 0x1122_33FF);
+        // 1-cycle mode stores sub-pixel coverage in the alpha byte (validated against
+        // Angrylion by `shade_tri_frac_16`), so check the combiner RGB at a fully-
+        // covered interior pixel — full coverage stores `7 << 5 = 0xE0`. The top
+        // vertex (2,0) is a degenerate single point, excluded by the AA-off top-left
+        // sample rule.
+        assert_eq!(
+            px(&bus, 2, 3),
+            0x1122_33E0,
+            "shaded RGB + full-coverage alpha"
+        );
         assert_eq!(px(&bus, 0, 0), 0, "outside the triangle stays clear");
     }
 
@@ -4904,12 +4982,13 @@ mod tests {
             let a = 0x200 + row * 32 + x * 4;
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
         };
+        // 1-cycle sub-pixel coverage stores `7 << 5 = 0xE0` in the alpha at a
+        // fully-covered interior pixel; the degenerate top vertex (2,0) is excluded.
         assert_eq!(
-            px(&bus, 2, 0),
-            0xFF00_00FF,
-            "textured red, not the FILL colour"
+            px(&bus, 2, 3),
+            0xFF00_00E0,
+            "textured red + full-coverage alpha, not the FILL colour"
         );
-        assert_eq!(px(&bus, 5, 3), 0xFF00_00FF);
     }
 
     /// **`decode_texture` pairs the interleaved int/frac words per the wiki.** The
@@ -4978,12 +5057,23 @@ mod tests {
         // opcode 0x0E = shade (bit 58) + texture (bit 57); hi = 0x0880_0010 | (1<<26) | (1<<25).
         rdp.dispatch(0x0E, 0x0E80_0010, 0x0010_0000, base as u32, &mut bus);
 
-        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        // This near-vertical triangle (DxMDy 0.25) covers column 2 only partially, so
+        // check the combiner RGB (the point of this test — the texture is decoded at
+        // +0x60, past the shade block); the alpha holds sub-pixel coverage, exercised
+        // separately by `shade_tri_frac_16`. Pixel (2,1) is drawn (the top vertex is a
+        // degenerate point).
+        let a = 0x200 + 32 + 2 * 4; // pixel (2, 1)
         let color =
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
         assert_eq!(
-            color, 0x00FF_00FF,
+            color & 0xFFFF_FF00,
+            0x00FF_0000,
             "texel column 1 (green) — texture read at +0x60"
+        );
+        assert_ne!(
+            color & 0xFF,
+            0,
+            "the covered pixel stores non-zero coverage"
         );
     }
 
