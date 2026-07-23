@@ -9,6 +9,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the first real ROM renders a frame (Phase 3, T-33-006)
+
+- **A real ROM now boots and renders a verified frame.** `tests/roms/homebrew/render_fill.z64`
+  — our own license-clean MIPS assembly (source `render_fill.s` + `build.sh` committed,
+  the `.z64` assembled and committed like any other build output) — boots through the
+  harness direct-load path, and the **real VR4300** executes its instructions to program
+  the Video Interface and CPU-fill a 32×24 framebuffer with a per-pixel gradient. The
+  **real VI** scans it out to the exact expected RGBA8 frame, deterministically
+  (`real_rom_frame.rs`). Unlike the synthetic `golden_frame` / `composite_frame` scenes,
+  nothing here is poked in by the harness — it is the CPU → RDRAM → VI scan-out path
+  driven end to end by a real ROM's own code. This is the T-33-006 "real ROM renders a
+  stable frame" milestone; an RDP-driven real-ROM frame (via the RSP microcode or direct
+  DPC command lists) is the follow-up.
+
 ### Changed — pin the toolchain to exactly 1.96.0
 
 - **The Rust toolchain and MSRV are pinned to the exact patch release `1.96.0`**
