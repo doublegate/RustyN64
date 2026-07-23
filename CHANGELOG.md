@@ -20,6 +20,24 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the first depth-tested triangle (Phase 3, T-33-004 PR-B part 2a)
+
+- **The RDP renders depth-tested triangles — the first per-pixel pipeline.** The
+  `Fill Z-Buffered Triangle` variants (opcode bit 56) now decode the z-coefficient
+  suffix (`z`, `dzdx`, `dzde`, `s15.16`) and, when `Set Other Modes` enables the
+  depth test/update, run the real per-pixel path: `interpolate_z` computes each
+  pixel's 18-bit depth (a faithful port of ParaLLEl-RDP's `interpolate_z` snap for
+  the full-coverage case), `depth_test` compares it against the Z buffer, and only
+  passing pixels write colour (`zbuffer_write` stores the new depth when `z_update`
+  is set). This gives the depth machinery and Z-buffer storage built earlier their
+  first runtime caller. Verified by an occluding-triangles test — a nearer triangle
+  draws, a farther one is rejected, a nearer-still one overwrites (both the accept
+  and reject paths), plus a hand-computed `interpolate_z` unit test. Scope (ledger
+  R-9/R-12): the colour still comes from the FILL register (the combiner/blender
+  routing and sub-pixel edge coverage are parts 2b/2c); `dz` derivation is a first
+  cut. `Set Combine Mode`/non-Z triangles are unaffected. Oracle stays 93 (no
+  systemtest ROM drives rendering yet).
+
 ### Added — the Z-buffer storage and RDRAM hidden bits (Phase 3, T-33-004 PR-B part 1)
 
 - **The RDP can read and write the Z buffer, including the RDRAM hidden bits.**
