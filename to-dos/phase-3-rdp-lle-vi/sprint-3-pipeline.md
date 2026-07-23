@@ -187,11 +187,11 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the short-block bug (a shade/z block written too short → misaligned suffix → blank frame) cannot
       recur. A **`tex_tri_16`** vector (11th, committed **`#[ignore]`d**) was added to exercise
       `interpolate_st` against Angrylion via a new **v2 `.rvec` preload** region (a texture placed in
-      RDRAM before the command list); Angrylion instrumentation then showed the vector's command
-      sequence is **malformed** (tile reads unconfigured `size = 0` at sample time, S coordinate stays
-      `0`), so its golden is not yet a valid oracle and the mismatch is a vector-setup artifact, **not**
-      a RustyN64 bug (ledger R-13 — the earlier "coordinate-scale" claim is retracted). The v2 preload
-      plumbing itself is verified (an all-white texture renders white through Angrylion).
+      RDRAM before the command list). It pins a **real** divergence RustyN64 does not model (ledger
+      R-13, settled by Angrylion instrumentation after two retracted mis-diagnoses): the vector is
+      well-formed (tile configured, S advances, texel 0 fetched as red), but Angrylion's output differs
+      because of the **1-cycle TEXEL0 pipeline** (`texel0/texel1` swap) and the **s10.5 coordinate
+      scale**, neither modelled yet. The v2 preload plumbing itself is verified (all-white → white).
       **Dither is now implemented** (`apply_rgb_dither`, a bit-exact port of
       Angrylion `dither.c` `rgb_dither`): the default **dither is ON** (RGB dither mode 0 = "magic"),
       so non-extreme colours round up per pixel where the 4×4 matrix cell is below the channel's low 3

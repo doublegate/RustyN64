@@ -291,18 +291,21 @@ fn shade_grad_tri_32_matches_angrylion() {
 /// preload (an 8-texel ramp placed in RDRAM, loaded by `Load Tile`, sampled across
 /// the triangle by a per-x S gradient with texel0 combiner passthrough).
 ///
-/// **`#[ignore]`d — the vector's command sequence is MALFORMED (WIP), so its golden
-/// is NOT yet a valid oracle for the sampler.** Direct instrumentation of Angrylion
-/// shows that although `rdp_set_tile` runs with the correct `size = 2`, at sample
-/// time tile 0 reads back **unconfigured** (`size/line/tmem = 0`) and the interpolated
-/// S coordinate is **0 at every pixel**, so the triangle never advances across the
-/// texture. The RustyN64-vs-golden mismatch is therefore a vector-setup artifact, not
-/// a confirmed RustyN64 bug (an earlier note here blamed the texel-coordinate scale;
-/// that is retracted — see ledger R-13). The v2 preload plumbing itself is verified
-/// (an all-white texture renders white through Angrylion). Next: fix the texture
-/// command sequence (the tile-state reset + the zero S coordinate), then re-evaluate.
+/// **`#[ignore]`d — pins a REAL texture-path divergence RustyN64 does not yet model.**
+/// The vector is **well-formed** (two earlier notes claiming a coordinate-scale bug,
+/// then a malformed vector, are both retracted — the "malformed" one came from reading
+/// an earlier *shade* vector's debug output). Correctly instrumented, Angrylion here
+/// configures tile 0 (`size = 2`), advances the S coordinate (`SSS = 0..5` across the
+/// columns), and fetches texel 0 = `(255,0,0,255)` = red **correctly** — yet the output
+/// differs from RustyN64. The cause is two RDP behaviours RustyN64 does not model:
+/// (1) the **1-cycle TEXEL0 pipeline** — Angrylion swaps `texel0_color = texel1_color`
+/// before the combine, so a `TEXEL0` passthrough in 1-cycle mode is *pipelined*, not the
+/// just-fetched texel; and (2) the **s10.5 texel-coordinate scale** — `SSS` spans < one
+/// texel, so Angrylion point-samples texel 0 across the triangle while RustyN64's
+/// `interpolate_st` (`v >> 16`) advances one texel per pixel. See ledger R-13. The v2
+/// preload plumbing itself is verified (an all-white texture renders white).
 #[test]
-#[ignore = "WIP: malformed texture command sequence (Angrylion sees unconfigured tile + S=0); see ledger R-13"]
+#[ignore = "WIP: real 1-cycle TEXEL0-pipeline + s10.5 coordinate-scale gaps RustyN64 doesn't model; see ledger R-13"]
 fn tex_tri_16_matches_angrylion() {
     assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
 }
