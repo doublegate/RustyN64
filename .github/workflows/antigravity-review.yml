@@ -19,17 +19,20 @@ permissions:
 
 jobs:
   review:
-    # A push to (opened/reopened/synchronize) a PR authored by a TRUSTED author, OR an
-    # `/agy-review` comment on a PR from a trusted author.
+    # A push to (opened/reopened/synchronize) a PR whose AUTHOR is trusted, OR an
+    # `/agy-review` comment BY a trusted user (the commenter — which may be on an
+    # external contributor's PR; that is the point of the on-demand path).
     #
-    # Both paths are gated on author_association because this job runs on a SELF-HOSTED
-    # runner and checks out the PR head (including `scripts/`): a fork PR could otherwise
-    # run arbitrary code on the runner. Gating `pull_request` on the PR author (not just
-    # `opened`/`reopened`) means `synchronize` can auto-re-review every push to a trusted
-    # author's PR without ever auto-running an untrusted fork's code. External-contributor
-    # PRs are reviewed on demand via a maintainer's `/agy-review` comment (same gate).
-    # Belt-and-suspenders with Settings -> Actions -> "Fork pull request workflows ->
-    # require approval for all outside collaborators".
+    # The two paths gate on different associations on purpose. The `pull_request`
+    # path checks the PR *author* because it runs automatically: this job is on a
+    # SELF-HOSTED runner and checks out the PR head (including `scripts/`), so a fork
+    # PR could otherwise run arbitrary code on the runner. Gating on the author (not
+    # just `opened`/`reopened`) lets `synchronize` auto-re-review every push to a
+    # trusted author's PR without ever auto-running an untrusted fork's code. The
+    # comment path checks the *commenter* so a maintainer can deliberately run a
+    # review on an external PR by typing `/agy-review`. Belt-and-suspenders with
+    # Settings -> Actions -> "Fork pull request workflows -> require approval for all
+    # outside collaborators".
     if: >-
       (github.event_name == 'pull_request' &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) ||
