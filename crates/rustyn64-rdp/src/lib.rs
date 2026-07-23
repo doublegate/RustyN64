@@ -1584,6 +1584,10 @@ impl Rdp {
                     bus,
                 );
             } else if has_color {
+                // The no-Z path (a triangle with no z-suffix): write the combiner colour
+                // directly. The memory-read blender lives only on the depth path
+                // (`depth_span`) for now, so `_shade_alpha` is unused here — a force-blend
+                // triangle without a Z buffer is a slice-2c gap (T-33-004, ledger R-9/R-11).
                 #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
                 for x in x0..=x1 {
                     let (color, _shade_alpha) = self.combined_color(
@@ -1877,6 +1881,9 @@ impl Rdp {
                             // alpha (`A`-select 0, carried in `pixel[3]`).
                             shade_alpha,
                         });
+                        // The blender produces RGB only; the alpha byte keeps the combiner
+                        // output alpha. The destination alpha / coverage write-back
+                        // (`cvg_dest`) is deliberately deferred to slice 2c, not omitted.
                         color = [rgb[0], rgb[1], rgb[2], color[3]];
                     }
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
