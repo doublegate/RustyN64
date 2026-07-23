@@ -20,6 +20,22 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the first shaded triangle (Phase 3, T-33-004 PR-B part 2b)
+
+- **The RDP renders shaded triangles through the colour combiner.** `Fill Shaded
+  Triangle` (opcode bit 58) now decodes the 8-word shade coefficient block
+  (`decode_shade`: RGBA base + per-x/per-major-edge deltas, `s15.16`), and each
+  pixel's colour comes from the combiner fed the interpolated shade
+  (`interpolate_shade`, a port of ParaLLEl-RDP's `interpolate_rgba` snap) rather
+  than the FILL register — the combiner's first runtime caller. The colour is packed
+  to the framebuffer format (`write_pixel`: RGBA8888 direct, RGBA5551 for 16-bit).
+  This works standalone and combined with the depth test. Verified by a
+  `decode_shade`/`interpolate_shade` unit test (hand-computed base colour) and a
+  shaded-triangle integration test that renders the combiner output, not the FILL
+  colour. Scope: this closes the R-9 flat-fill for shaded triangles; texture
+  (texel0/1) and the memory-read blender are the next 2b/2c slices, and the `dz`
+  and sub-pixel coverage remain first-cut. Oracle stays 93.
+
 ### Added — the first depth-tested triangle (Phase 3, T-33-004 PR-B part 2a)
 
 - **The RDP renders depth-tested triangles — the first per-pixel pipeline.** The

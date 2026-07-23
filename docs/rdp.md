@@ -460,9 +460,24 @@ depth test or update — `depth_span` runs the real per-pixel path instead of th
 Validated by an occluding-triangles test (a nearer triangle draws, a farther one is rejected, a
 nearer-still one overwrites — both accept and reject paths) and a hand-computed `interpolate_z` test.
 
-Scope (**open residual R-9/R-12**): the colour is still the FILL register (the combiner→blender routing
-is part 2b, which closes R-9); coverage is full (sub-pixel edge coverage is part 2c); the `dz`
-derivation is a first cut. The oracle stays **93** (no systemtest ROM drives rendering yet).
+Scope: coverage is full (sub-pixel edge coverage is part 2c); the `dz` derivation is a first cut. The
+oracle stays **93** (no systemtest ROM drives rendering yet).
+
+### The first shaded triangle (T-33-004, PR-B part 2b)
+
+`Fill Shaded Triangle` (opcode bit 58) now colours each pixel from the **combiner** fed the interpolated
+shade, not the FILL register — the combiner's first runtime caller.
+
+- **Decode.** `decode_shade` reads the 8-word shade block (RGBA base + per-x `dx` and per-major-edge `de`
+  deltas, `s15.16`; the base's int part is 9-bit signed, the deltas' 16-bit) into `ShadeSetup`.
+- **Interpolate and combine.** `interpolate_shade` (a port of ParaLLEl-RDP's `interpolate_rgba` snap)
+  gives the per-pixel RGBA; `shaded_color` runs it through `Rdp::combine` with the prim/env registers,
+  and `write_pixel` packs the result to the colour image (RGBA8888 direct, RGBA5551 for 16-bit).
+
+This applies standalone and combined with the depth test. Validated by a hand-computed
+`decode_shade`/`interpolate_shade` test and a shaded-triangle test that renders the combiner output
+(not the FILL colour). **This closes the R-9 flat-fill for shaded triangles.** Texture (texel0/1) and
+the memory-read blender are the next slices; the oracle stays **93**.
 
 ## State
 
