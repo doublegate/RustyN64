@@ -20,6 +20,19 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — copy-mode Texture Rectangle: 4-pixels-per-cycle non-1:1 blit (Phase 3, R-8)
+
+- **COPY-mode Texture Rectangle now models the RDP's 4-pixels-per-cycle sub-texel
+  selection under a non-1:1 `DsDx`.** Previously the copy stepped the texture
+  coordinate per pixel (a naive magnification); the real RDP reads a 64-bit TMEM
+  word (4 consecutive texels) per cycle, so the base texel is taken at each cycle's
+  first column (advancing `DsDx × 4` texels per cycle) and the within-cycle offset
+  is a direct `+0..3` TMEM increment. A new `tex_rect_mag_16` conformance vector (a
+  2× magnify, `DsDx = 2.0`, reading texels `0,1,2,3,2,3,4,5`) validates it against
+  Angrylion byte-for-byte. The 1:1 case (`DsDx = 4.0` → `s = col`) is the special
+  case, so the round-trip test and the existing 1:1 copy vectors still pass. Closes
+  part of ledger R-8. 14 conformance vectors now pass (+ 1 ignored WIP).
+
 ### Added — copy-mode Texture Rectangle conformance (first texture path vs the oracle) (Phase 3, T-33-005)
 
 - **The copy-mode Texture Rectangle path is now validated against Angrylion.** A new

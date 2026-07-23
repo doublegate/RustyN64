@@ -349,3 +349,16 @@ fn tex_rect_8x8_16_matches_angrylion() {
         include_bytes!("vectors/tex_rect_8x8_16.rvec"),
     );
 }
+
+/// A **magnified** COPY-mode Texture Rectangle (`DsDx = 2.0`, 0.5 texel/pixel). The
+/// RDP copies **4 pixels per cycle**: within a cycle it reads 4 consecutive texels
+/// (`base..base+3` from a 64-bit TMEM word) and the base advances by `DsDx × 4`
+/// texels per cycle, so an 8-texel ramp magnified 2× reads texels `0,1,2,3,2,3,4,5`
+/// (not the naive per-pixel `0,0,1,1,2,2,3,3`). Guards the 4-pixels-per-cycle copy.
+#[test]
+fn tex_rect_mag_16_matches_angrylion() {
+    assert_matches(
+        "tex_rect_mag_16",
+        include_bytes!("vectors/tex_rect_mag_16.rvec"),
+    );
+}

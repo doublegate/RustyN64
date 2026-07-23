@@ -540,6 +540,27 @@ static const uint32_t V14_TEX_RECT_8X8_16[] = {
 };
 static uint16_t tex8x8[64];
 
+// V15: a MAGNIFIED COPY-mode Texture Rectangle — an 8-texel texture (fully loaded,
+// so no unloaded-TMEM read) blitted into an 8x1 image with DsDx = 2.0 (0.5
+// texel/pixel). The RDP copies 4 pixels per cycle (reading 4 consecutive texels
+// from a 64-bit TMEM word, the base advancing DsDx*4 texels/cycle), so a 2x magnify
+// reads texels 0,1,2,3,2,3,4,5 — NOT the naive per-pixel 0,0,1,1,2,2,3,3. RustyN64
+// now models this (ledger R-8) and matches the golden below byte-for-byte.
+static const uint16_t TEX8X1_RAMP[8] = {
+    0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, 0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u,
+};
+static const uint32_t V15_TEX_RECT_MAG_16[] = {
+    0x2F2000F0u, 0x00000000u, // Set Other Modes: COPY, dither off
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000000u, // Set Tile 0: 16-bit, line 2, tmem 0
+    0x32000000u, 0x0001C000u, // Set Tile Size: SL0 TL0 SH7 TH0 (8x1)
+    0x34000000u, 0x0001C000u, // Load Tile: SL0 TL0 SH7 TH0 -> 8x1 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020004u, // Set Scissor: (0,0)-(8,1)
+    0x2401C000u, 0x00000000u, // Texture Rectangle: XL=7 YL=0 tile0 XH0 YH0
+    0x00000000u, 0x08000400u, // S=0 T=0 | DsDx=2.0 (0x800) DtDy=1.0
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
@@ -607,6 +628,11 @@ int main(int argc, char **argv) {
                   sizeof(V14_TEX_RECT_8X8_16) / 4, V14_TEX_RECT_8X8_16,
                   0x3000, 64, tex8x8};
     if (emit_vector(&v14, out_dir)) return 1;
+
+    Vector v15 = {"tex_rect_mag_16", 0x2000, 0x1000, 8, 1, 2,
+                  sizeof(V15_TEX_RECT_MAG_16) / 4, V15_TEX_RECT_MAG_16,
+                  0x3000, 8, TEX8X1_RAMP};
+    if (emit_vector(&v15, out_dir)) return 1;
 
     return 0;
 }

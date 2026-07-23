@@ -293,19 +293,25 @@ pointer) and passes it to `dispatch`, so a handler can read its later words
   on alternate mask-sized spans and **mask** to `mask` bits (`mask == 0` = no wrap). Copy
   mode omits the clamp step. Matched to the ParaLLEl-RDP `texture.h` order.
 - **Copy-mode Texture Rectangle** rasterises the screen rectangle (lower-right inclusive),
-  stepping `S` across X and `T` down Y. The horizontal step is scaled by the
-  4-pixels-per-cycle factor (`>> (5 + dx_shift)`, `dx_shift = 2` for a 16-bit image), so a
-  1:1 blit's `DsDx = 4.0` advances one texel per pixel. The raw 16-bit texel is copied
-  verbatim into the colour image (a direct 16-bit copy), clipped to the scissor.
+  stepping `T` down Y and copying **4 pixels per cycle** across X: each cycle reads a 64-bit
+  TMEM word (4 consecutive 16-bit texels) and writes them to 4 output pixels. So the base
+  texel is evaluated at each cycle's first column (`base = wrap(s_start + (DsDx·cycle_col >>
+  (5 + dx_shift)))`, `dx_shift = 2` for 16-bit), advancing `DsDx × 4` texels per cycle, and
+  the within-cycle offset is a direct `+0..3` TMEM increment — **not** a per-pixel step. A 1:1
+  blit (`DsDx = 4.0`) reduces to `s = col`; a non-1:1 blit (e.g. `DsDx = 2.0`) reads texels
+  `0,1,2,3,2,3,4,5`, not the naive `0,0,1,1,2,2,3,3`. The raw 16-bit texel is copied verbatim
+  into the colour image, clipped to the scissor.
 
 Provenance: the command encoding, copy pipeline, and wrap order are cross-verified against
 the N64brew wiki and ParaLLEl-RDP (MIT). Validated by a **round-trip identity** test — a
 `Load Tile` texture blitted back by `Texture Rectangle` reproduces the source byte-for-byte
-(load and fetch share the odd-row swap) — plus a `wrap_coord` unit test.
+(load and fetch share the odd-row swap) — a `wrap_coord` unit test, and the `tex_rect_copy_16`
+/ `_offset_16` / `_8x8_16` (1:1) and `tex_rect_mag_16` (non-1:1 `DsDx = 2.0`) conformance
+vectors against Angrylion.
 
-Scope (**open residual R-8**): the 16-bit tile → 16-bit colour image path is wired.
-`Texture Rectangle Flip` (0x25), the 8/32-bit and TLUT copy paths, the exact non-1:1
-sub-texel selection, and the copy alpha-compare are deferred to the Sprint-3 fuzz; an
+Scope (**open residual R-8**): the 16-bit tile → 16-bit colour image path is wired, including
+the 4-pixels-per-cycle non-1:1 selection. `Texture Rectangle Flip` (0x25), the 8/32-bit and TLUT
+copy paths, and the copy alpha-compare are deferred to the Sprint-3 fuzz; an
 unsupported configuration draws nothing. The oracle count stays **93** — the n64-systemtest
 categories that exercise rendered output need the full 1-/2-cycle pipeline (Sprint 3).
 
