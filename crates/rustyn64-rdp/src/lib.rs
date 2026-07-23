@@ -125,9 +125,12 @@ const fn sext9(x: i32) -> i32 {
     (x << 23) >> 23
 }
 
-/// Position of the most significant set bit of `x`, or `-1` if `x == 0` — GLSL
-/// `findMSB` semantics (ParaLLEl-RDP `z_encode.h`/`depth_test.h` rely on the
-/// `-1` case flowing through `max(findMSB(dz), 0)`).
+/// Position of the most significant set bit of `x`, or `-1` for `x <= 0` — GLSL
+/// `findMSB` semantics for the non-negative inputs this codec uses (`z_encode.h`).
+/// All callers here pass non-negative magnitudes; the `-1` result flows through
+/// `max(findMSB(dz), 0)` in [`dz_compress`], and [`combine_dz`] guards on it so a
+/// non-positive input can never reach the negative shift (GLSL's signed `findMSB`
+/// differs for genuinely-negative inputs, which do not occur in this domain).
 #[allow(
     clippy::cast_possible_wrap,
     reason = "leading_zeros() is 0..=31, always in range for i32"
@@ -189,8 +192,12 @@ const fn dz_compress(dz: i32) -> i32 {
 }
 
 /// The largest power of two `<= dz` (ParaLLEl-RDP `depth_test.h` `combine_dz`).
+/// Guards on `find_msb(dz) >= 0` rather than `dz != 0` so a non-positive `dz`
+/// returns 0 instead of shifting `1 << -1` (the codec only feeds it non-negative
+/// magnitudes; the guard makes it panic-free for any `i32` regardless).
 const fn combine_dz(dz: i32) -> i32 {
-    if dz != 0 { 1 << find_msb(dz) } else { 0 }
+    let m = find_msb(dz);
+    if m >= 0 { 1 << m } else { 0 }
 }
 
 /// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
@@ -1465,7 +1472,10 @@ impl Rdp {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "blend_shift values are clamped to 0..=4 before the u8 cast"
+        reason = "blend_shift is 0..=4 for in-domain dz: the z_compare branch clamps \
+                  both bounds; the else branch mirrors the oracle's upper-only min \
+                  (depth_test.h:136 vs :57-58), where an out-of-4-bit dz_compressed \
+                  wraps exactly as the reference's u8() cast does"
     )]
     #[allow(
         clippy::similar_names,
@@ -1482,15 +1492,18 @@ impl Rdp {
         let blend_en;
         let coverage_wrap;
         let mut blend_shift = [0u8; 2];
+        // The stored dz is a 4-bit field; mask it so `dz_decompress`'s `1 << dz`
+        // can never shift past 31 even if a caller left junk in the upper bits.
+        let current_dz = i32::from(inp.current_dz & 0xf);
 
         if inp.z_compare {
             let memory_z = z_decompress(inp.current_depth);
-            let mut memory_dz = dz_decompress(i32::from(inp.current_dz));
+            let mut memory_dz = dz_decompress(current_dz);
             let precision_factor = (i32::from(inp.current_depth) >> 11) & 0xf;
             let mut coplanar = false;
 
-            blend_shift[0] = (dz_compressed - i32::from(inp.current_dz)).clamp(0, 4) as u8;
-            blend_shift[1] = (i32::from(inp.current_dz) - dz_compressed).clamp(0, 4) as u8;
+            blend_shift[0] = (dz_compressed - current_dz).clamp(0, 4) as u8;
+            blend_shift[1] = (current_dz - dz_compressed).clamp(0, 4) as u8;
 
             if precision_factor < 3 {
                 if memory_dz == 0x8000 {
@@ -3745,5 +3758,68 @@ mod tests {
         inp.z_compare = false;
         assert!(Rdp::depth_test(0x3FF00, 0, 0, 1, &inp).depth_pass);
         assert!(Rdp::depth_test(0x00000, 0, 0, 1, &inp).depth_pass);
+    }
+
+    /// **Interpenetrating Z mode reduces coverage at an intersect.** With the
+    /// `front && farther && overflow` intersect condition met (a near pixel just
+    /// short of `memory_z = 0x3F000`, coverage overflowing), the pixel passes and
+    /// its coverage is scaled: `cvg_coeff = (0x3F000 − 0x3EFFC) & 0xf = 4`, so
+    /// `coverage_count = min((4·4) >> 3, 8) = 2` — hand-computed from `depth_test.h`.
+    #[test]
+    fn depth_test_interpenetrating_reduces_coverage() {
+        let inp = DepthInputs {
+            current_depth: 0x3000, // memory_z = 0x3F000, precision-factor 6
+            current_dz: 0,
+            current_coverage: 4, // + coverage_count 4 => overflow (>= 8)
+            z_compare: true,
+            z_mode: 1,
+            force_blend: false,
+            aa_enable: false,
+        };
+        let r = Rdp::depth_test(0x3_EFFC, 0, 0, 4, &inp);
+        assert!(r.depth_pass, "intersect passes");
+        assert_eq!(r.coverage_count, 2, "coverage scaled down at the intersect");
+    }
+
+    /// **The `precision_factor < 3` coplanar path forces a pass.** A memory pixel
+    /// with a low exponent (`precision-factor 2`) and `current_dz == 15`
+    /// (`memory_dz == 0x8000`) is treated as coplanar, so even a pixel *behind*
+    /// `memory_z` passes opaque mode — exercising the stored-`dz` adjustment that
+    /// the plain occluding pairs (precision-factor 6) deliberately avoid.
+    #[test]
+    fn depth_test_precision_factor_coplanar_forces_pass() {
+        let inp = DepthInputs {
+            current_depth: 0x1000, // memory_z = 0x30000, precision-factor 2 (< 3)
+            current_dz: 15,        // memory_dz = 0x8000 -> coplanar branch
+            current_coverage: 0,
+            z_compare: true,
+            z_mode: 0,
+            force_blend: false,
+            aa_enable: false,
+        };
+        // 0x3FF00 is behind memory_z (0x30000); without the coplanar path it would
+        // fail opaque mode, but coplanar makes `nearer` unconditionally true.
+        assert!(Rdp::depth_test(0x3_FF00, 0, 0, 1, &inp).depth_pass);
+    }
+
+    /// **Out-of-domain inputs do not panic.** A `current_dz` with junk in the upper
+    /// bits (masked to 4 bits before `1 << dz`) and a large per-pixel `dz` (whose
+    /// `combine_dz` path is guarded against a `1 << -1`) must not shift-overflow.
+    /// Without the masks/guard this panics in a debug build.
+    #[test]
+    fn depth_test_out_of_domain_inputs_do_not_panic() {
+        let inp = DepthInputs {
+            current_depth: 0x3000,
+            current_dz: 200, // upper bits set; masked to 8
+            current_coverage: 0,
+            z_compare: true,
+            z_mode: 0,
+            force_blend: false,
+            aa_enable: false,
+        };
+        // A negative dz makes `dz | memory_dz` negative, driving combine_dz's
+        // find_msb to -1 — the `1 << -1` the guard prevents. dz_compressed 20 is
+        // also out of its 4-bit domain. The call just has to return, not panic.
+        let _ = Rdp::depth_test(0x1000, -1, 20, 1, &inp);
     }
 }
