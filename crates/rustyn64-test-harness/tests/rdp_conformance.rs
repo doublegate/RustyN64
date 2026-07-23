@@ -422,7 +422,7 @@ fn tex_rect_mag_16_matches_angrylion() {
 /// family's vectors while others grow — cannot make the oracle gate pass without
 /// replaying that family's coverage (the accuracy oracle must never pass vacuously).
 /// Add a row when a family is committed; never let a floor exceed its committed count.
-const FUZZ_FAMILY_FLOORS: &[(&str, usize)] = &[("fz_fill_", 48), ("fz_scis_", 48)];
+const FUZZ_FAMILY_FLOORS: &[(&str, usize)] = &[("fz_fill_", 48), ("fz_scis_", 48), ("fz_tri_", 48)];
 
 /// The **seeded-fuzz corpus gate.** Every committed `.rvec` under `tests/vectors/fuzz/`
 /// is a curated candidate from the reproducible generator (`vectors-gen/driver.c`
