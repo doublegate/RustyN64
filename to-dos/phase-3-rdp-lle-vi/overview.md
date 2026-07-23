@@ -58,8 +58,9 @@ Out-of-scope:
 - [Sprint 2 — Texture state, TMEM, and the texel formats](sprint-2-texture.md) —
   the state and data path a textured primitive needs, up to a copy-mode Texture Rectangle.
   **Status:** COMPLETE (2026-07-23) — the first textured picture.
-- Sprint 3 — The colour combiner, the blender, Z/coverage, and the fuzz-suite 0-diff.
-  **Status:** stub — refine when Sprint 2 is close to complete (now).
+- [Sprint 3 — The colour combiner, the blender, Z/coverage, and the fuzz 0-diff](sprint-3-pipeline.md) —
+  the per-pixel pipeline and the ParaLLEl-RDP conformance bit-exactness gate (the v0.4.0 cut criterion).
+  **Status:** planned; in progress.
 
 ## Dependencies
 
