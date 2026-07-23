@@ -279,6 +279,36 @@ nothing. The supported paths are byte-exact against hand-computed expectations (
 tests). The oracle count stays **93** — a load is observable only once the sampler
 (T-32-004) reads TMEM.
 
+### The sampler and copy-mode Texture Rectangle (T-32-004)
+
+The first **textured picture**: `Texture Rectangle` (0x24) blits a tile into the colour
+image in copy mode, closing the Sprint-2 texture path. This is the first **two-word**
+command — `tick` now captures the command's RDRAM base address (before advancing the FIFO
+pointer) and passes it to `dispatch`, so a handler can read its later words
+(`bus.rdram_read_u32(cmd_base + 8)`).
+
+- **The coordinate wrap** (`wrap_coord`) turns a raw `s10.5` texture coordinate into a
+  tile-relative integer texel: clamp to `i16`, **shift** (codes 1–10 right, 11–15 left by
+  `16−code`), subtract the tile origin `SL`, take the integer part (`>>5`), then **mirror**
+  on alternate mask-sized spans and **mask** to `mask` bits (`mask == 0` = no wrap). Copy
+  mode omits the clamp step. Matched to the ParaLLEl-RDP `texture.h` order.
+- **Copy-mode Texture Rectangle** rasterises the screen rectangle (lower-right inclusive),
+  stepping `S` across X and `T` down Y. The horizontal step is scaled by the
+  4-pixels-per-cycle factor (`>> (5 + dx_shift)`, `dx_shift = 2` for a 16-bit image), so a
+  1:1 blit's `DsDx = 4.0` advances one texel per pixel. The raw 16-bit texel is copied
+  verbatim into the colour image (a direct 16-bit copy), clipped to the scissor.
+
+Provenance: the command encoding, copy pipeline, and wrap order are cross-verified against
+the N64brew wiki and ParaLLEl-RDP (MIT). Validated by a **round-trip identity** test — a
+`Load Tile` texture blitted back by `Texture Rectangle` reproduces the source byte-for-byte
+(load and fetch share the odd-row swap) — plus a `wrap_coord` unit test.
+
+Scope (**open residual R-8**): the 16-bit tile → 16-bit colour image path is wired.
+`Texture Rectangle Flip` (0x25), the 8/32-bit and TLUT copy paths, the exact non-1:1
+sub-texel selection, and the copy alpha-compare are deferred to the Sprint-3 fuzz; an
+unsupported configuration draws nothing. The oracle count stays **93** — the n64-systemtest
+categories that exercise rendered output need the full 1-/2-cycle pipeline (Sprint 3).
+
 ### Load TLUT and the texel-format decoders (T-32-003)
 
 `Load TLUT` (0x30) and `Rdp::fetch_texel` — the palette load and the fetch half of the

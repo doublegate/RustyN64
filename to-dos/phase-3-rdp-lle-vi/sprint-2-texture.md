@@ -132,14 +132,23 @@ Rectangle` (0x24) / `Texture Rectangle Flip` (0x25) into the colour image in **c
 first textured picture. This needs the multi-word dispatch extension (Texture Rectangle is 2
 words), so `dispatch` gains access to the command's base address to read the second word.
 
-**Acceptance criteria:**
+**Acceptance criteria (DONE — 16-bit copy path; Flip + non-16-bit deferred to R-8):**
 
-- [ ] `dispatch` can read a multi-word command's later words (the tick advance is refactored so the
-      base address is available), covered by a decode test that would desync without it.
-- [ ] The sampler applies mask (wrap), clamp, mirror, and shift to S and T per the shift table.
-- [ ] Texture Rectangle in copy mode writes the sampled texels into the scissored region of the
-      colour image, verified byte-for-byte for a small textured rect.
-- [ ] A golden frame (`golden_frame.rs` sibling) pins a textured rectangle end-to-end.
+- [x] `dispatch` can read a multi-word command's later words — `tick` captures the command's
+      RDRAM base before advancing and passes it to `dispatch`; `texture_rectangle` reads word 1
+      via `bus.rdram_read_u32(cmd_base + 8)`. Exercised by the round-trip test (which desyncs
+      without the second word).
+- [x] `wrap_coord` applies shift, tile-origin subtraction, mirror, and mask to S and T per the
+      shift table (copy mode omits clamp — the ParaLLEl-RDP order). Unit-tested.
+- [x] Texture Rectangle in copy mode writes the sampled texels into the scissored region of the
+      colour image, verified byte-for-byte (the round-trip test).
+- [x] A **golden** pins a textured rectangle end to end — via a **round-trip identity** test
+      (`Load Tile` a 4×2 texture, blit it back with `Texture Rectangle`, assert the framebuffer
+      equals the source texel-for-texel). This is a committed exact-output test in `rustyn64-rdp`;
+      a harness `golden_frame`-style hash can follow once the fuller pipeline lands.
+
+**Deferred (ledger R-8):** `Texture Rectangle Flip` (0x25), the 8/32-bit and TLUT copy paths, the
+exact non-1:1 sub-texel selection, and the copy alpha-compare — an unsupported config draws nothing.
 
 **Dependencies:** T-32-003
 **Reference:** `docs/rdp.md` §Texture rectangle; Commands.md 0x24/0x25; Pipeline.md §Copy
@@ -154,10 +163,20 @@ words), so `dispatch` gains access to the command's base address to read the sec
 - Z-buffering, coverage, primitive depth (0x2E).
 - The documented RDP hazards (texture-load-then-use) — carried from Sprint 1.
 - The ParaLLEl-RDP fuzz suite 0-diff vs Angrylion (the v0.4.0 cut gate).
+- The R-7 (4-bit / 32-bit-block loading) and R-8 (Flip, non-16-bit copy) residuals.
 
 ## Sprint review checklist
 
-- [ ] All tickets checked off or explicitly deferred (with reason).
-- [ ] A textured rectangle renders to a committed golden.
-- [ ] CHANGELOG.md updated.
-- [ ] `docs/rdp.md` updated in the same change as the code it describes.
+- [x] All tickets checked off or explicitly deferred (with reason).
+- [x] A textured rectangle renders to a committed (round-trip) golden.
+- [x] CHANGELOG.md updated.
+- [x] `docs/rdp.md` updated in the same change as the code it describes.
+
+## Sprint status — COMPLETE 2026-07-23
+
+All four tickets landed on `main`: T-32-001 (#64), T-32-002 (#65), T-32-003 (#66), T-32-004.
+The texture path is end to end — state, TMEM loads, the palette + texel-format decoders, and a
+copy-mode Texture Rectangle that produces the **first textured picture**. Deferred to Sprint 3
+(fuzz-validated): the 4-bit / 32-bit-block loads (R-7) and the Flip / non-16-bit / alpha-compare
+copy paths (R-8). **Next: Sprint 3 — the colour combiner, blender, Z/coverage, and the
+ParaLLEl-RDP fuzz 0-diff vs Angrylion (the v0.4.0 cut gate).**

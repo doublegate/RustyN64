@@ -9,6 +9,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the first textured picture: copy-mode Texture Rectangle (Phase 3, T-32-004)
+
+- **The RDP draws a texture.** `Texture Rectangle` (0x24) blits a tile into the
+  colour image in copy mode — the first textured picture and the close of Sprint
+  2's texture path. `wrap_coord` turns a raw `s10.5` coordinate into a
+  tile-relative texel via shift → subtract-`SL` → mirror → mask (the copy-mode
+  order, no clamp), matched to the ParaLLEl-RDP layout. The rectangle steps `S`
+  across X (scaled by the 4-pixels-per-cycle factor so a 1:1 blit's `DsDx = 4.0`
+  is one texel/pixel) and `T` down Y, copying the raw 16-bit texel into the
+  colour image, scissor-clipped. This is the first **two-word** command: `tick`
+  now passes the command's RDRAM base to `dispatch` so multi-word handlers read
+  their later words. Validated by a round-trip identity test (a `Load Tile`
+  texture blitted back reproduces the source byte-for-byte) plus a `wrap_coord`
+  unit test. Scope (ledger R-8): the 16-bit → 16-bit path; `Flip`, the 8/32-bit
+  and TLUT copy paths, non-1:1 sub-texel selection, and the copy alpha-compare
+  are deferred to the Sprint-3 fuzz. Oracle unchanged at 93.
+
 ### Added — RDP texel-format decoders and Load TLUT (Phase 3, T-32-003)
 
 - **The RDP decodes texels and loads palettes.** `Rdp::fetch_texel(tile, s, t)`

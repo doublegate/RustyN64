@@ -90,6 +90,8 @@ const OP_SYNC_LOAD: u8 = 0x26;
 const OP_SYNC_PIPE: u8 = 0x27;
 const OP_SYNC_TILE: u8 = 0x28;
 const OP_SYNC_FULL: u8 = 0x29;
+const OP_TEXTURE_RECTANGLE: u8 = 0x24;
+const OP_TEXTURE_RECTANGLE_FLIP: u8 = 0x25;
 const OP_SET_SCISSOR: u8 = 0x2D;
 const OP_LOAD_TLUT: u8 = 0x30;
 const OP_SET_TILE_SIZE: u8 = 0x32;
@@ -99,6 +101,39 @@ const OP_SET_TILE: u8 = 0x35;
 
 /// TMEM byte offset of the high (palette / split-high) half.
 const TMEM_HIGH: u32 = 0x800;
+
+/// Sign-extend the low 16 bits of `v` to `i32` (for the `s10.5` `S`/`T` and the
+/// `s5.10` `DsDx`/`DtDy`). `v as i16` already keeps only the low 16 bits.
+const fn sext16(v: u32) -> i32 {
+    v as i16 as i32
+}
+
+/// Wrap one raw texture coordinate (`s10.5` fixed point) into a tile-relative
+/// integer texel, applying the tile's shift, tile-origin subtraction, mirror, and
+/// mask — the COPY-mode order (no clamp). Matches the ParaLLEl-RDP reference
+/// (`texture.h`): clamp to `i16`, then shift (codes 1–10 shift right, 11–15 shift
+/// left by `16−code`), subtract `SL<<3`, take the integer part (`>>5`), then
+/// mirror-on-alternate-spans and mask to `mask` bits (`mask == 0` = no wrap).
+fn wrap_coord(coord: i32, shift: u8, mask: u8, mirror: bool, lo: u16) -> i32 {
+    let shift = shift.min(15); // the hardware shift field is 4 bits (0..15)
+    let c = coord.clamp(-0x8000, 0x7FFF);
+    let shifted = if shift <= 10 {
+        c >> shift
+    } else {
+        // Left shift by (16 − shift), truncated to 16 bits (sign-preserving).
+        i32::from((c as i16).wrapping_shl(u32::from(16 - shift)))
+    };
+    let mut s = (shifted - (i32::from(lo) << 3)) >> 5;
+    let mask = mask.min(10); // hardware caps the mask width at 10
+    if mask != 0 {
+        let m = 1i32 << mask;
+        if mirror && s & m != 0 {
+            s ^= m - 1; // reflect on odd mask-sized spans
+        }
+        s &= m - 1;
+    }
+    s
+}
 
 /// Widen a 5-bit channel to 8 bits by bit-replication (`v<<3 | v>>2`).
 const fn widen5(v: u32) -> u8 {
@@ -419,12 +454,14 @@ impl Rdp {
         if self.cmd_end - self.cmd_current < len_bytes {
             return;
         }
-        // The low half of the first command word (every command handled so far
-        // fits in one 64-bit word: opcode + flags in `hi`, payload in `lo`).
+        // The low half of the first command word. Multi-word commands (e.g.
+        // Texture Rectangle, 2 words) read their later words through `cmd_base`,
+        // the command's RDRAM address captured *before* the pointer advances.
         let word0_lo = bus.rdram_read_u32(self.cmd_current.wrapping_add(4));
+        let cmd_base = self.cmd_current;
         self.cmd_current = self.cmd_current.wrapping_add(len_bytes);
         self.commands_processed = self.commands_processed.wrapping_add(1);
-        self.dispatch(opcode, word0_hi, word0_lo, bus);
+        self.dispatch(opcode, word0_hi, word0_lo, cmd_base, bus);
     }
 
     /// Act on a just-consumed command. Only the sync commands are handled so
@@ -457,7 +494,7 @@ impl Rdp {
     /// cycle-type gate arrives with `Set Other Modes`, so `Fill Rectangle` is a
     /// solid FILL fill for now; 1-/2-cycle rectangles route through the blender,
     /// not this code).
-    fn dispatch<B: VideoBus>(&mut self, opcode: u8, hi: u32, lo: u32, bus: &mut B) {
+    fn dispatch<B: VideoBus>(&mut self, opcode: u8, hi: u32, lo: u32, cmd_base: u32, bus: &mut B) {
         match opcode {
             OP_SYNC_LOAD => self.stall = SYNC_LOAD_GCLK,
             OP_SYNC_PIPE => self.stall = SYNC_PIPE_GCLK,
@@ -496,6 +533,8 @@ impl Rdp {
             OP_LOAD_TILE => self.load_tile(hi, lo, bus),
             OP_LOAD_BLOCK => self.load_block(hi, lo, bus),
             OP_LOAD_TLUT => self.load_tlut(hi, lo, bus),
+            OP_TEXTURE_RECTANGLE => self.texture_rectangle(hi, lo, cmd_base, bus, false),
+            OP_TEXTURE_RECTANGLE_FLIP => self.texture_rectangle(hi, lo, cmd_base, bus, true),
             // TODO(T-31-004): remaining opcodes are recognised and
             // length-consumed by `tick`, but not yet dispatched — an
             // intentional, documented no-op at this stage, not a silent discard.
@@ -586,6 +625,101 @@ impl Rdp {
                     // `color_image_bpp` yields only 1, 2, or 4; unreachable.
                     _ => {}
                 }
+            }
+        }
+    }
+
+    /// Apply a `Texture Rectangle` (0x24) / `Flip` (0x25) in **COPY mode**: blit a
+    /// tile into the colour image. Word 0 carries the screen rectangle (`u10.2`)
+    /// and the tile; word 1 (read from `cmd_base`) carries the texture start
+    /// (`S`/`T`, `s10.5`) and the per-pixel increments (`DsDx`/`DtDy`, `s5.10`).
+    ///
+    /// COPY mode is a raw texel blit — no combiner or blender. The lower-right
+    /// screen bound is inclusive. For a 16-bit colour image the texel bits are
+    /// copied verbatim (a direct 16-bit copy). `S` steps across X and `T` down Y
+    /// (`Flip` swaps them); the horizontal step is scaled by the 4-pixels-per-cycle
+    /// factor (`>> (5 + dx_shift)`) so a 1:1 blit's `DsDx = 4.0` advances one texel
+    /// per pixel.
+    ///
+    /// Scope (**open residual R-8**): wired for a **16-bit tile → 16-bit colour
+    /// image** (the first-picture path). `Flip`, the 8/32-bit and TLUT copy paths,
+    /// non-1:1 sub-texel selection, and the copy alpha-compare are deferred to the
+    /// ParaLLEl-RDP fuzz validation (Sprint 3); an unsupported configuration draws
+    /// nothing.
+    // The coordinate/address arithmetic casts here (screen/texel coords to `i32`
+    // and back to `u32` offsets) wrap deliberately: a degenerate coordinate wraps
+    // into the framebuffer/TMEM space rather than trapping. `bus` IS used mutably
+    // (`rdram_write` in the inner loop); `needless_pass_by_ref_mut` mis-analyses the
+    // mutable trait call nested past the early-return guard (a known false positive).
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::needless_pass_by_ref_mut
+    )]
+    fn texture_rectangle<B: VideoBus>(
+        &mut self,
+        hi: u32,
+        lo: u32,
+        cmd_base: u32,
+        bus: &mut B,
+        flip: bool,
+    ) {
+        // Word 0: screen rectangle (u10.2) + tile index.
+        let xl = (hi >> 12) & 0xFFF;
+        let yl = hi & 0xFFF;
+        let tile_idx = ((lo >> 24) & 0x7) as usize;
+        let xh = (lo >> 12) & 0xFFF;
+        let yh = lo & 0xFFF;
+        // Word 1: texture start (s10.5) + increments (s5.10).
+        let w1_hi = bus.rdram_read_u32(cmd_base.wrapping_add(8));
+        let w1_lo = bus.rdram_read_u32(cmd_base.wrapping_add(12));
+        // S/T are signed s10.5 (a scrolled/wrapped tile can start negative), so
+        // sign-extend like DsDx/DtDy — a plain mask would read bit 15 as +32768.
+        let s_start = sext16(w1_hi >> 16);
+        let t_start = sext16(w1_hi);
+        let dsdx = sext16(w1_lo >> 16);
+        let dtdy = sext16(w1_lo);
+
+        let tile = self.tiles[tile_idx];
+        // Only the 16-bit -> 16-bit copy is wired (R-8); Flip too.
+        if flip || tile.size != 2 || self.color_image_size != 2 || self.color_image_width == 0 {
+            return;
+        }
+        let dx_shift = 2u32; // 4 pixels per 64-bit cycle for a 16-bit image.
+        // Integer pixel bounds; COPY mode's lower-right is inclusive.
+        let px0 = xh >> 2;
+        let py0 = yh >> 2;
+        // Clip to the scissor (floor upper-left, and the rect's inclusive lower-right).
+        let x_lo = px0.max(u32::from(self.scissor_ulx) >> 2);
+        let y_lo = py0.max(u32::from(self.scissor_uly) >> 2);
+        let x_hi =
+            (xl >> 2).min((u32::from(self.scissor_lrx).wrapping_add(3) >> 2).saturating_sub(1));
+        let y_hi =
+            (yl >> 2).min((u32::from(self.scissor_lry).wrapping_add(3) >> 2).saturating_sub(1));
+        let stride = u32::from(self.color_image_width) * 2;
+        for py in y_lo..=y_hi {
+            let row = (py - py0) as i32;
+            let t105 = t_start + ((dtdy * row) >> 5);
+            let t_tex = wrap_coord(t105, tile.shift_t, tile.mask_t, tile.mirror_t, tile.tl);
+            let swap = ((t_tex & 1) << 2) as u32;
+            let t_row = u32::from(tile.line)
+                .wrapping_mul(8)
+                .wrapping_mul(t_tex as u32);
+            let row_addr = self.color_image.wrapping_add(py.wrapping_mul(stride));
+            for px in x_lo..=x_hi {
+                let col = (px - px0) as i32;
+                // Horizontal step scaled for the 4-pixels-per-cycle copy.
+                let s105 = s_start + ((dsdx * col) >> (5 + dx_shift));
+                let s_tex = wrap_coord(s105, tile.shift_s, tile.mask_s, tile.mirror_s, tile.sl);
+                // Raw 16-bit texel fetch (RGBA16 addressing, no decode).
+                let boff = (u32::from(tile.tmem_addr).wrapping_mul(8))
+                    .wrapping_add(t_row)
+                    .wrapping_add((s_tex as u32).wrapping_mul(2))
+                    ^ swap;
+                let texel = self.tmem_u16(boff);
+                let addr = row_addr.wrapping_add(px.wrapping_mul(2));
+                bus.rdram_write(addr, (texel >> 8) as u8);
+                bus.rdram_write(addr.wrapping_add(1), (texel & 0xFF) as u8);
             }
         }
     }
@@ -1659,7 +1793,7 @@ mod tests {
         // format=4 size=1 width_field=0x13F (-> 0x140) addr=0x654321
         let mut rdp = Rdp::new();
         let mut bus = NullBus;
-        rdp.dispatch(OP_SET_TEXTURE_IMAGE, 0x3D88_013F, 0x0065_4321, &mut bus);
+        rdp.dispatch(OP_SET_TEXTURE_IMAGE, 0x3D88_013F, 0x0065_4321, 0, &mut bus);
         assert_eq!(rdp.tex_image_format, 4);
         assert_eq!(rdp.tex_image_size, 1);
         assert_eq!(rdp.tex_image_width, 0x140, "width is field + 1");
@@ -1677,10 +1811,10 @@ mod tests {
     fn dispatch_routes_set_tile_and_set_tile_size() {
         let mut rdp = Rdp::new();
         let mut bus = NullBus;
-        rdp.dispatch(OP_SET_TILE, 0x3570_3F00, 0x02A9_CD59, &mut bus); // index 2
+        rdp.dispatch(OP_SET_TILE, 0x3570_3F00, 0x02A9_CD59, 0, &mut bus); // index 2
         assert_eq!(rdp.tiles[2].format, 3, "0x35 routed to set_tile");
         assert_eq!(rdp.tiles[2].line, 0x1F, "and decoded its fields");
-        rdp.dispatch(OP_SET_TILE_SIZE, 0x3212_3045, 0x0267_80AB, &mut bus); // index 2
+        rdp.dispatch(OP_SET_TILE_SIZE, 0x3212_3045, 0x0267_80AB, 0, &mut bus); // index 2
         assert_eq!(
             (rdp.tiles[2].sl, rdp.tiles[2].th),
             (0x123, 0x0AB),
@@ -1954,7 +2088,7 @@ mod tests {
         a.tex_image_size = 2;
         a.tex_image_width = 2;
         a.tex_image_addr = 0x100;
-        a.dispatch(OP_LOAD_TILE, 0x0000_0000, 0x0000_4000, &mut bus); // SH=1 -> 2 texels
+        a.dispatch(OP_LOAD_TILE, 0x0000_0000, 0x0000_4000, 0, &mut bus); // SH=1 -> 2 texels
         assert_eq!(
             (a.tmem_byte(0), a.tmem_byte(1)),
             (0x11, 0x22),
@@ -1965,7 +2099,7 @@ mod tests {
         b.tex_image_size = 1;
         b.tex_image_width = 4;
         b.tex_image_addr = 0x100;
-        b.dispatch(OP_LOAD_BLOCK, 0x0000_0000, 0x0000_3000, &mut bus); // SH=3 -> 4 texels
+        b.dispatch(OP_LOAD_BLOCK, 0x0000_0000, 0x0000_3000, 0, &mut bus); // SH=3 -> 4 texels
         assert_eq!(b.tmem_byte(0), 0x11, "0x33 routed to load_block");
     }
 
@@ -2194,8 +2328,136 @@ mod tests {
         let mut rdp = Rdp::new();
         rdp.tiles[0].tmem_addr = 0x100;
         rdp.tex_image_addr = 0x100;
-        rdp.dispatch(OP_LOAD_TLUT, 0x0000_0000, 0x0000_0000, &mut bus); // 1 entry
+        rdp.dispatch(OP_LOAD_TLUT, 0x0000_0000, 0x0000_0000, 0, &mut bus); // 1 entry
         assert_eq!(rdp.tmem_byte(0x800), 0xAB, "0x30 routed to load_tlut");
         assert_eq!(rdp.tmem_byte(0x801), 0xCD);
+    }
+
+    // ---- T-32-004: coordinate wrap + copy-mode Texture Rectangle ----
+
+    /// **`wrap_coord` applies shift, tile-origin subtraction, mirror, and mask.**
+    /// The coordinate is `s10.5`; a texel index of `n` is `n << 5`.
+    #[test]
+    fn wrap_coord_shift_subtract_mirror_mask() {
+        // Plain: texel 3 (= 3<<5 = 96), no shift/mask/mirror, SL 0 -> 3.
+        assert_eq!(wrap_coord(96, 0, 0, false, 0), 3);
+        // Subtract SL: SL=1 (u10.2) -> shifts the origin left by one texel.
+        assert_eq!(wrap_coord(96, 0, 0, false, 4), 2, "SL=1 texel subtracted");
+        // Mask to 2 bits (mask_s=2 -> wrap every 4 texels): texel 5 -> 1.
+        assert_eq!(wrap_coord(5 << 5, 0, 2, false, 0), 1, "masked to 2 bits");
+        // Mirror with mask 2: texel 5 is in the odd span [4,7] -> reflects to 2.
+        assert_eq!(wrap_coord(5 << 5, 0, 2, true, 0), 2, "mirrored");
+        // Right shift (code 1) halves the coordinate before the texel divide.
+        assert_eq!(wrap_coord(4 << 5, 1, 0, false, 0), 2, "shift code 1 = >>1");
+        // Left shift (code 12 = left by 4): coord 0x10 -> 0x100 -> texel 8.
+        assert_eq!(wrap_coord(0x10, 12, 0, false, 0), 8, "shift code 12 = <<4");
+        // A negative coordinate stays negative through the left shift.
+        assert_eq!(
+            wrap_coord(-0x10, 12, 0, false, 0),
+            -8,
+            "left shift preserves sign"
+        );
+    }
+
+    /// **A copy-mode Texture Rectangle round-trips a texture.** `Load Tile` loads a
+    /// 4×2 16-bit texture into TMEM; a 1:1 `Texture Rectangle` (copy mode) blits it
+    /// into a 16-bit colour image. Because the load and the copy fetch share the
+    /// odd-row swap, the framebuffer must equal the source texture exactly — the
+    /// first textured picture, end to end.
+    #[test]
+    fn texture_rectangle_copy_round_trips_a_texture() {
+        let mut mem = alloc::vec![0u8; 0x400];
+        // Source 4x2 16-bit texture at 0x100 (8 distinct texels).
+        let tex: [u16; 8] = [
+            0x0102, 0x0304, 0x0506, 0x0708, 0x090A, 0x0B0C, 0x0D0E, 0x0F10,
+        ];
+        for (i, &v) in tex.iter().enumerate() {
+            mem[0x100 + i * 2] = (v >> 8) as u8;
+            mem[0x100 + i * 2 + 1] = (v & 0xFF) as u8;
+        }
+        // Texture Rectangle command word 1 at 0x308 (word 0 supplied to dispatch):
+        // S=0 T=0 | DsDx=4.0 (0x1000) DtDy=1.0 (0x400) -> a 1:1 blit.
+        mem[0x308..0x30C].copy_from_slice(&0u32.to_be_bytes()); // S=0, T=0
+        mem[0x30C..0x310].copy_from_slice(&0x1000_0400u32.to_be_bytes());
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        // Load the texture into TMEM (tile 0: 16-bit, line 1).
+        rdp.tex_image_size = 2;
+        rdp.tex_image_width = 4;
+        rdp.tex_image_addr = 0x100;
+        rdp.tiles[0].size = 2;
+        rdp.tiles[0].line = 1;
+        rdp.load_tile(0x0000_0000, 0x0000_C004, &bus); // SL0 TL0 SH3 TH1 -> 4x2
+        // Colour image: 16-bit, width 4, at 0x200.
+        rdp.color_image_size = 2;
+        rdp.color_image_width = 4;
+        rdp.color_image = 0x200;
+        // Scissor covering the 4x2 rect (a real command list always sets it).
+        rdp.scissor_lrx = 4 << 2;
+        rdp.scissor_lry = 2 << 2;
+        // Texture Rectangle: word0 XL=3<<2 (0xC), YL=1<<2 (4), tile 0, XH=0, YH=0.
+        rdp.dispatch(
+            OP_TEXTURE_RECTANGLE,
+            0x0000_C004,
+            0x0000_0000,
+            0x300,
+            &mut bus,
+        );
+        // The colour image equals the source texture, texel for texel.
+        for (i, &v) in tex.iter().enumerate() {
+            let hi = bus.mem[0x200 + i * 2];
+            let lo = bus.mem[0x200 + i * 2 + 1];
+            assert_eq!(
+                u16::from_be_bytes([hi, lo]),
+                v,
+                "framebuffer pixel {i} matches the source texel"
+            );
+        }
+    }
+
+    /// **`Texture Rectangle Flip` and unsupported sizes draw nothing** (R-8): the
+    /// copy path is wired only for a 16-bit tile into a 16-bit colour image.
+    #[test]
+    fn texture_rectangle_unsupported_configs_draw_nothing() {
+        let mut mem = alloc::vec![0u8; 0x400];
+        mem[0x308..0x310].copy_from_slice(&[0u8; 8]);
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.tiles[0].size = 2;
+        rdp.tiles[0].line = 1;
+        rdp.color_image_size = 2;
+        rdp.color_image_width = 4;
+        rdp.color_image = 0x200;
+        // Flip is deferred -> draws nothing.
+        rdp.dispatch(
+            OP_TEXTURE_RECTANGLE_FLIP,
+            0x0000_C004,
+            0x0000_0000,
+            0x300,
+            &mut bus,
+        );
+        assert!(
+            bus.mem[0x200..0x210].iter().all(|&b| b == 0),
+            "Flip draws nothing"
+        );
+        // 8-bit colour image (unsupported) -> draws nothing.
+        rdp.color_image_size = 1;
+        rdp.dispatch(
+            OP_TEXTURE_RECTANGLE,
+            0x0000_C004,
+            0x0000_0000,
+            0x300,
+            &mut bus,
+        );
+        assert!(
+            bus.mem[0x200..0x210].iter().all(|&b| b == 0),
+            "8-bit target draws nothing"
+        );
     }
 }
