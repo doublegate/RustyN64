@@ -20,6 +20,30 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the RDP conformance gate + a bug it immediately caught (Phase 3, T-33-005)
+
+- **The ParaLLEl-RDP / Angrylion conformance gate is live.** A licence-clean
+  golden-vector pipeline: a standalone driver (`crates/rustyn64-test-harness/vectors-gen/`,
+  our own MIT code) runs the **Angrylion** software RDP (the non-commercial
+  study oracle, fetched into gitignored `ref-proj/`, never vendored) over
+  hand-written RDP command lists and emits `.rvec` vectors carrying *only
+  outputs* — the command stream plus Angrylion's rendered framebuffer, both
+  freely committable. `tests/rdp_conformance.rs` replays each command stream
+  through RustyN64's own RDP and asserts a byte-for-byte match. A FILL-rectangle
+  vector passes (proving the pipeline and byte order end to end).
+- **The gate immediately found a real rasteriser bug.** Its second vector — a
+  flat Fill Triangle — exposed that `triangle_fill` multiplies the per-pixel edge
+  slope (`DxHDy`/`DxMDy`/`DxLDy`) by the sub-scanline offset in **quarter-pixel**
+  units without the compensating `>> 2`, so every triangle edge advances **4× too
+  fast**. The wiki (`…/Commands` §Edge Coefficients — the slopes are "change in x
+  per change in y" with `yh/ym/yl` in `s11.2` *screen* pixels) and parallel-rdp
+  (`span_setup.comp:167`, where `setup.dxhdy = raw >> 2`) both confirm the slope
+  is per-pixel; applying `>> 2` makes the triangle vector match byte-for-byte
+  (verified). The self-asserted `fill_triangle_flat_fills_a_right_triangle` unit
+  test had baked in the buggy staircase — the exact circular-golden trap this gate
+  exists to break. The triangle vector is committed and `#[ignore]`d, pinning the
+  bug until the slope fix lands (ledger **R-14**). Oracle 93.
+
 ### Added — sub-pixel coverage primitives (Phase 3, T-33-004 PR-B 2c-coverage)
 
 - **The RDP's sub-pixel coverage mask is now computed.** `compute_coverage` ports
