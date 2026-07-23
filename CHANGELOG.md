@@ -20,6 +20,19 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — alpha-compare on the no-Z pixel path (Phase 3, R-11)
+
+- **Alpha-compare now gates the pixel write** (`Set Other Modes` bit 0) on the
+  no-Z shaded/textured triangle path. `alpha_compare_passes` kills a pixel whose
+  combiner output alpha is below the `Set Blend Color` alpha threshold (evaluated
+  before coverage overwrites the alpha byte; `>=` passes). Validated byte-for-byte
+  against Angrylion by a new `alpha_compare_16` conformance vector — a flat-red
+  triangle whose shade alpha ramps across X (`dx.A = 0x30`) against a `0x80`
+  threshold, so the low-alpha columns are killed and only the higher-alpha columns
+  draw — plus a boundary unit test. 15 conformance vectors now pass (+ 1 ignored
+  WIP). Still deferred (ledger R-11): alpha-compare on the depth path (the RDP
+  orders it before the depth test) and the dithered-threshold variant.
+
 ### Added — copy-mode Texture Rectangle: 4-pixels-per-cycle non-1:1 blit (Phase 3, R-8)
 
 - **COPY-mode Texture Rectangle now models the RDP's 4-pixels-per-cycle sub-texel

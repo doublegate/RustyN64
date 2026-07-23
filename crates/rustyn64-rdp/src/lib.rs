@@ -1805,6 +1805,12 @@ impl Rdp {
                         y_base,
                         x,
                     );
+                    // Alpha-compare (Set Other Modes bit 0) gates the write on the
+                    // combiner output alpha, evaluated BEFORE coverage overwrites the
+                    // alpha byte.
+                    if !self.alpha_compare_passes(color[3]) {
+                        continue;
+                    }
                     if subpixel {
                         match self.pixel_coverage(xleft, xright, x) {
                             Some(cov) => color[3] = cov << 5,
@@ -2056,6 +2062,20 @@ impl Rdp {
     /// only (FILL/COPY bypass the combiner), and RGB dither mode 3 is "off" — both
     /// return early. Alpha is untouched. `(x, y)` index the 4×4 dither matrix
     /// (**R-10**: noise mode 2 reads the magic cell for now).
+    /// Whether a pixel survives **alpha-compare** (`Set Other Modes` bit 0). With
+    /// the gate off, every pixel passes. With it on, the combiner output alpha must
+    /// be `>=` the threshold — the `Set Blend Color` alpha (the dithered-threshold
+    /// variant, `dither_alpha_en`, is a deferred residual). Below-threshold pixels
+    /// are not written (N64brew *…/Blender* §Alpha compare).
+    fn alpha_compare_passes(&self, alpha: u8) -> bool {
+        if !self.other_modes.alpha_compare_en {
+            return true;
+        }
+        #[allow(clippy::cast_possible_truncation)] // low byte of the RGBA8888 register
+        let threshold = (self.blend_color & 0xFF) as u8;
+        alpha >= threshold
+    }
+
     fn dither_pixel(&self, color: &mut [u8; 4], x: u32, y: u32) {
         // FILL/COPY bypass the combiner, and mode 3 ("off") never rounds up — both
         // are the common case, so skip the per-pixel work outright rather than run
@@ -4528,6 +4548,28 @@ mod tests {
             apply_rgb_dither([0xFF, 0xF8, 0x00, 0x00], 0),
             [0xFF, 0xF8, 0x00, 0x00]
         );
+    }
+
+    /// **Alpha-compare gates on `combiner_alpha >= Set Blend Color alpha`.** With the
+    /// gate off every alpha passes; with it on, only alphas at or above the threshold
+    /// survive. Mutating `>=` to `>` flips the boundary case, and dropping the enable
+    /// check makes the "gate off" case fail — so the test pins both.
+    #[test]
+    fn alpha_compare_gates_on_blend_color_alpha() {
+        let mut rdp = Rdp::new();
+        rdp.blend_color = 0x0000_0080; // threshold alpha = 0x80
+
+        // Gate off: everything passes regardless of the threshold.
+        rdp.other_modes.alpha_compare_en = false;
+        assert!(rdp.alpha_compare_passes(0x00));
+        assert!(rdp.alpha_compare_passes(0x7F));
+
+        // Gate on: `alpha >= 0x80` passes, below fails, and the boundary is inclusive.
+        rdp.other_modes.alpha_compare_en = true;
+        assert!(!rdp.alpha_compare_passes(0x00));
+        assert!(!rdp.alpha_compare_passes(0x7F));
+        assert!(rdp.alpha_compare_passes(0x80));
+        assert!(rdp.alpha_compare_passes(0xFF));
     }
 
     /// **`Set Blend Color` / `Set Fog Color` latch their RGBA8888 registers.**

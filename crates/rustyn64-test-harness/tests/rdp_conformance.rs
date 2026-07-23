@@ -350,6 +350,19 @@ fn tex_rect_8x8_16_matches_angrylion() {
     );
 }
 
+/// **Alpha-compare** gates the pixel write. A 1-cycle flat-red shaded triangle whose
+/// combiner alpha (the interpolated shade alpha) ramps across X (`dx.A = 0x30`), with
+/// alpha-compare enabled and a `Set Blend Color` alpha threshold of `0x80`. Columns
+/// whose alpha is below the threshold are killed (stay background 0); only the higher-
+/// alpha columns draw red. Guards the `alpha_compare_en` write gate.
+#[test]
+fn alpha_compare_16_matches_angrylion() {
+    assert_matches(
+        "alpha_compare_16",
+        include_bytes!("vectors/alpha_compare_16.rvec"),
+    );
+}
+
 /// A **magnified** COPY-mode Texture Rectangle (`DsDx = 2.0`, 0.5 texel/pixel). The
 /// RDP copies **4 pixels per cycle**: within a cycle it reads 4 consecutive texels
 /// (`base..base+3` from a 64-bit TMEM word) and the base advances by `DsDx × 4`
