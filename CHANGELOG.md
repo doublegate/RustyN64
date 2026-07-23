@@ -20,6 +20,18 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — cvg_dest = full coverage write-back (Phase 3, R-9)
+
+- **The `cvg_dest = full` coverage write-back mode is now modelled.** `pixel_coverage`
+  stores full coverage (`7`) when `Set Other Modes` `cvg_dest = 2`, instead of the
+  clamp `(count - 1) & 7`, so a partially-covered edge pixel gets the full RGBA5551
+  alpha bit. Validated byte-for-byte against Angrylion by a new `cvg_dest_full_16`
+  vector — the same fractional-edge triangle as `shade_tri_frac_16`, whose partial
+  right-edge column stores `0xf801` (full) instead of `0xf800` (clamp). 17
+  conformance vectors now pass (+ 1 ignored WIP). The clamp mode (0) is the default
+  and unchanged; the wrap (1) and save (3) modes need the memory-read coverage
+  accumulator and remain deferred (R-9).
+
 ### Added — alpha-compare on the no-Z and depth pixel paths (Phase 3, R-11)
 
 - **Alpha-compare now gates the pixel write** (`Set Other Modes` bit 0) on **both**

@@ -601,6 +601,23 @@ static const uint32_t V17_ALPHA_COMPARE_Z_16[] = {
     Z_SUFFIX(0x08000000),                                          // z = near
 };
 
+// V18: a fractional-edge shaded triangle with cvg_dest = FULL (Set Other Modes bits
+// 9:8 = 10). Identical to shade_tri_frac_16 except the coverage write-back stores
+// FULL coverage (7) instead of the clamp `(count-1)&7`, so the partially-covered
+// right-edge column stores alpha bit 1 (`0xf801`) instead of `0xf800`. Probes the
+// cvg_dest = full mode (the clamp default is the other vectors).
+static const uint32_t V18_CVG_DEST_FULL_16[] = {
+    0x2F000000u, 0x00000200u, // Set Other Modes: 1-cycle, AA off, cvg_dest = full (bits 9:8 = 10)
+    0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00028000u, 0x00000000u, // XH = 2.5, DxHDy = 0
+    0x00068000u, 0x00000000u, // XM = 6.5, DxMDy = 0
+    SHADE_BLOCK_FLAT(0xFF, 0x00, 0x00, 0xFF), // flat red shade (16 words)
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
@@ -681,6 +698,10 @@ int main(int argc, char **argv) {
     Vector v17 = {"alpha_compare_z_16", 0x2000, 0x1000, 8, 8, 2,
                   sizeof(V17_ALPHA_COMPARE_Z_16) / 4, V17_ALPHA_COMPARE_Z_16};
     if (emit_vector(&v17, out_dir)) return 1;
+
+    Vector v18 = {"cvg_dest_full_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V18_CVG_DEST_FULL_16) / 4, V18_CVG_DEST_FULL_16};
+    if (emit_vector(&v18, out_dir)) return 1;
 
     return 0;
 }
