@@ -144,26 +144,26 @@ fn fill_rect_16_matches_angrylion() {
     assert_matches("fill_rect_16", include_bytes!("vectors/fill_rect_16.rvec"));
 }
 
-/// **Pinned failing oracle — RustyN64's triangle edge slope is 4× too fast.**
+/// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
 ///
-/// Angrylion renders this left-major triangle (a vertical left edge at x=2, the
-/// hypotenuse widening `DxMDy = 0.25` per **pixel** row) as a near-vertical line
-/// — over its 4 rows the right edge only reaches x≈2.75, so only column 2 is
-/// covered. RustyN64 instead draws a staircase, because `triangle_fill` multiplies
-/// the per-pixel edge slope by the sub-scanline offset in **quarter-pixel** units
-/// (`y = line*4 + sub`) without the compensating `>> 2` — so every edge advances
-/// 4× too fast. The wiki (`…/Commands` §Edge Coefficients: "change in x per change
-/// in y", `yh/ym/yl` in `s11.2` **screen** pixels) and parallel-rdp
-/// (`span_setup.comp:167`, where `setup.dxhdy = raw >> 2`) both confirm the slope
-/// is per-pixel; applying `>> 2` to the three slopes makes this vector pass
-/// byte-for-byte (verified).
-///
-/// The self-asserted `fill_triangle_flat_fills_a_right_triangle` unit test baked
-/// in the buggy staircase — the exact circular-golden trap this conformance gate
-/// exists to break. **Un-ignore when the slope fix lands** (and re-derive the
-/// affected triangle unit-test goldens against this oracle).
+/// This left-major triangle (a vertical left edge at x=2, the hypotenuse widening
+/// `DxMDy = 0.25` per **pixel** row) renders as a near-vertical line — over its 4
+/// rows the right edge only reaches x≈2.75, so only column 2 is covered. It once
+/// caught the 4× edge-slope bug: `triangle_fill` was multiplying the per-pixel
+/// slope by the sub-scanline offset in quarter-pixel units (`y = line*4 + sub`)
+/// without the compensating `>> 2`, drawing a staircase. Fixed (the slopes are
+/// pre-shifted `>> 2` at decode); this vector now guards against a regression.
 #[test]
-#[ignore = "pins the discovered 4x edge-slope bug; un-ignore with the slope fix"]
 fn fill_tri_16_matches_angrylion() {
     assert_matches("fill_tri_16", include_bytes!("vectors/fill_tri_16.rvec"));
+}
+
+/// A wider flat triangle (`DxMDy = 1.0` px/row) — a real multi-column staircase,
+/// exercising the edge-walk across columns.
+#[test]
+fn fill_tri_wide_16_matches_angrylion() {
+    assert_matches(
+        "fill_tri_wide_16",
+        include_bytes!("vectors/fill_tri_wide_16.rvec"),
+    );
 }

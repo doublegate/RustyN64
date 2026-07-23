@@ -226,6 +226,20 @@ static const uint32_t V2_FILL_TRI_16[] = {
     0x00020000u, 0x00004000u, // XM = 2.0, DxMDy = 0.25
 };
 
+// V3: a WIDER FILL-mode Fill Triangle — same left-major shape but DxMDy = 1.0
+// px/pixel-row, so the hypotenuse spans several columns over the 8 rows (a real
+// multi-pixel staircase), exercising the edge-walk across columns.
+static const uint32_t V3_FILL_TRI_WIDE_16[] = {
+    0x2F300000u, 0x00000000u, // Set Other Modes: cycle_type = FILL
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x08800020u, 0x00200000u, // op=0x08, lft=1, yl=32, ym=32, yh=0  (8 rows)
+    0x00000000u, 0x00000000u, // XL = 0, DxLDy = 0
+    0x00020000u, 0x00000000u, // XH = 2.0, DxHDy = 0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -236,6 +250,10 @@ int main(int argc, char **argv) {
     Vector v2 = {"fill_tri_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V2_FILL_TRI_16) / 4, V2_FILL_TRI_16};
     if (emit_vector(&v2, out_dir)) return 1;
+
+    Vector v3 = {"fill_tri_wide_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V3_FILL_TRI_WIDE_16) / 4, V3_FILL_TRI_WIDE_16};
+    if (emit_vector(&v3, out_dir)) return 1;
 
     return 0;
 }

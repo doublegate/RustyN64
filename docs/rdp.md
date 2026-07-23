@@ -554,11 +554,14 @@ row-major big-endian logical values (exactly what RustyN64 writes into RDRAM), t
 direct byte compare. Rendering is deterministic (`parallel = false`, no wall-clock/RNG), so a command
 list always yields byte-identical output.
 
-The FILL-rectangle vector passes end to end. The first **triangle** vector immediately caught a real
-bug — the 4× edge-slope error now tracked as ledger **R-14** (`triangle_fill` applies the per-pixel
-slope against quarter-pixel sub-scanline units without the `>> 2`). That vector is committed and
-`#[ignore]`d, pinning the bug until the slope fix re-derives the affected triangle goldens against this
-oracle. This is the gate doing its job: breaking the circular self-asserted goldens that masked the bug.
+The FILL-rectangle and both flat-triangle vectors (`fill_tri_16`, `fill_tri_wide_16`) pass end to end.
+The first triangle vector earned the gate its keep immediately: it caught the **4× edge-slope bug**
+(`triangle_fill` applied the per-pixel slope against quarter-pixel sub-scanline units without the
+`>> 2`), which the self-asserted `fill_triangle_flat_fills_a_right_triangle` unit test had masked with a
+circular staircase golden. The fix — pre-shifting the three slopes `>> 2` at decode — is in place
+(ledger **R-14**, closed), and the affected triangle unit tests were corrected against the oracle (their
+`DxMDy` changed from `0.25` to `1.0`, the value for which the staircase is genuinely correct, confirmed
+by `fill_tri_wide_16`). The corpus grows toward the ~150-vector cut criterion from here.
 
 ## State
 
