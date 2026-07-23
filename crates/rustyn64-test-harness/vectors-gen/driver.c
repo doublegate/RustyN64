@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <errno.h>
 
 #include "n64video.h"
 #include "vdac.h"
@@ -673,6 +674,11 @@ static int fuzz_fill_rect(int idx, const char *out_dir) {
     uint32_t ry0 = rng_range(0, h - 1), ry1 = rng_range(ry0 + 1, h);
     uint16_t c = (uint16_t)rng_range(0, 0xFFFF);
     uint32_t fill_lo = ((uint32_t)c << 16) | c;
+    // The scissor is the full image so the rectangle's own edges determine the
+    // fill extent. A separate scissor-clip sweep is deferred: adding one surfaced a
+    // distinct divergence in the *scissor* lower-right rounding (the existing
+    // `fill_rectangle_is_clipped_to_the_scissor` unit test asserts an exclusive
+    // scissor that has never been oracle-checked), which is its own investigation.
     uint32_t words[] = {
         0x2F300000u, 0x00000000u,                  // Set Other Modes: FILL
         0x3F100000u | (w - 1u), 0x00001000u,       // Set Color Image: 16-bit
@@ -701,10 +707,24 @@ static int emit_fuzz(const char *out_dir, uint64_t seed, int count) {
 int main(int argc, char **argv) {
     // Fuzz mode: `./driver --fuzz <out_dir> <seed> <count>` emits a reproducible
     // candidate corpus (curated on the Rust side) instead of the fixed vectors.
+    // Both numeric arguments are validated: a malformed or out-of-range value must
+    // fail loudly, never emit nothing and return success (the accuracy oracle must
+    // not report success without actually generating vectors).
     if (argc >= 5 && strcmp(argv[1], "--fuzz") == 0) {
-        uint64_t seed = strtoull(argv[3], NULL, 0);
-        int count = atoi(argv[4]);
-        return emit_fuzz(argv[2], seed, count);
+        char *endp = NULL;
+        errno = 0;
+        unsigned long long seed = strtoull(argv[3], &endp, 0);
+        if (errno != 0 || endp == argv[3] || *endp != '\0') {
+            fprintf(stderr, "--fuzz: invalid seed '%s'\n", argv[3]);
+            return 1;
+        }
+        errno = 0;
+        long count = strtol(argv[4], &endp, 0);
+        if (errno != 0 || endp == argv[4] || *endp != '\0' || count <= 0 || count > 100000) {
+            fprintf(stderr, "--fuzz: invalid count '%s' (want 1..100000)\n", argv[4]);
+            return 1;
+        }
+        return emit_fuzz(argv[2], seed, (int)count);
     }
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).

@@ -43,9 +43,11 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   committed vector under `tests/vectors/fuzz/`. Only candidates that already match
   the oracle are committed, so an unmodelled corner is dropped rather than baked
   in. The first family — **48 random FILL rectangles** (seed `0x1234`) sweeping
-  colour, image size, rectangle position, and scissor — is committed and passes;
-  it is what surfaced the lower-right edge bug above. The corpus is reproducible
-  (regenerating from the seed is byte-identical).
+  fill colour, image size, and rectangle position (the scissor is the full image,
+  so the rectangle's own edges determine the extent) — is committed and passes; it
+  is what surfaced the lower-right edge bug above. The corpus is reproducible
+  (regenerating from the seed is byte-identical), and the `--fuzz` arguments are
+  validated (a malformed seed/count fails loudly rather than emitting nothing).
 
 ### Added — combiner primitive-colour mux conformance vector (Phase 3)
 

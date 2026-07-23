@@ -1417,13 +1417,13 @@ impl Rdp {
     /// resolves per pixel by size (N64brew *…/Commands* §Set Fill Color):
     /// 32-bit writes the whole colour; 16-bit takes the upper half for even
     /// pixels and the lower half for odd; 8-bit takes byte `x & 3`. Coordinates
-    /// are `u10.2`; FILL mode floors the upper-left and rounds the lower-right up
-    /// (a half-open pixel span — N64brew *…/Commands* §Fill Rectangle). The exact
-    /// sub-pixel edge rules, and the scissor's inclusive-right/exclusive-lower
-    /// FILL rule, are an **open residual** (`docs/accuracy-ledger.md` R-3):
-    /// byte-exact for aligned rectangles, validated bit-for-bit against Angrylion
-    /// via the ParaLLEl-RDP fuzz suite (Sprint 3) and superseded there if it
-    /// diverges.
+    /// are `u10.2`; FILL mode floors the upper-left and draws through the pixel
+    /// **containing** the lower-right coordinate (inclusive), with `yl | 3` forcing
+    /// the last scanline whole (Angrylion `rasterizer.c`). The **scissor** clips
+    /// with an **exclusive** lower-right. This integer-coordinate rule is
+    /// oracle-validated against Angrylion (`docs/accuracy-ledger.md` R-3, the
+    /// seeded-fuzz corpus); the remaining residual is **sub-pixel** (fractional)
+    /// rectangle edges, which the whole-pixel corpus does not exercise.
     fn fill_rectangle<B: VideoBus>(&self, hi: u32, lo: u32, bus: &mut B) {
         let Some(bpp) = self.color_image_bpp() else {
             return; // 4-bit target: the real RDP crashes; we skip.

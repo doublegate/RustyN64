@@ -181,14 +181,21 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
 - [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (66 vectors
-      passing + 1 ignored WIP): 18 hand-authored + a 48-vector seeded-fuzz batch.** A reproducible
-      generator (`vectors-gen/driver.c --fuzz <dir> <seed> <count>`, SplitMix64) plus a curation
-      dev-tool (`curate_fuzz_candidates`) and a directory gate (`fuzz_corpus_matches_angrylion`) now
-      grow the corpus mechanically: candidates are replayed and only oracle-matching ones committed
-      under `tests/vectors/fuzz/`. The **first fuzz family — 48 random FILL rectangles** (seed
-      `0x1234`, sweeping colour/size/position/scissor) — is committed, and it **found a real bug**: the
-      FILL rect lower-right edge was half-open where the RDP is inclusive (fixed, R-3). Further families
-      (fill/shaded triangles, copy texrects) land next. The 18 hand-authored:
+      passing + 1 ignored WIP), via TWO paths.**
+      **(a) Hand-authored** (18, listed below): individual `.rvec` vectors written to target a specific
+      RDP behaviour, committed directly under `tests/vectors/`.
+      **(b) Seeded-fuzz** (48, under `tests/vectors/fuzz/`): a reproducible generator
+      (`vectors-gen/driver.c --fuzz <dir> <seed> <count>`, SplitMix64) grows the corpus mechanically.
+      Candidates are replayed by the `curate_fuzz_candidates` dev-tool and only oracle-matching ones are
+      committed; the `fuzz_corpus_matches_angrylion` gate replays every committed fuzz vector (with a
+      minimum-count floor so a dropped corpus fails rather than passes vacuously). Provenance is
+      recorded in `tests/vectors/fuzz/README.md` (per-batch: prefix, family, seed, count) and the
+      Angrylion oracle commit is pinned in `vectors-gen/README.md`. The **first fuzz family — 48 random
+      FILL rectangles** (seed `0x1234`, sweeping fill colour / image size / rectangle position, with a
+      full-image scissor) — is committed, and it **found a real bug**: the FILL rect lower-right edge
+      was half-open where the RDP is inclusive (fixed, R-3). A scissor-clip sweep is deferred (it
+      surfaced a separate scissor-edge divergence, R-15). Further families (fill/shaded triangles, copy
+      texrects) land next. The 18 hand-authored:
       `prim_combiner_32` (the combiner **primitive-colour mux** — Set Prim
       Color routed through `rgb_d = a_d = prim`, with a *distinct* flat shade that must NOT appear, so
       the vector discriminates prim from shade; validates an already-implemented mux path against the

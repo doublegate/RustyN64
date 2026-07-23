@@ -416,32 +416,45 @@ fn tex_rect_mag_16_matches_angrylion() {
     );
 }
 
+/// The lower bound on the committed seeded-fuzz corpus. The gate fails if fewer
+/// than this many `.rvec` vectors are found, so a packaging or checkout error that
+/// drops the corpus directory cannot make the oracle gate report success without
+/// having replayed anything (the accuracy oracle must never pass vacuously). Raise
+/// it as families are added; never let it exceed the committed count.
+const MIN_FUZZ_CORPUS: usize = 48;
+
 /// The **seeded-fuzz corpus gate.** Every committed `.rvec` under `tests/vectors/fuzz/`
 /// is a curated candidate from the reproducible generator (`vectors-gen/driver.c`
 /// `--fuzz <dir> <seed> <count>`): only candidates that already matched the Angrylion
 /// golden were committed, so this replays each and asserts the byte-exact match still
-/// holds. It scales to any corpus size without a `#[test]` per vector, and its count
-/// is the honest running total of oracle-validated fuzz vectors. An empty/absent
-/// directory passes (the corpus grows family by family).
+/// holds. It scales to any corpus size without a `#[test]` per vector. The corpus is
+/// committed, so a missing directory or a below-floor count is a failure, not a pass
+/// — the gate must run vectors to succeed ([[vacuous-pass-in-rom-tests]]).
 #[test]
 fn fuzz_corpus_matches_angrylion() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/fuzz");
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return; // no corpus committed yet
-    };
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("committed fuzz corpus directory {dir} is unreadable: {e}"));
     let mut names: Vec<std::path::PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "rvec"))
         .collect();
     names.sort(); // deterministic order
-    let mut count = 0usize;
     for path in &names {
         let bytes = std::fs::read(path).expect("read fuzz vector");
         let name = path.file_stem().unwrap().to_string_lossy();
         assert_matches(&name, &bytes);
-        count += 1;
     }
-    eprintln!("fuzz corpus: {count} vector(s) match the Angrylion golden");
+    assert!(
+        names.len() >= MIN_FUZZ_CORPUS,
+        "fuzz corpus has {} vector(s), below the floor of {MIN_FUZZ_CORPUS} — a \
+         checkout/packaging error may have dropped vectors",
+        names.len(),
+    );
+    eprintln!(
+        "fuzz corpus: {} vector(s) match the Angrylion golden",
+        names.len()
+    );
 }
 
 /// **Curation dev-tool** (not a gate): replay every `.rvec` in `$RUSTYN64_FUZZ_DIR`
