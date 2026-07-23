@@ -112,6 +112,7 @@ const fn sext16(v: u32) -> i32 {
 /// `yh/ym/yl` are 14-bit `s11.2`, `xh/xm/xl` 28-bit `s11.16`, the slopes 30-bit).
 #[allow(clippy::cast_possible_wrap)] // the reinterpret-as-signed IS the sign extension
 const fn sext(v: u32, bits: u32) -> i32 {
+    debug_assert!(bits >= 1 && bits <= 32, "sext width out of range");
     let shift = 32 - bits;
     ((v << shift) as i32) >> shift
 }
@@ -615,28 +616,10 @@ impl Rdp {
             return;
         }
         let stride = u32::from(self.color_image_width) * bpp;
-        let color = self.fill_color.to_be_bytes();
         for y in y0..y1 {
             let row = self.color_image.wrapping_add(y * stride);
             for x in x0..x1 {
-                let addr = row.wrapping_add(x * bpp);
-                match bpp {
-                    4 => {
-                        for (i, b) in color.iter().enumerate() {
-                            bus.rdram_write(addr.wrapping_add(i as u32), *b);
-                        }
-                    }
-                    2 => {
-                        // Even pixel: upper 16 bits; odd pixel: lower 16 bits.
-                        let half = if x & 1 == 0 { 0 } else { 2 };
-                        bus.rdram_write(addr, color[half]);
-                        bus.rdram_write(addr.wrapping_add(1), color[half + 1]);
-                    }
-                    // 8-bit: one of four values, repeating every four pixels.
-                    1 => bus.rdram_write(addr, color[(x & 3) as usize]),
-                    // `color_image_bpp` yields only 1, 2, or 4; unreachable.
-                    _ => {}
-                }
+                self.fill_pixel(row, x, bpp, bus);
             }
         }
     }
@@ -791,11 +774,14 @@ impl Rdp {
         }
         let flip = hi >> 23 & 1 != 0;
         let yl = sext(hi & 0x3FFF, 14);
-        let ym = sext(lo >> 16 & 0x3FFF, 14);
+        let mut ym = sext(lo >> 16 & 0x3FFF, 14);
         let yh = sext(lo & 0x3FFF, 14);
         if yl <= yh {
             return; // degenerate
         }
+        // The triangle setup guarantees yh <= ym <= yl (sorted vertices); clamp
+        // malformed input into range so the M/L edge split stays well-defined.
+        ym = ym.clamp(yh, yl);
         // Edge coefficients: words 1 (L), 2 (H major), 3 (M).
         let xl = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(8)) & 0x0FFF_FFFF,
@@ -856,6 +842,10 @@ impl Rdp {
                 if xleft > xright {
                     continue;
                 }
+                // Union the four sub-scanline spans into one bounding span for the
+                // pixel row — a flat-fill approximation; true per-sub-scanline
+                // coverage (partial edge pixels) lands with the sub-pixel edge rule
+                // and coverage (T-33-004 / the conformance fuzz, R-9).
                 span_l = span_l.min(xleft);
                 span_r = span_r.max(xright);
             }
@@ -2662,5 +2652,42 @@ mod tests {
                 assert_eq!(filled(&bus, x, row), want, "pixel ({x},{row})");
             }
         }
+    }
+
+    /// **The triangle span is clipped to the scissor.** The same right triangle
+    /// with the scissor's right edge at x=3 must lose the pixels the hypotenuse
+    /// would otherwise reach (x=4 on row 2, x=5 on row 3) — exercising the X
+    /// scissor boundary with an independent expectation.
+    #[test]
+    fn fill_triangle_is_clipped_to_the_scissor() {
+        let mut mem = alloc::vec![0u8; 0x400];
+        mem[0x310..0x314].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh = 2.0
+        mem[0x318..0x31C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm = 2.0
+        mem[0x31C..0x320].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy = 0.25
+        let mut bus = SliceBus {
+            mem,
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.color_image_size = 3;
+        rdp.color_image_width = 8;
+        rdp.color_image = 0x200;
+        rdp.fill_color = 0xAABB_CCDD;
+        rdp.scissor_lrx = 3 << 2; // right edge at x=3 -> clips x>=4
+        rdp.scissor_lry = 8 << 2; // all rows kept
+        rdp.dispatch(0x08, 0x0880_0010, 0x0010_0000, 0x300, &mut bus);
+
+        let filled = |bus: &SliceBus, x: usize, row: usize| -> bool {
+            let a = 0x200 + row * 32 + x * 4;
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
+                == 0xAABB_CCDD
+        };
+        // The hypotenuse pixels past x=3 are clipped away.
+        assert!(!filled(&bus, 4, 2), "x=4 row 2 clipped by scissor");
+        assert!(!filled(&bus, 5, 3), "x=5 row 3 clipped by scissor");
+        // The in-scissor part of every row is still drawn.
+        assert!(filled(&bus, 2, 0));
+        assert!(filled(&bus, 3, 1));
+        assert!(filled(&bus, 3, 3), "x=3 row 3 kept (at the scissor edge)");
     }
 }
