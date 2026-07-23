@@ -8,6 +8,10 @@ name: Antigravity PR Review
 
 on:
   pull_request:
+    # `synchronize` auto-re-reviews on every push to a same-repo PR. It is safe
+    # under the default-branch checkout below: the reviewer always runs from the
+    # default branch, and the PR only supplies the diff (data fed to agy), never
+    # the reviewer code.
     types: [opened, reopened, synchronize]
   issue_comment:
     types: [created]
@@ -19,24 +23,24 @@ permissions:
 
 jobs:
   review:
-    # A push to (opened/reopened/synchronize) a PR whose AUTHOR is trusted, OR an
-    # `/agy-review` comment BY a trusted user (the commenter — which may be on an
-    # external contributor's PR; that is the point of the on-demand path).
-    #
-    # The two paths gate on different associations on purpose. The `pull_request`
-    # path checks the PR *author* because it runs automatically: this job is on a
-    # SELF-HOSTED runner and checks out the PR head (including `scripts/`), so a fork
-    # PR could otherwise run arbitrary code on the runner. Gating on the author (not
-    # just `opened`/`reopened`) lets `synchronize` auto-re-review every push to a
-    # trusted author's PR without ever auto-running an untrusted fork's code. The
-    # comment path checks the *commenter* so a maintainer can deliberately run a
-    # review on an external PR by typing `/agy-review`. Belt-and-suspenders with
-    # Settings -> Actions -> "Fork pull request workflows -> require approval for all
-    # outside collaborators".
+    # SECURITY GATE (a self-hosted runner on a PUBLIC repo executes on real hardware
+    # and spends the owner's Google AI Ultra quota, so "who can start a run" is the
+    # primary control):
+    #  - pull_request: only from a branch in THIS repo. A FORK PR must never schedule
+    #    work on the self-hosted host. GitHub's "require approval for outside
+    #    collaborators" setting is belt-and-suspenders, not the gate — its default only
+    #    covers *first-time* contributors, so a returning outside contributor would
+    #    otherwise get a runner.
+    #  - issue_comment: only `/agy-review` from someone with write access
+    #    (OWNER/MEMBER/COLLABORATOR), so a stranger cannot trigger execution by
+    #    commenting. `scripts/agy-review.sh` re-checks the fork status defensively,
+    #    because the `issue_comment` payload carries no head-repo field for the `if:`
+    #    to gate on — a trusted commenter is not the same as a trusted diff.
     if: >-
       (github.event_name == 'pull_request' &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) ||
-      (github.event.issue.pull_request != null &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
        startsWith(github.event.comment.body, '/agy-review') &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     # Concurrency at the JOB level (NOT workflow level): a job skipped by the `if:`
@@ -50,10 +54,27 @@ jobs:
       cancel-in-progress: false
     runs-on: [self-hosted, agy]
     steps:
+      # Check out the DEFAULT BRANCH, never the PR head. This job runs the checked-out
+      # `scripts/agy-review.sh` on a self-hosted runner with a token in the environment,
+      # so taking those scripts from the PR would let the reviewed change rewrite its own
+      # reviewer. The review content is unaffected: the diff comes from `gh pr diff` (or,
+      # for a diff over GitHub's 20,000-line API limit, from a local `git diff` of fetched
+      # objects) — never from the checked-out working tree, which stays on the default
+      # branch throughout. Consequence worth knowing: a PR that edits the reviewer or the
+      # style guide is reviewed by the version already on the default branch until it merges.
       - name: Check out repo (for the style guide + scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          # Not `fetch-depth: 0`: the large-diff fallback fetches exactly the two refs it
+          # needs on demand, so a full history clone would be paid on every run for a path
+          # most runs never take.
           fetch-depth: 1
+          # No checkout should persist credentials: agy executes with the repo as its
+          # workspace, so a token left in .git/config would be reachable by anything the
+          # review runs. The large-diff fallback still performs an authenticated fetch, but
+          # supplies the token per command via `http.extraheader` rather than persisting it.
+          persist-credentials: false
 
       - name: Run Antigravity review
         env:
@@ -61,7 +82,13 @@ jobs:
           # --- optional overrides (uncomment to change) ---
           # AGY_MODEL: gemini-3-pro        # default: agy's configured model
           AGY_EFFORT: high                 # low|medium|high
-          MAX_DIFF_BYTES: "200000"         # truncate huge diffs (~200 KB)
+          # AGY_DIFF_MODE: auto            # auto|inline|file — how the diff reaches agy. `auto`
+          #                                # (default) inlines a small diff and hands a large one to
+          #                                # agy as a file, so PR size never truncates the review.
+          # MAX_DIFF_BYTES: "5000000"      # sanity cap on a pathological diff (5 MB). Do NOT lower
+          #                                # this to bound the review: it truncates the diff BEFORE the
+          #                                # file handoff, so a low value defeats the large-PR path.
+          # MAX_PROMPT_BYTES: "125000"     # inline/file threshold + hard backstop on the argv prompt
           # STYLE_GUIDE: .github/agy-review.md   # style guide, loaded if present
         run: |
           chmod +x scripts/agy-review.sh scripts/_agy_print.sh
