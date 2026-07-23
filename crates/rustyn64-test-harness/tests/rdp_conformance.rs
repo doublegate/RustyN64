@@ -390,7 +390,8 @@ fn cvg_dest_full_16_matches_angrylion() {
 }
 
 /// A 1-cycle 32-bit shaded triangle whose combiner outputs the **primitive** colour
-/// (`rgb_d = a_d = prim`, select 3), not the shade. The shade block is a distinct
+/// (the cyc1 `rgb_d`/`a_d` add-inputs both select `prim` = 3; 1-cycle mode evaluates
+/// the cyc1 selects), not the shade. The shade block is a distinct
 /// colour (`0x112233`), so a combiner that wrongly emitted the shade would show it
 /// instead of the prim `0x224466` — this **discriminates** the primitive combiner
 /// input (`Set Prim Color`) from the shade path. Validates the combiner prim mux.

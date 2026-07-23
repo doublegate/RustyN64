@@ -626,7 +626,10 @@ static const uint32_t V18_CVG_DEST_FULL_16[] = {
 static const uint32_t V19_PRIM_COMBINER_32[] = {
     0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off
     0x3A000000u, 0x224466FFu, // Set Prim Color: R=0x22 G=0x44 B=0x66 A=0xFF
-    0x3C000000u, 0x000000C3u, // Set Combine Mode: rgb_d=3 / a_d=3 (primitive passthrough)
+    0x3C000000u, 0x000000C3u, // Set Combine: cyc1 rgb_d=(lo>>6)&7=3, a_d=lo&7=3 (both prim).
+                              // 1-cycle mode evaluates the cyc1 selects (combine() at
+                              // rdp/lib.rs applies cyc0 only in 2-cycle); this is the D (add)
+                              // input of (A-B)*C+D, so the pixel is the prim colour.
     0x3F180007u, 0x00001000u, // Set Color Image: 32-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
