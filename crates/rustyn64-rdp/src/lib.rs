@@ -1707,6 +1707,14 @@ impl Rdp {
     /// Read the current colour-image pixel at `(row_addr, x)` as RGBA8888 — the
     /// blender's `memory_color`. The inverse of [`Self::write_pixel`]: direct for a
     /// 32-bit image, RGBA5551 widened (5→8 bits) for a 16-bit one.
+    ///
+    /// An 8-bit colour image (`bpp == 1`, a legal but unsupported render target —
+    /// [`Self::color_image_bpp`] returns `Some(1)` for it) reads as transparent
+    /// black, mirroring [`Self::write_pixel`]'s silent no-op for the same size (the
+    /// blended result is discarded there anyway, so no draw happens either way). It
+    /// stays a graceful default rather than a panic because `bpp` derives from a
+    /// `Set Color Image` field under ROM control (module 60: never panic on external
+    /// input, and a `debug_assert` would fire on that legal configuration).
     fn read_pixel<B: VideoBus>(row_addr: u32, x: u32, bpp: u32, bus: &B) -> [u8; 4] {
         let addr = row_addr.wrapping_add(x.wrapping_mul(bpp));
         match bpp {
@@ -1723,12 +1731,8 @@ impl Rdp {
                 ]);
                 unpack_rgba5551(p)
             }
-            _ => {
-                // Only 16-/32-bit colour images reach the per-pixel pipeline; an 8-bit or
-                // other `bpp` here is a caller bug, not a valid framebuffer read.
-                debug_assert!(false, "read_pixel: unsupported bpp {bpp}");
-                [0; 4]
-            }
+            // 8-bit (bpp 1) and any other size: transparent black, as documented above.
+            _ => [0; 4],
         }
     }
 
@@ -5046,6 +5050,74 @@ mod tests {
         assert_eq!(
             color, 0x7BC1,
             "50/50 blend of red over green, repacked to RGBA5551"
+        );
+    }
+
+    /// **The blender's `A`-select 2 takes the interpolated shade alpha, not the
+    /// combiner output alpha.** These are independent inputs; this test forces them
+    /// apart so a regression that fed `color[3]` back in would be caught. The alpha
+    /// combiner outputs the env alpha (`0xF0`) while the interpolated shade alpha is
+    /// `0x80`; the blender selects `A = 2` (shade alpha). With shade alpha `0x80`,
+    /// `a0 = 16` / `a1 + 1 = 16` gives the 50/50 red-over-green `0x7F7F00`. Had the
+    /// combiner alpha `0xF0` leaked in, `a0 = 30` / `a1 + 1 = 2` would give
+    /// `0xEF0F00` — a distinct value, so the test mutation-checks the fix.
+    #[test]
+    fn blender_shade_alpha_is_interpolated_not_combiner_output() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        for row in 0..8 {
+            for x in 0..8 {
+                let a = 0x200 + row * 32 + x * 4;
+                bus.mem[a..a + 4].copy_from_slice(&0x00FF_00FFu32.to_be_bytes()); // green
+            }
+        }
+        for b in &mut bus.mem[0x400..0x500] {
+            *b = 0xFF;
+        }
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3;
+        rdp.color_image_width = 8;
+        rdp.z_image = 0x400;
+        rdp.env_color = 0x0000_00F0; // env alpha = 0xF0 (the combiner output alpha)
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.other_modes.z_compare_en = true;
+        rdp.other_modes.z_update_en = true;
+        rdp.other_modes.force_blend = true;
+        rdp.other_modes.blend[0] = BlendCycle {
+            p: 0,
+            a: 2, // shade alpha -- the input under test
+            m: 1,
+            b: 0,
+        };
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 4, // shade rgb -> red
+            a_a: 7,
+            a_b: 7,
+            a_c: 7,
+            a_d: 5, // env alpha -> combiner output alpha = 0xF0 (!= shade alpha 0x80)
+        };
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        bus.mem[base + 0x20..base + 0x24].copy_from_slice(&(0xFFu32 << 16).to_be_bytes()); // R=0xFF
+        bus.mem[base + 0x24..base + 0x28].copy_from_slice(&0x0000_0080u32.to_be_bytes()); // shade A=0x80
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes()); // z_px
+        rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        let color =
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
+        assert_eq!(
+            color, 0x7F7F_00F0,
+            "shade alpha 0x80 drives a 50/50 blend; combiner alpha 0xF0 only rides in the output byte"
         );
     }
 }
