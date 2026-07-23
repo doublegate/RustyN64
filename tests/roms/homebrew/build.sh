@@ -23,6 +23,11 @@ LINK_ADDR=0x1000
 
 command -v "$CC" >/dev/null || { echo "need $CC (set MIPS_CC)"; exit 1; }
 command -v "$OBJCOPY" >/dev/null || { echo "need $OBJCOPY (set MIPS_OBJCOPY)"; exit 1; }
+command -v python3 >/dev/null || { echo "need python3 for the .z64 packaging step"; exit 1; }
+
+# Remove intermediates on any exit (including a failed packaging step), so a
+# partial run never leaves orphaned .elf/.bin behind.
+trap 'rm -f render_fill.elf render_fill.bin' EXIT
 
 "$CC" -march=vr4300 -mabi=32 -mno-abicalls -fno-pic -EB -nostdlib \
       -Wl,-Ttext="$LINK_ADDR" -Wl,-e,_start -o render_fill.elf render_fill.s
@@ -45,5 +50,3 @@ if len(rom) % 2:
 open("render_fill.z64", "wb").write(rom)
 print(f"wrote render_fill.z64 ({len(rom)} bytes, {len(code)} bytes of code)")
 PY
-
-rm -f render_fill.elf render_fill.bin

@@ -32,8 +32,16 @@ const FB_PHYS: usize = 0x0020_0000;
 /// instructions), well under this.
 const BUDGET_TICKS: u64 = 2_000_000;
 
-/// Expand a 5-bit channel to 8 bits the way the VI DAC does (`v<<3 | v>>2`).
+/// Retired-instruction floor proving the fill loop actually ran: ~12 setup
+/// instructions + 768 iterations × ~8 loop-body instructions ≈ 6156, so a run
+/// that completes below this slipped past the loop rather than executing it.
+const MIN_FILL_RETIRED: u64 = 6000;
+
+/// Expand a 5-bit channel to 8 bits the way the VI DAC does (`v<<3 | v>>2`). The
+/// input is masked to 5 bits, matching the hardware field width, so an unmasked
+/// caller cannot corrupt the top bits.
 const fn expand5(v: u8) -> u8 {
+    let v = v & 0x1F;
     (v << 3) | (v >> 2)
 }
 
@@ -59,7 +67,9 @@ fn render() -> Vec<u8> {
     let deadline = sys.master_ticks() + BUDGET_TICKS;
     while sys.master_ticks() < deadline {
         sys.step_to_next_edge();
-        if sys.bus.rdram[last_px] != 0 {
+        // The whole 16-bit pixel, not one byte: pixel 767 is `0xF801`, so any
+        // format/value change still trips this as long as the pixel is non-zero.
+        if sys.bus.rdram[last_px] != 0 || sys.bus.rdram[last_px + 1] != 0 {
             filled = true;
             break;
         }
@@ -70,10 +80,8 @@ fn render() -> Vec<u8> {
          frame would be a vacuous pass",
         sys.cpu.retired
     );
-    // The fill loop is ~6k instructions; a completion after a handful means the
-    // pipeline slipped past the loop rather than running it.
     assert!(
-        sys.cpu.retired > 6000,
+        sys.cpu.retired > MIN_FILL_RETIRED,
         "only {} instructions retired; the fill loop cannot have run",
         sys.cpu.retired
     );
