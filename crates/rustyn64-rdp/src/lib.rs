@@ -795,6 +795,11 @@ const fn unpack_rgba5551(p: u16) -> [u8; 4] {
 /// (parallel-rdp `coverage.h` `SUBPIXELS`).
 pub const COVERAGE_SUBPIXELS: usize = 4;
 
+/// `log2` of the 4 sub-scanlines per pixel row: the triangle edge slopes are dx
+/// per **pixel** row but the edge-walk steps per **quarter**-pixel, so each slope
+/// is pre-shifted `>> SUB_SCANLINE_SHIFT` at decode (ledger R-14).
+const SUB_SCANLINE_SHIFT: i32 = 2;
+
 /// Quantise a signed edge X to the 3-fraction-bit sub-pixel domain used by
 /// [`compute_coverage`], with the RDP sticky bit.
 ///
@@ -1549,6 +1554,16 @@ impl Rdp {
         // malformed input into range so the M/L edge split stays well-defined.
         ym = ym.clamp(yh, yl);
         // Edge coefficients: words 1 (L), 2 (H major), 3 (M).
+        //
+        // The slopes `dx?dy` are `s13.16` **dx per pixel-row** (N64brew *…/Commands*
+        // §Edge Coefficients: "change in x per change in y", with `yh/ym/yl` in
+        // `s11.2` *screen* pixels). The edge-walk below advances the edge per
+        // Y-subpixel — `y = line*4 + sub` is in **quarter-pixel** units — so each
+        // slope is pre-shifted `>> SUB_SCANLINE_SHIFT` to a per-quarter-pixel step
+        // (parallel-rdp `span_setup.comp:167`, where `setup.dxhdy = raw >> 2`).
+        // Omitting this advanced every edge 4× too fast (ledger R-14, caught by the
+        // T-33-005 conformance gate against Angrylion). The arithmetic shift rounds
+        // a negative slope toward −∞, matching the hardware (`fill_tri_neg_16`).
         let xl = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(8)) & 0x0FFF_FFFF,
             28,
@@ -1556,7 +1571,7 @@ impl Rdp {
         let dxldy = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(12)) & 0x3FFF_FFFF,
             30,
-        );
+        ) >> SUB_SCANLINE_SHIFT;
         let xh = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(16)) & 0x0FFF_FFFF,
             28,
@@ -1564,7 +1579,7 @@ impl Rdp {
         let dxhdy = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(20)) & 0x3FFF_FFFF,
             30,
-        );
+        ) >> SUB_SCANLINE_SHIFT;
         let xm = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(24)) & 0x0FFF_FFFF,
             28,
@@ -1572,7 +1587,7 @@ impl Rdp {
         let dxmdy = sext(
             bus.rdram_read_u32(cmd_base.wrapping_add(28)) & 0x3FFF_FFFF,
             30,
-        );
+        ) >> SUB_SCANLINE_SHIFT;
 
         // Scissor in integer pixels (u10.2 -> pixel).
         let sx0 = i32::from(self.scissor_ulx) >> 2;
@@ -4034,15 +4049,17 @@ mod tests {
     /// with a vertical left edge at x=2 and a hypotenuse widening 1 pixel per row
     /// fills the staircase {row0:x2, row1:x2-3, row2:x2-4, row3:x2-5} — verified
     /// pixel-for-pixel against a 32-bit colour image, which pins the edge-walk and
-    /// the s11.2/s11.16 fixed-point decode.
+    /// the s11.2/s11.16 fixed-point decode. This exact staircase is oracle-confirmed:
+    /// `fill_tri_wide_16` (T-33-005) renders the same geometry byte-for-byte in Angrylion.
     #[test]
     fn fill_triangle_flat_fills_a_right_triangle() {
         let mut mem = alloc::vec![0u8; 0x400];
         // Edge words at cmd_base 0x300: word1 (L, unused) = 0; word2 (H major):
-        // xh = 2.0 (0x2_0000), dxhdy = 0; word3 (M): xm = 2.0, dxmdy = 0.25 (0x4000).
+        // xh = 2.0 (0x2_0000), dxhdy = 0; word3 (M): xm = 2.0, dxmdy = 1.0 (0x1_0000).
+        // The slope is dx per *pixel* row (R-14): 1.0 widens the span one pixel per row.
         mem[0x310..0x314].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
         mem[0x318..0x31C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
-        mem[0x31C..0x320].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy = 0.25
+        mem[0x31C..0x320].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // dxmdy = 1.0
         let mut bus = SliceBus {
             mem,
             dp_raised: false,
@@ -4091,7 +4108,7 @@ mod tests {
         let mut mem = alloc::vec![0u8; 0x400];
         mem[0x310..0x314].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh = 2.0
         mem[0x318..0x31C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm = 2.0
-        mem[0x31C..0x320].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy = 0.25
+        mem[0x31C..0x320].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // dxmdy = 1.0 (R-14)
         let mut bus = SliceBus {
             mem,
             dp_raised: false,
@@ -4766,7 +4783,7 @@ mod tests {
         let base = 0x600usize;
         bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
         bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
-        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // dxmdy = 1.0 (R-14)
         // Shade int-base at base + 0x20 / 0x24.
         bus.mem[base + 0x20..base + 0x24].copy_from_slice(&((0x11u32 << 16) | 0x22).to_be_bytes());
         bus.mem[base + 0x24..base + 0x28].copy_from_slice(&((0x33u32 << 16) | 0xFF).to_be_bytes());
@@ -4878,7 +4895,7 @@ mod tests {
         let base = 0x600usize;
         bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
         bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
-        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // dxmdy = 1.0 (R-14)
         // Texture block at base + 0x20 (no shade): all-zero -> s = t = 0.
         // opcode 0x0A = texture (bit 57); hi = 0x0880_0010 | (1 << 25).
         rdp.dispatch(0x0A, 0x0A80_0010, 0x0010_0000, base as u32, &mut bus);

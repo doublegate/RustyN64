@@ -176,10 +176,14 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress:** the first
-      triangle vector (`fill_tri_16`) is committed and `#[ignore]`d because it caught a real bug —
-      the 4× edge-slope error (ledger **R-14**). Un-ignore it and grow the suite once the slope fix
-      lands and the triangle unit-test goldens are re-derived against this oracle.
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (4 vectors
+      passing):** `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16` (negative-slope).
+      The first triangle vector caught
+      the 4× edge-slope bug (ledger **R-14**), now **fixed** — the slopes are pre-shifted `>> 2` at
+      decode and the affected triangle unit-test goldens were corrected against the oracle. Next:
+      shaded / textured / depth / scissor triangle vectors, then the 2c coverage inclusion rewrite
+      (which needs vectors with *fractional* edges, where the union approximation and Angrylion
+      diverge), then breadth across combiner / blend / format / Z modes toward ~150.
 
 **Complexity:** XL — the long pole.
 

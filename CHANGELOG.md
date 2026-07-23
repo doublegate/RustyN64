@@ -20,6 +20,21 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Fixed — the 4× triangle edge-slope bug (Phase 3, ledger R-14)
+
+- **Triangle edges now advance at the correct rate.** `triangle_fill` was
+  multiplying the per-pixel edge slopes (`DxHDy`/`DxMDy`/`DxLDy`) by the
+  sub-scanline offset in quarter-pixel units (`y = line*4 + sub`) without the
+  compensating `>> 2`, so every triangle edge advanced 4× too fast. The three
+  slopes are now pre-shifted `>> 2` at decode (matching parallel-rdp's
+  `setup.dxhdy = raw >> 2`), since they are dx **per pixel row** while the
+  edge-walk steps per quarter-pixel. Verified byte-for-byte against Angrylion by
+  the `fill_tri_16` and `fill_tri_wide_16` conformance vectors (the latter added
+  here — a multi-column staircase). The self-asserted triangle unit tests that had
+  baked in the buggy staircase were corrected: their `DxMDy` changed from `0.25`
+  to `1.0` (the value for which that staircase is the *correct* output, confirmed
+  by the oracle), so the geometry is no longer circular. Oracle 93.
+
 ### Added — the RDP conformance gate + a bug it immediately caught (Phase 3, T-33-005)
 
 - **The ParaLLEl-RDP / Angrylion conformance gate is live.** A licence-clean
@@ -41,8 +56,8 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   is per-pixel; applying `>> 2` makes the triangle vector match byte-for-byte
   (verified). The self-asserted `fill_triangle_flat_fills_a_right_triangle` unit
   test had baked in the buggy staircase — the exact circular-golden trap this gate
-  exists to break. The triangle vector is committed and `#[ignore]`d, pinning the
-  bug until the slope fix lands (ledger **R-14**). Oracle 93.
+  exists to break. The bug is fixed in the R-14 entry above (the vector passes, no
+  longer `#[ignore]`d). Oracle 93.
 
 ### Added — sub-pixel coverage primitives (Phase 3, T-33-004 PR-B 2c-coverage)
 
