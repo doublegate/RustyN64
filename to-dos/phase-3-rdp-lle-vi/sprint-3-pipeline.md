@@ -176,10 +176,14 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (7 vectors
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (8 vectors
       passing):** `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16`,
       `fill_tri_frac_16` (FILL rounds), `shade_tri_frac_16` (1-cycle sub-pixel coverage),
-      `shade_depth_tri_frac_16` (the depth path applies the same coverage). The 2c sub-pixel coverage
+      `shade_depth_tri_frac_16` (the depth path applies the same coverage), `shade_tri_32` (32-bit
+      RGBA8888 colour path). **Finding:** the default **dither is ON** (RGB dither mode 0 = "magic"),
+      so non-extreme colours vary per pixel — dither must be disabled in vectors (Set Other Modes hi
+      bits 7:4 = `1111` → `0x2F0000F0`) until dither is implemented (a 2c residual). The 2c sub-pixel
+      coverage
       is now wired for both the shaded/textured **and depth** 1-/2-cycle paths (inclusion + coverage
       write-back); remaining: the interpenetration-Z coverage, the AA-edge blend, other `cvg_dest`
       modes, alpha-compare, dither. NB: constructing shade+z / textured vectors requires the FULL
