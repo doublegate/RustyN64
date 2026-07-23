@@ -2157,6 +2157,14 @@ impl Rdp {
                 if shade.is_some() || tex.is_some() {
                     let (mut color, shade_alpha) =
                         self.combined_color(shade, tex, major_x, line, y_base, x);
+                    // Alpha-compare gates the write AND the z-write on the combiner
+                    // alpha (before blend/coverage touch the alpha byte). This is
+                    // observably equivalent to the RDP's pre-depth-test ordering
+                    // because the compare is depth-independent: a pixel is written
+                    // (and its depth stored) only when both depth and alpha pass.
+                    if !self.alpha_compare_passes(color[3]) {
+                        continue;
+                    }
                     // The blender runs only when the depth test enabled it (translucent /
                     // AA-edge pixels); an opaque pixel keeps the combiner colour, matching
                     // the reference's `!blend_en` fast-path. The full opaque-alpha fast path

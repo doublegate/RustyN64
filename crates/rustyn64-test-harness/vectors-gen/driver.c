@@ -581,6 +581,26 @@ static const uint32_t V16_ALPHA_COMPARE_16[] = {
     SHADE_BLOCK(0xFF, 0x00, 0x00, 0x00, 0, 0, 0, 0x30, 0, 0, 0, 0),
 };
 
+// V17: alpha-compare on the DEPTH path — the same shade-alpha ramp + 0x80 threshold
+// as V16, but on a z-suffixed triangle (op 0x0D) with z_update on and z_compare off
+// (so every pixel passes the depth test and alpha-compare is the only gate). The
+// colour output equals V16's: low-alpha columns are killed. Guards the alpha-compare
+// gate on `depth_span` (it must skip both the colour write and the z-write).
+static const uint32_t V17_ALPHA_COMPARE_Z_16[] = {
+    0x2F0000F0u, 0x00000021u, // Set Other Modes: 1-cycle, dither off, alpha_compare (bit0) + z_update (bit5)
+    0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
+    0x39000000u, 0x00000080u, // Set Blend Color: alpha threshold = 0x80
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x3E000000u, 0x00001800u, // Set Depth Image: z buffer at 0x1800
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0D800020u, 0x00200000u, // op=0x0D (shade+z), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    SHADE_BLOCK(0xFF, 0x00, 0x00, 0x00, 0, 0, 0, 0x30, 0, 0, 0, 0), // red, alpha ramp dx.A=0x30
+    Z_SUFFIX(0x08000000),                                          // z = near
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
@@ -657,6 +677,10 @@ int main(int argc, char **argv) {
     Vector v16 = {"alpha_compare_16", 0x2000, 0x1000, 8, 8, 2,
                   sizeof(V16_ALPHA_COMPARE_16) / 4, V16_ALPHA_COMPARE_16};
     if (emit_vector(&v16, out_dir)) return 1;
+
+    Vector v17 = {"alpha_compare_z_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V17_ALPHA_COMPARE_Z_16) / 4, V17_ALPHA_COMPARE_Z_16};
+    if (emit_vector(&v17, out_dir)) return 1;
 
     return 0;
 }

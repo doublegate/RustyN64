@@ -180,9 +180,10 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (15 vectors
-      passing + 1 ignored WIP):** `alpha_compare_16` (**alpha-compare** write gate on the no-Z path,
-      R-11 — a shade-alpha ramp killing low-alpha columns), `tex_rect_copy_16` + `tex_rect_offset_16` +
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (16 vectors
+      passing + 1 ignored WIP):** `alpha_compare_16` + `alpha_compare_z_16` (**alpha-compare** write gate
+      on the no-Z **and depth** paths, R-11 — a shade-alpha ramp killing low-alpha columns),
+      `tex_rect_copy_16` + `tex_rect_offset_16` +
       `tex_rect_8x8_16` + `tex_rect_mag_16` (COPY-mode Texture Rectangle — 1:1 origin/offset/full-8×8
       blits **and** the non-1:1 **4-pixels-per-cycle** magnify (`DsDx=2.0`, modelled + validated, R-8) —
       the **first texture path validated against Angrylion**, clean because copy mode bypasses the
