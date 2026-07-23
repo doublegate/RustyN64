@@ -1540,9 +1540,19 @@ impl Rdp {
             let row_addr = self.color_image.wrapping_add(py.wrapping_mul(stride));
             for px in x_lo..=x_hi {
                 let col = (px - px0) as i32;
-                // Horizontal step scaled for the 4-pixels-per-cycle copy.
-                let s105 = s_start + ((dsdx * col) >> (5 + dx_shift));
-                let s_tex = wrap_coord(s105, tile.shift_s, tile.mask_s, tile.mirror_s, tile.sl);
+                // COPY mode processes **4 pixels per cycle**: each cycle reads a
+                // 64-bit TMEM word (4 consecutive 16-bit texels) and writes them to
+                // 4 output pixels. So the base texel is evaluated at the cycle's
+                // first column (advancing by `DsDx * 4` texels per cycle), and the
+                // within-cycle offset is a direct `+0..3` TMEM increment — NOT a
+                // per-pixel coordinate step (N64brew *…/Commands* §Texture Rectangle
+                // copy; ledger R-8). For `DsDx = 4.0` (1:1) this reduces to `s = col`.
+                let cycle_start = col & !3;
+                let within = col & 3;
+                let base_s105 = s_start + ((dsdx * cycle_start) >> (5 + dx_shift));
+                let base_tex =
+                    wrap_coord(base_s105, tile.shift_s, tile.mask_s, tile.mirror_s, tile.sl);
+                let s_tex = base_tex + within;
                 // Raw 16-bit texel fetch (RGBA16 addressing, no decode).
                 let boff = (u32::from(tile.tmem_addr).wrapping_mul(8))
                     .wrapping_add(t_row)
