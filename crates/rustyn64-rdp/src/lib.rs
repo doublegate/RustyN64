@@ -262,7 +262,10 @@ fn interpolate_shade(
     for (c, o) in out.iter_mut().enumerate() {
         let scan = base[c].wrapping_add(de[c].wrapping_mul(y.wrapping_sub(y_base)));
         let v = scan.wrapping_add((dx[c] & !0x1f).wrapping_mul(x.wrapping_sub(base_x)));
-        let snapped = ((v >> 14) << 2) >> 4;
+        // The snap is done in i16, matching the oracle's `i16x4(rgba >> 14)` cast
+        // (`interpolation.h`) — the truncation to 16 bits is part of the hardware
+        // result, and it keeps the `<< 2` off the i32 sign bit.
+        let snapped = (((v >> 14) as i16).wrapping_shl(2) >> 4).into();
         *o = clamp_9bit(snapped);
     }
     out
@@ -4433,5 +4436,62 @@ mod tests {
         assert_eq!(px(&bus, 2, 0), 0x1122_33FF, "shaded, not the FILL colour");
         assert_eq!(px(&bus, 5, 3), 0x1122_33FF);
         assert_eq!(px(&bus, 0, 0), 0, "outside the triangle stays clear");
+    }
+
+    /// **A combined shaded + depth-tested triangle (0x0D) decodes both blocks at the
+    /// right offsets.** With the shade block at `+0x20` and the z block at `+0x60`
+    /// (past the 8-word shade block), the pixel must be the shade colour *and* the
+    /// stored depth must be the z-block's value — if `decode_triangle_z` misread the
+    /// shade block as z, the stored `compressed_z` would differ.
+    #[test]
+    fn shaded_and_depth_tested_triangle_reads_both_blocks() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        for b in &mut bus.mem[0x400..0x500] {
+            *b = 0xFF; // Z buffer pre-cleared to the far plane
+        }
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3;
+        rdp.color_image_width = 8;
+        rdp.z_image = 0x400;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.other_modes.z_compare_en = true;
+        rdp.other_modes.z_update_en = true;
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 4,
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 4,
+        };
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        // Shade block int-base at +0x20 (colour 0x1122_33FF).
+        bus.mem[base + 0x20..base + 0x24].copy_from_slice(&((0x11u32 << 16) | 0x22).to_be_bytes());
+        bus.mem[base + 0x24..base + 0x28].copy_from_slice(&((0x33u32 << 16) | 0xFF).to_be_bytes());
+        // Z block at +0x60 (past the 8-word shade block): z_base -> z_px 0x4000.
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes());
+        // opcode 0x0D = shade (bit 58) + z (bit 56); hi = 0x0880_0010 | (1<<26) | (1<<24).
+        rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        let color =
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
+        assert_eq!(color, 0x1122_33FF, "shade block decoded (colour)");
+        let (cz, _) = rdp.zbuffer_read(2, 0, &bus);
+        assert_eq!(
+            cz,
+            z_compress(0x4000),
+            "z block decoded at +0x60, not the shade block"
+        );
     }
 }
