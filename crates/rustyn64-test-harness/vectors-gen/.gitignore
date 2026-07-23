@@ -1,0 +1,5 @@
+# Build artifacts — the generator binary and Angrylion object files are
+# licence-restricted (non-commercial MAME) and must NEVER be committed. Only
+# driver.c / Makefile / README.md and the emitted .rvec vectors are tracked.
+driver
+*.o

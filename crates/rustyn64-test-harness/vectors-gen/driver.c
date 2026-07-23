@@ -195,6 +195,38 @@ static int emit_vector(const Vector *v, const char *out_dir) {
     return 0;
 }
 
+// ---- Command-block helpers ----
+//
+// The shade / texture / z attribute blocks of a Fill Triangle (0x08-0x0F) MUST be
+// their full length, or the command is silently shortened, the following blocks
+// misalign, and Angrylion renders a BLANK frame (this cost hours once — a shade
+// block written 14 words instead of 16). These macros expand to the exact word
+// count so a block can never be short by construction.
+
+// Pack two signed 16-bit coefficient halves into one command word (hi | lo).
+#define HALVES(hi16, lo16) \
+    ((((uint32_t)(hi16) & 0xFFFFu) << 16) | ((uint32_t)(lo16) & 0xFFFFu))
+
+// A full 16-word (8-u64) shade block: integer RGBA base, per-x (dx) integer
+// deltas, and per-major-edge (de) integer deltas; all fractional words are zero.
+// Word order matches RustyN64's decode: base_int, dx_int, base_frac, dx_frac,
+// de_int, dy_int, de_frac, dy_frac (two words each).
+#define SHADE_BLOCK(br, bg, bb, ba, dxr, dxg, dxb, dxa, der, deg, deb, dea) \
+    HALVES(br, bg), HALVES(bb, ba),   /* int base   R,G | B,A */             \
+        HALVES(dxr, dxg), HALVES(dxb, dxa), /* dx  int */                    \
+        0u, 0u,                             /* base frac */                  \
+        0u, 0u,                             /* dx  frac */                   \
+        HALVES(der, deg), HALVES(deb, dea), /* de  int */                    \
+        0u, 0u,                             /* dy  int */                    \
+        0u, 0u,                             /* de  frac */                   \
+        0u, 0u                              /* dy  frac */
+
+// A flat (constant-colour) shade block: base only, no deltas.
+#define SHADE_BLOCK_FLAT(r, g, b, a) SHADE_BLOCK(r, g, b, a, 0, 0, 0, 0, 0, 0, 0, 0)
+
+// A full 4-word z-suffix: z (s15.16, high word), then dzdx, dzde, dzdy (all 0).
+#define Z_SUFFIX(z) (uint32_t)(z), 0u, 0u, 0u
+
 // ---- Vectors ----
 // V1: a FILL-mode Fill Rectangle over an 8x8 RGBA5551 image (green 0x07C1).
 // Both renderers write the fill verbatim, so this proves the harness plumbing
@@ -289,14 +321,7 @@ static const uint32_t V6_SHADE_TRI_FRAC_16[] = {
     0x00000000u, 0x00000000u, // XL = 0, DxLDy = 0
     0x00028000u, 0x00000000u, // XH = 2.5 (left edge), DxHDy = 0
     0x00068000u, 0x00000000u, // XM = 6.5 (right edge), DxMDy = 0
-    0x00FF0000u, 0x000000FFu, // shade int base: R=0xFF, G=0, B=0, A=0xFF (flat red)
-    0x00000000u, 0x00000000u, // dx int
-    0x00000000u, 0x00000000u, // frac base
-    0x00000000u, 0x00000000u, // dx frac
-    0x00000000u, 0x00000000u, // de int
-    0x00000000u, 0x00000000u, // dy int
-    0x00000000u, 0x00000000u, // de frac
-    0x00000000u, 0x00000000u, // dy frac
+    SHADE_BLOCK_FLAT(0xFF, 0x00, 0x00, 0xFF), // flat red shade (16 words)
 };
 
 // V7: a 1-cycle shaded triangle with a z-suffix (z_update on, z_compare off) and
@@ -314,16 +339,8 @@ static const uint32_t V7_SHADE_DEPTH_TRI_FRAC_16[] = {
     0x00000000u, 0x00000000u, // XL, DxLDy
     0x00028000u, 0x00000000u, // XH = 2.5, DxHDy = 0
     0x00068000u, 0x00000000u, // XM = 6.5, DxMDy = 0
-    0x00FF0000u, 0x000000FFu, // shade int base: red (8 u64 shade words)
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x08000000u, 0x00000000u, // z suffix: z = 0x0800_0000 (near), dzdx = 0
-    0x00000000u, 0x00000000u, // dzde, dzdy
+    SHADE_BLOCK_FLAT(0xFF, 0x00, 0x00, 0xFF), // flat red shade (16 words)
+    Z_SUFFIX(0x08000000),                     // z = 0x0800_0000 (near), dz* = 0
 };
 
 // V8: a 1-cycle 32-bit (RGBA8888) shaded triangle — the wide DxMDy=1.0 staircase,
@@ -340,14 +357,7 @@ static const uint32_t V8_SHADE_TRI_32[] = {
     0x00000000u, 0x00000000u, // XL, DxLDy
     0x00020000u, 0x00000000u, // XH = 2.0
     0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
-    0x00110022u, 0x003300FFu, // shade int base: R=0x11 G=0x22 B=0x33 A=0xFF (16 u32)
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
+    SHADE_BLOCK_FLAT(0x11, 0x22, 0x33, 0xFF), // flat shade R11 G22 B33 (16 words)
 };
 
 // V9: a 32-bit shaded triangle with MAGIC dither ON (the default, hi bits 7:4=0)
@@ -363,14 +373,27 @@ static const uint32_t V9_DITHER_TRI_32[] = {
     0x00000000u, 0x00000000u, // XL, DxLDy
     0x00020000u, 0x00000000u, // XH = 2.0
     0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
-    0x00110022u, 0x003300FFu, // shade int base: R=0x11 G=0x22 B=0x33 A=0xFF (16 u32)
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
-    0x00000000u, 0x00000000u,
+    SHADE_BLOCK_FLAT(0x11, 0x22, 0x33, 0xFF), // flat shade R11 G22 B33 (16 words)
+};
+
+// V10: a 32-bit Gouraud-gradient shaded triangle (dither off) — the FIRST vector
+// to exercise shade *interpolation* rather than a flat colour. R has a per-x
+// gradient (dx.R = -0x10 per pixel, from base 0xF0) and G a per-major-edge
+// gradient (de.G = +0x08 per scanline, from base 0x40); B is flat 0x80. Angrylion
+// defines the golden, so this validates RustyN64's `interpolate_shade` (base + dx
+// + de, i16 snap) end-to-end against the oracle. Dither is off (hi 7:4 = 1111) so
+// the gradient is isolated from the dither round-up.
+static const uint32_t V10_SHADE_GRAD_TRI_32[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, AA off, dither OFF
+    0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
+    0x3F180007u, 0x00001000u, // Set Color Image: 32-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // base R=0xF0 G=0x40 B=0x80 A=0xFF; dx.R=-0x10; de.G=+0x08.
+    SHADE_BLOCK(0xF0, 0x40, 0x80, 0xFF, -0x10, 0, 0, 0, 0, 0x08, 0, 0),
 };
 
 int main(int argc, char **argv) {
@@ -411,6 +434,10 @@ int main(int argc, char **argv) {
     Vector v9 = {"dither_tri_32", 0x2000, 0x1000, 8, 8, 4,
                  sizeof(V9_DITHER_TRI_32) / 4, V9_DITHER_TRI_32};
     if (emit_vector(&v9, out_dir)) return 1;
+
+    Vector v10 = {"shade_grad_tri_32", 0x2000, 0x1000, 8, 8, 4,
+                  sizeof(V10_SHADE_GRAD_TRI_32) / 4, V10_SHADE_GRAD_TRI_32};
+    if (emit_vector(&v10, out_dir)) return 1;
 
     return 0;
 }

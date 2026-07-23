@@ -240,3 +240,16 @@ fn dither_tri_32_matches_angrylion() {
         include_bytes!("vectors/dither_tri_32.rvec"),
     );
 }
+
+/// A 1-cycle **Gouraud-gradient** shaded triangle into a 32-bit image (dither off).
+/// The first vector to exercise shade *interpolation* rather than a flat colour: R
+/// carries a per-x gradient (`dx.R = -0x10`/pixel from base `0xF0`) and G a
+/// per-major-edge gradient (`de.G = +0x08`/scanline from base `0x40`); B is flat.
+/// Validates `interpolate_shade` (base + dx + de, i16 snap) against Angrylion.
+#[test]
+fn shade_grad_tri_32_matches_angrylion() {
+    assert_matches(
+        "shade_grad_tri_32",
+        include_bytes!("vectors/shade_grad_tri_32.rvec"),
+    );
+}

@@ -62,3 +62,14 @@ directly).
 
 Add a command-list array + a `Vector` entry in `driver.c`, rebuild, re-run, and
 reference the new `.rvec` from a test in `../tests/rdp_conformance.rs`.
+
+**Always build a triangle's attribute blocks with the `SHADE_BLOCK` /
+`SHADE_BLOCK_FLAT` / `Z_SUFFIX` macros**, never by hand. A `Fill Triangle`'s shade
+/ texture / z block must be its full length (16 words for shade/tex, 4 for z); a
+short block silently shortens the command, misaligns the following blocks, and
+makes Angrylion render a **blank** frame — a bug that once cost hours. The macros
+expand to the exact word count, so a block cannot be short by construction.
+
+When adding a vector, regenerate into a scratch dir first and confirm the existing
+vectors come back **byte-identical** (`cmp`) before overwriting `../tests/vectors/`
+— that proves your change didn't perturb the committed goldens.
