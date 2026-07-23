@@ -131,11 +131,37 @@ typedef struct {
     uint32_t bpp;       // 2 (RGBA5551) or 4 (RGBA8888)
     uint32_t n_words;   // number of 32-bit command words
     const uint32_t *words;
+    // Optional 16-bit texture preload placed in RDRAM before the command list
+    // runs (so a Load Tile has something to read). When `n_texels == 0` the vector
+    // is emitted in the v1 format (no preload region) and stays byte-identical to
+    // the pre-preload generator. `texels` are logical RGBA5551 values.
+    uint32_t preload_addr;
+    uint32_t n_texels;
+    const uint16_t *texels;
 } Vector;
+
+// Place a run of logical 16-bit texels into Angrylion RDRAM starting at `byte_addr`.
+// Angrylion's Load Tile reads the texture as **32-bit words with no byte-swap**
+// (`RREADIDX32` = `rdram32[idx]`, tex.c), exactly like the command list — NOT via
+// 16-bit halfword access. So two texels pack big-endian into one word (`hi16 <<
+// 16 | lo16`); this is the same byte stream RustyN64 reads big-endian from the
+// `.rvec` preload region, so both renderers see identical texels.
+static void rdram_put_texels16(uint32_t byte_addr, const uint16_t *texels, uint32_t n) {
+    for (uint32_t i = 0; i < n; i += 2) {
+        uint32_t hi = texels[i];
+        uint32_t lo = (i + 1 < n) ? texels[i + 1] : 0u;
+        rdram_put_word(byte_addr + i * 2u, (hi << 16) | lo);
+    }
+}
 
 // Render one vector through Angrylion and write its `.rvec` file.
 static int emit_vector(const Vector *v, const char *out_dir) {
     engine_init();
+
+    // Place the optional texture preload into RDRAM (before the command list, so a
+    // Load Tile reads it). Written as 32-bit words, matching Angrylion's Load Tile.
+    uint32_t preload_len = v->n_texels * 2u;
+    rdram_put_texels16(v->preload_addr, v->texels, v->n_texels);
 
     // Place the command list into RDRAM.
     for (uint32_t i = 0; i < v->n_words; i++) {
@@ -160,13 +186,31 @@ static int emit_vector(const Vector *v, const char *out_dir) {
     FILE *f = fopen(path, "wb");
     if (!f) { perror("fopen"); return 1; }
 
-    // Header (9 big-endian u32): magic, version, fb_addr, width, height, bpp,
-    // cmd_addr, cmd_len, fb_len.
-    uint32_t hdr[9] = {0x52564543u, 1u, v->fb_addr, v->width, v->height,
-                       v->bpp, v->cmd_addr, cmd_len, fb_len};
-    for (int i = 0; i < 9; i++) {
-        uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
-        wr(be, 4, f);
+    // Header. A vector with no preload is emitted in the v1 format (9 u32:
+    // magic, version=1, fb_addr, width, height, bpp, cmd_addr, cmd_len, fb_len)
+    // so the pre-preload vectors stay byte-identical. A vector with a preload uses
+    // the v2 format (11 u32: the v1 fields with version=2, plus preload_addr and
+    // preload_len), and the preload bytes precede the command list in the body.
+    if (preload_len == 0) {
+        uint32_t hdr[9] = {0x52564543u, 1u, v->fb_addr, v->width, v->height,
+                           v->bpp, v->cmd_addr, cmd_len, fb_len};
+        for (int i = 0; i < 9; i++) {
+            uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
+            wr(be, 4, f);
+        }
+    } else {
+        uint32_t hdr[11] = {0x52564543u, 2u, v->fb_addr, v->width, v->height,
+                            v->bpp, v->cmd_addr, cmd_len, fb_len,
+                            v->preload_addr, preload_len};
+        for (int i = 0; i < 11; i++) {
+            uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
+            wr(be, 4, f);
+        }
+        // Preload region: the logical texels, big-endian (RustyN64's RDRAM layout).
+        for (uint32_t i = 0; i < v->n_texels; i++) {
+            uint8_t be[2] = {v->texels[i] >> 8, v->texels[i]};
+            wr(be, 2, f);
+        }
     }
     // Command list (big-endian words, matching RustyN64's write_cmd layout).
     for (uint32_t i = 0; i < v->n_words; i++) {
@@ -226,6 +270,19 @@ static int emit_vector(const Vector *v, const char *out_dir) {
 
 // A full 4-word z-suffix: z (s15.16, high word), then dzdx, dzde, dzdy (all 0).
 #define Z_SUFFIX(z) (uint32_t)(z), 0u, 0u, 0u
+
+// A full 16-word texture-coordinate block: S/T/W integer base, per-x (dx) and
+// per-major-edge (de) integer deltas; fractional words zero. Each 64-bit word
+// packs S in bits 63:48, T in 47:32, W in 31:16 (S,T in the hi u32, W in the lo).
+#define TEX_BLOCK(bs, bt, bw, dxs, dxt, dxw, des, det, dew)  \
+    HALVES(bs, bt), HALVES(bw, 0),      /* int base   S,T | W */ \
+        HALVES(dxs, dxt), HALVES(dxw, 0), /* dx  int */           \
+        0u, 0u,                           /* base frac */         \
+        0u, 0u,                           /* dx  frac */          \
+        HALVES(des, det), HALVES(dew, 0), /* de  int */           \
+        0u, 0u,                           /* dy  int */           \
+        0u, 0u,                           /* de  frac */          \
+        0u, 0u                            /* dy  frac */
 
 // ---- Vectors ----
 // V1: a FILL-mode Fill Rectangle over an 8x8 RGBA5551 image (green 0x07C1).
@@ -396,6 +453,35 @@ static const uint32_t V10_SHADE_GRAD_TRI_32[] = {
     SHADE_BLOCK(0xF0, 0x40, 0x80, 0xFF, -0x10, 0, 0, 0, 0, 0x08, 0, 0),
 };
 
+// V11: a 1-cycle TEXTURED triangle (16-bit RGBA5551), the first vector to validate
+// texture sampling against Angrylion (every prior texture check was an internal
+// round-trip). An 8x1 texture of eight distinct texels is preloaded into RDRAM at
+// 0x3000, loaded into TMEM by Load Tile, and sampled across the triangle by a per-x
+// S gradient (dx.S = 1.0/pixel, T flat) so each column reads a different texel. The
+// combiner passes texel0 straight through (rgb_d = a_d = texel0). Perspective off.
+// This exercises Set Texture Image / Set Tile / Set Tile Size / Load Tile /
+// interpolate_st / fetch_texel end-to-end; Angrylion defines the golden.
+static const uint16_t TEX8_RAMP[8] = {
+    0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, // red, green, blue, white
+    0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u, // magenta, cyan, yellow, grey
+};
+static const uint32_t V11_TEX_TRI_16[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, AA off, dither off, persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: rgb_d=1 / a_d=1 (texel0 passthrough)
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000030u, // Set Tile 0: 16-bit, line=2 (64-bit words), tmem=0, mask_s=3
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: SL=0 TL=0 SH=7 TH=0 (u10.2)
+    0x34000000u, 0x0001C000u, // Load Tile 0: SL=0 TL=0 SH=7 TH=0
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // S base 0, T base 0, W base 1.0; dx.S = 1.0 (one texel per pixel); rest 0.
+    TEX_BLOCK(0, 0, 1, 1, 0, 0, 0, 0, 0),
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -438,6 +524,11 @@ int main(int argc, char **argv) {
     Vector v10 = {"shade_grad_tri_32", 0x2000, 0x1000, 8, 8, 4,
                   sizeof(V10_SHADE_GRAD_TRI_32) / 4, V10_SHADE_GRAD_TRI_32};
     if (emit_vector(&v10, out_dir)) return 1;
+
+    Vector v11 = {"tex_tri_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V11_TEX_TRI_16) / 4, V11_TEX_TRI_16,
+                  0x3000, 8, TEX8_RAMP};
+    if (emit_vector(&v11, out_dir)) return 1;
 
     return 0;
 }
