@@ -299,6 +299,33 @@ static const uint32_t V6_SHADE_TRI_FRAC_16[] = {
     0x00000000u, 0x00000000u, // dy frac
 };
 
+// V7: a 1-cycle shaded triangle with a z-suffix (z_update on, z_compare off) and
+// the same fractional edges as V6 (2.5/6.5). Angrylion applies the identical
+// sub-pixel coverage on the depth path — column 2 excluded, column 6 partial — so
+// the colour output equals V6's. The z (0x0800_0000, near) writes the z buffer at
+// 0x1800; the depth test passes (z_compare off). Drives the depth-path coverage.
+static const uint32_t V7_SHADE_DEPTH_TRI_FRAC_16[] = {
+    0x2F000000u, 0x00000020u, // Set Other Modes: 1-cycle, AA off, z_update_en (bit 5)
+    0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x3E000000u, 0x00001800u, // Set Depth Image: z buffer at 0x1800
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0D800020u, 0x00200000u, // op=0x0D (shade+z), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00028000u, 0x00000000u, // XH = 2.5, DxHDy = 0
+    0x00068000u, 0x00000000u, // XM = 6.5, DxMDy = 0
+    0x00FF0000u, 0x000000FFu, // shade int base: red (8 u64 shade words)
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x08000000u, 0x00000000u, // z suffix: z = 0x0800_0000 (near), dzdx = 0
+    0x00000000u, 0x00000000u, // dzde, dzdy
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -325,6 +352,10 @@ int main(int argc, char **argv) {
     Vector v6 = {"shade_tri_frac_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V6_SHADE_TRI_FRAC_16) / 4, V6_SHADE_TRI_FRAC_16};
     if (emit_vector(&v6, out_dir)) return 1;
+
+    Vector v7 = {"shade_depth_tri_frac_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V7_SHADE_DEPTH_TRI_FRAC_16) / 4, V7_SHADE_DEPTH_TRI_FRAC_16};
+    if (emit_vector(&v7, out_dir)) return 1;
 
     return 0;
 }

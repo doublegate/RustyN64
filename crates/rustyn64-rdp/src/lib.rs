@@ -1704,6 +1704,11 @@ impl Rdp {
             // shared by the depth and shade interpolators.
             let major_x = i64::from(xh) + i64::from(line * 4 - yh_base) * i64::from(dxhdy);
             if let Some(z) = z_setup {
+                let cov = if subpixel {
+                    Some((&xleft, &xright))
+                } else {
+                    None
+                };
                 self.depth_span(
                     row_addr,
                     x0,
@@ -1713,6 +1718,7 @@ impl Rdp {
                     major_x,
                     y_base,
                     &z,
+                    cov,
                     shade_setup.as_ref(),
                     tex_setup.as_ref(),
                     bus,
@@ -1979,8 +1985,15 @@ impl Rdp {
 
     /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
     /// for each pixel, interpolate the depth, test it against the Z buffer, and —
-    /// only if it passes — write the colour and (when `z_update`) the depth. Coverage
-    /// is full (`8`) here; sub-pixel edge coverage is the deferred R-9 residual.
+    /// only if it passes — write the colour and (when `z_update`) the depth.
+    ///
+    /// In 1-/2-cycle mode `cov` carries the per-Y-subpixel edges: each pixel is gated
+    /// by [`Self::pixel_coverage`] (an uncovered pixel is skipped before the depth
+    /// test) and the coverage count is stored in the pixel alpha, identical to the
+    /// no-Z shaded path (validated against Angrylion by `shade_depth_tri_frac_16`).
+    /// FILL/COPY mode passes `None` and keeps whole-pixel coverage. The depth test
+    /// itself still uses a full count (`8`); the coverage-weighted interpenetration
+    /// path is the deferred R-9/R-12 residual.
     #[allow(
         clippy::too_many_arguments,
         reason = "an internal rasteriser span helper; a struct would only relocate the parameters"
@@ -2003,12 +2016,23 @@ impl Rdp {
         major_x: i64,
         y_base: i32,
         z: &ZTriSetup,
+        cov: Option<(&[i32; COVERAGE_SUBPIXELS], &[i32; COVERAGE_SUBPIXELS])>,
         shade: Option<&ShadeSetup>,
         tex: Option<&TexSetup>,
         bus: &mut B,
     ) {
         let yu = line as u32;
         for x in x0..=x1 {
+            // In 1-/2-cycle mode, sub-pixel coverage gates the pixel and drives the
+            // stored alpha; an uncovered pixel is skipped before the depth test (no
+            // Z read/write). FILL/COPY mode (`cov == None`) keeps whole-pixel span.
+            let pixel_cov = match cov {
+                Some((xleft, xright)) => match self.pixel_coverage(*xleft, *xright, x) {
+                    Some(c) => Some(c),
+                    None => continue,
+                },
+                None => None,
+            };
             let z_px = interpolate_z(z.z_base, z.dzdx, z.dzde, major_x, line, y_base, x);
             let xu = x as u32;
             let (mem_z, mem_dz) = self.zbuffer_read(xu, yu, bus);
@@ -2046,9 +2070,12 @@ impl Rdp {
                             shade_alpha,
                         });
                         // The blender produces RGB only; the alpha byte keeps the combiner
-                        // output alpha. The destination alpha / coverage write-back
-                        // (`cvg_dest`) is deliberately deferred to slice 2c, not omitted.
+                        // output alpha unless sub-pixel coverage overrides it below.
                         color = [rgb[0], rgb[1], rgb[2], color[3]];
+                    }
+                    // Store the sub-pixel coverage in the pixel alpha (1-/2-cycle mode).
+                    if let Some(c) = pixel_cov {
+                        color[3] = c << 5;
                     }
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
                 } else {
@@ -4762,18 +4789,21 @@ mod tests {
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
         };
 
+        // 1-cycle sub-pixel coverage excludes the degenerate top vertex (2,0); check the
+        // drawn pixel (2,1). The no-shade fill path writes the FILL colour verbatim (no
+        // coverage-alpha), so the full 32-bit value is asserted.
         draw(&mut bus, &mut rdp, 0x600, 0x0800_0000, 0x1111_1111); // near  (z_px 0x4000)
-        assert_eq!(px(&bus, 2, 0), 0x1111_1111, "near draws vs cleared buffer");
+        assert_eq!(px(&bus, 2, 1), 0x1111_1111, "near draws vs cleared buffer");
         draw(&mut bus, &mut rdp, 0x700, 0x1000_0000, 0x2222_2222); // far   (z_px 0x8000)
         assert_eq!(
-            px(&bus, 2, 0),
+            px(&bus, 2, 1),
             0x1111_1111,
             "far is occluded (depth rejects)"
         );
         assert_eq!(px(&bus, 2, 3), 0x1111_1111);
         draw(&mut bus, &mut rdp, 0x800, 0x0400_0000, 0x3333_3333); // nearer(z_px 0x2000)
         assert_eq!(
-            px(&bus, 2, 0),
+            px(&bus, 2, 1),
             0x3333_3333,
             "nearer overwrites (depth accepts)"
         );
@@ -4924,11 +4954,17 @@ mod tests {
         // opcode 0x0D = shade (bit 58) + z (bit 56); hi = 0x0880_0010 | (1<<26) | (1<<24).
         rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
 
-        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        // 1-cycle coverage excludes the degenerate top vertex (2,0); check the drawn
+        // pixel (2,1). The shade RGB is `0x112233`; the alpha holds sub-pixel coverage.
+        let a = 0x200 + 32 + 2 * 4; // pixel (2, 1)
         let color =
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
-        assert_eq!(color, 0x1122_33FF, "shade block decoded (colour)");
-        let (cz, _) = rdp.zbuffer_read(2, 0, &bus);
+        assert_eq!(
+            color & 0xFFFF_FF00,
+            0x1122_3300,
+            "shade block decoded (colour)"
+        );
+        let (cz, _) = rdp.zbuffer_read(2, 1, &bus);
         assert_eq!(
             cz,
             z_compress(0x4000),
@@ -5156,11 +5192,14 @@ mod tests {
         bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes()); // z_px 0x4000
         rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
 
-        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        // 1-cycle coverage excludes the degenerate top vertex (2,0) and stores coverage
+        // in the alpha; check the blended RGB at the drawn pixel (2,1).
+        let a = 0x200 + 32 + 2 * 4; // pixel (2, 1)
         let color =
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
         assert_eq!(
-            color, 0x7F7F_0080,
+            color & 0xFFFF_FF00,
+            0x7F7F_0000,
             "50/50 blend of red over green (not plain red)"
         );
     }
@@ -5241,10 +5280,13 @@ mod tests {
         bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes()); // z_px
         rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
 
-        let a = 0x200 + 2 * 2; // pixel (2, 0), bpp = 2
+        // Drawn pixel (2,1); the RGBA5551 alpha bit (bit 0) now holds sub-pixel
+        // coverage, so mask it and check the RGB (0x7BC0 = the 50/50 red-over-green).
+        let a = 0x200 + 16 + 2 * 2; // pixel (2, 1), bpp = 2
         let color = u16::from_be_bytes([bus.mem[a], bus.mem[a + 1]]);
         assert_eq!(
-            color, 0x7BC1,
+            color & 0xFFFE,
+            0x7BC0,
             "50/50 blend of red over green, repacked to RGBA5551"
         );
     }
@@ -5308,12 +5350,16 @@ mod tests {
         bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes()); // z_px
         rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
 
-        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        // Drawn pixel (2,1); the RGB proves shade alpha 0x80 drove the 50/50 blend
+        // (combiner alpha 0xF0 would give 0xEF0F00). The stored alpha now holds
+        // sub-pixel coverage rather than the combiner alpha, so check RGB only.
+        let a = 0x200 + 32 + 2 * 4; // pixel (2, 1)
         let color =
             u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
         assert_eq!(
-            color, 0x7F7F_00F0,
-            "shade alpha 0x80 drives a 50/50 blend; combiner alpha 0xF0 only rides in the output byte"
+            color & 0xFFFF_FF00,
+            0x7F7F_0000,
+            "shade alpha 0x80 drives a 50/50 blend, not combiner alpha 0xF0"
         );
     }
 

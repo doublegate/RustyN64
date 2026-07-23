@@ -176,13 +176,15 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (6 vectors
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (7 vectors
       passing):** `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16`,
-      `fill_tri_frac_16` (FILL-mode fractional edges round), `shade_tri_frac_16` (1-cycle sub-pixel
-      coverage — a fractional edge excludes a column, a partial edge stores reduced coverage). The 2c
-      sub-pixel coverage is now wired for the 1-/2-cycle `has_color` path (inclusion + coverage
-      write-back); remaining: the depth path, AA-edge blend, other `cvg_dest` modes, alpha-compare,
-      dither. The first triangle vector caught
+      `fill_tri_frac_16` (FILL rounds), `shade_tri_frac_16` (1-cycle sub-pixel coverage),
+      `shade_depth_tri_frac_16` (the depth path applies the same coverage). The 2c sub-pixel coverage
+      is now wired for both the shaded/textured **and depth** 1-/2-cycle paths (inclusion + coverage
+      write-back); remaining: the interpenetration-Z coverage, the AA-edge blend, other `cvg_dest`
+      modes, alpha-compare, dither. NB: constructing shade+z / textured vectors requires the FULL
+      16-u32 shade block — a short block silently misaligns the z-suffix and Angrylion renders blank.
+      The first triangle vector caught
       the 4× edge-slope bug (ledger **R-14**), now **fixed** — the slopes are pre-shifted `>> 2` at
       decode and the affected triangle unit-test goldens were corrected against the oracle. Next:
       shaded / textured / depth / scissor triangle vectors, then the 2c coverage inclusion rewrite

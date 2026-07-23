@@ -540,9 +540,10 @@ stored in the pixel's alpha/coverage bits (`(count − 1) & 7`). FILL/COPY mode 
 span, which is correct (FILL renders "without subpixel accuracy"). Validated against Angrylion by
 `fill_tri_frac_16` (FILL rounds a fractional edge) and `shade_tri_frac_16` (a 1-cycle triangle whose
 fractional left edge excludes a column and whose right edge leaves a column partially covered).
-Scope (**open residual R-9**): the **depth path** still uses full coverage, and the coverage-weighted
-**AA-edge blend**, the other `cvg_dest` modes, **alpha-compare**, and **dither** are not wired. The
-oracle stays **93**.
+The **depth path** applies the same coverage (`depth_span` takes the edges too; `shade_depth_tri_frac_16`
+renders identically to `shade_tri_frac_16` against Angrylion). Scope (**open residual R-9**): the
+coverage-weighted **interpenetration Z** path, the **AA-edge blend**, the other `cvg_dest` modes,
+**alpha-compare**, and **dither** are not wired. The oracle stays **93**.
 
 ### The conformance gate (T-33-005)
 
