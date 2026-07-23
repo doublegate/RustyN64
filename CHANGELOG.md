@@ -27,8 +27,8 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   it into TMEM with `Load Tile`, and blits it 1:1 (`DsDx = 4.0`, `DtDy = 1.0`) into a
   4×2 colour image with `Set Other Modes` cycle type = COPY. Copy mode blits texels
   straight from TMEM to the framebuffer — **no combiner, no 1-cycle texel pipeline** —
-  so it sidesteps the gaps the (`#[ignore]`d) `tex_tri_16` triangle vector pins, and
-  RustyN64 matches Angrylion byte-for-byte. This is the **first texture path checked
+  so it sidesteps the gaps exposed by the currently ignored `tex_tri_16` triangle
+  vector, and RustyN64 matches Angrylion byte-for-byte. This is the **first texture path checked
   against the oracle** (previously only an internal `Load Tile → Texture Rectangle`
   round-trip). 11 conformance vectors now pass (+ 1 ignored WIP).
 
