@@ -29,10 +29,8 @@ RUSTYN64_FUZZ_DIR=/tmp/cand cargo test -p rustyn64-test-harness \
 
 | Prefix | Family | Seed | Count | Notes |
 | --- | --- | --- | --- | --- |
-| `fz_fill_` | FILL-mode `Fill Rectangle` (16-bit) | `0x1234` | 48 | Sweeps fill colour, image size, and rectangle position (scissor is the full image). Found the R-3 inclusive-lower-right edge bug. |
-
-A scissor-clip sweep is deferred: adding one surfaced a distinct divergence in the
-*scissor* lower-right rounding (ledger R-15), its own investigation.
+| `fz_fill_` | FILL-mode `Fill Rectangle` (16-bit) | `0x1234` | 48 | Sweeps fill colour, image size, and rectangle position (scissor is the full image). Found the R-3 inclusive-lower-right edge bug. Generator family `fillrect`. |
+| `fz_scis_` | FILL `Fill Rectangle` + independent scissor sub-rect (16-bit) | `0x5c15` | 48 | Varies the scissor so it clips the rectangle on each edge. Found the R-15 asymmetric scissor clip (inclusive X, exclusive Y, `allover` guard). Generator family `scissor`. |
 
 Regenerating batch `fz_fill_` from its seed is byte-identical to what is
 committed here.

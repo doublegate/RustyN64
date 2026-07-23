@@ -421,7 +421,7 @@ fn tex_rect_mag_16_matches_angrylion() {
 /// drops the corpus directory cannot make the oracle gate report success without
 /// having replayed anything (the accuracy oracle must never pass vacuously). Raise
 /// it as families are added; never let it exceed the committed count.
-const MIN_FUZZ_CORPUS: usize = 48;
+const MIN_FUZZ_CORPUS: usize = 96;
 
 /// The **seeded-fuzz corpus gate.** Every committed `.rvec` under `tests/vectors/fuzz/`
 /// is a curated candidate from the reproducible generator (`vectors-gen/driver.c`

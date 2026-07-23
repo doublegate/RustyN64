@@ -1443,20 +1443,37 @@ impl Rdp {
         // whole). Both confirmed against the Angrylion conformance oracle (ledger
         // R-3): a rect whose lower-right lands on an integer pixel boundary still
         // draws that pixel row/column. Convert the inclusive pixel index to a
-        // half-open bound with `+ 1`; the scissor (below) then clips exclusively.
-        let rx0 = ((lo >> 12) & 0xFFF) >> 2;
+        // half-open bound with `+ 1`.
+        let rect_xh = (lo >> 12) & 0xFFF; // rect upper-left x, u10.2
+        let rx0 = rect_xh >> 2;
         let ry0 = (lo & 0xFFF) >> 2;
         let rx1 = (((hi >> 12) & 0xFFF) >> 2) + 1;
         let ry1 = (((hi & 0xFFF) | 3) >> 2) + 1;
-        // Scissor: floor upper-left, round lower-right up.
+        // Scissor clip is **asymmetric** (ledger R-15, oracle-confirmed against
+        // Angrylion `rasterizer.c` `edgewalker_for_prims`). The **Y** lower-right is
+        // **exclusive** (scanlines at or past `scissor.yl` are dropped:
+        // `invaly = k >= yllimit`) — the RDP shows this because FILL/COPY forces the
+        // *rectangle's* `yl | 3` while the scissor's `yl` stays raw. The **X**
+        // lower-right is **inclusive** of the pixel containing `scissor.xl`, EXCEPT
+        // that the horizontal clip drops the whole scanline when the rectangle lies
+        // entirely at or past the scissor's right edge (`allover`: the rect's left
+        // edge is `>= scissor.xl`) — without that guard the inclusive bound would
+        // spuriously draw the single boundary column when a rect starts exactly on
+        // the scissor's right edge.
+        let scissor_xl = u32::from(self.scissor_lrx);
+        if rect_xh >= scissor_xl {
+            return; // rectangle entirely right of the scissor: nothing drawn
+        }
         let sx0 = u32::from(self.scissor_ulx) >> 2;
         let sy0 = u32::from(self.scissor_uly) >> 2;
-        let sx1 = (u32::from(self.scissor_lrx) + 3) >> 2;
-        let sy1 = (u32::from(self.scissor_lry) + 3) >> 2;
-        // Intersection of rectangle and scissor (half-open).
+        let sx1 = (scissor_xl >> 2) + 1; // inclusive right pixel -> half-open
+        let sy1 = (u32::from(self.scissor_lry) + 3) >> 2; // exclusive
+        // Intersection of rectangle and scissor (half-open), then a hard clip to the
+        // colour-image width: a pixel at or past the stride would spill into the next
+        // row, so the inclusive X bounds never write beyond the framebuffer.
         let x0 = rx0.max(sx0);
         let y0 = ry0.max(sy0);
-        let x1 = rx1.min(sx1);
+        let x1 = rx1.min(sx1).min(u32::from(self.color_image_width));
         let y1 = ry1.min(sy1);
         if x0 >= x1 || y0 >= y1 {
             return;
@@ -3405,12 +3422,17 @@ mod tests {
         assert_eq!(bus.mem[0..4], [0xAA, 0xBB, 0xCC, 0xDD]);
     }
 
-    /// **The scissor clips the fill on all four edges.** A rectangle larger than
-    /// the scissor only writes the scissored region; the right and lower edges
-    /// are exclusive, so the boundary pixels just outside stay clear.
+    /// **The scissor clips the fill, with an asymmetric lower-right** (ledger R-15,
+    /// Angrylion-oracle-confirmed). A rectangle larger than the scissor writes only
+    /// the scissored region: the **X** lower-right is **inclusive** of its boundary
+    /// pixel (column 6 for `xl = 6.0`), while the **Y** lower-right is **exclusive**
+    /// (row 3 for `yl = 3.0` stays clear). The pixel one column past the inclusive X
+    /// edge (column 7) stays clear. (An earlier version of this test asserted an
+    /// *exclusive* X edge — that was self-authored and never oracle-checked; the
+    /// scissor-clip fuzz corpus corrected it.)
     #[test]
     fn fill_rectangle_is_clipped_to_the_scissor() {
-        // 32-bit, width 8. Scissor keeps x in [2,6), y in [1,3).
+        // 32-bit, width 8. Scissor keeps x in [2,6] (inclusive), y in [1,3) (excl).
         let (_, bus) = run_commands(&[
             set_color_image(0, 3, 8, 0),
             set_fill_color(0x1122_3344),
@@ -3423,10 +3445,17 @@ mod tests {
         };
         // Inside the scissor: written.
         assert_eq!(px(2, 1), [0x11, 0x22, 0x33, 0x44], "inside top-left");
-        assert_eq!(px(5, 2), [0x11, 0x22, 0x33, 0x44], "inside bottom-right");
+        assert_eq!(px(5, 2), [0x11, 0x22, 0x33, 0x44], "inside");
+        // The X lower-right boundary pixel (column 6) IS drawn (inclusive).
+        assert_eq!(px(6, 1), [0x11, 0x22, 0x33, 0x44], "right edge inclusive");
+        assert_eq!(px(6, 2), [0x11, 0x22, 0x33, 0x44], "right edge inclusive");
         // Outside each edge: clear.
         assert_eq!(px(1, 1), [0, 0, 0, 0], "left of scissor");
-        assert_eq!(px(6, 1), [0, 0, 0, 0], "right edge exclusive");
+        assert_eq!(
+            px(7, 1),
+            [0, 0, 0, 0],
+            "one column past the inclusive X edge"
+        );
         assert_eq!(px(2, 0), [0, 0, 0, 0], "above scissor");
         assert_eq!(px(2, 3), [0, 0, 0, 0], "lower edge exclusive");
     }
