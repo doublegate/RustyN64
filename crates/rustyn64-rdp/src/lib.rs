@@ -248,13 +248,13 @@ fn alpha_input_c(sel: u8, inp: &CombinerInputs) -> i16 {
 /// (N64brew *…/Blender*). 0 = pixel (combiner output), 1 = memory (framebuffer),
 /// 2 = blend-colour register, 3 = fog-colour register.
 fn blend_rgb_input(sel: u8, inp: &BlendInputs) -> [u8; 3] {
-    let src = match sel & 0x3 {
+    let [r, g, b, _] = match sel & 0x3 {
         1 => inp.memory,
         2 => inp.blend_color,
         3 => inp.fog,
         _ => inp.pixel,
     };
-    [src[0], src[1], src[2]]
+    [r, g, b]
 }
 
 /// The blender's `A` (1b) alpha weight: 0 = pixel alpha, 1 = fog alpha,
@@ -268,15 +268,19 @@ fn blend_a_input(sel: u8, inp: &BlendInputs) -> u8 {
     }
 }
 
-/// The blender's `B` (2b) alpha weight: 0 = `1 − A` (`(!pixel_alpha) & 0xFF`),
-/// 1 = memory alpha (framebuffer coverage), 2 = one (0xFF), 3 = zero (N64brew
-/// *…/Blender*).
-fn blend_b_input(sel: u8, inp: &BlendInputs) -> u8 {
+/// The blender's `B` (2b) alpha weight: 0 = `1 − A`, 1 = memory alpha (framebuffer
+/// coverage), 2 = one (0xFF), 3 = zero (N64brew *…/Blender*).
+///
+/// The `1 − A` case is the one's complement of the **already-selected `A` weight**
+/// (`a0`), not of pixel alpha specifically — the ParaLLEl-RDP constant is named
+/// `INV_PIXEL_ALPHA` but computes `~a0` (`blender.h:106`), so `A` selecting fog or
+/// shade alpha makes `B` their complement too. `a0` is passed in already resolved.
+fn blend_b_input(sel: u8, inp: &BlendInputs, a0: u8) -> u8 {
     match sel & 0x3 {
         1 => inp.memory[3],
         2 => 0xFF,
         3 => 0,
-        _ => !inp.pixel[3],
+        _ => !a0,
     }
 }
 
@@ -1273,15 +1277,22 @@ impl Rdp {
     /// the `+ 1` on the `M` term is real hardware, not a rounding fudge.
     ///
     /// The colour selects (`P`, `M`) pick an RGB triple; the alpha selects (`A`,
-    /// `B`) pick a scalar weight. `final_cycle` gates the two early-return fast
-    /// paths (opaque passthrough and `color_on_cvg`); the anti-aliased divider
-    /// path, alpha-compare, dither and Z are **open residual R-11**.
+    /// `B`) pick a scalar weight — `B`'s `1 − A` case complements the resolved `A`
+    /// weight, so `A` is computed first and handed to `blend_b_input`. The result
+    /// is masked to 8 bits, **not** clamped: the reference casts through `u8` and
+    /// re-masks (`blender.h:142`), so an over-range blend wraps exactly as hardware
+    /// does — software is expected to keep `a0 + a1 + 1 ≈ 32`.
+    ///
+    /// The final-cycle early-return fast paths (opaque passthrough, `color_on_cvg`),
+    /// the anti-aliased divider path, alpha-compare, dither, and Z are **open
+    /// residual R-11**; `blend_cycle` always takes the no-divide branch for now.
     #[must_use]
     pub fn blend_cycle(cycle: BlendCycle, inp: &BlendInputs) -> [u8; 3] {
         let p = blend_rgb_input(cycle.p, inp);
         let m = blend_rgb_input(cycle.m, inp);
-        let a0 = u32::from(blend_a_input(cycle.a, inp) >> 3);
-        let a1 = u32::from(blend_b_input(cycle.b, inp) >> 3);
+        let a0_full = blend_a_input(cycle.a, inp);
+        let a0 = u32::from(a0_full >> 3);
+        let a1 = u32::from(blend_b_input(cycle.b, inp, a0_full) >> 3);
         let mut out = [0u8; 3];
         for (ch, o) in out.iter_mut().enumerate() {
             let blended = u32::from(p[ch]) * a0 + u32::from(m[ch]) * (a1 + 1);
@@ -3369,5 +3380,28 @@ mod tests {
             [93, 93, 93]
         );
         assert_eq!(rdp.blend(inp), [90, 90, 90], "2-cycle chains forward");
+    }
+
+    /// **The `B = 1 − A` select complements the *resolved* `A`, not pixel alpha.**
+    /// `A` selects fog alpha (0xFF → a0 = 31) and `B` selects `1 − A`, so
+    /// `a1 = (~0xFF) >> 3 = 0` and `a1 + 1 = 1`: `100·31 + 10·1 = 3110 → 97`.
+    /// Pixel alpha is 0x00 here, so the old `!pixel_alpha` bug would use
+    /// `a1 = (~0x00) >> 3 = 31` → `100·31 + 10·32 = 3420 → 106`; asserting 97
+    /// fails against that regression (ParaLLEl-RDP `blender.h:106`, `~a0`).
+    #[test]
+    fn blend_inv_alpha_complements_selected_a_not_pixel() {
+        let cycle = BlendCycle {
+            p: 0,
+            a: 1,
+            m: 1,
+            b: 0,
+        };
+        let inp = BlendInputs {
+            pixel: [100, 100, 100, 0x00],
+            memory: [10, 10, 10, 40],
+            fog: [0, 0, 0, 0xFF],
+            ..BlendInputs::default()
+        };
+        assert_eq!(Rdp::blend_cycle(cycle, &inp), [97, 97, 97]);
     }
 }
