@@ -20,6 +20,27 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — sub-pixel coverage primitives (Phase 3, T-33-004 PR-B 2c-coverage)
+
+- **The RDP's sub-pixel coverage mask is now computed.** `compute_coverage` ports
+  parallel-rdp's `coverage.h` exactly: 4 Y-subpixels × 2 X-samples (at the diamond
+  offsets `{0, 4}` / `{2, 6}` that alternate by Y-subpixel) tested against the
+  per-subpixel half-open span edges, yielding the 8-bit mask whose popcount is the
+  coverage count (0–8). `quantize_x` snaps a `s.16` edge X to the 3-fraction-bit
+  coverage domain with the RDP sticky bit (any discarded fraction forces the low
+  bit, keeping the half-open edge tests exact). `Set Other Modes` now decodes
+  `aa_enable` (bit 3). Verified by hand-computed unit tests (full/partial/empty
+  masks, the sticky bit, negative-coordinate shift) derived from the oracle's
+  arithmetic — **not** from this implementation's own output.
+- **Scope (ledger R-9):** these are the pure, oracle-verified primitives; the
+  rasteriser still unions the four sub-scanlines into a whole-pixel bounding span,
+  so `compute_coverage` has **no runtime caller yet**. Wiring it in changes every
+  triangle's edge pixels (the exact top-left-sample rule kills a degenerate top row
+  the union approximation drew), so the pixel-inclusion rewrite — and its re-derived
+  goldens — is deferred to the coverage-integration slice, to be validated against
+  the ParaLLEl-RDP conformance vectors (T-33-005) rather than against
+  hand-derived goldens that could share a systematic error with the port. Oracle 93.
+
 ### Added — the memory-read blender on triangles (Phase 3, T-33-004 PR-B 2b-blend)
 
 - **The RDP blends translucent triangles against the framebuffer.** `depth_span`
