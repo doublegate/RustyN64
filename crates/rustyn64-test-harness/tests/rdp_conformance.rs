@@ -217,3 +217,11 @@ fn shade_depth_tri_frac_16_matches_angrylion() {
         include_bytes!("vectors/shade_depth_tri_frac_16.rvec"),
     );
 }
+
+/// A 1-cycle shaded triangle into a **32-bit RGBA8888** colour image (dither off).
+/// Exercises the 32-bit write path: a fully-covered interior pixel is the shade RGB
+/// `0x112233` plus the coverage alpha `0xE0`.
+#[test]
+fn shade_tri_32_matches_angrylion() {
+    assert_matches("shade_tri_32", include_bytes!("vectors/shade_tri_32.rvec"));
+}

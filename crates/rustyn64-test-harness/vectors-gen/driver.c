@@ -326,6 +326,30 @@ static const uint32_t V7_SHADE_DEPTH_TRI_FRAC_16[] = {
     0x00000000u, 0x00000000u, // dzde, dzdy
 };
 
+// V8: a 1-cycle 32-bit (RGBA8888) shaded triangle — the wide DxMDy=1.0 staircase,
+// flat shade R=0x11 G=0x22 B=0x33. Exercises the 32-bit colour path; the stored
+// alpha byte holds sub-pixel coverage (cov<<5), so a fully-covered interior pixel
+// is 0x112233E0. (The full 16-u32 shade block is required — a short block would
+// misalign nothing here but shorten the command; see shade_depth_tri_frac_16.)
+static const uint32_t V8_SHADE_TRI_32[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, AA off, RGB+alpha dither OFF (hi 7:4=1111)
+    0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
+    0x3F180007u, 0x00001000u, // Set Color Image: 32-bit (size=3), width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    0x00110022u, 0x003300FFu, // shade int base: R=0x11 G=0x22 B=0x33 A=0xFF (16 u32)
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -356,6 +380,10 @@ int main(int argc, char **argv) {
     Vector v7 = {"shade_depth_tri_frac_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V7_SHADE_DEPTH_TRI_FRAC_16) / 4, V7_SHADE_DEPTH_TRI_FRAC_16};
     if (emit_vector(&v7, out_dir)) return 1;
+
+    Vector v8 = {"shade_tri_32", 0x2000, 0x1000, 8, 8, 4,
+                 sizeof(V8_SHADE_TRI_32) / 4, V8_SHADE_TRI_32};
+    if (emit_vector(&v8, out_dir)) return 1;
 
     return 0;
 }
