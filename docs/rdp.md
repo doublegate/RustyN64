@@ -558,9 +558,9 @@ fractional left edge excludes a column and whose right edge leaves a column part
 The **depth path** applies the same coverage (`depth_span` takes the edges too; `shade_depth_tri_frac_16`
 renders identically to `shade_tri_frac_16` against Angrylion). **Ordered RGB dither is wired**
 (T-33-004 2c, `dither_tri_32` — see the blender section). **Alpha-compare is wired** on both the
-no-Z and depth paths (R-11, `alpha_compare_16` / `alpha_compare_z_16`). Scope (**open residual
-R-9**): the coverage-weighted **interpenetration Z** path, the **AA-edge blend**, and the other
-`cvg_dest` modes are not wired. The oracle stays **93**.
+no-Z and depth paths (R-11, `alpha_compare_16` / `alpha_compare_z_16`). **`cvg_dest = full` is wired** (`cvg_dest_full_16` — a partial edge column stores full coverage
+`0xf801`). Scope (**open residual R-9**): the coverage-weighted **interpenetration Z** path, the
+**AA-edge blend**, and the **wrap/save `cvg_dest`** modes are not wired. The oracle stays **93**.
 
 ### The conformance gate (T-33-005)
 

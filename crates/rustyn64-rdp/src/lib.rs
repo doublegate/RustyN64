@@ -2041,10 +2041,12 @@ impl Rdp {
     /// A zero mask kills the pixel. With anti-aliasing off, only the first
     /// sub-sample (mask bit 0 — the top-left) matters, so a pixel whose top-left
     /// sample is outside the span is dropped (parallel-rdp `shading.h:171-178`). The
-    /// stored coverage is the `COVERAGE_CLAMP` no-blend write-back `(count - 1) & 7`
-    /// (`coverage.h`), which packs into the pixel's alpha/coverage bits — full
-    /// coverage (count 8) stores 7, so the RGBA5551 alpha bit (`cov >> 2`) is set.
-    /// The coverage-weighted AA blend and the other `cvg_dest` modes are slice 2c-2.
+    /// stored coverage is the `cvg_dest` write-back: **clamp** (mode 0) stores the
+    /// no-blend `(count - 1) & 7` (`coverage.h`) and **full** (mode 2) stores `7`
+    /// (so a partially-covered edge pixel gets the full RGBA5551 alpha bit). Both
+    /// pack into the pixel's alpha/coverage bits — full coverage (count 8) stores 7,
+    /// so the alpha bit (`cov >> 2`) is set. The **wrap** (1) and **save** (3) modes
+    /// need the memory-read coverage accumulator (R-9 slice 2c-2) and are deferred.
     fn pixel_coverage(
         &self,
         xleft: [i32; COVERAGE_SUBPIXELS],
@@ -2056,7 +2058,13 @@ impl Rdp {
             return None;
         }
         #[allow(clippy::cast_possible_truncation)] // count_ones() is 1..=8 here
-        Some(((mask.count_ones() - 1) & 7) as u8)
+        let count = mask.count_ones() as u8;
+        // `cvg_dest = 2` (full) forces full coverage regardless of the sample count.
+        Some(if self.other_modes.cvg_dest == 2 {
+            7
+        } else {
+            (count - 1) & 7
+        })
     }
 
     /// Apply the ordered RGB dither to a combined pixel colour in place, mirroring

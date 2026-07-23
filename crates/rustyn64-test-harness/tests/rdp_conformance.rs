@@ -376,6 +376,19 @@ fn alpha_compare_z_16_matches_angrylion() {
     );
 }
 
+/// **`cvg_dest = full`** coverage write-back. The same fractional-edge shaded
+/// triangle as `shade_tri_frac_16`, but with `Set Other Modes` `cvg_dest = 2`
+/// (full): the partially-covered right-edge column stores **full** coverage (7 →
+/// RGBA5551 alpha bit set, `0xf801`) instead of the clamp `(count-1) & 7`
+/// (`0xf800`). Guards the `cvg_dest = full` write-back path.
+#[test]
+fn cvg_dest_full_16_matches_angrylion() {
+    assert_matches(
+        "cvg_dest_full_16",
+        include_bytes!("vectors/cvg_dest_full_16.rvec"),
+    );
+}
+
 /// A **magnified** COPY-mode Texture Rectangle (`DsDx = 2.0`, 0.5 texel/pixel). The
 /// RDP copies **4 pixels per cycle**: within a cycle it reads 4 consecutive texels
 /// (`base..base+3` from a 64-bit TMEM word) and the base advances by `DsDx × 4`
