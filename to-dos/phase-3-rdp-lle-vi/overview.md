@@ -57,9 +57,9 @@ Out-of-scope:
   the shortest path from a command list to a visible frame. **Status:** COMPLETE (2026-07-22).
 - [Sprint 2 — Texture state, TMEM, and the texel formats](sprint-2-texture.md) —
   the state and data path a textured primitive needs, up to a copy-mode Texture Rectangle.
-  **Status:** in progress.
+  **Status:** COMPLETE (2026-07-23) — the first textured picture.
 - Sprint 3 — The colour combiner, the blender, Z/coverage, and the fuzz-suite 0-diff.
-  **Status:** stub — refine when Sprint 2 is close to complete.
+  **Status:** stub — refine when Sprint 2 is close to complete (now).
 
 ## Dependencies
 
