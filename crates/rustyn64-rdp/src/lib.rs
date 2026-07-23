@@ -238,6 +238,36 @@ fn interpolate_z(
     snapped.clamp(0, 0x3_FFFF)
 }
 
+/// Interpolate the per-pixel shade colour for pixel `(x, y)` from a triangle's
+/// shade coefficients — a port of ParaLLEl-RDP's `interpolate_rgba`
+/// (`interpolation.h`) for the full-coverage case. `base`/`dx`/`de` are the `s15.16`
+/// RGBA base and its per-x / per-major-edge deltas; `base_x` is the major-edge x
+/// integer at this scanline. Each channel: walk the scanline base by `de`, add the
+/// per-x `dx` term (masked `& ~0x1f`), snap `>> 14 << 2 >> 4`, and clamp to a byte.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "base_x derives from the s15.16 major-edge x, in range for the cast"
+)]
+fn interpolate_shade(
+    base: &[i32; 4],
+    dx: &[i32; 4],
+    de: &[i32; 4],
+    major_x: i64,
+    y: i32,
+    y_base: i32,
+    x: i32,
+) -> [u8; 4] {
+    let base_x = (major_x >> 16) as i32;
+    let mut out = [0u8; 4];
+    for (c, o) in out.iter_mut().enumerate() {
+        let scan = base[c].wrapping_add(de[c].wrapping_mul(y.wrapping_sub(y_base)));
+        let v = scan.wrapping_add((dx[c] & !0x1f).wrapping_mul(x.wrapping_sub(base_x)));
+        let snapped = ((v >> 14) << 2) >> 4;
+        *o = clamp_9bit(snapped);
+    }
+    out
+}
+
 /// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
 /// the 0x80 bias, sign-extend to 9 bits, add the bias back (ParaLLEl-RDP
 /// `special_expand`, `combiner.h`). The multiplier C uses a plain [`sext9`].
@@ -589,6 +619,30 @@ struct ZTriSetup {
     dzde: i32,
     dz: i32,
     dz_compressed: i32,
+}
+
+/// The decoded per-triangle shade setup for the per-pixel path: the `s15.16` RGBA
+/// base colour (at the top vertex) and its per-x (`dx`) and per-major-edge (`de`)
+/// deltas. The per-scanline `dy` term (sub-pixel snap) is part 2c.
+#[derive(Debug, Default, Clone, Copy)]
+struct ShadeSetup {
+    base: [i32; 4],
+    dx: [i32; 4],
+    de: [i32; 4],
+}
+
+/// Unpack an RGBA8888 register word into `[r, g, b, a]` bytes.
+const fn unpack_rgba(w: u32) -> [u8; 4] {
+    w.to_be_bytes()
+}
+
+/// Pack an RGBA8888 colour into a 16-bit RGBA5551 framebuffer pixel
+/// (`R[15:11] G[10:6] B[5:1] A[0]`).
+const fn pack_rgba5551(rgba: [u8; 4]) -> u16 {
+    ((rgba[0] as u16 >> 3) << 11)
+        | ((rgba[1] as u16 >> 3) << 6)
+        | ((rgba[2] as u16 >> 3) << 1)
+        | (rgba[3] as u16 >> 7)
 }
 
 /// One cycle of the colour combiner.
@@ -1253,6 +1307,10 @@ impl Rdp {
         clippy::needless_pass_by_ref_mut,
         clippy::similar_names
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the rasteriser's edge decode, span walk, and the flat/shaded/depth render paths are one tightly-coupled unit; splitting further would fragment the shared setup"
+    )]
     fn triangle_fill<B: VideoBus>(&mut self, hi: u32, lo: u32, cmd_base: u32, bus: &mut B) {
         let Some(bpp) = self.color_image_bpp() else {
             return;
@@ -1316,6 +1374,10 @@ impl Rdp {
         } else {
             None
         };
+        // Shade block (bit 58): when present, the pixel colour comes from the
+        // combiner fed the interpolated shade, not the FILL register (T-33-004
+        // PR-B 2b — the first shaded triangle).
+        let shade_setup = Self::decode_shade(hi, cmd_base, bus);
         let y_base = yh >> 2;
 
         for line in start_line..=end_line {
@@ -1357,15 +1419,34 @@ impl Rdp {
             let row_addr = self
                 .color_image
                 .wrapping_add((line as u32).wrapping_mul(stride));
-            let Some(z) = z_setup else {
+            // The major-edge x at this scanline (s15.16), the interpolation origin
+            // shared by the depth and shade interpolators.
+            let major_x = i64::from(xh) + i64::from(line * 4 - yh_base) * i64::from(dxhdy);
+            if let Some(z) = z_setup {
+                self.depth_span(
+                    row_addr,
+                    x0,
+                    x1,
+                    line,
+                    bpp,
+                    major_x,
+                    y_base,
+                    &z,
+                    shade_setup.as_ref(),
+                    bus,
+                );
+            } else if let Some(shade) = shade_setup.as_ref() {
+                #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
+                for x in x0..=x1 {
+                    let color = self.shaded_color(shade, major_x, line, y_base, x);
+                    Self::write_pixel(row_addr, x as u32, bpp, color, bus);
+                }
+            } else {
+                #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
                 for x in x0..=x1 {
                     self.fill_pixel(row_addr, x as u32, bpp, bus);
                 }
-                continue;
-            };
-            // The major-edge x at this scanline (s15.16), the interpolation origin.
-            let major_x = i64::from(xh) + i64::from(line * 4 - yh_base) * i64::from(dxhdy);
-            self.depth_span(row_addr, x0, x1, line, bpp, major_x, y_base, &z, bus);
+            }
         }
     }
 
@@ -1409,6 +1490,88 @@ impl Rdp {
         })
     }
 
+    /// Decode the 8-word shade coefficient block of a `Fill Triangle` (present when
+    /// bit 58 is set) into [`ShadeSetup`]. It follows the 4-word base immediately
+    /// (before the texture/z blocks). Per channel the value is `s15.16`: the base's
+    /// int part is 9-bit signed, the deltas' int parts 16-bit (N64brew *…/Commands*
+    /// §Fill Shaded Triangle). Returns `None` when there is no shade block.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "the s15.16 delta is the raw (int << 16 | frac) bits reinterpreted as signed"
+    )]
+    fn decode_shade<B: VideoBus>(hi: u32, cmd_base: u32, bus: &B) -> Option<ShadeSetup> {
+        if (hi >> 26) & 1 == 0 {
+            return None;
+        }
+        let sa = cmd_base.wrapping_add(4 * 8);
+        let w = |word: u32| bus.rdram_read_u32(sa.wrapping_add(word * 4));
+        // Words: 0 int-base, 1 dx-int, 2 frac-base, 3 dx-frac, 4 de-int, 5 dy-int,
+        // 6 de-frac, 7 dy-frac. Each 64-bit word packs R/G/B/A; read as two u32
+        // halves — channels 0/1 (R/G) in the hi u32, 2/3 (B/A) in the lo. Within a
+        // u32, the even channel (R/B) is the high 16 bits, the odd (G/A) the low.
+        let u32_index = |base_word: u32, ch: usize| base_word * 2 + (ch >> 1) as u32;
+        let field = |base_word: u32, ch: usize, mask: u32| {
+            let shift = 16 * (1 - (ch & 1) as u32);
+            (w(u32_index(base_word, ch)) >> shift) & mask
+        };
+        let mut shade = ShadeSetup::default();
+        for ch in 0..4 {
+            // Base: 9-bit int (word 0) + 16-bit frac (word 2) -> a 25-bit s(9).16.
+            let i9 = field(0, ch, 0x1FF);
+            let bf = field(2, ch, 0xFFFF);
+            shade.base[ch] = sext((i9 << 16) | bf, 25);
+            // Deltas: 16-bit int + 16-bit frac -> a full s15.16, reinterpreted.
+            let assemble =
+                |iw: u32, fw: u32| ((field(iw, ch, 0xFFFF) << 16) | field(fw, ch, 0xFFFF)) as i32;
+            shade.dx[ch] = assemble(1, 3);
+            shade.de[ch] = assemble(4, 6);
+        }
+        Some(shade)
+    }
+
+    /// Write one RGBA8888 pixel to the colour image at `(row_addr, x)`: direct for a
+    /// 32-bit image, packed to RGBA5551 for a 16-bit one (matching `fill_pixel`'s
+    /// addressing). Other sizes are unsupported and write nothing.
+    fn write_pixel<B: VideoBus>(row_addr: u32, x: u32, bpp: u32, rgba: [u8; 4], bus: &mut B) {
+        let addr = row_addr.wrapping_add(x.wrapping_mul(bpp));
+        match bpp {
+            4 => {
+                for (i, b) in rgba.iter().enumerate() {
+                    bus.rdram_write(addr.wrapping_add(i as u32), *b);
+                }
+            }
+            2 => {
+                let p = pack_rgba5551(rgba).to_be_bytes();
+                bus.rdram_write(addr, p[0]);
+                bus.rdram_write(addr.wrapping_add(1), p[1]);
+            }
+            _ => {}
+        }
+    }
+
+    /// Compute a shaded pixel's colour: interpolate the shade, run it through the
+    /// combiner (with the prim/env registers), and return the RGBA8888 result. The
+    /// two-cycle mode comes from `Set Other Modes`; texture (texel0/1) is part 2b's
+    /// texture slice and reads as zero here.
+    fn shaded_color(
+        &self,
+        shade: &ShadeSetup,
+        major_x: i64,
+        line: i32,
+        y_base: i32,
+        x: i32,
+    ) -> [u8; 4] {
+        let shade_rgba =
+            interpolate_shade(&shade.base, &shade.dx, &shade.de, major_x, line, y_base, x);
+        let inp = CombinerInputs {
+            shade: shade_rgba,
+            prim: unpack_rgba(self.prim_color),
+            env: unpack_rgba(self.env_color),
+            ..CombinerInputs::default()
+        };
+        self.combine(inp, self.other_modes.cycle_type == 1)
+    }
+
     /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
     /// for each pixel, interpolate the depth, test it against the Z buffer, and —
     /// only if it passes — write the colour and (when `z_update`) the depth. Coverage
@@ -1435,6 +1598,7 @@ impl Rdp {
         major_x: i64,
         y_base: i32,
         z: &ZTriSetup,
+        shade: Option<&ShadeSetup>,
         bus: &mut B,
     ) {
         let yu = line as u32;
@@ -1453,7 +1617,13 @@ impl Rdp {
             };
             let dr = Self::depth_test(z_px, z.dz, z.dz_compressed, 8, &dinp);
             if dr.depth_pass {
-                self.fill_pixel(row_addr, xu, bpp, bus);
+                // Shaded triangles take the combiner colour; otherwise the FILL register.
+                if let Some(shade) = shade {
+                    let color = self.shaded_color(shade, major_x, line, y_base, x);
+                    Self::write_pixel(row_addr, xu, bpp, color, bus);
+                } else {
+                    self.fill_pixel(row_addr, xu, bpp, bus);
+                }
                 if self.other_modes.z_update_en {
                     #[allow(
                         clippy::cast_sign_loss,
@@ -4186,5 +4356,82 @@ mod tests {
         // i32::MIN at dzdx (za + 4 = 0x24).
         bus.mem[0x24..0x28].copy_from_slice(&0x8000_0000u32.to_be_bytes());
         assert!(Rdp::decode_triangle_z(1 << 24, 0, &bus).is_some());
+    }
+
+    // ---- T-33-004 PR-B 2b: shade interpolation ----
+
+    /// **`decode_shade` assembles the RGBA base and `interpolate_shade` yields the
+    /// byte colours.** The shade block's int-base word packs `R.i`/`G.i` in the hi
+    /// u32 (bits 56:48 / 40:32) and `B.i`/`A.i` in the lo u32; a flat base (no
+    /// deltas) of `(100, 150, 200, 255)` interpolates to exactly those bytes.
+    #[test]
+    fn decode_shade_assembles_base_and_interpolates() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x100],
+            hidden: alloc::vec![0u8; 0x80],
+        };
+        // Shade block at cmd_base(0) + 4 words = 0x20. Word0 int-base:
+        // hi = (R.i << 16) | G.i, lo = (B.i << 16) | A.i. Frac/deltas left 0.
+        bus.mem[0x20..0x24].copy_from_slice(&((0x64u32 << 16) | 0x96).to_be_bytes()); // R=100 G=150
+        bus.mem[0x24..0x28].copy_from_slice(&((0xC8u32 << 16) | 0xFF).to_be_bytes()); // B=200 A=255
+        let shade = Rdp::decode_shade(1 << 26, 0, &bus).expect("shade block present");
+        assert_eq!(shade.base, [0x64_0000, 0x96_0000, 0xC8_0000, 0xFF_0000]);
+        assert_eq!(shade.dx, [0; 4]);
+        assert_eq!(shade.de, [0; 4]);
+        assert_eq!(
+            interpolate_shade(&shade.base, &shade.dx, &shade.de, 0, 0, 0, 0),
+            [100, 150, 200, 255],
+            "flat base interpolates to the byte colour"
+        );
+    }
+
+    /// **A shaded triangle renders the interpolated colour through the combiner.**
+    /// A flat-shaded triangle (base `(0x11, 0x22, 0x33, 0xFF)`) with a shade-
+    /// passthrough combiner (`D = shade`, `A = B` so `(A−B)·C = 0`) writes that
+    /// colour — not the FILL register — into the 32-bit colour image, proving the
+    /// decode → interpolate → combine → write path.
+    #[test]
+    fn shaded_triangle_renders_combined_shade() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3; // 32-bit
+        rdp.color_image_width = 8;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.fill_color = 0xDEAD_BEEF; // must NOT appear
+        // Shade-passthrough combiner: cyc1 D = shade (4), A = B (cancel).
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 4,
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 4,
+        };
+        // Staircase triangle (as the flat-fill test) with the shade flag (bit 58 ->
+        // hi bit 26), flat base colour (0x11, 0x22, 0x33, 0xFF).
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        // Shade int-base at base + 0x20 / 0x24.
+        bus.mem[base + 0x20..base + 0x24].copy_from_slice(&((0x11u32 << 16) | 0x22).to_be_bytes());
+        bus.mem[base + 0x24..base + 0x28].copy_from_slice(&((0x33u32 << 16) | 0xFF).to_be_bytes());
+        // opcode 0x0C = Fill Shaded Triangle (bit 58 set); hi = 0x0880_0010 | (1<<26).
+        rdp.dispatch(0x0C, 0x0C80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let px = |bus: &ZBufBus, x: usize, row: usize| -> u32 {
+            let a = 0x200 + row * 32 + x * 4;
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
+        };
+        assert_eq!(px(&bus, 2, 0), 0x1122_33FF, "shaded, not the FILL colour");
+        assert_eq!(px(&bus, 5, 3), 0x1122_33FF);
+        assert_eq!(px(&bus, 0, 0), 0, "outside the triangle stays clear");
     }
 }
