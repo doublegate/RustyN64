@@ -4632,4 +4632,27 @@ mod tests {
         );
         assert_eq!(px(&bus, 5, 3), 0xFF00_00FF);
     }
+
+    /// **`decode_texture` pairs the interleaved int/frac words per the wiki.** The
+    /// block is `word0 = s.i/t.i`, `word2 = s.f/t.f`, `word4 = dsde.i` — so the base
+    /// assembles from words 0 (int) and **2** (frac). Distinct frac bytes absent
+    /// from word 4 make a mispaired decode (e.g. int + de) surface as a wrong base.
+    #[test]
+    fn decode_texture_pairs_interleaved_int_frac() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x100],
+            hidden: alloc::vec![0u8; 0x80],
+        };
+        // Word0 int-base hi = (s.i << 16) | t.i; word2 frac-base hi = (s.f << 16) | t.f.
+        // Word4 (de int) left 0, so a base that read word4 as its frac would be wrong.
+        bus.mem[0x20..0x24].copy_from_slice(&((0x0005u32 << 16) | 0x0007).to_be_bytes());
+        bus.mem[0x30..0x34].copy_from_slice(&((0x8000u32 << 16) | 0x4000).to_be_bytes());
+        let tex = Rdp::decode_texture(1 << 25, 0, &bus).expect("texture block present");
+        assert_eq!(
+            tex.base,
+            [0x0005_8000, 0x0007_4000],
+            "base = word0 (int) + word2 (frac), not word4"
+        );
+        assert_eq!(tex.de, [0, 0], "de reads word4/word6 (both zero here)");
+    }
 }
