@@ -282,15 +282,106 @@ fn interpolate_shade(
     clippy::cast_sign_loss,
     reason = "base_x is in range for the cast; the texel coord wraps into fetch_texel"
 )]
-fn interpolate_st(tex: &TexSetup, major_x: i64, y: i32, y_base: i32, x: i32) -> [u32; 2] {
+fn interpolate_st(
+    tex: &TexSetup,
+    persp: bool,
+    major_x: i64,
+    y: i32,
+    y_base: i32,
+    x: i32,
+) -> [u32; 2] {
     let base_x = (major_x >> 16) as i32;
-    let mut st = [0u32; 2];
-    for (c, o) in st.iter_mut().enumerate() {
+    let mut stw = [0i32; 3];
+    for (c, o) in stw.iter_mut().enumerate() {
         let scan = tex.base[c].wrapping_add(tex.de[c].wrapping_mul(y.wrapping_sub(y_base)));
         let v = scan.wrapping_add((tex.dx[c] & !0x1f).wrapping_mul(x.wrapping_sub(base_x)));
-        *o = (v >> 16) as u32;
+        *o = v >> 16; // the integer coordinate fed to the (non-)perspective divide
     }
-    st
+    // `no_perspective_divide` is just `(s, t)`; the perspective path divides by W.
+    let (s, t) = if persp {
+        perspective_divide(stw[0], stw[1], stw[2])
+    } else {
+        (stw[0], stw[1])
+    };
+    [s as u32, t as u32]
+}
+
+/// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
+/// transcribed in its `(base, slope · 4)` source form). Indexed by the top 6 bits
+/// of the normalised `W`; `(base, slope)` give `rcp = ((slope · wnorm) >> 10) + base`.
+#[rustfmt::skip]
+const PERSPECTIVE_TABLE: [(i16, i16); 64] = [
+    (0x4000, -252 * 4), (0x3f04, -244 * 4), (0x3e10, -238 * 4), (0x3d22, -230 * 4),
+    (0x3c3c, -223 * 4), (0x3b5d, -218 * 4), (0x3a83, -210 * 4), (0x39b1, -205 * 4),
+    (0x38e4, -200 * 4), (0x381c, -194 * 4), (0x375a, -189 * 4), (0x369d, -184 * 4),
+    (0x35e5, -179 * 4), (0x3532, -175 * 4), (0x3483, -170 * 4), (0x33d9, -166 * 4),
+    (0x3333, -162 * 4), (0x3291, -157 * 4), (0x31f4, -155 * 4), (0x3159, -150 * 4),
+    (0x30c3, -147 * 4), (0x3030, -143 * 4), (0x2fa1, -140 * 4), (0x2f15, -137 * 4),
+    (0x2e8c, -134 * 4), (0x2e06, -131 * 4), (0x2d83, -128 * 4), (0x2d03, -125 * 4),
+    (0x2c86, -123 * 4), (0x2c0b, -120 * 4), (0x2b93, -117 * 4), (0x2b1e, -115 * 4),
+    (0x2aab, -113 * 4), (0x2a3a, -110 * 4), (0x29cc, -108 * 4), (0x2960, -106 * 4),
+    (0x28f6, -104 * 4), (0x288e, -102 * 4), (0x2828, -100 * 4), (0x27c4,  -98 * 4),
+    (0x2762,  -96 * 4), (0x2702,  -94 * 4), (0x26a4,  -92 * 4), (0x2648,  -91 * 4),
+    (0x25ed,  -89 * 4), (0x2594,  -87 * 4), (0x253d,  -86 * 4), (0x24e7,  -85 * 4),
+    (0x2492,  -83 * 4), (0x243f,  -81 * 4), (0x23ee,  -80 * 4), (0x239e,  -79 * 4),
+    (0x234f,  -77 * 4), (0x2302,  -76 * 4), (0x22b6,  -74 * 4), (0x226c,  -74 * 4),
+    (0x2222,  -72 * 4), (0x21da,  -71 * 4), (0x2193,  -70 * 4), (0x214d,  -69 * 4),
+    (0x2108,  -67 * 4), (0x20c5,  -67 * 4), (0x2082,  -65 * 4), (0x2041,  -65 * 4),
+];
+
+/// The reciprocal and shift for a normalised `W` (ParaLLEl-RDP `perspective_get_lut`).
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "normout & 0x3fff >> 8 is 0..=63, a valid table index"
+)]
+fn perspective_get_lut(w: i32) -> (i32, i32) {
+    let shift = (14 - find_msb(w)).min(14);
+    let normout = (w << shift) & 0x3fff;
+    let wnorm = normout & 0xff;
+    let (base, slope) = PERSPECTIVE_TABLE[(normout >> 8) as usize];
+    let rcp = ((i32::from(slope) * wnorm) >> 10) + i32::from(base);
+    (rcp, shift)
+}
+
+/// Perspective-divide a texture coordinate `(s, t)` by `w` — a faithful port of
+/// ParaLLEl-RDP's `perspective_divide` (`perspective.h`): the LUT reciprocal, the
+/// shift, the `temp_mask` out-of-bounds saturation, the `w <= 0` carry, and the
+/// final 17-bit clamp. Returns the divided `(s, t)`.
+#[allow(
+    clippy::similar_names,
+    reason = "s / t / w are the RDP's own texture-coordinate names"
+)]
+fn perspective_divide(s: i32, t: i32, w: i32) -> (i32, i32) {
+    let w_carry = w <= 0;
+    let w = w & 0x7fff;
+    let (rcp, shift) = perspective_get_lut(w);
+    let prod0 = [s.wrapping_mul(rcp), t.wrapping_mul(rcp)];
+    let temp_mask = ((1 << 30) - 1) & -((1 << 29) >> shift);
+    let out_of_bounds = [prod0[0] & temp_mask, prod0[1] & temp_mask];
+    let (mut temp, prod) = if shift == 14 {
+        ([prod0[0] << 1, prod0[1] << 1], prod0)
+    } else {
+        let p = [prod0[0] >> (13 - shift), prod0[1] >> (13 - shift)];
+        (p, p)
+    };
+    if out_of_bounds != [0, 0] {
+        for c in 0..2 {
+            if out_of_bounds[c] != temp_mask && out_of_bounds[c] != 0 {
+                temp[c] = if prod[c] & (1 << 29) == 0 {
+                    0x7fff
+                } else {
+                    -0x8000
+                };
+            }
+        }
+    }
+    if w_carry {
+        temp = [0x7fff, 0x7fff];
+    }
+    (
+        temp[0].clamp(-0x10000, 0xffff),
+        temp[1].clamp(-0x10000, 0xffff),
+    )
 }
 
 /// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
@@ -577,6 +668,8 @@ pub struct OtherModes {
     pub z_mode: u8,
     /// Alpha-compare enable (gates the pixel write; R-11).
     pub alpha_compare_en: bool,
+    /// Perspective-correct texturing (bit 51): divide the interpolated `S`/`T` by `W`.
+    pub persp_tex_en: bool,
 }
 
 /// The resolved per-pixel blender input colours (each RGBA8888).
@@ -656,14 +749,14 @@ struct ShadeSetup {
     de: [i32; 4],
 }
 
-/// The decoded per-triangle texture setup (S/T only; the `W` perspective term is
-/// the deferred perspective slice). `base`/`dx`/`de` are the `s16.16` S/T base at
-/// the top vertex and its per-x and per-major-edge deltas.
+/// The decoded per-triangle texture setup: `S`/`T`/`W` (`W` for the perspective
+/// divide). `base`/`dx`/`de` are the `s16.16` base at the top vertex and its per-x
+/// and per-major-edge deltas.
 #[derive(Debug, Default, Clone, Copy)]
 struct TexSetup {
-    base: [i32; 2],
-    dx: [i32; 2],
-    de: [i32; 2],
+    base: [i32; 3],
+    dx: [i32; 3],
+    de: [i32; 3],
 }
 
 /// Unpack an RGBA8888 register word into `[r, g, b, a]` bytes.
@@ -1612,13 +1705,16 @@ impl Rdp {
         let has_shade = (hi >> 26) & 1;
         let ta = cmd_base.wrapping_add((4 + 8 * has_shade) * 8);
         let w = |word: u32| bus.rdram_read_u32(ta.wrapping_add(word * 4));
-        // S and T are both in the hi u32 of each 64-bit word: S at bits 31:16, T at
-        // 15:0. `c == 0` -> S (shift 16), `c == 1` -> T (shift 0).
-        let field = |u32_word: u32, c: usize| (w(u32_word) >> (16 * (1 - c as u32))) & 0xFFFF;
-        let assemble =
-            |iw: u32, fw: u32, c: usize| ((field(iw * 2, c) << 16) | field(fw * 2, c)) as i32;
+        // Each 64-bit word packs S (bits 63:48), T (47:32), W (31:16): S and T are in
+        // the hi u32 (shift 16 / 0), W in the lo u32 (shift 16). `c` = 0 S, 1 T, 2 W.
+        let field = |base_word: u32, c: usize| {
+            let u32_off = u32::from(c == 2);
+            let shift = if c == 1 { 0 } else { 16 };
+            (w(base_word * 2 + u32_off) >> shift) & 0xFFFF
+        };
+        let assemble = |iw: u32, fw: u32, c: usize| ((field(iw, c) << 16) | field(fw, c)) as i32;
         let mut tex = TexSetup::default();
-        for c in 0..2 {
+        for c in 0..3 {
             tex.base[c] = assemble(0, 2, c); // int word 0, frac word 2
             tex.dx[c] = assemble(1, 3, c); // per-x
             tex.de[c] = assemble(4, 6, c); // per-major-edge
@@ -1650,7 +1746,8 @@ impl Rdp {
                 interpolate_shade(&shade.base, &shade.dx, &shade.de, major_x, line, y_base, x);
         }
         if let Some(tex) = tex {
-            let [s, t] = interpolate_st(tex, major_x, line, y_base, x);
+            let [s, t] =
+                interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
             inp.texel0 = self.fetch_texel(&self.tiles[0], s, t);
         }
         self.combine(inp, self.other_modes.cycle_type == 1)
@@ -1818,6 +1915,7 @@ impl Rdp {
             z_update_en: (lo >> 5) & 1 != 0,
             z_mode: ((lo >> 10) & 0x3) as u8,
             alpha_compare_en: lo & 1 != 0,
+            persp_tex_en: (hi >> 19) & 1 != 0, // command bit 51
         };
     }
 
@@ -4649,11 +4747,11 @@ mod tests {
         bus.mem[0x30..0x34].copy_from_slice(&((0x8000u32 << 16) | 0x4000).to_be_bytes());
         let tex = Rdp::decode_texture(1 << 25, 0, &bus).expect("texture block present");
         assert_eq!(
-            tex.base,
+            [tex.base[0], tex.base[1]],
             [0x0005_8000, 0x0007_4000],
             "base = word0 (int) + word2 (frac), not word4"
         );
-        assert_eq!(tex.de, [0, 0], "de reads word4/word6 (both zero here)");
+        assert_eq!(tex.de, [0, 0, 0], "de reads word4/word6 (all zero here)");
     }
 
     /// **A shaded + textured triangle (0x0E) reads the texture block past the 8-word
@@ -4706,5 +4804,23 @@ mod tests {
             color, 0x00FF_00FF,
             "texel column 1 (green) — texture read at +0x60"
         );
+    }
+
+    /// **`perspective_divide` matches the hand-computed ParaLLEl-RDP arithmetic.** For
+    /// `w = 0x4000` the LUT gives `rcp = 0x4000`, `shift = 0`, so `s → (s·0x4000) >> 13`
+    /// (`0x10 → 0x20`); `w = 0x2000` gives `shift = 1` so `>> 12` (`0x100 → 0x400`); and
+    /// `w <= 0` sets the carry to `0x7FFF`.
+    #[test]
+    fn perspective_divide_matches_hand_computed() {
+        assert_eq!(perspective_divide(0x10, 0x20, 0x4000), (0x20, 0x40));
+        assert_eq!(perspective_divide(0x100, 0, 0x2000), (0x400, 0));
+        assert_eq!(
+            perspective_divide(0x10, 0x20, -1),
+            (0x7FFF, 0x7FFF),
+            "w<=0 carry"
+        );
+        // The LUT's first/last entries pin the transcription boundaries.
+        assert_eq!(PERSPECTIVE_TABLE[0], (0x4000, -1008));
+        assert_eq!(PERSPECTIVE_TABLE[63], (0x2041, -260));
     }
 }

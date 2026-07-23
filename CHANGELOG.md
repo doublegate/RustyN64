@@ -20,6 +20,20 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — perspective-correct texturing (Phase 3, T-33-004 PR-B 2b-perspective)
+
+- **The RDP divides texture coordinates by W.** When `Set Other Modes` `persp_tex_en`
+  (bit 51) is set, `interpolate_st` now interpolates `S`/`T`/`W` and runs the
+  hardware perspective divide — a faithful port of ParaLLEl-RDP's `perspective_divide`
+  (`perspective.h`): the 64-entry reciprocal LUT (`perspective_get_lut`), the
+  normalisation shift, the `temp_mask` out-of-bounds saturation, the `w <= 0` carry,
+  and the 17-bit clamp. `TexSetup` gains the `W` channel and `decode_texture` reads
+  it; `OtherModes` gains `persp_tex_en`. Validated by a hand-computed
+  `perspective_divide` test (the LUT reciprocal/shift at `w = 0x4000`/`0x2000`, the
+  carry) plus LUT-boundary transcription checks. The non-perspective path
+  (`persp_tex_en` clear) is unchanged. Scope (ledger R-13): the exact tile
+  shift/clamp/mask for triangle coordinates remains for the conformance pass. Oracle 93.
+
 ### Added — the first textured triangle (Phase 3, T-33-004 PR-B part 2b-texture)
 
 - **The RDP samples textures on triangles.** `Fill Textured Triangle` (opcode bit
