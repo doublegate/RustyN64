@@ -38,7 +38,7 @@ jobs:
       # Pinned to the toolchain in rust-toolchain.toml rather than @stable.
       # rust-toolchain.toml takes precedence over the action's default anyway,
       # so @stable meant installing one toolchain and building with another.
-      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
 

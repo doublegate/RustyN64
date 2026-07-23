@@ -9,6 +9,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Changed — pin the toolchain to exactly 1.96.0
+
+- **The Rust toolchain and MSRV are pinned to the exact patch release `1.96.0`**
+  (edition 2024 unchanged), down from the `1.97` minor-series pin. `rust-toolchain.toml`,
+  `Cargo.toml`'s `rust-version`, and every CI/release/docs workflow (`dtolnay/rust-toolchain@1.96.0`)
+  now name one exact version, so local, CI, and release builds all resolve the same
+  compiler rather than whatever `1.96.x`/`1.97.x` patch a runner happens to have. This
+  is a reproducibility guarantee for the eventual libretro core (a floating patch pin
+  bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
+  and builds `no_std` cleanly on 1.96.0.
+
 ### Added — the colour combiner (Phase 3, T-33-002)
 
 - **The RDP evaluates the colour combiner.** `Set Combine Mode` (0x3C) decodes

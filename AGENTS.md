@@ -156,7 +156,7 @@ cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-feature
 ```
 
 Workspace lints: clippy `pedantic` + `nursery` at warn, `missing_docs` warn, `unsafe_code` warn.
-Edition 2024, toolchain pinned to 1.97. New public items need rustdoc or the doc gate fails.
+Edition 2024, toolchain pinned to 1.96.0. New public items need rustdoc or the doc gate fails.
 Feature flags: `test-roms` (committed CC0/homebrew suites) and `commercial-roms` (local dumps;
 ROMs gitignored under `tests/roms/external/`, only screenshots/`.snap` committed). **Both gate
 zero code today** — no `cfg(feature = ...)` exists for either, so `--features test-roms` runs

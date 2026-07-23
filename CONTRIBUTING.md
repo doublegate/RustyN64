@@ -7,7 +7,7 @@ lint-clean and the determinism contract intact.
 ## Development setup
 
 - Install [rustup](https://rustup.rs).
-- The toolchain is pinned in `rust-toolchain.toml` (Rust 1.97, edition 2024);
+- The toolchain is pinned in `rust-toolchain.toml` (Rust 1.96.0, edition 2024);
   `rustup` auto-installs it on first build.
 - `cargo check --workspace` to verify the workspace compiles.
 - `cargo test --workspace` to run the unit + integration tests.
