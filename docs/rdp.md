@@ -331,7 +331,8 @@ sampler applies only the odd-row 32-bit-word swap `^= (t & 1) << 2` — the endi
 ParaLLEl-RDP applies to its host-word storage are intentionally absent on both the load and
 fetch sides. **YUV16** decode is deferred (no oracle test needs it this sprint); **4-bit
 loading** (nibble `Load Tile`/`Load Block`) remains R-7, though 4-bit *fetch* is done. The
-oracle count stays **93** — `fetch_texel` has no runtime caller until the sampler (T-32-004).
+oracle count stays **93** — `fetch_texel` now has runtime callers (the texture rectangle,
+T-32-004, and the textured triangle, T-33-004 2b-texture), but no systemtest drives the render path.
 
 ### The flat-fill triangle rasteriser (T-33-001)
 
@@ -380,8 +381,9 @@ Scope (**open residual R-10**): the common inputs (combined, texel0/1, primitive
 environment, one, zero, and the C-slot alpha taps) are wired; the **exotic** inputs — noise, LOD
 fraction, the key/convert constants — read as zero until the LOD/key/convert state lands. The
 arithmetic, the 16-field decode, the mux, and the 2-cycle chaining are unit-tested against
-hand-computed values. `combine` has no runtime caller until the triangle pipeline routes through
-it (with shade/texture attributes and the cycle-type gate); the oracle stays **93**.
+hand-computed values. `combine` now has its runtime caller — `combined_color` routes the
+interpolated shade and sampled texel through it per pixel (T-33-004 2b) — but no systemtest drives
+the render path, so the oracle stays **93**.
 
 ### The blender (T-33-003)
 

@@ -147,8 +147,9 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   unit-tested bit-for-bit on hand-computed values. Scope (ledger R-11): the
   anti-aliased-edge divider LUT, memory-alpha blend-shift, alpha-compare, dither,
   `color_on_cvg`, and coverage write-back are decoded but unused until the pixel
-  pipeline routes through the blender with real framebuffer/coverage/Z (T-33-004);
-  `blend` has no runtime caller yet, so the oracle stays 93.
+  pipeline routes through the blender with real framebuffer/coverage/Z (T-33-004).
+  `blend` gains that runtime caller in the 2b-blend entry above; the oracle stays
+  93 (no systemtest drives the render path).
 
 ### Added — the colour combiner (Phase 3, T-33-002)
 
@@ -162,8 +163,9 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   constant-colour registers. Cross-verified against the wiki and ParaLLEl-RDP
   (MIT) and unit-tested bit-for-bit on hand-computed values. Scope (ledger R-10):
   the common inputs are wired; the exotic inputs (noise, LOD fraction, key/convert
-  constants) read as zero until that state lands. `combine` has no runtime caller
-  until the triangle pipeline routes through it, so the oracle stays 93.
+  constants) read as zero until that state lands. `combine` gains its runtime
+  caller in the shaded/textured-triangle entries above; the oracle stays 93 (no
+  systemtest drives the render path).
 
 ### Added — the flat-fill triangle rasteriser (Phase 3, T-33-001)
 
@@ -211,8 +213,9 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   routing. YUV16 and 4-bit *loading* remain deferred (R-7); 4-bit *fetch* is done.
   The `Load TLUT` base is written wherever `tmem_addr` points (the upper-half /
   alignment rule is a programmer requirement, not a hardware rejection — enforcing
-  one would invent behaviour). Oracle unchanged at 93 (`fetch_texel` has no runtime
-  caller until the sampler, T-32-004).
+  one would invent behaviour). Oracle unchanged at 93 (`fetch_texel` gains its
+  runtime callers in the texture-rectangle and textured-triangle entries; no
+  systemtest drives the render path).
 
 ### Added — RDP TMEM loads: Load Tile and Load Block (Phase 3, T-32-002)
 

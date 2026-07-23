@@ -1586,7 +1586,7 @@ impl Rdp {
             } else if has_color {
                 #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
                 for x in x0..=x1 {
-                    let color = self.combined_color(
+                    let (color, _shade_alpha) = self.combined_color(
                         shade_setup.as_ref(),
                         tex_setup.as_ref(),
                         major_x,
@@ -1717,11 +1717,18 @@ impl Rdp {
                 bus.rdram_read(addr.wrapping_add(3)),
             ],
             2 => {
-                let p = (u16::from(bus.rdram_read(addr)) << 8)
-                    | u16::from(bus.rdram_read(addr.wrapping_add(1)));
+                let p = u16::from_be_bytes([
+                    bus.rdram_read(addr),
+                    bus.rdram_read(addr.wrapping_add(1)),
+                ]);
                 unpack_rgba5551(p)
             }
-            _ => [0; 4],
+            _ => {
+                // Only 16-/32-bit colour images reach the per-pixel pipeline; an 8-bit or
+                // other `bpp` here is a caller bug, not a valid framebuffer read.
+                debug_assert!(false, "read_pixel: unsupported bpp {bpp}");
+                [0; 4]
+            }
         }
     }
 
@@ -1763,6 +1770,11 @@ impl Rdp {
     /// decoded setups, `None` when that attribute is absent. The two-cycle mode
     /// comes from `Set Other Modes`. Texture uses the non-perspective coordinate
     /// (`interpolate_st`) sampled from tile 0.
+    ///
+    /// Returns the combiner output **and** the interpolated shade alpha, which the
+    /// blender selects separately (`A`-select 2) from the combiner output alpha
+    /// (`A`-select 0) — the two differ whenever the alpha combiner transforms the
+    /// shade alpha. Shade alpha is `0` when the triangle carries no shade block.
     fn combined_color(
         &self,
         shade: Option<&ShadeSetup>,
@@ -1771,7 +1783,7 @@ impl Rdp {
         line: i32,
         y_base: i32,
         x: i32,
-    ) -> [u8; 4] {
+    ) -> ([u8; 4], u8) {
         let mut inp = CombinerInputs {
             prim: unpack_rgba(self.prim_color),
             env: unpack_rgba(self.env_color),
@@ -1786,7 +1798,11 @@ impl Rdp {
                 interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
             inp.texel0 = self.fetch_texel(&self.tiles[0], s, t);
         }
-        self.combine(inp, self.other_modes.cycle_type == 1)
+        let shade_alpha = inp.shade[3];
+        (
+            self.combine(inp, self.other_modes.cycle_type == 1),
+            shade_alpha,
+        )
     }
 
     /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
@@ -1839,7 +1855,8 @@ impl Rdp {
             if dr.depth_pass {
                 // Shaded/textured triangles take the combiner colour; else the FILL register.
                 if shade.is_some() || tex.is_some() {
-                    let mut color = self.combined_color(shade, tex, major_x, line, y_base, x);
+                    let (mut color, shade_alpha) =
+                        self.combined_color(shade, tex, major_x, line, y_base, x);
                     // The blender runs only when the depth test enabled it (translucent /
                     // AA-edge pixels); an opaque pixel keeps the combiner colour, matching
                     // the reference's `!blend_en` fast-path. The full opaque-alpha fast path
@@ -1851,7 +1868,10 @@ impl Rdp {
                             memory,
                             blend_color: unpack_rgba(self.blend_color),
                             fog: unpack_rgba(self.fog_color),
-                            shade_alpha: color[3],
+                            // The blender's shade-alpha mux input (`A`-select 2) is the
+                            // interpolated shade alpha, independent of the combiner output
+                            // alpha (`A`-select 0, carried in `pixel[3]`).
+                            shade_alpha,
                         });
                         color = [rgb[0], rgb[1], rgb[2], color[3]];
                     }
@@ -4942,6 +4962,90 @@ mod tests {
         assert_eq!(
             color, 0x7F7F_0080,
             "50/50 blend of red over green (not plain red)"
+        );
+    }
+
+    /// **`unpack_rgba5551` widens each 5-bit channel by high-bit replication** and
+    /// maps the 1-bit alpha to `0x00`/`0xFF` — the exact inverse of `pack_rgba5551`
+    /// on the packable values. `0x1F → 0xFF`, `0x00 → 0x00`, `0x10 → 0x84`
+    /// (`0b10000 << 3 | 0b10000 >> 2 = 0x80 | 0x04`).
+    #[test]
+    fn unpack_rgba5551_widens_by_high_bit_replication() {
+        assert_eq!(unpack_rgba5551(0xFFFF), [0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(unpack_rgba5551(0x0000), [0x00, 0x00, 0x00, 0x00]);
+        // R = 0x10 (bits 15:11), everything else zero, alpha bit set.
+        assert_eq!(unpack_rgba5551(0x8001), [0x84, 0x00, 0x00, 0xFF]);
+        // Pure green (G = 0x1F) with alpha — the 16-bit background the blend test uses.
+        assert_eq!(unpack_rgba5551(0x07C1), [0x00, 0xFF, 0x00, 0xFF]);
+        // Round-trip every packable RGBA8888 whose low bits are already truncated.
+        for &v in &[0x00u8, 0x08, 0x84, 0xF8, 0xFF] {
+            let packed = pack_rgba5551([v & 0xF8, 0, v & 0xF8, 0x80]);
+            let un = unpack_rgba5551(packed);
+            assert_eq!(pack_rgba5551(un), packed, "round-trip stable for {v:#04x}");
+        }
+    }
+
+    /// **The blender also runs against a 16-bit RGBA5551 framebuffer.** The same
+    /// red-over-green 50/50 blend as [`translucent_triangle_blends_with_framebuffer`]
+    /// but with a 16-bit colour image, exercising `read_pixel`'s RGBA5551 decode and
+    /// `write_pixel`'s repack. Memory green `0x07C1` unpacks to `0x00FF00`; the blend
+    /// `0x7F7F00` repacks to `0x7BC1` (`R,G = 0x7F>>3 = 0x0F`, alpha bit `0x80>>7 = 1`).
+    #[test]
+    fn translucent_triangle_blends_16bit_framebuffer() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        // Pre-fill the 16-bit colour image with green (RGBA5551 0x07C1); Z buffer far.
+        for row in 0..8 {
+            for x in 0..8 {
+                let a = 0x200 + row * 16 + x * 2;
+                bus.mem[a..a + 2].copy_from_slice(&0x07C1u16.to_be_bytes());
+            }
+        }
+        for b in &mut bus.mem[0x400..0x500] {
+            *b = 0xFF;
+        }
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 2; // 16-bit RGBA5551
+        rdp.color_image_width = 8;
+        rdp.z_image = 0x400;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.other_modes.z_compare_en = true;
+        rdp.other_modes.z_update_en = true;
+        rdp.other_modes.force_blend = true;
+        rdp.other_modes.blend[0] = BlendCycle {
+            p: 0,
+            a: 0,
+            m: 1,
+            b: 0,
+        };
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 4,
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 4,
+        };
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        bus.mem[base + 0x20..base + 0x24].copy_from_slice(&(0xFFu32 << 16).to_be_bytes()); // R=0xFF
+        bus.mem[base + 0x24..base + 0x28].copy_from_slice(&0x0000_0080u32.to_be_bytes()); // A=0x80
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes()); // z_px
+        rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let a = 0x200 + 2 * 2; // pixel (2, 0), bpp = 2
+        let color = u16::from_be_bytes([bus.mem[a], bus.mem[a + 1]]);
+        assert_eq!(
+            color, 0x7BC1,
+            "50/50 blend of red over green, repacked to RGBA5551"
         );
     }
 }

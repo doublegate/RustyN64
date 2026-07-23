@@ -81,10 +81,12 @@ alpha-compare, and the dither modes.
       and by a 2-cycle chain whose result differs from cycle 0 alone (so a no-op cannot pass). The
       literal `P*A + M*B` in the original description was the schematic form; the hardware weights are
       5-bit and the `M` term carries a `+1` (N64brew *…/Blender*, ParaLLEl-RDP `blender.h`).
-- [ ] **Deferred to R-11 / T-33-004.** Alpha-compare, the coverage/dither modes, the AA-edge divider,
+- [~] **Deferred to R-11 / T-33-004.** Alpha-compare, the coverage/dither modes, the AA-edge divider,
       and the memory-alpha blend-shift need the per-pixel framebuffer read + coverage accumulator,
       which reach the blender only once the triangle pipeline routes combiner→blender per pixel
-      (T-33-004). `blend` has no runtime caller yet, so the oracle stays 93 (ledger **R-11**).
+      (T-33-004). The memory-read blender itself is now wired (T-33-004 PR-B 2b-blend, gated on
+      `force_blend`); the remaining coverage/AA/alpha-compare/dither paths land with slice 2c. The
+      oracle stays 93 — no systemtest drives the render path (ledger **R-11**).
 
 **Complexity:** L
 
