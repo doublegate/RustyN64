@@ -20,6 +20,24 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the Z-buffer machinery (Phase 3, T-33-004 PR-A)
+
+- **The RDP has a depth codec, per-pixel depth test, and depth-source commands.**
+  The N64's inverted-floating-point Z encoding (14-bit stored ↔ 18-bit UNORM) is
+  implemented as exact inverses of ParaLLEl-RDP's `z_encode.h` (`z_compress`/
+  `z_decompress`, plus the 4-bit `log2` `dz` codec). `depth_test` is a faithful port
+  of `depth_test.h`: given a pixel's `z`/`dz` and the Z-buffer read (`DepthInputs`),
+  it returns the pass/fail plus blend/coverage state (`DepthResult`) across all four
+  Z modes — opaque (with the coplanar same-surface path), interpenetrating (the
+  coverage-reducing intersect), transparent, and decal — including the stored-`dz`
+  coplanar/precision-factor handling. `Set Depth Image` (0x3E) latches the Z-buffer
+  base and `Set Primitive Depth` (0x2E) the `z`/`dz` for `z_source_sel`. Validated
+  by hand-computed codec boundary values, a `z_compress ∘ z_decompress` round-trip,
+  and observable occluding-vs-occluded depth pairs per mode (six new `rdp` tests).
+  Scope (ledger R-12): the Z-buffer RDRAM read/write (the hidden-bit storage), the
+  coverage accumulator, and the per-pixel combiner→blender→depth routing land in
+  PR-B (which closes the R-9 flat-fill). No runtime caller yet, so the oracle stays 93.
+
 ### Added — the blender (Phase 3, T-33-003)
 
 - **The RDP evaluates the blender.** `Set Other Modes` (0x2F) decodes the render
