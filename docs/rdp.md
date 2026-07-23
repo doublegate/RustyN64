@@ -541,6 +541,25 @@ with the coverage integration, validated against the ParaLLEl-RDP conformance ve
 coverage-weighted AA blend and the `cvg_dest` write-back are the remaining slice-2c residual. The
 oracle stays **93**.
 
+### The conformance gate (T-33-005)
+
+The bit-exactness gate against Angrylion, the accuracy oracle. Licence-clean by construction: a
+standalone generator (`crates/rustyn64-test-harness/vectors-gen/`, our own MIT code) drives the
+Angrylion software RDP (non-commercial study licence, fetched into gitignored `ref-proj/`, never
+vendored) over hand-written RDP command lists and emits `.rvec` vectors carrying *only outputs* — the
+command stream plus Angrylion's rendered framebuffer, both freely committable. `tests/rdp_conformance.rs`
+replays each command stream through RustyN64's RDP and asserts a byte-for-byte framebuffer match.
+Because the command bytes are stored big-endian (RustyN64's RDRAM layout) and the golden pixels are
+row-major big-endian logical values (exactly what RustyN64 writes into RDRAM), the comparison is a
+direct byte compare. Rendering is deterministic (`parallel = false`, no wall-clock/RNG), so a command
+list always yields byte-identical output.
+
+The FILL-rectangle vector passes end to end. The first **triangle** vector immediately caught a real
+bug — the 4× edge-slope error now tracked as ledger **R-14** (`triangle_fill` applies the per-pixel
+slope against quarter-pixel sub-scanline units without the `>> 2`). That vector is committed and
+`#[ignore]`d, pinning the bug until the slope fix re-derives the affected triangle goldens against this
+oracle. This is the gate doing its job: breaking the circular self-asserted goldens that masked the bug.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);

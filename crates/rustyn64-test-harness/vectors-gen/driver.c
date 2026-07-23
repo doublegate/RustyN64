@@ -1,0 +1,214 @@
+// Standalone Angrylion RDP driver — generates golden conformance vectors.
+//
+// Runs the Angrylion N64 RDP software renderer (CPU-only, the accuracy oracle)
+// over hand-written RDP command lists and dumps each rendered framebuffer as a
+// self-describing `.rvec` vector: header + command-list bytes + golden pixels.
+// The RustyN64 test harness replays the same command list through its own RDP
+// and asserts a byte-for-byte match.
+//
+// LICENCE NOTE: Angrylion-rdp-plus is the non-commercial MAME-licensed study
+// oracle (ref-proj/, gitignored). This tool and its Angrylion build stay OUT of
+// the committed tree; only the *output* vectors (command stream + golden frame,
+// both freely committable) are checked in. See ref-proj/README.md.
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdarg.h>
+
+#include "n64video.h"
+#include "vdac.h"
+
+// ---- Required external stubs (the core links against these) ----
+
+void msg_error(const char *err, ...) {
+    // Print and continue — a malformed command must be recorded, not fatal.
+    va_list ap;
+    va_start(ap, err);
+    fprintf(stderr, "[angrylion msg_error] ");
+    vfprintf(stderr, err, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+}
+void msg_warning(const char *err, ...) { (void)err; }
+void msg_debug(const char *err, ...) { (void)err; }
+
+void vdac_init(struct n64video_config *config) { (void)config; }
+void vdac_write(struct frame_buffer *fb) { (void)fb; }
+void vdac_sync(bool invalid) { (void)invalid; }
+void vdac_close(void) {}
+
+static void mi_intr_cb(void) {}
+
+// ---- RDRAM + register backing store ----
+
+#define RDRAM_SIZE 0x800000u // 8 MiB (RDRAM_MAX_SIZE)
+
+static uint8_t g_rdram[RDRAM_SIZE];
+static uint32_t g_vi_regs[VI_NUM_REG];
+static uint32_t g_dp_regs[DP_NUM_REG];
+static uint32_t g_irq_reg;
+static uint32_t *g_p_vi[VI_NUM_REG];
+static uint32_t *g_p_dp[DP_NUM_REG];
+
+static struct n64video_config g_config;
+
+static void engine_init(void) {
+    memset(g_rdram, 0, sizeof(g_rdram));
+    memset(g_vi_regs, 0, sizeof(g_vi_regs));
+    memset(g_dp_regs, 0, sizeof(g_dp_regs));
+    g_irq_reg = 0;
+    for (unsigned i = 0; i < VI_NUM_REG; i++) g_p_vi[i] = &g_vi_regs[i];
+    for (unsigned i = 0; i < DP_NUM_REG; i++) g_p_dp[i] = &g_dp_regs[i];
+
+    memset(&g_config, 0, sizeof(g_config));
+    g_config.gfx.rdram = g_rdram;
+    g_config.gfx.rdram_size = RDRAM_SIZE;
+    g_config.gfx.dmem = NULL;
+    g_config.gfx.vi_reg = g_p_vi;
+    g_config.gfx.dp_reg = g_p_dp;
+    g_config.gfx.mi_intr_reg = &g_irq_reg;
+    g_config.gfx.mi_intr_cb = mi_intr_cb;
+    g_config.vi.mode = VI_MODE_NORMAL;
+    g_config.vi.interp = VI_INTERP_LINEAR;
+    g_config.dp.compat = DP_COMPAT_HIGH;
+    g_config.parallel = false; // single-threaded => bit-deterministic
+    g_config.num_workers = 0;
+
+    n64video_init(&g_config);
+}
+
+// Write one 32-bit command word into RDRAM. 32-bit access has no byte-swap XOR,
+// so a host u32 stored at word index (addr>>2) is read back verbatim by the RDP.
+static void rdram_put_word(uint32_t byte_addr, uint32_t word) {
+    ((uint32_t *)g_rdram)[byte_addr >> 2] = word;
+}
+
+// Read a 16-bit framebuffer pixel (RGBA5551) as its logical N64 value.
+static uint16_t read_fb16(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w) {
+    uint32_t idx16 = (fb_addr >> 1) + y * w + x;
+    return ((const uint16_t *)g_rdram)[idx16 ^ 1]; // WORD_ADDR_XOR
+}
+// Read a 32-bit framebuffer pixel (RGBA8888) as its logical N64 value (0xRRGGBBCC).
+static uint32_t read_fb32(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w) {
+    uint32_t idx32 = (fb_addr >> 2) + y * w + x;
+    return ((const uint32_t *)g_rdram)[idx32]; // no XOR at 32-bit
+}
+
+// ---- Vector definition ----
+
+typedef struct {
+    const char *name;
+    uint32_t cmd_addr;
+    uint32_t fb_addr;
+    uint32_t width;
+    uint32_t height;
+    uint32_t bpp;       // 2 (RGBA5551) or 4 (RGBA8888)
+    uint32_t n_words;   // number of 32-bit command words
+    const uint32_t *words;
+} Vector;
+
+// Render one vector through Angrylion and write its `.rvec` file.
+static int emit_vector(const Vector *v, const char *out_dir) {
+    engine_init();
+
+    // Place the command list into RDRAM.
+    for (uint32_t i = 0; i < v->n_words; i++) {
+        rdram_put_word(v->cmd_addr + i * 4, v->words[i]);
+    }
+
+    uint32_t cmd_len = v->n_words * 4;
+    g_dp_regs[DP_STATUS] = 0; // clear XBUS/FREEZE/FLUSH
+    g_dp_regs[DP_START] = v->cmd_addr;
+    g_dp_regs[DP_CURRENT] = v->cmd_addr;
+    g_dp_regs[DP_END] = v->cmd_addr + cmd_len;
+    n64video_process_list();
+
+    uint32_t fb_len = v->width * v->height * v->bpp;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s.rvec", out_dir, v->name);
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror("fopen"); return 1; }
+
+    // Header (9 big-endian u32): magic, version, fb_addr, width, height, bpp,
+    // cmd_addr, cmd_len, fb_len.
+    uint32_t hdr[9] = {0x52564543u, 1u, v->fb_addr, v->width, v->height,
+                       v->bpp, v->cmd_addr, cmd_len, fb_len};
+    for (int i = 0; i < 9; i++) {
+        uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
+        fwrite(be, 1, 4, f);
+    }
+    // Command list (big-endian words, matching RustyN64's write_cmd layout).
+    for (uint32_t i = 0; i < v->n_words; i++) {
+        uint32_t w = v->words[i];
+        uint8_t be[4] = {w >> 24, w >> 16, w >> 8, w};
+        fwrite(be, 1, 4, f);
+    }
+    // Golden framebuffer: logical pixel values, row-major, big-endian.
+    for (uint32_t y = 0; y < v->height; y++) {
+        for (uint32_t x = 0; x < v->width; x++) {
+            if (v->bpp == 2) {
+                uint16_t p = read_fb16(v->fb_addr, x, y, v->width);
+                uint8_t be[2] = {p >> 8, p};
+                fwrite(be, 1, 2, f);
+            } else {
+                uint32_t p = read_fb32(v->fb_addr, x, y, v->width);
+                uint8_t be[4] = {p >> 24, p >> 16, p >> 8, p};
+                fwrite(be, 1, 4, f);
+            }
+        }
+    }
+    fclose(f);
+    n64video_close();
+    fprintf(stderr, "wrote %s (%u words cmd, %ux%u %ubpp)\n", path,
+            v->n_words, v->width, v->height, v->bpp);
+    return 0;
+}
+
+// ---- Vectors ----
+// V1: a FILL-mode Fill Rectangle over an 8x8 RGBA5551 image (green 0x07C1).
+// Both renderers write the fill verbatim, so this proves the harness plumbing
+// and byte order with a guaranteed 0-diff.
+static const uint32_t V1_FILL_RECT_16[] = {
+    0x2F300000u, 0x00000000u, // Set Other Modes: cycle_type = FILL (bits 21:20 = 3)
+    0x3F100007u, 0x00001000u, // Set Color Image: size=2(16b), width-1=7, addr=0x1000
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green 0x07C1 in both halves
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)  [XL=32, YL=32]
+    0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
+};
+
+// V2: a FILL-mode Fill Triangle (0x08) — a left-major right triangle with a
+// vertical left edge at x=2 and a hypotenuse widening 1 px/row over rows 0-3,
+// filled green. This is where RustyN64's whole-pixel union approximation should
+// diverge from Angrylion's exact sub-pixel coverage (the oracle for slice 2c).
+// The 4-u64-word (8-u32) edge-coefficient block matches RustyN64's flat-fill test
+// geometry: yl=ym=16, yh=0, flip=1, xh=xm=2.0, dxmdy=0.25.
+static const uint32_t V2_FILL_TRI_16[] = {
+    0x2F300000u, 0x00000000u, // Set Other Modes: cycle_type = FILL
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green 0x07C1
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    // Fill Triangle 0x08 (8 u32 words): word0/1 = flags+YL/YM/YH; then
+    // XL,DxLDy,XH,DxHDy,XM,DxMDy.
+    0x08800010u, 0x00100000u, // op=0x08, lft=1, yl=16, ym=16, yh=0
+    0x00000000u, 0x00000000u, // XL = 0, DxLDy = 0
+    0x00020000u, 0x00000000u, // XH = 2.0, DxHDy = 0
+    0x00020000u, 0x00004000u, // XM = 2.0, DxMDy = 0.25
+};
+
+int main(int argc, char **argv) {
+    const char *out_dir = (argc > 1) ? argv[1] : ".";
+
+    Vector v1 = {"fill_rect_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V1_FILL_RECT_16) / 4, V1_FILL_RECT_16};
+    if (emit_vector(&v1, out_dir)) return 1;
+
+    Vector v2 = {"fill_tri_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V2_FILL_TRI_16) / 4, V2_FILL_TRI_16};
+    if (emit_vector(&v2, out_dir)) return 1;
+
+    return 0;
+}
