@@ -83,7 +83,20 @@ static void engine_init(void) {
 // Write one 32-bit command word into RDRAM. 32-bit access has no byte-swap XOR,
 // so a host u32 stored at word index (addr>>2) is read back verbatim by the RDP.
 static void rdram_put_word(uint32_t byte_addr, uint32_t word) {
+    if (byte_addr + 4 > RDRAM_SIZE) {
+        fprintf(stderr, "rdram_put_word: address 0x%X out of bounds\n", byte_addr);
+        exit(1);
+    }
     ((uint32_t *)g_rdram)[byte_addr >> 2] = word;
+}
+
+// fwrite that aborts on a short write (e.g. out of disk space) rather than
+// silently producing a truncated/corrupt .rvec.
+static void wr(const void *buf, size_t n, FILE *f) {
+    if (fwrite(buf, 1, n, f) != n) {
+        perror("fwrite");
+        exit(1);
+    }
 }
 
 // Read a 16-bit framebuffer pixel (RGBA5551) as its logical N64 value.
@@ -129,7 +142,11 @@ static int emit_vector(const Vector *v, const char *out_dir) {
     uint32_t fb_len = v->width * v->height * v->bpp;
 
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s.rvec", out_dir, v->name);
+    int need = snprintf(path, sizeof(path), "%s/%s.rvec", out_dir, v->name);
+    if (need < 0 || (size_t)need >= sizeof(path)) {
+        fprintf(stderr, "path too long for vector %s\n", v->name);
+        return 1;
+    }
     FILE *f = fopen(path, "wb");
     if (!f) { perror("fopen"); return 1; }
 
@@ -139,13 +156,13 @@ static int emit_vector(const Vector *v, const char *out_dir) {
                        v->bpp, v->cmd_addr, cmd_len, fb_len};
     for (int i = 0; i < 9; i++) {
         uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
-        fwrite(be, 1, 4, f);
+        wr(be, 4, f);
     }
     // Command list (big-endian words, matching RustyN64's write_cmd layout).
     for (uint32_t i = 0; i < v->n_words; i++) {
         uint32_t w = v->words[i];
         uint8_t be[4] = {w >> 24, w >> 16, w >> 8, w};
-        fwrite(be, 1, 4, f);
+        wr(be, 4, f);
     }
     // Golden framebuffer: logical pixel values, row-major, big-endian.
     for (uint32_t y = 0; y < v->height; y++) {
@@ -153,15 +170,15 @@ static int emit_vector(const Vector *v, const char *out_dir) {
             if (v->bpp == 2) {
                 uint16_t p = read_fb16(v->fb_addr, x, y, v->width);
                 uint8_t be[2] = {p >> 8, p};
-                fwrite(be, 1, 2, f);
+                wr(be, 2, f);
             } else {
                 uint32_t p = read_fb32(v->fb_addr, x, y, v->width);
                 uint8_t be[4] = {p >> 24, p >> 16, p >> 8, p};
-                fwrite(be, 1, 4, f);
+                wr(be, 4, f);
             }
         }
     }
-    fclose(f);
+    if (fclose(f) != 0) { perror("fclose"); return 1; }
     n64video_close();
     fprintf(stderr, "wrote %s (%u words cmd, %ux%u %ubpp)\n", path,
             v->n_words, v->width, v->height, v->bpp);

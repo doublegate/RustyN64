@@ -39,6 +39,11 @@ struct Vector<'a> {
 /// version, `fb_addr`, `width`, `height`, `bpp`, `cmd_addr`, `cmd_len`, `fb_len`)
 /// followed by the command bytes and the golden framebuffer bytes.
 fn parse(bytes: &[u8]) -> Vector<'_> {
+    let hdr = 36;
+    assert!(
+        bytes.len() >= hdr,
+        "truncated .rvec: shorter than the header"
+    );
     let u32_at =
         |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
     assert_eq!(u32_at(0), 0x5256_4543, "bad magic (expected RVEC)");
@@ -50,8 +55,11 @@ fn parse(bytes: &[u8]) -> Vector<'_> {
     let cmd_addr = u32_at(24);
     let cmd_len = u32_at(28) as usize;
     let fb_len = u32_at(32) as usize;
-    let hdr = 36;
     assert_eq!(fb_len, (width * height * bpp) as usize, "fb_len mismatch");
+    assert!(
+        bytes.len() >= hdr + cmd_len + fb_len,
+        "truncated .rvec: header declares more payload than the file holds"
+    );
     Vector {
         fb_addr,
         width,
