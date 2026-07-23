@@ -482,6 +482,29 @@ static const uint32_t V11_TEX_TRI_16[] = {
     TEX_BLOCK(0, 0, 1, 1, 0, 0, 0, 0, 0),
 };
 
+// V12: a COPY-mode Texture Rectangle (16-bit) — the first texture path validated
+// against Angrylion that does NOT go through the combiner or the 1-cycle texel
+// pipeline (copy mode blits texels straight from TMEM to the colour image). A 4x2
+// texture of 8 byte-asymmetric texels is preloaded at 0x3000, loaded into TMEM by
+// Load Tile, and blitted 1:1 (DsDx = 4.0, DtDy = 1.0) into a 4x2 colour image, so
+// the framebuffer should equal the source texels verbatim. RustyN64 passes this as
+// an internal round-trip; this checks it against the oracle.
+static const uint16_t TEX4X2_RAMP[8] = {
+    0x0102u, 0x0304u, 0x0506u, 0x0708u, // row 0
+    0x090Au, 0x0B0Cu, 0x0D0Eu, 0x0F10u, // row 1
+};
+static const uint32_t V12_TEX_RECT_COPY_16[] = {
+    0x2F2000F0u, 0x00000000u, // Set Other Modes: COPY (cycle 21:20=10), dither off
+    0x3D100003u, 0x00003000u, // Set Texture Image: 16-bit, width 4, addr 0x3000
+    0x35100200u, 0x00000000u, // Set Tile 0: 16-bit, line 1 (64-bit words), tmem 0
+    0x32000000u, 0x0000C004u, // Set Tile Size: SL0 TL0 SH3 TH1 (u10.2 = 0xC,4)
+    0x34000000u, 0x0000C004u, // Load Tile: SL0 TL0 SH3 TH1 -> 4x2 texels
+    0x3F100003u, 0x00001000u, // Set Color Image: 16-bit, width 4, addr 0x1000
+    0x2D000000u, 0x00010008u, // Set Scissor: (0,0)-(4,2)
+    0x2400C004u, 0x00000000u, // Texture Rectangle: XL=3 YL=1 tile0 XH0 YH0
+    0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 (0x1000) DtDy=1.0 (0x400)
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -529,6 +552,11 @@ int main(int argc, char **argv) {
                   sizeof(V11_TEX_TRI_16) / 4, V11_TEX_TRI_16,
                   0x3000, 8, TEX8_RAMP};
     if (emit_vector(&v11, out_dir)) return 1;
+
+    Vector v12 = {"tex_rect_copy_16", 0x2000, 0x1000, 4, 2, 2,
+                  sizeof(V12_TEX_RECT_COPY_16) / 4, V12_TEX_RECT_COPY_16,
+                  0x3000, 8, TEX4X2_RAMP};
+    if (emit_vector(&v12, out_dir)) return 1;
 
     return 0;
 }

@@ -309,3 +309,19 @@ fn shade_grad_tri_32_matches_angrylion() {
 fn tex_tri_16_matches_angrylion() {
     assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
 }
+
+/// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
+/// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
+/// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`
+/// pins. A 4×2 texture (8 byte-asymmetric texels) is preloaded (v2 `.rvec`), loaded
+/// by `Load Tile`, and blitted 1:1 (`DsDx = 4.0`, `DtDy = 1.0`) into a 4×2 colour
+/// image, so the framebuffer equals the source texels verbatim. Exercises Set Texture
+/// Image / Set Tile / Set Tile Size / Load Tile / `texture_rectangle` end-to-end
+/// against the oracle (RustyN64 previously only round-trip-tested this internally).
+#[test]
+fn tex_rect_copy_16_matches_angrylion() {
+    assert_matches(
+        "tex_rect_copy_16",
+        include_bytes!("vectors/tex_rect_copy_16.rvec"),
+    );
+}

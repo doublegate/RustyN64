@@ -176,8 +176,10 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (10 vectors
-      passing):** `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16`,
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (11 vectors
+      passing + 1 ignored WIP):** `tex_rect_copy_16` (COPY-mode Texture Rectangle — the **first texture
+      path validated against Angrylion**, clean because copy mode bypasses the combiner/texel pipeline),
+      `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16`,
       `fill_tri_frac_16` (FILL rounds), `shade_tri_frac_16` (1-cycle sub-pixel coverage),
       `shade_depth_tri_frac_16` (the depth path applies the same coverage), `shade_tri_32` (32-bit
       RGBA8888 colour path, dither off), `dither_tri_32` (the default **magic** dither over a flat

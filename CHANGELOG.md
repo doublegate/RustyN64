@@ -20,6 +20,18 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — copy-mode Texture Rectangle conformance (first texture path vs the oracle) (Phase 3, T-33-005)
+
+- **The copy-mode Texture Rectangle path is now validated against Angrylion.** A new
+  `tex_rect_copy_16` vector preloads a 4×2 16-bit texture (v2 `.rvec` preload), loads
+  it into TMEM with `Load Tile`, and blits it 1:1 (`DsDx = 4.0`, `DtDy = 1.0`) into a
+  4×2 colour image with `Set Other Modes` cycle type = COPY. Copy mode blits texels
+  straight from TMEM to the framebuffer — **no combiner, no 1-cycle texel pipeline** —
+  so it sidesteps the gaps exposed by the currently ignored `tex_tri_16` triangle
+  vector, and RustyN64 matches Angrylion byte-for-byte. This is the **first texture path checked
+  against the oracle** (previously only an internal `Load Tile → Texture Rectangle`
+  round-trip). 11 conformance vectors now pass (+ 1 ignored WIP).
+
 ### Added — textured-triangle conformance (v2 `.rvec` preload) + pinned coordinate divergence (Phase 3, T-33-005)
 
 - **The `.rvec` conformance format gains a texture preload region (v2), and the
