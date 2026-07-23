@@ -914,6 +914,8 @@ const DITHER_BAYER: [u8; 16] = [
 fn rgb_dither_value(mode: u8, x: u32, y: u32) -> i32 {
     let idx = ((y & 3) * 4 + (x & 3)) as usize;
     match mode {
+        // Mode 2 (noise) intentionally reuses the magic matrix pending a real
+        // noise source (**R-10**); a per-pixel noise value replaces this then.
         0 | 2 => i32::from(DITHER_MAGIC[idx]),
         1 => i32::from(DITHER_BAYER[idx]),
         _ => 7, // 3: constant 7 -> no dithering
@@ -2039,11 +2041,14 @@ impl Rdp {
 
     /// Apply the ordered RGB dither to a combined pixel colour in place, mirroring
     /// Angrylion's `rgb_dither`. Dither is part of the 1-/2-cycle pixel pipeline
-    /// only (FILL/COPY bypass the combiner), and RGB dither mode 3 ("off") never
-    /// rounds up, so both are no-ops here. Alpha is untouched. `(x, y)` index the
-    /// 4×4 dither matrix (**R-10**: noise mode 2 reads the magic cell for now).
+    /// only (FILL/COPY bypass the combiner), and RGB dither mode 3 is "off" — both
+    /// return early. Alpha is untouched. `(x, y)` index the 4×4 dither matrix
+    /// (**R-10**: noise mode 2 reads the magic cell for now).
     fn dither_pixel(&self, color: &mut [u8; 4], x: u32, y: u32) {
-        if self.other_modes.cycle_type >= 2 {
+        // FILL/COPY bypass the combiner, and mode 3 ("off") never rounds up — both
+        // are the common case, so skip the per-pixel work outright rather than run
+        // it to a no-op result.
+        if self.other_modes.cycle_type >= 2 || self.other_modes.rgb_dither_mode == 3 {
             return;
         }
         let dith = rgb_dither_value(self.other_modes.rgb_dither_mode, x, y);
