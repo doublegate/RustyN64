@@ -162,7 +162,11 @@ directly** — a standalone ~200-line MIT driver (`crates/rustyn64-test-harness/
 that links only Angrylion's CPU-only `n64video.c` + `parallel.cpp` (no Vulkan/OpenGL/Granite), pokes a
 command list into RDRAM, calls `n64video_process_list()`, and reads the framebuffer back. Vectors are
 hand-authored command lists (deterministic, `parallel=false`), not randomised. The `.rvec` container
-(9×u32 BE header + command bytes + golden framebuffer) lives under `tests/vectors/`; the golden pixels
+lives under `tests/vectors/` in two layouts (see `vectors-gen/README.md`): **v1** is a 9×u32 BE header
++ command bytes + golden framebuffer; **v2** adds two header words (`preload_addr`, `preload_len` → 11
+u32) and a **preload region** (a texture written to RDRAM before the command list, for `Load Tile`) between
+the header and the command bytes. A vector with no preload is emitted as v1, so pre-preload vectors stay
+byte-identical. The golden pixels
 are stored raw big-endian at small resolutions (the 8×8 vectors are 204–228 B each — well within
 budget, no compression/LFS needed yet). **Reproducibility:** the corpus was generated against Angrylion
 (`angrylion-rdp-plus`) pinned at commit `31bdb1f0a79dd726017a38432540c6b5db0fa117`; a different
