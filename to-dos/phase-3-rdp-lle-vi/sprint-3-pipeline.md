@@ -180,22 +180,25 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (114 vectors
-      passing + 1 ignored WIP), via TWO paths.**
+- [x] Expand the corpus to ~150 vectors — the v0.4.0 vector target is **met (162 passing + 1 ignored
+      WIP)**, via TWO paths. (The other half of the cut criterion — a real-ROM golden frame, T-33-006 —
+      is still open.)
       **(a) Hand-authored** (18, listed below): individual `.rvec` vectors written to target a specific
       RDP behaviour, committed directly under `tests/vectors/`.
-      **(b) Seeded-fuzz** (96, under `tests/vectors/fuzz/`): a reproducible generator
+      **(b) Seeded-fuzz** (144, under `tests/vectors/fuzz/`): a reproducible generator
       (`vectors-gen/driver.c --fuzz <dir> <seed> <count> [family]`, SplitMix64) grows the corpus
       mechanically. Candidates are replayed by the `curate_fuzz_candidates` dev-tool and only
       oracle-matching ones are committed; the `fuzz_corpus_matches_angrylion` gate replays every
-      committed fuzz vector (with a minimum-count floor so a dropped corpus fails rather than passes
+      committed fuzz vector with **per-family** floors (so dropping a family fails rather than passes
       vacuously). Provenance is recorded in `tests/vectors/fuzz/README.md` (per-batch: prefix, family,
-      seed, count) and the Angrylion oracle commit is pinned in `vectors-gen/README.md`. **Two families,
-      each of which found a real bug:** `fillrect` (48, seed `0x1234`, full-image scissor) found the FILL
-      rect lower-right half-open/inclusive off-by-one (R-3); `scissor` (48, seed `0x5c15`, an independent
-      scissor sub-rect) found the asymmetric scissor clip — inclusive X, exclusive Y, with an `allover`
-      guard (R-15). Further families (fill/shaded triangles, copy texrects) land next. The 18
-      hand-authored:
+      seed, count) and the Angrylion oracle commit is pinned in `vectors-gen/README.md`. **Three
+      families:** `fillrect` (48, seed `0x1234`, full-image scissor) found the FILL rect lower-right
+      half-open/inclusive off-by-one (R-3); `scissor` (48, seed `0x5c15`, an independent scissor sub-rect)
+      found the asymmetric scissor clip — inclusive X, exclusive Y, with an `allover` guard (R-15);
+      `filltri` (48, seed `0x7213`) sweeps integer-vertex FILL triangles (edge-walk across
+      size/apex/slope/flip). NOTE: the corpus is **FILL-mode-heavy** — textured / shaded / blended /
+      Z-tested triangles need the R-13 texel pipeline and the 1-/2-cycle paths before they can be fuzzed.
+      The 18 hand-authored:
       `prim_combiner_32` (the combiner **primitive-colour mux** — Set Prim
       Color routed through `rgb_d = a_d = prim`, with a *distinct* flat shade that must NOT appear, so
       the vector discriminates prim from shade; validates an already-implemented mux path against the

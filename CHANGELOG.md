@@ -57,13 +57,16 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   into pass/fail) plus a `fuzz_corpus_matches_angrylion` gate that replays every
   committed vector under `tests/vectors/fuzz/`. Only candidates that already match
   the oracle are committed, so an unmodelled corner is dropped rather than baked
-  in. Two families are committed (**96 vectors**): **48 FILL rectangles** (seed
-  `0x1234`, full-image scissor — surfaced the R-3 rectangle-edge bug) and **48
+  in. Three families are committed (**144 vectors**): **48 FILL rectangles** (seed
+  `0x1234`, full-image scissor — surfaced the R-3 rectangle-edge bug), **48
   scissor-clip rectangles** (seed `0x5c15`, an independent scissor sub-rect —
-  surfaced the R-15 asymmetric-scissor bug). Both are selected via the generator's
-  family argument (`--fuzz <dir> <seed> <count> [fillrect|scissor]`), reproducible
-  (regenerating from the seed is byte-identical), and the `--fuzz` arguments are
-  validated (a malformed seed/count fails loudly rather than emitting nothing).
+  surfaced the R-15 asymmetric-scissor bug), and **48 FILL triangles** (seed
+  `0x7213`, integer-vertex two-edge triangles exercising the edge-walk across
+  size/apex/slope/flip). They are selected via the generator's family argument
+  (`--fuzz <dir> <seed> <count> [fillrect|scissor|filltri]`), reproducible
+  (regenerating from the seed is byte-identical), guarded by per-family corpus
+  floors, and the `--fuzz` arguments are validated (a malformed seed/count fails
+  loudly rather than emitting nothing).
 
 ### Added — combiner primitive-colour mux conformance vector (Phase 3)
 

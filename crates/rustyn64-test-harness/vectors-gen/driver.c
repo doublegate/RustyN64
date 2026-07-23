@@ -718,14 +718,55 @@ static int fuzz_scissor(int idx, const char *out_dir) {
     return emit_vector(&v, out_dir);
 }
 
+// FILL-mode Fill Triangle (0x08) with INTEGER vertices and slopes. One edge is the
+// vertical major edge (an apex column), the other a minor edge widening by an
+// integer px/row slope; `flip` picks which side is major. FILL mode renders whole
+// pixels (no sub-pixel coverage), and RustyN64's union-approximation edge-walk
+// matches Angrylion for integer-aligned triangles, so members reproduce the oracle.
+// `ym == yl` uses only the major + one minor edge (the simplest two-edge triangle).
+static int fuzz_fill_tri(int idx, const char *out_dir) {
+    uint32_t w = rng_range(6, 12), h = rng_range(5, 10);
+    uint16_t c = (uint16_t)rng_range(0, 0xFFFF);
+    uint32_t fill_lo = ((uint32_t)c << 16) | c;
+    uint32_t flip = rng_range(0, 1);
+    uint32_t yl = h * 4u;              // full height, integer .2 (yh = 0, ym = yl)
+    uint32_t slope = rng_range(1, 2);  // 1 or 2 px per row
+    uint32_t apex, dxmdy;
+    if (flip) { // left-major: vertical left edge, minor widens right (+slope)
+        apex = rng_range(0, w / 3);
+        dxmdy = slope << 16;
+    } else {    // right-major: vertical right edge, minor widens left (-slope)
+        apex = rng_range((2u * w) / 3u, w - 1u);
+        dxmdy = (uint32_t)(-(int32_t)(slope << 16)) & 0x3FFFFFFFu;
+    }
+    uint32_t xedge = apex << 16;      // XH == XM == apex.0 (s.16)
+    uint32_t op = 0x08000000u | (flip << 23) | (yl & 0x3FFFu);
+    uint32_t words[] = {
+        0x2F300000u, 0x00000000u,                  // Set Other Modes: FILL
+        0x3F100000u | (w - 1u), 0x00001000u,       // Set Color Image: 16-bit
+        0x37000000u, fill_lo,                      // Set Fill Color
+        0x2D000000u, ((w * 4u) << 12) | (h * 4u),  // Set Scissor (0,0)-(w,h)
+        op, (yl << 16),                            // Fill Triangle: yl / ym=yl / yh=0
+        0x00000000u, 0x00000000u,                  // XL, DxLDy (unused, ym == yl)
+        xedge, 0x00000000u,                        // XH (major), DxHDy = 0 (vertical)
+        xedge, dxmdy,                              // XM (minor apex), DxMDy
+    };
+    char name[64];
+    snprintf(name, sizeof(name), "fz_tri_%03d", idx);
+    Vector v = {name, 0x2000, 0x1000, w, h, 2, sizeof(words) / 4, words, 0, 0, NULL};
+    return emit_vector(&v, out_dir);
+}
+
 // Emit a reproducible fuzz corpus of `count` candidates from `seed` in `family`.
 static int emit_fuzz(const char *out_dir, uint64_t seed, int count, const char *family) {
     g_rng = seed;
     int (*gen)(int, const char *) = fuzz_fill_rect;
     if (strcmp(family, "scissor") == 0) {
         gen = fuzz_scissor;
+    } else if (strcmp(family, "filltri") == 0) {
+        gen = fuzz_fill_tri;
     } else if (strcmp(family, "fillrect") != 0) {
-        fprintf(stderr, "fuzz: unknown family '%s' (want fillrect|scissor)\n", family);
+        fprintf(stderr, "fuzz: unknown family '%s' (want fillrect|scissor|filltri)\n", family);
         return 1;
     }
     for (int i = 0; i < count; i++) {
