@@ -561,6 +561,26 @@ static const uint32_t V15_TEX_RECT_MAG_16[] = {
     0x00000000u, 0x08000400u, // S=0 T=0 | DsDx=2.0 (0x800) DtDy=1.0
 };
 
+// V16: an ALPHA-COMPARE probe — a 1-cycle shaded triangle (flat red RGB) whose
+// combiner alpha (= the interpolated shade alpha) ramps across X via dx.A = 0x30,
+// with alpha-compare enabled (Set Other Modes bit 0) against a Set Blend Color
+// alpha threshold of 0x80. Columns whose alpha fails the compare are killed (stay
+// background 0); the rest draw red. RustyN64 currently ignores alpha_compare_en
+// (draws every column). Angrylion defines which columns survive.
+static const uint32_t V16_ALPHA_COMPARE_16[] = {
+    0x2F0000F0u, 0x00000001u, // Set Other Modes: 1-cycle, dither off, alpha_compare_en (bit 0)
+    0x3C000000u, 0x00000104u, // Set Combine Mode: rgb_d=4/a_d=4 (shade passthrough)
+    0x39000000u, 0x00000080u, // Set Blend Color: alpha threshold = 0x80
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // base R=0xFF G=0 B=0 A=0; dx.A = 0x30 (alpha ramps 0,0x30,0x60,0x90,... across X).
+    SHADE_BLOCK(0xFF, 0x00, 0x00, 0x00, 0, 0, 0, 0x30, 0, 0, 0, 0),
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
@@ -633,6 +653,10 @@ int main(int argc, char **argv) {
                   sizeof(V15_TEX_RECT_MAG_16) / 4, V15_TEX_RECT_MAG_16,
                   0x3000, 8, TEX8X1_RAMP};
     if (emit_vector(&v15, out_dir)) return 1;
+
+    Vector v16 = {"alpha_compare_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V16_ALPHA_COMPARE_16) / 4, V16_ALPHA_COMPARE_16};
+    if (emit_vector(&v16, out_dir)) return 1;
 
     return 0;
 }
