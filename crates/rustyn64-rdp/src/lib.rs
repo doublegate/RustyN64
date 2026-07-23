@@ -773,6 +773,21 @@ const fn pack_rgba5551(rgba: [u8; 4]) -> u16 {
         | (rgba[3] as u16 >> 7)
 }
 
+/// Unpack a 16-bit RGBA5551 framebuffer pixel to RGBA8888, widening each 5-bit
+/// channel by high-bit replication (`v << 3 | v >> 2`) and the 1-bit alpha to
+/// `0x00`/`0xFF`.
+const fn unpack_rgba5551(p: u16) -> [u8; 4] {
+    let r = (p >> 11) & 0x1F;
+    let g = (p >> 6) & 0x1F;
+    let b = (p >> 1) & 0x1F;
+    [
+        ((r << 3) | (r >> 2)) as u8,
+        ((g << 3) | (g >> 2)) as u8,
+        ((b << 3) | (b >> 2)) as u8,
+        if p & 1 != 0 { 0xFF } else { 0 },
+    ]
+}
+
 /// One cycle of the colour combiner.
 ///
 /// The four RGB input selects and the four alpha input selects for
@@ -1689,6 +1704,27 @@ impl Rdp {
         }
     }
 
+    /// Read the current colour-image pixel at `(row_addr, x)` as RGBA8888 — the
+    /// blender's `memory_color`. The inverse of [`Self::write_pixel`]: direct for a
+    /// 32-bit image, RGBA5551 widened (5→8 bits) for a 16-bit one.
+    fn read_pixel<B: VideoBus>(row_addr: u32, x: u32, bpp: u32, bus: &B) -> [u8; 4] {
+        let addr = row_addr.wrapping_add(x.wrapping_mul(bpp));
+        match bpp {
+            4 => [
+                bus.rdram_read(addr),
+                bus.rdram_read(addr.wrapping_add(1)),
+                bus.rdram_read(addr.wrapping_add(2)),
+                bus.rdram_read(addr.wrapping_add(3)),
+            ],
+            2 => {
+                let p = (u16::from(bus.rdram_read(addr)) << 8)
+                    | u16::from(bus.rdram_read(addr.wrapping_add(1)));
+                unpack_rgba5551(p)
+            }
+            _ => [0; 4],
+        }
+    }
+
     /// Decode the 8-word texture coefficient block of a `Fill Triangle` (present
     /// when bit 57 is set) into [`TexSetup`]. It follows the 4-word base plus the
     /// shade block (if bit 58 set), before the z block. Each word packs `S`/`T`/`W`
@@ -1794,14 +1830,31 @@ impl Rdp {
                 current_coverage: 0,
                 z_compare: self.other_modes.z_compare_en,
                 z_mode: self.other_modes.z_mode,
-                force_blend: false,
+                force_blend: self.other_modes.force_blend,
+                // AA-edge coverage (the `aa_enable && farther` blend path) is slice 2c;
+                // until per-pixel coverage exists, only `force_blend` drives the blender.
                 aa_enable: false,
             };
             let dr = Self::depth_test(z_px, z.dz, z.dz_compressed, 8, &dinp);
             if dr.depth_pass {
                 // Shaded/textured triangles take the combiner colour; else the FILL register.
                 if shade.is_some() || tex.is_some() {
-                    let color = self.combined_color(shade, tex, major_x, line, y_base, x);
+                    let mut color = self.combined_color(shade, tex, major_x, line, y_base, x);
+                    // The blender runs only when the depth test enabled it (translucent /
+                    // AA-edge pixels); an opaque pixel keeps the combiner colour, matching
+                    // the reference's `!blend_en` fast-path. The full opaque-alpha fast path
+                    // and coverage-driven alpha are R-11.
+                    if dr.blend_en {
+                        let memory = Self::read_pixel(row_addr, xu, bpp, bus);
+                        let rgb = self.blend(BlendInputs {
+                            pixel: color,
+                            memory,
+                            blend_color: unpack_rgba(self.blend_color),
+                            fog: unpack_rgba(self.fog_color),
+                            shade_alpha: color[3],
+                        });
+                        color = [rgb[0], rgb[1], rgb[2], color[3]];
+                    }
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
                 } else {
                     self.fill_pixel(row_addr, xu, bpp, bus);
@@ -4822,5 +4875,73 @@ mod tests {
         // The LUT's first/last entries pin the transcription boundaries.
         assert_eq!(PERSPECTIVE_TABLE[0], (0x4000, -1008));
         assert_eq!(PERSPECTIVE_TABLE[63], (0x2041, -260));
+    }
+
+    /// **A translucent triangle blends with the framebuffer.** A shaded triangle
+    /// (combiner → red, alpha `0x80`) over a green background, with `force_blend`
+    /// and blend modes `P = pixel`, `A = pixel-alpha`, `M = memory`, `B = 1−A`, blends
+    /// 50/50: `a0 = 0x80>>3 = 16`, `a1+1 = (~0x80>>3)+1 = 16`, so each channel is
+    /// `(pixel + memory)/2` → `0x7F7F00`. Without the memory read (or with blend off)
+    /// it would be plain red — the green contribution proves the blender ran.
+    #[test]
+    fn translucent_triangle_blends_with_framebuffer() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        // Pre-fill the colour image with green (0x00FF00FF) and the Z buffer far.
+        for row in 0..8 {
+            for x in 0..8 {
+                let a = 0x200 + row * 32 + x * 4;
+                bus.mem[a..a + 4].copy_from_slice(&0x00FF_00FFu32.to_be_bytes());
+            }
+        }
+        for b in &mut bus.mem[0x400..0x500] {
+            *b = 0xFF;
+        }
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3;
+        rdp.color_image_width = 8;
+        rdp.z_image = 0x400;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.other_modes.z_compare_en = true;
+        rdp.other_modes.z_update_en = true;
+        rdp.other_modes.force_blend = true; // -> depth_test sets blend_en
+        rdp.other_modes.blend[0] = BlendCycle {
+            p: 0,
+            a: 0,
+            m: 1,
+            b: 0,
+        }; // pixel, pixel-a, memory, 1-A
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 4, // shade rgb
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 4, // shade alpha
+        };
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        // Shade int-base: R = 0xFF, G = B = 0, A = 0x80.
+        bus.mem[base + 0x20..base + 0x24].copy_from_slice(&(0xFFu32 << 16).to_be_bytes());
+        bus.mem[base + 0x24..base + 0x28].copy_from_slice(&0x0000_0080u32.to_be_bytes());
+        // opcode 0x0D = shade (bit 58) + z (bit 56); z block at +0x60 (near).
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&0x0800_0000u32.to_be_bytes()); // z_px 0x4000
+        rdp.dispatch(0x0D, 0x0D80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let a = 0x200 + 2 * 4; // pixel (2, 0)
+        let color =
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]]);
+        assert_eq!(
+            color, 0x7F7F_0080,
+            "50/50 blend of red over green (not plain red)"
+        );
     }
 }

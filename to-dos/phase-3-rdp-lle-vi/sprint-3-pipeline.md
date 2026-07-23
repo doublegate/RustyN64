@@ -105,11 +105,22 @@ storage + coverage + per-pixel pipeline routing), per the split-large-tickets ru
       test honours the Z mode, asserted by **observable occluding-vs-occluded pairs** per mode (opaque,
       transparent, decal, and `z_compare` off) at the `depth_test` function level — a pixel that must
       and must not pass. `Set Depth Image` (0x3E) and `Set Primitive Depth` (0x2E) latch. Six new tests.
-- [ ] **PR-B.** The Z-buffer **RDRAM read/write** (the 18-bit-per-pixel hidden-bit storage) actually
+- [~] **PR-B.** The Z-buffer **RDRAM read/write** (the 18-bit-per-pixel hidden-bit storage) actually
       updates the buffer for an occluding-vs-occluded pair. Coverage accumulates at partially-covered
       edge pixels and feeds the blender. Primitive depth is used when the triangle carries no per-vertex
       Z. This is where `depth_test`/the codec get their runtime caller (routing combiner→blender→depth
       per pixel), which also closes the R-9 flat-fill. Ledger **R-12**.
+      - [x] **part 1** — Z-buffer RDRAM read/write + hidden bits (`RdramBus` methods + lazy Bus store),
+            round-trip tested (PR #75).
+      - [x] **part 2a** — per-pixel depth test + Z-write in the rasteriser (`decode_triangle_z`,
+            `interpolate_z`, `depth_span`); occluding-triangle pair proves accept+reject (PR #77).
+      - [x] **part 2b** — combiner→blender routing: shade (`interpolate_shade`), texture
+            (`interpolate_st` + `fetch_texel`, non-perspective and perspective divide), and the
+            **memory-read blender** (`read_pixel` + `blend`, gated on `force_blend`) all wired per
+            pixel; closes the R-9 flat-fill for shaded/textured/translucent triangles.
+      - [ ] **part 2c** — sub-pixel coverage accumulator (`quantize_x` sticky-bit edge rounding), the
+            coverage-driven AA blend + `cvg_dest` write-back, primitive-depth `z_source_sel`, and
+            alpha-compare/dither. Feeds the conformance gate (T-33-005).
 
 **Complexity:** L
 

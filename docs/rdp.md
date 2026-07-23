@@ -402,12 +402,21 @@ ParaLLEl-RDP (MIT, `shaders/blender.h`).
 - **Cycles.** 1-cycle mode evaluates blend cycle 0 alone; 2-cycle mode feeds cycle 0's RGB back
   as the pixel colour into cycle 1 (the alpha selects are unchanged between cycles).
 
-Scope (**open residual R-11**): the anti-aliased-edge divider LUT, the memory-alpha
+- **Runtime wiring (T-33-004 PR-B 2b-blend).** `depth_span` now gives the blender its first
+  runtime caller: for a shaded/textured triangle it reads the destination framebuffer pixel
+  (`read_pixel`, the inverse of `write_pixel` for RGBA8888 and RGBA5551) and routes the combiner
+  colour through `blend` **when the depth test enabled blending** — which, until per-pixel coverage
+  exists, means `force_blend` is set. This mirrors the reference blender's `!blend_en` fast-path:
+  an opaque pixel keeps the combiner colour and only a translucent (later, AA-edge) pixel blends
+  with memory. A translucent-triangle integration test proves a 50/50 blend of red over a green
+  background reaches `0x7F7F00` (plain red would mean the memory read never happened).
+
+Scope (**open residual R-11 / R-9**): the anti-aliased-edge divider LUT, the memory-alpha
 interpenetrating-Z blend-shift path, alpha-compare, dither, the `color_on_cvg` divide interaction,
-and the coverage write-back are decoded-but-unused until the triangle pipeline routes through the
-blender with real framebuffer/coverage/Z (T-33-004). The decode, the no-divide equation, the
-input muxes, and the 2-cycle chaining are unit-tested against hand-computed values. `blend` has no
-runtime caller yet; the oracle stays **93**.
+and the coverage write-back remain decoded-but-unused — they need the sub-pixel coverage
+accumulator (slice 2c). The decode, the no-divide equation, the input muxes, the 2-cycle chaining,
+and now the memory-read wiring are unit/integration-tested against hand-computed values; the
+oracle stays **93** (no systemtest drives the render path).
 
 ### The Z-buffer machinery (T-33-004, PR-A)
 

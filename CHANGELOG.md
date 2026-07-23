@@ -20,6 +20,21 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the memory-read blender on triangles (Phase 3, T-33-004 PR-B 2b-blend)
+
+- **The RDP blends translucent triangles against the framebuffer.** `depth_span`
+  now reads the destination pixel (`read_pixel`, the inverse of `write_pixel` for
+  both RGBA8888 and RGBA5551) and routes the combiner colour through `blend` when
+  the depth test enables blending — gated on `Set Other Modes` `force_blend`, which
+  mirrors the reference blender's `!blend_en` fast-path so opaque pixels keep the
+  combiner colour and only translucent (or, later, AA-edge) pixels blend with memory.
+  This gives `blend` its first runtime caller (closing part of ledger R-11). Verified
+  by a translucent-triangle integration test: a shaded triangle (combiner → red,
+  alpha `0x80`) over a green background blends 50/50 to `0x7F7F00`, proving the
+  memory read ran — plain red would mean it did not. Scope (ledger R-9/R-11): the
+  AA-edge divider LUT, the interpenetrating-Z blend-shift, alpha-compare, dither, and
+  coverage write-back need the sub-pixel coverage accumulator (slice 2c). Oracle 93.
+
 ### Added — perspective-correct texturing (Phase 3, T-33-004 PR-B 2b-perspective)
 
 - **The RDP divides texture coordinates by W.** When `Set Other Modes` `persp_tex_en`
