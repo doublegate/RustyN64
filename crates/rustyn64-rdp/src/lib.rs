@@ -819,8 +819,9 @@ impl Rdp {
             let lo_b = bus.rdram_read(src.wrapping_add(1));
             let dst = tmem_base + i * 8;
             for k in 0..4u32 {
-                self.tmem_write((dst + k * 2) as usize, hi_b);
-                self.tmem_write((dst + k * 2 + 1) as usize, lo_b);
+                let slot = (dst + k * 2) as usize;
+                self.tmem_write(slot, hi_b);
+                self.tmem_write(slot + 1, lo_b);
             }
         }
         // Load TLUT also updates the tile size (like the other loads).
@@ -845,7 +846,11 @@ impl Rdp {
     #[must_use]
     pub fn fetch_texel(&self, tile: &TileDescriptor, s: u32, t: u32) -> [u8; 4] {
         let swap = (t & 1) << 2;
-        let base = u32::from(tile.tmem_addr) * 8 + u32::from(tile.line) * 8 * t;
+        // Wrapping arithmetic: an oversized (unclipped) `t` must not debug-panic
+        // on overflow — TMEM addresses wrap into the 4 KiB space anyway.
+        let base = u32::from(tile.tmem_addr)
+            .wrapping_mul(8)
+            .wrapping_add(u32::from(tile.line).wrapping_mul(8).wrapping_mul(t));
         match (tile.format, tile.size) {
             (0, 2) => decode_rgba16(self.tmem_u16((base + s * 2) ^ swap)), // RGBA16
             (0, 3) => {
@@ -896,7 +901,9 @@ impl Rdp {
             (2, 0) => {
                 // CI4: 4-bit index + tile.palette as the high nibble.
                 let nib = self.nibble_at((((base + (s >> 1)) & 0x7FF) ^ swap) as usize, s);
-                let ci = u32::from(nib) | (u32::from(tile.palette) << 4);
+                // `palette` is already 4-bit from `set_tile` decode; mask defensively
+                // so a directly-constructed descriptor cannot push `ci` out of range.
+                let ci = u32::from(nib) | (u32::from(tile.palette & 0xF) << 4);
                 self.tlut_lookup(ci)
             }
             _ => [0, 0, 0, 0],
