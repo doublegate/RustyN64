@@ -271,16 +271,18 @@ fn blend_a_input(sel: u8, inp: &BlendInputs) -> u8 {
 /// The blender's `B` (2b) alpha weight: 0 = `1 − A`, 1 = memory alpha (framebuffer
 /// coverage), 2 = one (0xFF), 3 = zero (N64brew *…/Blender*).
 ///
-/// The `1 − A` case is the one's complement of the **already-selected `A` weight**
-/// (`a0`), not of pixel alpha specifically — the ParaLLEl-RDP constant is named
+/// The `1 − A` case is the one's complement of the **already-selected `A` weight**,
+/// not of pixel alpha specifically — the ParaLLEl-RDP constant is named
 /// `INV_PIXEL_ALPHA` but computes `~a0` (`blender.h:106`), so `A` selecting fog or
-/// shade alpha makes `B` their complement too. `a0` is passed in already resolved.
-fn blend_b_input(sel: u8, inp: &BlendInputs, a0: u8) -> u8 {
+/// shade alpha makes `B` their complement too. `a0_full` is that resolved `A` weight
+/// **before** the `>> 3` (the complement is taken on the full 8-bit value, then both
+/// weights are shifted — `blender.h:106` vs `:112`).
+fn blend_b_input(sel: u8, inp: &BlendInputs, a0_full: u8) -> u8 {
     match sel & 0x3 {
         1 => inp.memory[3],
         2 => 0xFF,
         3 => 0,
-        _ => !a0,
+        _ => !a0_full,
     }
 }
 
@@ -1303,8 +1305,13 @@ impl Rdp {
 
     /// Evaluate the whole blender for a pixel: blend cycle 0 alone in 1-cycle
     /// mode, or cycle 0's RGB fed back as the pixel colour into cycle 1 in
-    /// 2-cycle mode (N64brew *…/Blender*). The alpha selects are unchanged
-    /// between cycles; only the pixel RGB is chained.
+    /// 2-cycle mode (N64brew *…/Blender*).
+    ///
+    /// Only `pixel.rgb` chains between cycles — **`pixel.a` is deliberately left
+    /// unchanged**, so both cycles' `A`/`B` alpha selects see the original combiner
+    /// alpha. This matches the reference, which reassigns `pixel_color.rgb` only
+    /// before the second `blender()` call (parallel-rdp `memory_interfacing.h:536`);
+    /// the blender produces no alpha of its own (`blender.h` returns `u8x3`).
     #[must_use]
     pub fn blend(&self, mut inp: BlendInputs) -> [u8; 3] {
         if self.other_modes.cycle_type == 1 {
