@@ -409,6 +409,33 @@ blender with real framebuffer/coverage/Z (T-33-004). The decode, the no-divide e
 input muxes, and the 2-cycle chaining are unit-tested against hand-computed values. `blend` has no
 runtime caller yet; the oracle stays **93**.
 
+### The Z-buffer machinery (T-33-004, PR-A)
+
+The depth codec, the per-pixel depth test, and the depth-source commands — the pure, oracle-verified
+pieces of Z-buffering, ahead of wiring them into the pixel pipeline. Cross-verified against
+ParaLLEl-RDP (MIT, `z_encode.h`, `depth_test.h`).
+
+- **The Z codec.** The N64 Z buffer uses an inverted floating-point encoding (more precision near the
+  far plane): a 14-bit stored value ↔ an 18-bit UNORM. `z_decompress`/`z_compress` are exact inverses
+  of `z_encode.h` (`exponent` in bits 13:11, `mantissa` in 10:0; `base = 0x40000 − (0x40000 >> exp)`);
+  `dz` is stored as a 4-bit `log2` (`dz_decompress = 1 << n`, `dz_compress` an integer `log2` correct
+  for powers of two — the hardware's cheap `log2`).
+- **The depth test.** `depth_test` is a faithful port of `depth_test.h`: given the pixel's `z`/`dz` and
+  the Z-buffer read (`DepthInputs`), it returns whether the pixel is written plus the blend/coverage
+  state (`DepthResult`). All four Z modes are modelled — **opaque** (nearer-passes, with a coplanar
+  same-surface coverage-increment path), **interpenetrating** (a decal-like intersect that *reduces*
+  coverage), **transparent** (strictly-in-front), and **decal** (coplanar only) — including the
+  stored-`dz` coplanar/precision-factor handling. Unit-tested by observable occluding-vs-occluded pairs
+  per mode.
+- **Depth-source commands.** `Set Depth Image` (0x3E) latches the Z-buffer base; `Set Primitive Depth`
+  (0x2E) latches the `z`/`dz` used when `Set Other Modes` `z_source_sel` selects primitive depth (the
+  only depth source for rectangle commands).
+
+Scope (**open residual R-12**): the Z-buffer **RDRAM read/write** (the 18-bit-per-pixel "hidden bit"
+storage format), **coverage accumulation** at edges, and the actual **per-pixel routing** of
+combiner→blender→depth in the triangle rasteriser land in PR-B (which also closes the R-9 flat-fill).
+`depth_test`/the codec have no runtime caller yet; the oracle stays **93**.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);
@@ -433,6 +460,9 @@ the rest is still marked TODO:
   T-33-002, via `Set Combine Mode` 0x3C).
 - **Blender latches** — the `P/A/M/B` selects + blend/fog colour registers
   (**present**, T-33-003). AA-edge / dither config is R-11.
+- **Depth registers** — the Z-buffer base (`Set Depth Image` 0x3E) and the primitive
+  `z`/`dz` (`Set Primitive Depth` 0x2E) (**present**, T-33-004 PR-A). The Z-buffer
+  RDRAM read/write and coverage accumulation are R-12 (PR-B).
 - **Scissor rectangle** + the fill/primitive/environment/fog/blend colors.
 
 ## Behavior

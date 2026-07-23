@@ -125,6 +125,74 @@ const fn sext9(x: i32) -> i32 {
     (x << 23) >> 23
 }
 
+/// Position of the most significant set bit of `x`, or `-1` if `x == 0` — GLSL
+/// `findMSB` semantics (ParaLLEl-RDP `z_encode.h`/`depth_test.h` rely on the
+/// `-1` case flowing through `max(findMSB(dz), 0)`).
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "leading_zeros() is 0..=31, always in range for i32"
+)]
+const fn find_msb(x: i32) -> i32 {
+    if x <= 0 {
+        -1
+    } else {
+        31 - (x.leading_zeros() as i32)
+    }
+}
+
+/// Decompress a 14-bit stored depth to an 18-bit UNORM (`0..=0x3_FFFF`). The N64
+/// Z buffer uses an inverted floating-point encoding with more precision near 1
+/// (ParaLLEl-RDP `z_encode.h`): `exponent` in bits 13:11, `mantissa` in 10:0.
+fn z_decompress(z: u16) -> i32 {
+    let z = i32::from(z);
+    let exponent = z >> 11;
+    let mantissa = z & 0x7ff;
+    let shift = (6 - exponent).max(0);
+    let base = 0x4_0000 - (0x4_0000 >> exponent);
+    (mantissa << shift) + base
+}
+
+/// Compress an 18-bit UNORM depth back to the 14-bit stored form (`z_encode.h`).
+/// Inverse of [`z_decompress`]; `exponent` is derived from the leading zeros of
+/// the inverted depth so precision concentrates near the far plane.
+///
+/// Verified by the [`z_decompress`] round-trip test; the Z-buffer writeback that
+/// calls it in the render path lands with the per-pixel pipeline (PR-B).
+#[allow(
+    dead_code,
+    reason = "compress half of the Z codec pair; used by the round-trip test now and the PR-B Z-buffer writeback"
+)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "the packed result is 0..=0x3FFF, always a valid non-negative u16"
+)]
+fn z_compress(z: i32) -> u16 {
+    let inv_z = (0x3_FFFF - z).max(1);
+    let exponent = (17 - find_msb(inv_z)).clamp(0, 7);
+    let shift = (6 - exponent).max(0);
+    let mantissa = (z >> shift) & 0x7ff;
+    ((exponent << 11) + mantissa) as u16
+}
+
+/// Decompress a 4-bit stored `dz` to its linear delta `1 << dz` (`z_encode.h`).
+const fn dz_decompress(dz: i32) -> i32 {
+    1 << dz
+}
+
+/// Compress a linear `dz` delta to its 4-bit `log2` form (`z_encode.h`). The RDP
+/// uses this cheap integer `log2`, correct only for powers of two (hence the
+/// "dz should be a power of 2" hazard); `dz == 0` yields 0 via `find_msb`'s `-1`.
+const fn dz_compress(dz: i32) -> i32 {
+    let m = find_msb(dz);
+    if m < 0 { 0 } else { m }
+}
+
+/// The largest power of two `<= dz` (ParaLLEl-RDP `depth_test.h` `combine_dz`).
+const fn combine_dz(dz: i32) -> i32 {
+    if dz != 0 { 1 << find_msb(dz) } else { 0 }
+}
+
 /// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
 /// the 0x80 bias, sign-extend to 9 bits, add the bias back (ParaLLEl-RDP
 /// `special_expand`, `combiner.h`). The multiplier C uses a plain [`sext9`].
@@ -352,6 +420,7 @@ const fn bytes_per_texel(size: u8) -> Option<u32> {
         _ => None,
     }
 }
+const OP_SET_PRIM_DEPTH: u8 = 0x2E;
 const OP_SET_OTHER_MODES: u8 = 0x2F;
 const OP_FILL_RECTANGLE: u8 = 0x36;
 const OP_SET_FILL_COLOR: u8 = 0x37;
@@ -361,6 +430,7 @@ const OP_SET_PRIM_COLOR: u8 = 0x3A;
 const OP_SET_ENV_COLOR: u8 = 0x3B;
 const OP_SET_COMBINE_MODE: u8 = 0x3C;
 const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
+const OP_SET_DEPTH_IMAGE: u8 = 0x3E;
 const OP_SET_COLOR_IMAGE: u8 = 0x3F;
 
 /// One cycle of the blender: the `P`/`M` colour selects and the `A`/`B` alpha
@@ -422,6 +492,42 @@ pub struct BlendInputs {
     pub fog: [u8; 4],
     /// The interpolated shade alpha.
     pub shade_alpha: u8,
+}
+
+/// The Z-buffer read and render-mode flags [`Rdp::depth_test`] needs beyond the
+/// incoming pixel's own `z`/`dz` (grouped so the signature stays legible).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DepthInputs {
+    /// The 14-bit compressed depth already stored for this pixel.
+    pub current_depth: u16,
+    /// The 4-bit `dz` already stored for this pixel.
+    pub current_dz: u8,
+    /// The coverage already accumulated in the framebuffer pixel.
+    pub current_coverage: i32,
+    /// `Set Other Modes` `z_compare_en`: run the depth comparison at all.
+    pub z_compare: bool,
+    /// `Set Other Modes` `z_mode`: 0 opaque, 1 interpenetrating, 2 transparent, 3 decal.
+    pub z_mode: u8,
+    /// `Set Other Modes` `force_blend`.
+    pub force_blend: bool,
+    /// Anti-aliasing enable (`Set Other Modes` `antialias_en`).
+    pub aa_enable: bool,
+}
+
+/// The outcome of a per-pixel depth test: whether the pixel is written, and the
+/// blend/coverage state the blender consumes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DepthResult {
+    /// The pixel passes the depth test and is written.
+    pub depth_pass: bool,
+    /// Enable the blender for this pixel (vs. an opaque overwrite).
+    pub blend_en: bool,
+    /// Coverage overflowed (`>= 8`): the surface differs, wrap the coverage.
+    pub coverage_wrap: bool,
+    /// The two blender coverage shifts (`[dz→mem, mem→dz]`, each clamped `0..=4`).
+    pub blend_shift: [u8; 2],
+    /// The (possibly interpenetrating-reduced) coverage count carried forward.
+    pub coverage_count: i32,
 }
 
 /// One cycle of the colour combiner.
@@ -571,8 +677,14 @@ pub struct Rdp {
     /// Color-image width in pixels (`Set Color Image` width\[9:0\] + 1). The row
     /// stride is `width * bytes_per_pixel`.
     pub color_image_width: u16,
-    /// Z-image base in RDRAM (`SET_Z_IMAGE`).
+    /// Z-image base in RDRAM (`Set Depth Image`, 0x3E).
     pub z_image: u32,
+    /// Primitive depth `z` (`Set Primitive Depth`, 0x2E): the s15.3 depth used when
+    /// `Set Other Modes` `z_source_sel` selects it (and the only depth source for
+    /// rectangle commands). Stored as the raw 16-bit field.
+    pub prim_z: u16,
+    /// Primitive `dz` (`Set Primitive Depth`, 0x2E), the raw 16-bit field.
+    pub prim_dz: u16,
     /// FILL-mode colour register (`Set Fill Color`, 0x37): a 32-bit value written
     /// verbatim to the color image. Its interpretation depends on the pixel size
     /// — one RGBA32, two RGBA16 (even pixel = upper half, odd = lower), or four
@@ -825,6 +937,12 @@ impl Rdp {
             OP_SET_ENV_COLOR => self.env_color = lo,
             OP_SET_BLEND_COLOR => self.blend_color = lo,
             OP_SET_FOG_COLOR => self.fog_color = lo,
+            OP_SET_DEPTH_IMAGE => self.z_image = lo & 0x00FF_FFFF,
+            OP_SET_PRIM_DEPTH => {
+                // z[15:0] = lo 31:16 (s15.3, integer part), dz[15:0] = lo 15:0.
+                self.prim_z = (lo >> 16) as u16;
+                self.prim_dz = lo as u16;
+            }
             OP_SET_OTHER_MODES => self.set_other_modes(hi, lo),
             OP_SET_COMBINE_MODE => self.set_combine_mode(hi, lo),
             OP_SET_SCISSOR => {
@@ -1329,6 +1447,103 @@ impl Rdp {
             return Self::blend_cycle(self.other_modes.blend[1], &inp);
         }
         Self::blend_cycle(self.other_modes.blend[0], &inp)
+    }
+
+    /// The per-pixel depth test and coverage/blend derivation — a faithful port of
+    /// ParaLLEl-RDP's `depth_test.h` (the Angrylion-parity reference).
+    ///
+    /// `z`/`dz` are this pixel's decompressed 18-bit depth and its raw delta;
+    /// `dz_compressed` is `dz`'s 4-bit `log2`; `coverage_count` is this pixel's
+    /// span coverage. [`DepthInputs`] carries the Z-buffer read and the render-mode
+    /// flags. When `z_compare` is off the pixel always passes; otherwise the four Z
+    /// modes (opaque/interpenetrating/transparent/decal) apply, with the
+    /// coplanar/precision-factor handling of the stored `dz`. Interpenetrating mode
+    /// can *reduce* the returned `coverage_count`. No buffer is touched here — the
+    /// caller (the pixel pipeline, PR-B) reads/writes the Z buffer and applies the
+    /// result; today this has no runtime caller, so the oracle is unchanged.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "blend_shift values are clamped to 0..=4 before the u8 cast"
+    )]
+    #[allow(
+        clippy::similar_names,
+        reason = "memory_z / memory_dz / dz are the oracle's own names (depth_test.h)"
+    )]
+    pub fn depth_test(
+        z: i32,
+        dz: i32,
+        dz_compressed: i32,
+        mut coverage_count: i32,
+        inp: &DepthInputs,
+    ) -> DepthResult {
+        let depth_pass;
+        let blend_en;
+        let coverage_wrap;
+        let mut blend_shift = [0u8; 2];
+
+        if inp.z_compare {
+            let memory_z = z_decompress(inp.current_depth);
+            let mut memory_dz = dz_decompress(i32::from(inp.current_dz));
+            let precision_factor = (i32::from(inp.current_depth) >> 11) & 0xf;
+            let mut coplanar = false;
+
+            blend_shift[0] = (dz_compressed - i32::from(inp.current_dz)).clamp(0, 4) as u8;
+            blend_shift[1] = (i32::from(inp.current_dz) - dz_compressed).clamp(0, 4) as u8;
+
+            if precision_factor < 3 {
+                if memory_dz == 0x8000 {
+                    coplanar = true;
+                    memory_dz = 0xffff;
+                } else {
+                    memory_dz = (memory_dz << 1).max(16 >> precision_factor);
+                }
+            }
+
+            let mut combined_dz = combine_dz(dz | memory_dz);
+            let combined_dz_interpenetrate = combined_dz;
+            combined_dz <<= 3;
+
+            let farther = coplanar || (z + combined_dz) >= memory_z;
+            let overflow = (coverage_count + inp.current_coverage) >= 8;
+
+            blend_en = inp.force_blend || (!overflow && inp.aa_enable && farther);
+            coverage_wrap = overflow;
+
+            let max_z = memory_z == 0x3_FFFF;
+            let front = z < memory_z;
+            let nearer = coplanar || (z - combined_dz) <= memory_z;
+            let opaque_pass = max_z || if overflow { front } else { nearer };
+
+            depth_pass = match inp.z_mode {
+                // Interpenetrating: a decal-like intersect modifies coverage; else
+                // it falls back to the opaque less-than test.
+                1 if front && farther && overflow => {
+                    let ip = dz_compress(combined_dz_interpenetrate & 0xffff);
+                    let cvg_coeff = ((memory_z >> ip) - (z >> ip)) & 0xf;
+                    coverage_count = ((cvg_coeff * coverage_count) >> 3).min(8);
+                    true
+                }
+                0 | 1 => opaque_pass,
+                2 => front || max_z,              // transparent
+                _ => farther && nearer && !max_z, // decal (3)
+            };
+        } else {
+            blend_shift[1] = (0xf - dz_compressed).min(4) as u8;
+            let overflow = (coverage_count + inp.current_coverage) >= 8;
+            blend_en = inp.force_blend || (!overflow && inp.aa_enable);
+            coverage_wrap = overflow;
+            depth_pass = true;
+        }
+
+        DepthResult {
+            depth_pass,
+            blend_en,
+            coverage_wrap,
+            blend_shift,
+            coverage_count,
+        }
     }
 
     /// Apply a `Set Tile` (0x35): decode the descriptor at `index` (bits 26:24)
@@ -3417,5 +3632,118 @@ mod tests {
             ..BlendInputs::default()
         };
         assert_eq!(Rdp::blend_cycle(cycle, &inp), [97, 97, 97]);
+    }
+
+    // ---- T-33-004: the Z-buffer machinery ----
+
+    /// **The Z codec matches the ParaLLEl-RDP `z_encode.h` arithmetic.** Boundary
+    /// values are hand-computed; `z_compress ∘ z_decompress` round-trips canonical
+    /// stored values; `dz` is `1 << n` with an integer-`log2` inverse.
+    #[test]
+    fn z_codec_matches_hand_computed() {
+        // decompress: 0 → 0; max 14-bit (0x3FFF) → max 18-bit (0x3FFFF); a mid value.
+        assert_eq!(z_decompress(0), 0);
+        assert_eq!(z_decompress(0x3FFF), 0x3_FFFF);
+        assert_eq!(z_decompress(0x3000), 0x3_F000); // exp 6, man 0
+        // round-trip canonical stored values.
+        for stored in [0u16, 0x2000, 0x3FFF] {
+            assert_eq!(
+                z_compress(z_decompress(stored)),
+                stored,
+                "round-trip {stored:#x}"
+            );
+        }
+        // dz: 1<<n and its integer-log2 inverse (0 maps to 0 via find_msb == -1).
+        assert_eq!(dz_decompress(15), 0x8000);
+        assert_eq!(dz_decompress(0), 1);
+        assert_eq!(dz_compress(0x8000), 15);
+        assert_eq!(dz_compress(1), 0);
+        assert_eq!(dz_compress(0), 0);
+        assert_eq!(combine_dz(0x180), 0x100, "largest POT <= 384 is 256");
+        assert_eq!(combine_dz(0), 0);
+    }
+
+    /// **`Set Primitive Depth` (0x2E) and `Set Depth Image` (0x3E) latch.** z in
+    /// `lo[31:16]`, dz in `lo[15:0]`; the depth-image base masks to 24 bits.
+    #[test]
+    fn set_prim_depth_and_depth_image_latch() {
+        let mut bus = SliceBus {
+            mem: alloc::vec![0u8; 0x100],
+            dp_raised: false,
+        };
+        let mut rdp = Rdp::new();
+        rdp.dispatch(OP_SET_PRIM_DEPTH, 0, (0x1234 << 16) | 0x0080, 0, &mut bus);
+        assert_eq!(rdp.prim_z, 0x1234);
+        assert_eq!(rdp.prim_dz, 0x0080);
+        rdp.dispatch(OP_SET_DEPTH_IMAGE, 0, 0xAB00_1240, 0, &mut bus);
+        assert_eq!(rdp.z_image, 0x0000_1240, "24-bit masked base");
+    }
+
+    /// Build [`DepthInputs`] for a memory pixel at stored depth `0x3000`
+    /// (`memory_z == 0x3F000`), `dz == 0`, precision-factor 6 (so no `dz`
+    /// adjustment), with the given mode. `aa`/`force_blend`/`coverage` are off so
+    /// the depth decision is pure less-than.
+    fn depth_inputs(z_mode: u8) -> DepthInputs {
+        DepthInputs {
+            current_depth: 0x3000,
+            current_dz: 0,
+            current_coverage: 0,
+            z_compare: true,
+            z_mode,
+            force_blend: false,
+            aa_enable: false,
+        }
+    }
+
+    /// **Opaque Z mode: the nearer pixel passes, the farther pixel is rejected.**
+    /// The observable occluding-vs-occluded pair against a memory depth of
+    /// `0x3F000`: an in-front pixel (`z = 0x30000`) writes, a behind one
+    /// (`z = 0x3FF00`) does not.
+    #[test]
+    fn depth_test_opaque_occludes() {
+        let inp = depth_inputs(0);
+        assert!(
+            Rdp::depth_test(0x30000, 0, 0, 1, &inp).depth_pass,
+            "nearer pixel passes"
+        );
+        assert!(
+            !Rdp::depth_test(0x3FF00, 0, 0, 1, &inp).depth_pass,
+            "farther pixel rejected"
+        );
+    }
+
+    /// **Transparent Z mode passes strictly-in-front pixels only.** Same pair:
+    /// front passes, behind fails (no coverage/decal subtlety).
+    #[test]
+    fn depth_test_transparent_passes_front() {
+        let inp = depth_inputs(2);
+        assert!(Rdp::depth_test(0x30000, 0, 0, 1, &inp).depth_pass);
+        assert!(!Rdp::depth_test(0x3FF00, 0, 0, 1, &inp).depth_pass);
+    }
+
+    /// **Decal Z mode passes only coplanar pixels.** A pixel at the memory depth
+    /// (`z = 0x3F000`) passes; an in-front pixel (`z = 0x30000`) — which opaque
+    /// mode would accept — is rejected, distinguishing decal from opaque.
+    #[test]
+    fn depth_test_decal_passes_coplanar_only() {
+        let inp = depth_inputs(3);
+        assert!(
+            Rdp::depth_test(0x3_F000, 0, 0, 1, &inp).depth_pass,
+            "coplanar passes"
+        );
+        assert!(
+            !Rdp::depth_test(0x30000, 0, 0, 1, &inp).depth_pass,
+            "in-front (non-coplanar) rejected"
+        );
+    }
+
+    /// **`z_compare` off: every pixel passes**, regardless of stored depth — the
+    /// depth test is bypassed and only coverage/blend state is derived.
+    #[test]
+    fn depth_test_disabled_always_passes() {
+        let mut inp = depth_inputs(0);
+        inp.z_compare = false;
+        assert!(Rdp::depth_test(0x3FF00, 0, 0, 1, &inp).depth_pass);
+        assert!(Rdp::depth_test(0x00000, 0, 0, 1, &inp).depth_pass);
     }
 }

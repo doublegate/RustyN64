@@ -95,13 +95,21 @@ alpha-compare, and the dither modes.
 **Description:** the Z-buffer test/update (the N64's 15.3 float-ish Z encoding), coverage accumulation
 at edges, and `Set Primitive Depth` (0x2E).
 
+Split into **PR-A** (the Z machinery — pure, oracle-verified functions) and **PR-B** (the Z-buffer
+storage + coverage + per-pixel pipeline routing), per the split-large-tickets rule.
+
 **Acceptance criteria:**
 
-- [ ] Z encode/decode matches the hardware format; the Z test/update honours the Z mode, asserted
-      by the **observable framebuffer/Z-buffer** result of an occluding-vs-occluded pair (a pixel
-      that must and must not be overwritten), not a status flag.
-- [ ] Coverage accumulates at partially-covered edge pixels and feeds the blender.
-- [ ] Primitive depth is used when the triangle carries no per-vertex Z.
+- [x] **PR-A.** Z encode/decode matches the hardware format (exact inverses of ParaLLEl-RDP
+      `z_encode.h`, validated by boundary values + a `z_compress ∘ z_decompress` round-trip); the Z
+      test honours the Z mode, asserted by **observable occluding-vs-occluded pairs** per mode (opaque,
+      transparent, decal, and `z_compare` off) at the `depth_test` function level — a pixel that must
+      and must not pass. `Set Depth Image` (0x3E) and `Set Primitive Depth` (0x2E) latch. Six new tests.
+- [ ] **PR-B.** The Z-buffer **RDRAM read/write** (the 18-bit-per-pixel hidden-bit storage) actually
+      updates the buffer for an occluding-vs-occluded pair. Coverage accumulates at partially-covered
+      edge pixels and feeds the blender. Primitive depth is used when the triangle carries no per-vertex
+      Z. This is where `depth_test`/the codec get their runtime caller (routing combiner→blender→depth
+      per pixel), which also closes the R-9 flat-fill. Ledger **R-12**.
 
 **Complexity:** L
 
