@@ -416,20 +416,21 @@ fn tex_rect_mag_16_matches_angrylion() {
     );
 }
 
-/// The lower bound on the committed seeded-fuzz corpus. The gate fails if fewer
-/// than this many `.rvec` vectors are found, so a packaging or checkout error that
-/// drops the corpus directory cannot make the oracle gate report success without
-/// having replayed anything (the accuracy oracle must never pass vacuously). Raise
-/// it as families are added; never let it exceed the committed count.
-const MIN_FUZZ_CORPUS: usize = 96;
+/// Per-family lower bounds on the committed seeded-fuzz corpus, keyed by filename
+/// prefix. The gate fails if any family has fewer than its floor, so a checkout or
+/// packaging error that drops a corpus directory — or a later edit that removes one
+/// family's vectors while others grow — cannot make the oracle gate pass without
+/// replaying that family's coverage (the accuracy oracle must never pass vacuously).
+/// Add a row when a family is committed; never let a floor exceed its committed count.
+const FUZZ_FAMILY_FLOORS: &[(&str, usize)] = &[("fz_fill_", 48), ("fz_scis_", 48)];
 
 /// The **seeded-fuzz corpus gate.** Every committed `.rvec` under `tests/vectors/fuzz/`
 /// is a curated candidate from the reproducible generator (`vectors-gen/driver.c`
-/// `--fuzz <dir> <seed> <count>`): only candidates that already matched the Angrylion
-/// golden were committed, so this replays each and asserts the byte-exact match still
-/// holds. It scales to any corpus size without a `#[test]` per vector. The corpus is
-/// committed, so a missing directory or a below-floor count is a failure, not a pass
-/// — the gate must run vectors to succeed ([[vacuous-pass-in-rom-tests]]).
+/// `--fuzz <dir> <seed> <count> [family]`): only candidates that already matched the
+/// Angrylion golden were committed, so this replays each and asserts the byte-exact
+/// match still holds. It scales to any corpus size without a `#[test]` per vector.
+/// The corpus is committed, so a missing directory or a below-floor **per-family**
+/// count is a failure, not a pass ([[vacuous-pass-in-rom-tests]]).
 #[test]
 fn fuzz_corpus_matches_angrylion() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/fuzz");
@@ -445,12 +446,19 @@ fn fuzz_corpus_matches_angrylion() {
         let name = path.file_stem().unwrap().to_string_lossy();
         assert_matches(&name, &bytes);
     }
-    assert!(
-        names.len() >= MIN_FUZZ_CORPUS,
-        "fuzz corpus has {} vector(s), below the floor of {MIN_FUZZ_CORPUS} — a \
-         checkout/packaging error may have dropped vectors",
-        names.len(),
-    );
+    // Each committed family must still be present at (or above) its floor.
+    let stems: Vec<String> = names
+        .iter()
+        .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    for &(prefix, floor) in FUZZ_FAMILY_FLOORS {
+        let count = stems.iter().filter(|s| s.starts_with(prefix)).count();
+        assert!(
+            count >= floor,
+            "fuzz family '{prefix}' has {count} vector(s), below its floor of {floor} — a \
+             checkout/packaging error may have dropped vectors",
+        );
+    }
     eprintln!(
         "fuzz corpus: {} vector(s) match the Angrylion golden",
         names.len()
