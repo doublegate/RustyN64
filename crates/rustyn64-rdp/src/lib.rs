@@ -1392,9 +1392,14 @@ impl Rdp {
         let z_base = bus.rdram_read_u32(za) as i32;
         let dzdx = bus.rdram_read_u32(za.wrapping_add(4)) as i32;
         let dzde = bus.rdram_read_u32(za.wrapping_add(8)) as i32;
+        // `dzdy` (za + 12) is the 4th z-suffix word; it feeds only the sub-pixel
+        // snap (part 2c), so the per-scanline path here uses `dzde` and leaves it.
+        //
         // Primitive dz for the stored value and the test tolerance: the integer
         // depth gradient (first cut — the exact setup derivation is R-9/R-12).
-        let dz = dzdx.abs().max(dzde.abs()) >> 16;
+        // `saturating_abs` avoids the `i32::MIN.abs()` overflow panic on the
+        // unvalidated RDRAM coefficients.
+        let dz = dzdx.saturating_abs().max(dzde.saturating_abs()) >> 16;
         Some(ZTriSetup {
             z_base,
             dzdx,
@@ -4166,5 +4171,20 @@ mod tests {
             0x3333_3333,
             "nearer overwrites (depth accepts)"
         );
+    }
+
+    /// **`decode_triangle_z` does not panic on an `i32::MIN` gradient.** The z-suffix
+    /// is unvalidated RDRAM; a `dzdx`/`dzde` of `0x8000_0000` would overflow `.abs()`.
+    /// `saturating_abs` keeps it total.
+    #[test]
+    fn decode_triangle_z_survives_i32_min_gradient() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x100],
+            hidden: alloc::vec![0u8; 0x80],
+        };
+        // z-flag set (bit 24), no shade/tex -> z-suffix at cmd_base + 0x20; put
+        // i32::MIN at dzdx (za + 4 = 0x24).
+        bus.mem[0x24..0x28].copy_from_slice(&0x8000_0000u32.to_be_bytes());
+        assert!(Rdp::decode_triangle_z(1 << 24, 0, &bus).is_some());
     }
 }
