@@ -1467,7 +1467,10 @@ impl Rdp {
         let sx0 = u32::from(self.scissor_ulx) >> 2;
         let sy0 = u32::from(self.scissor_uly) >> 2;
         let sx1 = (scissor_xl >> 2) + 1; // inclusive right pixel -> half-open
-        let sy1 = (u32::from(self.scissor_lry) + 3) >> 2; // exclusive
+        // Exclusive Y: `(lry + 3) >> 2` keeps a row iff any of its four sub-scanlines
+        // is `< lry` (Angrylion drops `k >= yllimit`), so a fractional `lry` still
+        // draws the partially-covered row while an integer `lry` drops it whole.
+        let sy1 = (u32::from(self.scissor_lry) + 3) >> 2;
         // Intersection of rectangle and scissor (half-open), then a hard clip to the
         // colour-image width: a pixel at or past the stride would spill into the next
         // row, so the inclusive X bounds never write beyond the framebuffer.
