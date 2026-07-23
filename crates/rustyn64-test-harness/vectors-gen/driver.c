@@ -350,6 +350,29 @@ static const uint32_t V8_SHADE_TRI_32[] = {
     0x00000000u, 0x00000000u,
 };
 
+// V9: a 32-bit shaded triangle with MAGIC dither ON (the default, hi bits 7:4=0)
+// and a flat shade R=0x11 G=0x22 B=0x33. Each channel is dithered per-pixel by the
+// 4x4 magic matrix, so interior pixels vary (0x33->0x38 where the matrix cell <
+// the channel's low 3 bits). Drives the dither implementation.
+static const uint32_t V9_DITHER_TRI_32[] = {
+    0x2F000000u, 0x00000000u, // Set Other Modes: 1-cycle, AA off, magic RGB+alpha dither (default)
+    0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
+    0x3F180007u, 0x00001000u, // Set Color Image: 32-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    0x00110022u, 0x003300FFu, // shade int base: R=0x11 G=0x22 B=0x33 A=0xFF (16 u32)
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+    0x00000000u, 0x00000000u,
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -384,6 +407,10 @@ int main(int argc, char **argv) {
     Vector v8 = {"shade_tri_32", 0x2000, 0x1000, 8, 8, 4,
                  sizeof(V8_SHADE_TRI_32) / 4, V8_SHADE_TRI_32};
     if (emit_vector(&v8, out_dir)) return 1;
+
+    Vector v9 = {"dither_tri_32", 0x2000, 0x1000, 8, 8, 4,
+                 sizeof(V9_DITHER_TRI_32) / 4, V9_DITHER_TRI_32};
+    if (emit_vector(&v9, out_dir)) return 1;
 
     return 0;
 }
