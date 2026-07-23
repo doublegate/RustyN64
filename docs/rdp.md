@@ -360,6 +360,29 @@ Z/coverage (T-33-004) then colour the triangle; the whole is graded bit-exact ag
 ParaLLEl-RDP conformance vectors (T-33-005). Validated here by a right-triangle golden pinning
 the edge-walk and the fixed-point decode. Oracle unchanged at **93**.
 
+### The colour combiner (T-33-002)
+
+`Set Combine Mode` (0x3C) and the `(A − B) * C + D` evaluation — the per-pixel colour mux,
+cross-verified against the N64brew wiki and ParaLLEl-RDP (MIT, `combiner.h`).
+
+- **Decode.** The single command word packs 16 input selects — RGB and alpha `A/B/C/D` for both
+  cycles — into `CombineMode`. `Set Prim Color` (0x3A) and `Set Env Color` (0x3B) latch the two
+  constant-colour registers the combiner can select.
+- **The equation.** Per channel, `(A − B) * C + D` with the RDP's fixed-point rules: `A/B/D` go
+  through the asymmetric 9-bit `special_expand` (subtract the `0x80` bias, sign-extend to 9 bits,
+  add it back), `C` is a plain 9-bit value, a `+0x80` rounding bias is applied **before** the
+  `>> 8`, and `D` is added afterwards unscaled; the result is clamped with the 9-bit fold (which
+  is why 256–383 saturate and 384–511 wrap). The "one" input is `0x100`, not `0xFF`.
+- **Cycles.** 1-cycle mode uses only cycle 1's selects; 2-cycle mode evaluates cycle 0 (no
+  inter-cycle clamp) and feeds its output as cycle 1's `Combined` input.
+
+Scope (**open residual R-10**): the common inputs (combined, texel0/1, primitive, shade,
+environment, one, zero, and the C-slot alpha taps) are wired; the **exotic** inputs — noise, LOD
+fraction, the key/convert constants — read as zero until the LOD/key/convert state lands. The
+arithmetic, the 16-field decode, the mux, and the 2-cycle chaining are unit-tested against
+hand-computed values. `combine` has no runtime caller until the triangle pipeline routes through
+it (with shade/texture attributes and the cycle-type gate); the oracle stays **93**.
+
 ## State
 
 Implemented (the FIFO pointers + image bases, plus the texture state below);

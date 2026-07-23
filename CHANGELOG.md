@@ -9,6 +9,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the colour combiner (Phase 3, T-33-002)
+
+- **The RDP evaluates the colour combiner.** `Set Combine Mode` (0x3C) decodes
+  the 16 RGB/alpha `A/B/C/D` input selects for both cycles, and `combine`
+  evaluates `(A − B) * C + D` per channel with the RDP's fixed-point rules — the
+  asymmetric 9-bit `special_expand` for `A/B/D`, a plain 9-bit `C`, a `+0x80`
+  rounding bias before the `>> 8`, `D` added unscaled, and the 9-bit clamp fold.
+  1-cycle mode uses only cycle 1; 2-cycle chains cycle 0 into cycle 1's
+  `Combined`. `Set Prim Color` (0x3A) and `Set Env Color` (0x3B) latch the
+  constant-colour registers. Cross-verified against the wiki and ParaLLEl-RDP
+  (MIT) and unit-tested bit-for-bit on hand-computed values. Scope (ledger R-10):
+  the common inputs are wired; the exotic inputs (noise, LOD fraction, key/convert
+  constants) read as zero until that state lands. `combine` has no runtime caller
+  until the triangle pipeline routes through it, so the oracle stays 93.
+
 ### Added — the flat-fill triangle rasteriser (Phase 3, T-33-001)
 
 - **The RDP rasterises triangles.** `Fill Triangle` (0x08) and its shade/texture/Z

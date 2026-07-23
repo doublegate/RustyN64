@@ -117,6 +117,130 @@ const fn sext(v: u32, bits: u32) -> i32 {
     ((v << shift) as i32) >> shift
 }
 
+/// Sign-extend the low 9 bits of `x` (the combiner's `bitfieldExtract(x, 0, 9)`).
+const fn sext9(x: i32) -> i32 {
+    (x << 23) >> 23
+}
+
+/// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
+/// the 0x80 bias, sign-extend to 9 bits, add the bias back (ParaLLEl-RDP
+/// `special_expand`, `combiner.h`). The multiplier C uses a plain [`sext9`].
+const fn special_expand(v: i32) -> i32 {
+    sext9(v - 0x80) + 0x80
+}
+
+/// Evaluate one combiner channel `(A − B) * C + D` with the RDP's fixed-point
+/// rules: A/B/D through [`special_expand`], C a plain 9-bit value, a `+0x80`
+/// rounding bias applied before the `>> 8`, and D added afterwards, unscaled
+/// (ParaLLEl-RDP `combiner_equation`). No clamp here — that is per cycle.
+const fn combine_channel(a: i32, b: i32, c: i32, d: i32) -> i32 {
+    let color = (special_expand(a) - special_expand(b)) * sext9(c) + 0x80;
+    (color >> 8) + special_expand(d)
+}
+
+/// Clamp a combiner result to `[0, 255]` with the RDP's 9-bit fold — the
+/// `-0x80 / sext9 / +0x80` before the clamp is what makes 256–383 saturate and
+/// 384–511 wrap toward 0 (ParaLLEl-RDP `clamp_9bit_notrunc`, `clamping.h`).
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn clamp_9bit(color: i32) -> u8 {
+    special_expand(color).clamp(0, 0xFF) as u8
+}
+
+/// The combiner's "1" input — `0x100` in the internal `.8` representation, not
+/// `0xFF` (N64brew *…/Commands* §0x3C).
+const COMBINER_ONE: i16 = 0x100;
+
+/// The RGB `A` (muladd) input for channel `ch`. Table: 0 Combined, 1 Texel0,
+/// 2 Texel1, 3 Prim, 4 Shade, 5 Env, 6 One, 7 Noise (R-10 → 0), 8+ Zero.
+fn rgb_input_a(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
+    match sel {
+        0 => i16::from(inp.combined[ch]),
+        1 => i16::from(inp.texel0[ch]),
+        2 => i16::from(inp.texel1[ch]),
+        3 => i16::from(inp.prim[ch]),
+        4 => i16::from(inp.shade[ch]),
+        5 => i16::from(inp.env[ch]),
+        6 => COMBINER_ONE,
+        _ => 0, // 7 Noise + 8+ Zero — R-10
+    }
+}
+
+/// The RGB `B` (mulsub) input. Same as `A` except 6/7 are KeyCenter/ConvertK4
+/// (both R-10 → 0), so 6+ reads as zero.
+fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
+    match sel {
+        0 => i16::from(inp.combined[ch]),
+        1 => i16::from(inp.texel0[ch]),
+        2 => i16::from(inp.texel1[ch]),
+        3 => i16::from(inp.prim[ch]),
+        4 => i16::from(inp.shade[ch]),
+        5 => i16::from(inp.env[ch]),
+        _ => 0, // 6 KeyCenter, 7 ConvertK4 — R-10; 8+ Zero
+    }
+}
+
+/// The RGB `C` (mul) input (5-bit table). Alpha-channel inputs (7–12) tap the
+/// alpha of the corresponding signal; the key/LOD/convert inputs are R-10 → 0.
+fn rgb_input_c(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
+    match sel {
+        0 => i16::from(inp.combined[ch]),
+        1 => i16::from(inp.texel0[ch]),
+        2 => i16::from(inp.texel1[ch]),
+        3 => i16::from(inp.prim[ch]),
+        4 => i16::from(inp.shade[ch]),
+        5 => i16::from(inp.env[ch]),
+        7 => i16::from(inp.combined[3]),
+        8 => i16::from(inp.texel0[3]),
+        9 => i16::from(inp.texel1[3]),
+        10 => i16::from(inp.prim[3]),
+        11 => i16::from(inp.shade[3]),
+        12 => i16::from(inp.env[3]),
+        _ => 0, // 6 KeyScale, 13 LODFrac, 14 PrimLODFrac, 15 ConvertK5 — R-10; 16+ Zero
+    }
+}
+
+/// The RGB `D` (add) input (3-bit table): 0 Combined … 5 Env, 6 One, 7 Zero.
+fn rgb_input_d(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
+    match sel {
+        0 => i16::from(inp.combined[ch]),
+        1 => i16::from(inp.texel0[ch]),
+        2 => i16::from(inp.texel1[ch]),
+        3 => i16::from(inp.prim[ch]),
+        4 => i16::from(inp.shade[ch]),
+        5 => i16::from(inp.env[ch]),
+        6 => COMBINER_ONE,
+        _ => 0, // 7 Zero
+    }
+}
+
+/// The alpha `A`/`B`/`D` input (3-bit table): 0 combined-alpha … 5 env-alpha,
+/// 6 one, 7 zero.
+fn alpha_input_abd(sel: u8, inp: &CombinerInputs) -> i16 {
+    match sel {
+        0 => i16::from(inp.combined[3]),
+        1 => i16::from(inp.texel0[3]),
+        2 => i16::from(inp.texel1[3]),
+        3 => i16::from(inp.prim[3]),
+        4 => i16::from(inp.shade[3]),
+        5 => i16::from(inp.env[3]),
+        6 => COMBINER_ONE,
+        _ => 0, // 7 Zero
+    }
+}
+
+/// The alpha `C` (mul) input (3-bit table): 0 lod-frac (R-10 → 0), 1 texel0-alpha,
+/// … 5 env-alpha, 6 prim-lod-frac (R-10 → 0), 7 zero.
+fn alpha_input_c(sel: u8, inp: &CombinerInputs) -> i16 {
+    match sel {
+        1 => i16::from(inp.texel0[3]),
+        2 => i16::from(inp.texel1[3]),
+        3 => i16::from(inp.prim[3]),
+        4 => i16::from(inp.shade[3]),
+        5 => i16::from(inp.env[3]),
+        _ => 0, // 0 LODFrac, 6 PrimLODFrac — R-10; 7 Zero
+    }
+}
+
 /// Wrap one raw texture coordinate (`s10.5` fixed point) into a tile-relative
 /// integer texel, applying the tile's shift, tile-origin subtraction, mirror, and
 /// mask — the COPY-mode order (no clamp). Matches the ParaLLEl-RDP reference
@@ -185,8 +309,66 @@ const fn bytes_per_texel(size: u8) -> Option<u32> {
 }
 const OP_FILL_RECTANGLE: u8 = 0x36;
 const OP_SET_FILL_COLOR: u8 = 0x37;
+const OP_SET_PRIM_COLOR: u8 = 0x3A;
+const OP_SET_ENV_COLOR: u8 = 0x3B;
+const OP_SET_COMBINE_MODE: u8 = 0x3C;
 const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
 const OP_SET_COLOR_IMAGE: u8 = 0x3F;
+
+/// One cycle of the colour combiner.
+///
+/// The four RGB input selects and the four alpha input selects for
+/// `(A − B) * C + D` (`Set Combine Mode`, 0x3C). A/B/D RGB are 4-bit (D 3-bit),
+/// C RGB is 5-bit; the alpha selects are all 3-bit.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CombineCycle {
+    /// RGB `A` (muladd) select.
+    pub rgb_a: u8,
+    /// RGB `B` (mulsub) select.
+    pub rgb_b: u8,
+    /// RGB `C` (mul) select.
+    pub rgb_c: u8,
+    /// RGB `D` (add) select.
+    pub rgb_d: u8,
+    /// Alpha `A` select.
+    pub a_a: u8,
+    /// Alpha `B` select.
+    pub a_b: u8,
+    /// Alpha `C` select.
+    pub a_c: u8,
+    /// Alpha `D` select.
+    pub a_d: u8,
+}
+
+/// The two-cycle colour-combiner configuration (`Set Combine Mode`, 0x3C).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CombineMode {
+    /// Cycle-0 selects (the first stage in 2-cycle mode).
+    pub cyc0: CombineCycle,
+    /// Cycle-1 selects (the only stage used in 1-cycle mode).
+    pub cyc1: CombineCycle,
+}
+
+/// The resolved per-pixel combiner input signals (each RGBA8888).
+///
+/// The combiner muxes these by the [`CombineCycle`] selects. Exotic inputs
+/// (noise, LOD frac, the key/convert constants) are not modelled yet (**open
+/// residual R-10**) and read as zero.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CombinerInputs {
+    /// The previous cycle's output (cycle 0's result feeds cycle 1's `Combined`).
+    pub combined: [u8; 4],
+    /// Texel from tile 0.
+    pub texel0: [u8; 4],
+    /// Texel from tile 1.
+    pub texel1: [u8; 4],
+    /// The primitive colour (`Set Prim Color`, 0x3A).
+    pub prim: [u8; 4],
+    /// The interpolated shade colour.
+    pub shade: [u8; 4],
+    /// The environment colour (`Set Env Color`, 0x3B).
+    pub env: [u8; 4],
+}
 
 /// TMEM size in bytes — 4 KiB of on-chip texture memory.
 ///
@@ -324,6 +506,12 @@ pub struct Rdp {
     pub tex_image_addr: u32,
     /// The eight tile descriptors (`Set Tile` / `Set Tile Size` / the loaders).
     pub tiles: [TileDescriptor; 8],
+    /// The colour-combiner configuration (`Set Combine Mode`, 0x3C).
+    pub combine: CombineMode,
+    /// The primitive colour, RGBA8888 (`Set Prim Color`, 0x3A).
+    pub prim_color: u32,
+    /// The environment colour, RGBA8888 (`Set Env Color`, 0x3B).
+    pub env_color: u32,
     /// On-chip texture memory (4 KiB). **Lazily allocated**: `None` until the
     /// first byte is written, and read as all-zero while `None`. This keeps
     /// [`Rdp`]'s `Default` cheap, which matters because `Bus::rdp_tick` does a
@@ -518,6 +706,9 @@ impl Rdp {
                 self.color_image = lo & 0x00FF_FFFF;
             }
             OP_SET_FILL_COLOR => self.fill_color = lo,
+            OP_SET_PRIM_COLOR => self.prim_color = lo,
+            OP_SET_ENV_COLOR => self.env_color = lo,
+            OP_SET_COMBINE_MODE => self.set_combine_mode(hi, lo),
             OP_SET_SCISSOR => {
                 // upper-left x/y = hi 23:12 / 11:0, lower-right x/y = lo 23:12 /
                 // 11:0 (all u10.2). The field/odd interlace bits (lo 25/24) are
@@ -861,6 +1052,70 @@ impl Rdp {
                 self.fill_pixel(row_addr, x as u32, bpp, bus);
             }
         }
+    }
+
+    /// Apply a `Set Combine Mode` (0x3C): decode the 16 mux input selects for both
+    /// cycles into [`CombineMode`] (N64brew *…/Commands* §0x3C, matched to the
+    /// ParaLLEl-RDP field layout).
+    fn set_combine_mode(&mut self, hi: u32, lo: u32) {
+        self.combine.cyc0 = CombineCycle {
+            rgb_a: ((hi >> 20) & 0xF) as u8,
+            rgb_c: ((hi >> 15) & 0x1F) as u8,
+            rgb_b: ((lo >> 28) & 0xF) as u8,
+            rgb_d: ((lo >> 15) & 0x7) as u8,
+            a_a: ((hi >> 12) & 0x7) as u8,
+            a_c: ((hi >> 9) & 0x7) as u8,
+            a_b: ((lo >> 12) & 0x7) as u8,
+            a_d: ((lo >> 9) & 0x7) as u8,
+        };
+        self.combine.cyc1 = CombineCycle {
+            rgb_a: ((hi >> 5) & 0xF) as u8,
+            rgb_c: (hi & 0x1F) as u8,
+            rgb_b: ((lo >> 24) & 0xF) as u8,
+            rgb_d: ((lo >> 6) & 0x7) as u8,
+            a_a: ((lo >> 21) & 0x7) as u8,
+            a_c: ((lo >> 18) & 0x7) as u8,
+            a_b: ((lo >> 3) & 0x7) as u8,
+            a_d: (lo & 0x7) as u8,
+        };
+    }
+
+    /// Evaluate the colour combiner for one cycle, returning the RGBA8888 output.
+    ///
+    /// Muxes the [`CombinerInputs`] by the cycle's selects into `(A − B) * C + D`
+    /// per channel (`combine_channel`), clamps to `[0, 255]` (`clamp_9bit`), and
+    /// does the same for alpha. The RGB and alpha combiners use different
+    /// input tables (N64brew *…/Commands* §0x3C). Exotic inputs (noise, LOD frac,
+    /// key/convert constants) are **open residual R-10** and read as zero.
+    #[must_use]
+    pub fn combine_cycle(cfg: CombineCycle, inp: &CombinerInputs) -> [u8; 4] {
+        // RGB: A/B share the muladd/mulsub table, C the wide mul table, D the add.
+        let mut out = [0u8; 4];
+        for (ch, o) in out.iter_mut().enumerate().take(3) {
+            let a = i32::from(rgb_input_a(cfg.rgb_a, inp, ch));
+            let b = i32::from(rgb_input_b(cfg.rgb_b, inp, ch));
+            let c = i32::from(rgb_input_c(cfg.rgb_c, inp, ch));
+            let d = i32::from(rgb_input_d(cfg.rgb_d, inp, ch));
+            *o = clamp_9bit(combine_channel(a, b, c, d));
+        }
+        // Alpha: A/B/D share one 3-bit table; C its own.
+        let a = i32::from(alpha_input_abd(cfg.a_a, inp));
+        let b = i32::from(alpha_input_abd(cfg.a_b, inp));
+        let c = i32::from(alpha_input_c(cfg.a_c, inp));
+        let d = i32::from(alpha_input_abd(cfg.a_d, inp));
+        out[3] = clamp_9bit(combine_channel(a, b, c, d));
+        out
+    }
+
+    /// Evaluate the whole combiner for a pixel: cycle 1 alone in 1-cycle mode, or
+    /// cycle 0 feeding cycle 1's `Combined` input in 2-cycle mode. `two_cycle`
+    /// comes from `Set Other Modes` (T-33-003).
+    #[must_use]
+    pub fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
+        if two_cycle {
+            inp.combined = Self::combine_cycle(self.combine.cyc0, &inp);
+        }
+        Self::combine_cycle(self.combine.cyc1, &inp)
     }
 
     /// Apply a `Set Tile` (0x35): decode the descriptor at `index` (bits 26:24)
@@ -2689,5 +2944,119 @@ mod tests {
         assert!(filled(&bus, 2, 0));
         assert!(filled(&bus, 3, 1));
         assert!(filled(&bus, 3, 3), "x=3 row 3 kept (at the scissor edge)");
+    }
+
+    // ---- T-33-002: the colour combiner ----
+
+    /// **`(A − B) * C + D` matches the hand-computed RDP arithmetic.** The `+0x80`
+    /// rounding before `>> 8`, C's plain 9-bit sign, and D added unscaled.
+    #[test]
+    fn combiner_equation_matches_hand_computed() {
+        // Passthrough C: A=One (0x100), B=0, D=0 -> the result is C.
+        assert_eq!(combine_channel(0x100, 0, 128, 0), 128, "One*C passthrough");
+        assert_eq!(combine_channel(0x100, 0, 255, 0), 255);
+        // Lerp: (200-100)*128/256 + 100 = 50 + 100 = 150.
+        assert_eq!(combine_channel(200, 100, 128, 100), 150);
+        // clamp_9bit folds an over-range result: 300 -> 300-0x80=0x94 -> sext9 stays
+        // positive (0x94<0x100) -> +0x80 = 0x114 -> clamp to 0xFF.
+        assert_eq!(clamp_9bit(300), 0xFF, "over-range saturates");
+        assert_eq!(clamp_9bit(-10), 0, "negative clamps to 0");
+    }
+
+    /// **`Set Combine Mode` (0x3C) decodes all 16 selects.** Each field is seeded
+    /// distinctly so a swapped bit range surfaces as a wrong select.
+    #[test]
+    fn set_combine_mode_decodes_selects() {
+        // Each field gets a distinct value in its own (non-overlapping) bit range.
+        let mut rdp = Rdp::new();
+        let hi = (0xA << 20) | (0x15 << 15) | (1 << 12) | (2 << 9) | (0xB << 5) | 0x1A;
+        let lo = (3 << 28)
+            | (0xC << 24)
+            | (3 << 21)
+            | (4 << 18)
+            | (5 << 15)
+            | (6 << 12)
+            | (7 << 9)
+            | (1 << 6)
+            | (2 << 3)
+            | 3;
+        rdp.set_combine_mode(hi, lo);
+        assert_eq!(rdp.combine.cyc0.rgb_a, 0xA);
+        assert_eq!(rdp.combine.cyc0.rgb_c, 0x15);
+        assert_eq!(rdp.combine.cyc0.rgb_b, 3);
+        assert_eq!(rdp.combine.cyc0.rgb_d, 5);
+        assert_eq!(rdp.combine.cyc0.a_a, 1);
+        assert_eq!(rdp.combine.cyc0.a_c, 2);
+        assert_eq!(rdp.combine.cyc0.a_b, 6);
+        assert_eq!(rdp.combine.cyc0.a_d, 7);
+        assert_eq!(rdp.combine.cyc1.rgb_a, 0xB);
+        assert_eq!(rdp.combine.cyc1.rgb_c, 0x1A);
+        assert_eq!(rdp.combine.cyc1.rgb_b, 0xC);
+        assert_eq!(rdp.combine.cyc1.rgb_d, 1);
+        assert_eq!(rdp.combine.cyc1.a_a, 3);
+        assert_eq!(rdp.combine.cyc1.a_c, 4);
+        assert_eq!(rdp.combine.cyc1.a_b, 2);
+        assert_eq!(rdp.combine.cyc1.a_d, 3);
+    }
+
+    /// **A one-cycle combiner passes texel0 through.** `A = One`, `B = Zero`,
+    /// `C = Texel0`, `D = Zero` for both RGB and alpha, so the output equals the
+    /// texel — an observable evaluation, seeded so a no-op differs.
+    #[test]
+    fn combine_cycle_passes_texel0_through() {
+        let cfg = CombineCycle {
+            rgb_a: 6, // One
+            rgb_b: 7, // -> Zero
+            rgb_c: 1, // Texel0
+            rgb_d: 7, // Zero
+            a_a: 6,   // One
+            a_b: 7,   // Zero
+            a_c: 1,   // Texel0 alpha
+            a_d: 7,   // Zero
+        };
+        let inp = CombinerInputs {
+            texel0: [10, 20, 30, 40],
+            ..CombinerInputs::default()
+        };
+        assert_eq!(Rdp::combine_cycle(cfg, &inp), [10, 20, 30, 40]);
+    }
+
+    /// **Two-cycle mode chains cycle 0 into cycle 1's `Combined` input.** Cycle 0
+    /// passes texel0 through; cycle 1 selects `Combined` for A (with C=One-ish),
+    /// so the final output reflects cycle 0's result — not cycle 1 reading a stale
+    /// combined value.
+    #[test]
+    fn combine_two_cycle_chains() {
+        let passthrough_texel0 = CombineCycle {
+            rgb_a: 6,
+            rgb_b: 7,
+            rgb_c: 1,
+            rgb_d: 7,
+            a_a: 6,
+            a_b: 7,
+            a_c: 1,
+            a_d: 7,
+        };
+        // Cycle 1: pass the Combined input through (A=One, B=Zero, C=Combined, D=Zero).
+        let passthrough_combined = CombineCycle {
+            rgb_a: 6,
+            rgb_b: 7,
+            rgb_c: 0, // Combined
+            rgb_d: 7,
+            a_a: 6,
+            a_b: 7,
+            a_c: 0, // combined alpha via C? alpha C 0 = lod-frac (0); use D instead
+            a_d: 0, // combined alpha
+        };
+        let mut rdp = Rdp::new();
+        rdp.combine.cyc0 = passthrough_texel0;
+        rdp.combine.cyc1 = passthrough_combined;
+        let inp = CombinerInputs {
+            texel0: [11, 22, 33, 44],
+            ..CombinerInputs::default()
+        };
+        let out = rdp.combine(inp, true);
+        // RGB is cycle0's texel0 passed through cycle1's Combined.
+        assert_eq!(&out[0..3], &[11, 22, 33], "2-cycle chains RGB");
     }
 }
