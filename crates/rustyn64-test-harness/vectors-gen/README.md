@@ -11,6 +11,19 @@ rendered framebuffer as a self-describing `.rvec` vector into
 `../tests/vectors/`. The RustyN64 test harness then replays the *same* command
 stream through its own RDP and asserts a byte-for-byte match.
 
+### `.rvec` format (v1 / v2)
+
+A big-endian header — `"RVEC"`, a version, then `fb_addr`, `width`, `height`,
+`bpp`, `cmd_addr`, `cmd_len`, `fb_len` — followed by the command bytes and the
+golden framebuffer. **v1** (9 header words) stops there. **v2** (11 words) adds
+`preload_addr` and `preload_len` and precedes the command bytes with a **preload
+region**: bytes written into RDRAM before the command list runs, so a `Load Tile`
+has a texture to read. A vector with no preload is emitted as v1, so the
+non-textured vectors stay byte-identical. The preload is a texture in RustyN64's
+big-endian RDRAM layout; the generator writes the same texels into Angrylion's
+RDRAM as 32-bit words (Angrylion's `Load Tile` reads via `RREADIDX32`, no byte
+swap), so both renderers see identical texels.
+
 ## Why the source isn't committed
 
 Angrylion-rdp-plus is under the **non-commercial MAME licence** — it is study-only

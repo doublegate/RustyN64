@@ -20,6 +20,26 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — textured-triangle conformance (v2 `.rvec` preload) + pinned coordinate divergence (Phase 3, T-33-005)
+
+- **The `.rvec` conformance format gains a texture preload region (v2), and the
+  first textured-triangle vector pins a real sampler divergence.** A `Load Tile`
+  reads its texture from RDRAM, which the previous format (cmd + framebuffer only)
+  could not carry; v2 adds an optional `(preload_addr, preload_len)` region written
+  to RDRAM before the command list runs. Both the generator and the replay harness
+  handle it, and the ten existing v1 vectors stay byte-identical. The preload path
+  is verified end-to-end (an all-white texture renders white through Angrylion, and
+  Angrylion's 16-bit `tmem_formatting` loads the ramp with `tmemidx0 = 0xF801`).
+- The new `tex_tri_16` vector (a per-pixel S gradient over an 8-texel ramp, texel0
+  passthrough) is the first to exercise `interpolate_st` against Angrylion — and it
+  **diverges**: RustyN64 samples texel 0 at pixel (2,1) → `0xF801`, but Angrylion's
+  golden is `0x0000`, so its sampler indexes a different texel for the same S. The
+  suspected cause is the texel-coordinate scale (`interpolate_st` uses `v >> 16` for
+  a plain s16.16 integer, but the RDP's texel coordinate is s10.5-based). The vector
+  is committed **`#[ignore]`d** to pin the divergence (ledger R-13, the R-14
+  precedent); root-causing and the fix are the follow-up. A `TEX_BLOCK` generator
+  macro joins `SHADE_BLOCK` / `Z_SUFFIX`.
+
 ### Added — conformance corpus: Gouraud-gradient vector + generator macros (Phase 3, T-33-005)
 
 - **The conformance corpus grows to 10 vectors, and the generator is hardened

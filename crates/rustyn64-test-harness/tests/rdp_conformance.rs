@@ -31,23 +31,32 @@ struct Vector<'a> {
     height: u32,
     bpp: u32,
     cmd_addr: u32,
+    /// Optional RDRAM preload (a texture a `Load Tile` reads), written before the
+    /// command list runs. `(addr, bytes)`; empty when the vector carries none.
+    preload_addr: u32,
+    preload: &'a [u8],
     cmds: &'a [u8],
     golden_fb: &'a [u8],
 }
 
-/// Parse the `.rvec` container: a 9×`u32` big-endian header (magic `"RVEC"`,
-/// version, `fb_addr`, `width`, `height`, `bpp`, `cmd_addr`, `cmd_len`, `fb_len`)
-/// followed by the command bytes and the golden framebuffer bytes.
+/// Parse the `.rvec` container. The big-endian header is `"RVEC"`, a version, then
+/// `fb_addr`, `width`, `height`, `bpp`, `cmd_addr`, `cmd_len`, `fb_len` — **v1** (9
+/// words) stops there; **v2** (11 words) adds `preload_addr`, `preload_len`. The
+/// body is the preload bytes (v2 only), then the command bytes, then the golden
+/// framebuffer bytes.
 fn parse(bytes: &[u8]) -> Vector<'_> {
-    let hdr = 36;
     assert!(
-        bytes.len() >= hdr,
+        bytes.len() >= 36,
         "truncated .rvec: shorter than the header"
     );
     let u32_at =
         |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
     assert_eq!(u32_at(0), 0x5256_4543, "bad magic (expected RVEC)");
-    assert_eq!(u32_at(4), 1, "unexpected vector version");
+    let version = u32_at(4);
+    assert!(
+        version == 1 || version == 2,
+        "unexpected vector version {version}"
+    );
     let fb_addr = u32_at(8);
     let width = u32_at(12);
     let height = u32_at(16);
@@ -55,6 +64,13 @@ fn parse(bytes: &[u8]) -> Vector<'_> {
     let cmd_addr = u32_at(24);
     let cmd_len = u32_at(28) as usize;
     let fb_len = u32_at(32) as usize;
+    // v2 carries a preload region (addr + len) in two extra header words.
+    let (hdr, preload_addr, preload_len) = if version == 2 {
+        assert!(bytes.len() >= 44, "truncated .rvec: v2 header incomplete");
+        (44usize, u32_at(36), u32_at(40) as usize)
+    } else {
+        (36usize, 0u32, 0usize)
+    };
     assert!(
         bpp == 2 || bpp == 4,
         "unsupported bpp {bpp} (expected 2 or 4)"
@@ -70,18 +86,27 @@ fn parse(bytes: &[u8]) -> Vector<'_> {
         .and_then(|n| n.checked_mul(bpp as usize))
         .expect("framebuffer dimensions overflow");
     assert_eq!(fb_len, expected_fb, "fb_len mismatch");
+    let total = hdr
+        .checked_add(preload_len)
+        .and_then(|n| n.checked_add(cmd_len))
+        .and_then(|n| n.checked_add(fb_len))
+        .expect("payload sizes overflow");
     assert!(
-        bytes.len() >= hdr + cmd_len + fb_len,
+        bytes.len() >= total,
         "truncated .rvec: header declares more payload than the file holds"
     );
+    let preload = &bytes[hdr..hdr + preload_len];
+    let cmd_start = hdr + preload_len;
     Vector {
         fb_addr,
         width,
         height,
         bpp,
         cmd_addr,
-        cmds: &bytes[hdr..hdr + cmd_len],
-        golden_fb: &bytes[hdr + cmd_len..hdr + cmd_len + fb_len],
+        preload_addr,
+        preload,
+        cmds: &bytes[cmd_start..cmd_start + cmd_len],
+        golden_fb: &bytes[cmd_start + cmd_len..cmd_start + cmd_len + fb_len],
     }
 }
 
@@ -94,11 +119,18 @@ fn replay(v: &Vector<'_>) -> Vec<u8> {
     let base = v.cmd_addr as usize;
     let fb = v.fb_addr as usize;
     let fb_len = (v.width * v.height * v.bpp) as usize;
+    let pre = v.preload_addr as usize;
     assert!(
-        base + v.cmds.len() <= bus.rdram.len() && fb + fb_len <= bus.rdram.len(),
+        base + v.cmds.len() <= bus.rdram.len()
+            && fb + fb_len <= bus.rdram.len()
+            && pre + v.preload.len() <= bus.rdram.len(),
         "vector addresses exceed RDRAM ({} bytes)",
         bus.rdram.len()
     );
+    // Place the optional texture preload (big-endian, RustyN64's RDRAM layout) so a
+    // Load Tile in the command list reads it, exactly as the generator placed it in
+    // Angrylion's RDRAM before rendering the golden.
+    bus.rdram[pre..pre + v.preload.len()].copy_from_slice(v.preload);
     bus.rdram[base..base + v.cmds.len()].copy_from_slice(v.cmds);
 
     // Point the DP FIFO at the list and drain it (one command per tick).
@@ -252,4 +284,26 @@ fn shade_grad_tri_32_matches_angrylion() {
         "shade_grad_tri_32",
         include_bytes!("vectors/shade_grad_tri_32.rvec"),
     );
+}
+
+/// A 1-cycle **textured** triangle (16-bit RGBA5551) — the first vector to validate
+/// texture sampling against Angrylion. An 8×1 ramp texture is preloaded into RDRAM
+/// (v2 `.rvec` preload), loaded into TMEM by `Load Tile`, and sampled across the
+/// triangle by a per-x S gradient (one texel per pixel), passed straight through the
+/// combiner. Exercises Set Texture Image / Set Tile / Load Tile / `interpolate_st` /
+/// `fetch_texel` end-to-end.
+///
+/// **`#[ignore]`d — pins a known texture-coordinate divergence (WIP).** The v2
+/// `.rvec` preload plumbing is verified: Angrylion loads the 8-texel ramp into TMEM
+/// correctly (its 16-bit `tmem_formatting` places `tmemidx0 = 0xF801`). RustyN64
+/// samples texel 0 at (2,1) → `0xF801`; Angrylion's golden is `0x0000`, so its
+/// sampler indexes a different (unloaded) texel. Suspected cause: the texel
+/// coordinate scale — `interpolate_st` takes the integer texel as `v >> 16` (plain
+/// s16.16), but the RDP's texel coordinate is s10.5-based. Root-causing (a
+/// coordinate sweep / Angrylion sampler trace) and the fix are the next step; the
+/// vector stays committed and ignored to pin the divergence.
+#[test]
+#[ignore = "WIP: texture-coordinate scale divergence (interpolate_st v>>16 vs RDP s10.5)"]
+fn tex_tri_16_matches_angrylion() {
+    assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
 }
