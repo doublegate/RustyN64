@@ -159,18 +159,19 @@ fn z_decompress(z: u16) -> i32 {
 /// Inverse of [`z_decompress`]; `exponent` is derived from the leading zeros of
 /// the inverted depth so precision concentrates near the far plane.
 ///
-/// Verified by the [`z_decompress`] round-trip test; the Z-buffer writeback that
-/// calls it in the render path lands with the per-pixel pipeline (PR-B).
-#[allow(
-    dead_code,
-    reason = "compress half of the Z codec pair; used by the round-trip test now and the PR-B Z-buffer writeback"
-)]
+/// Verified by the [`z_decompress`] round-trip test and exercised by
+/// [`Rdp::zbuffer_write`], which compresses the computed 18-bit depth before it is
+/// packed into the Z buffer.
 #[allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     reason = "the packed result is 0..=0x3FFF, always a valid non-negative u16"
 )]
 fn z_compress(z: i32) -> u16 {
+    // Clamp to the 18-bit UNORM domain so the `0x3FFFF - z` subtraction and the
+    // `z >> shift` mantissa are well-defined for any computed depth (parallel-rdp
+    // clamps `z` this way before writeback, `clamping.h`).
+    let z = z.clamp(0, 0x3_FFFF);
     let inv_z = (0x3_FFFF - z).max(1);
     let exponent = (17 - find_msb(inv_z)).clamp(0, 7);
     let shift = (6 - exponent).max(0);
@@ -1563,6 +1564,48 @@ impl Rdp {
             blend_shift,
             coverage_count,
         }
+    }
+
+    /// Byte address of the 16-bit Z-buffer entry for pixel `(x, y)`: entries are
+    /// 16-bit, based at `z_image`. The row stride reuses `color_image_width` — the
+    /// N64 RDP addresses the depth buffer with the *colour* buffer's width (there is
+    /// no separate depth-image width register), so the two buffers share a geometry.
+    fn zbuffer_addr(&self, x: u32, y: u32) -> u32 {
+        let index = y
+            .wrapping_mul(u32::from(self.color_image_width))
+            .wrapping_add(x);
+        self.z_image.wrapping_add(index.wrapping_mul(2))
+    }
+
+    /// Read the Z-buffer entry at `(x, y)` as `(compressed_z, dz)`.
+    ///
+    /// The 16-bit halfword holds the 14-bit compressed `z` in bits 15:2 and the
+    /// **high** two bits of the 4-bit `dz` in bits 1:0; the **low** two bits of
+    /// `dz` come from the RDRAM hidden bits — matching ParaLLEl-RDP's
+    /// `load_vram_depth`. `dz` is returned as the 4-bit value `0..=15`.
+    #[must_use]
+    pub fn zbuffer_read<B: VideoBus>(&self, x: u32, y: u32, bus: &B) -> (u16, u8) {
+        let addr = self.zbuffer_addr(x, y);
+        let word = (u16::from(bus.rdram_read(addr)) << 8)
+            | u16::from(bus.rdram_read(addr.wrapping_add(1)));
+        let hidden = bus.rdram_read_hidden(addr) & 0x3;
+        let compressed_z = word >> 2;
+        let dz = (((word & 0x3) as u8) << 2) | hidden;
+        (compressed_z, dz)
+    }
+
+    /// Write the Z-buffer entry at `(x, y)`: compress the 18-bit `z`, pack it with
+    /// `dz`'s high two bits into the halfword, and store `dz`'s low two bits in the
+    /// RDRAM hidden bits — matching ParaLLEl-RDP's `store_vram_depth`. `dz` is the
+    /// 4-bit compressed delta (`0..=15`); `z` is the 18-bit UNORM depth.
+    pub fn zbuffer_write<B: VideoBus>(&self, x: u32, y: u32, z: i32, dz: u8, bus: &mut B) {
+        let addr = self.zbuffer_addr(x, y);
+        let dz = dz & 0xf;
+        let word = (z_compress(z) << 2) | u16::from(dz >> 2);
+        let bytes = word.to_be_bytes();
+        bus.rdram_write(addr, bytes[0]);
+        bus.rdram_write(addr.wrapping_add(1), bytes[1]);
+        bus.rdram_write_hidden(addr, dz & 0x3);
     }
 
     /// Apply a `Set Tile` (0x35): decode the descriptor at `index` (bits 26:24)
@@ -3832,5 +3875,60 @@ mod tests {
             r.blend_shift[0] <= 4 && r.blend_shift[1] <= 4,
             "invariant holds"
         );
+    }
+
+    /// A test bus that models the RDRAM hidden bits (one 2-bit value per 16-bit
+    /// halfword), so the full 4-bit `dz` round-trip can be exercised.
+    struct ZBufBus {
+        mem: Vec<u8>,
+        hidden: Vec<u8>,
+    }
+    impl RdramBus for ZBufBus {
+        fn rdram_read(&self, addr: u32) -> u8 {
+            self.mem.get(addr as usize).copied().unwrap_or(0)
+        }
+        fn rdram_write(&mut self, addr: u32, val: u8) {
+            if let Some(b) = self.mem.get_mut(addr as usize) {
+                *b = val;
+            }
+        }
+        fn rdram_read_hidden(&self, addr: u32) -> u8 {
+            self.hidden.get((addr >> 1) as usize).copied().unwrap_or(0) & 0x3
+        }
+        fn rdram_write_hidden(&mut self, addr: u32, val: u8) {
+            if let Some(b) = self.hidden.get_mut((addr >> 1) as usize) {
+                *b = val & 0x3;
+            }
+        }
+    }
+    impl VideoBus for ZBufBus {
+        fn raise_dp_interrupt(&mut self) {}
+    }
+
+    /// **The Z buffer round-trips the compressed z and the full 4-bit dz.** The dz
+    /// splits across the halfword's low 2 bits and the hidden bits, so a value like
+    /// `0xB` (`0b1011`) only survives if the hidden path carries the low 2 bits —
+    /// without it, `read` would return `0b1000` (`8`). `0x30000` is a canonical
+    /// depth that `z_compress`/`z_decompress` reproduce exactly.
+    #[test]
+    fn zbuffer_round_trips_z_and_dz() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        let mut rdp = Rdp::new();
+        rdp.z_image = 0x200;
+        rdp.color_image_width = 8;
+        rdp.zbuffer_write(3, 2, 0x30000, 0xB, &mut bus);
+        let (cz, dz) = rdp.zbuffer_read(3, 2, &bus);
+        assert_eq!(cz, z_compress(0x30000), "compressed z stored and loaded");
+        assert_eq!(
+            z_decompress(cz),
+            0x30000,
+            "canonical depth decompresses exactly"
+        );
+        assert_eq!(dz, 0xB, "full 4-bit dz survives via halfword + hidden bits");
+        // A different pixel is untouched (independent entry).
+        assert_eq!(rdp.zbuffer_read(4, 2, &bus), (0, 0));
     }
 }

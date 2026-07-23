@@ -97,6 +97,13 @@ pub struct Bus {
     /// Main system RDRAM (boxed slice: 8 MiB, heap-allocated without a stack
     /// temporary).
     pub rdram: alloc::boxed::Box<[u8]>,
+    /// The RDRAM "hidden" bits: the 9th bit RDRAM carries per byte, used by the
+    /// RDP Z-buffer for the low 2 bits of each pixel's `dz`. Two bits per 16-bit
+    /// halfword, **bit-packed** four halfwords to a byte (`RDRAM_SIZE / 8` = 1 MiB
+    /// for 8 MiB of RDRAM). Lazily allocated — `None` until the first hidden write,
+    /// since only Z-buffered rendering touches it (reads return 0, matching the
+    /// power-on state).
+    pub rdram_hidden: Option<alloc::boxed::Box<[u8]>>,
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
@@ -170,6 +177,7 @@ impl Default for Bus {
             pi_write_latch: 0,
             pi_write_countdown: 0,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
+            rdram_hidden: None,
             rsp: Rsp::new(),
             rdp: Rdp::new(),
             vi: Vi::new(),
@@ -1051,6 +1059,31 @@ impl RdramBus for Bus {
             self.rdram[off] = val;
         }
     }
+
+    fn rdram_read_hidden(&self, addr: u32) -> u8 {
+        // Two bits per 16-bit halfword, packed four halfwords to a byte. `None`
+        // (never written) reads 0.
+        match (&self.rdram_hidden, Self::rdram_offset(addr)) {
+            (Some(hidden), Some(off)) => {
+                let halfword = off >> 1;
+                let shift = (halfword & 3) * 2;
+                (hidden[halfword >> 2] >> shift) & 0x3
+            }
+            _ => 0,
+        }
+    }
+
+    fn rdram_write_hidden(&mut self, addr: u32, val: u8) {
+        if let Some(off) = Self::rdram_offset(addr) {
+            let hidden = self
+                .rdram_hidden
+                .get_or_insert_with(|| alloc::vec![0u8; RDRAM_SIZE / 8].into_boxed_slice());
+            let halfword = off >> 1;
+            let shift = (halfword & 3) * 2;
+            let byte = &mut hidden[halfword >> 2];
+            *byte = (*byte & !(0x3 << shift)) | ((val & 0x3) << shift);
+        }
+    }
 }
 
 // --- The RDP's narrow view. ---
@@ -1080,6 +1113,28 @@ mod tests {
         let mut bus = Bus::new();
         CpuBus::write_u8(&mut bus, 0x0000_1234, 0xAB);
         assert_eq!(CpuBus::read_u8(&mut bus, 0x0000_1234), 0xAB);
+    }
+
+    #[test]
+    fn rdram_hidden_bits_lazy_round_trip_and_masked() {
+        let mut bus = Bus::new();
+        // Unallocated at power-on; reads back clear.
+        assert!(bus.rdram_hidden.is_none());
+        assert_eq!(bus.rdram_read_hidden(0x1000), 0);
+        // First write allocates and stores the 2-bit value.
+        bus.rdram_write_hidden(0x1000, 0x3);
+        assert!(bus.rdram_hidden.is_some(), "allocated on first write");
+        assert_eq!(bus.rdram_read_hidden(0x1000), 0x3);
+        // Bit-packed four halfwords to a byte: the adjacent halfword shares the
+        // byte but not the bits, so writing it must not clobber the first.
+        assert_eq!(bus.rdram_read_hidden(0x1002), 0);
+        bus.rdram_write_hidden(0x1002, 0x2);
+        assert_eq!(bus.rdram_read_hidden(0x1002), 0x2);
+        assert_eq!(bus.rdram_read_hidden(0x1000), 0x3, "neighbour unchanged");
+        // Only the low 2 bits are kept.
+        bus.rdram_write_hidden(0x1000, 0x5);
+        assert_eq!(bus.rdram_read_hidden(0x1000), 0x1);
+        assert_eq!(bus.rdram_read_hidden(0x1002), 0x2, "still independent");
     }
 
     #[test]
