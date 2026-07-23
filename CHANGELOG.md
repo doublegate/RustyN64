@@ -20,6 +20,21 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the first textured triangle (Phase 3, T-33-004 PR-B part 2b-texture)
+
+- **The RDP samples textures on triangles.** `Fill Textured Triangle` (opcode bit
+  57) now decodes the 8-word texture coefficient block (`decode_texture`: `S`/`T`
+  base + per-x/per-major-edge deltas, `s16.16`), and each pixel's combiner input
+  `texel0` comes from `fetch_texel` at the interpolated coordinate (`interpolate_st`),
+  sampled from tile 0. Works standalone and combined with shade/depth. Verified by a
+  textured-triangle test that samples a loaded RGBA16 texel (`0xF801` → red) through a
+  texel-passthrough combiner, writing `0xFF0000FF` rather than the FILL register.
+  Scope (ledger R-13): the coordinate uses the **non-perspective** path
+  (`no_perspective_divide`, integer `s16.16 >> 16`) — the perspective divide
+  (`W` reciprocal LUT) and the exact tile shift/clamp/mask for triangle coordinates
+  are the next slice; the flat-coordinate case (which this test exercises) is
+  scale-independent and correct. Oracle stays 93.
+
 ### Added — the first shaded triangle (Phase 3, T-33-004 PR-B part 2b)
 
 - **The RDP renders shaded triangles through the colour combiner.** `Fill Shaded

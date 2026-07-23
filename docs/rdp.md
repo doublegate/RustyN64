@@ -476,8 +476,22 @@ shade, not the FILL register — the combiner's first runtime caller.
 
 This applies standalone and combined with the depth test. Validated by a hand-computed
 `decode_shade`/`interpolate_shade` test and a shaded-triangle test that renders the combiner output
-(not the FILL colour). **This closes the R-9 flat-fill for shaded triangles.** Texture (texel0/1) and
-the memory-read blender are the next slices; the oracle stays **93**.
+(not the FILL colour). **This closes the R-9 flat-fill for shaded triangles.** The oracle stays **93**.
+
+### The first textured triangle (T-33-004, PR-B part 2b-texture)
+
+`Fill Textured Triangle` (opcode bit 57) samples a tile per pixel into the combiner's `texel0`.
+
+- **Decode.** `decode_texture` reads the 8-word texture block (`S`/`T` base + per-x/per-major-edge
+  deltas, `s16.16`; `W` is the deferred perspective term) into `TexSetup`.
+- **Sample and combine.** `interpolate_st` gives the per-pixel coordinate (the **non-perspective**
+  path — the integer part of the interpolated `s16.16`); `combined_color` samples tile 0 with
+  `fetch_texel` and runs the combiner (with any shade). Works standalone and with shade/depth.
+
+Validated by a textured-triangle test that samples a loaded RGBA16 texel through a texel-passthrough
+combiner. Scope (**open residual R-13**): the **perspective divide** (the `W` reciprocal LUT) and the
+exact tile shift/clamp/mask for triangle coordinates are the next slice; the flat-coordinate case is
+scale-independent and correct. The oracle stays **93**.
 
 ## State
 

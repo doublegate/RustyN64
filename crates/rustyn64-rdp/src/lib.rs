@@ -271,6 +271,28 @@ fn interpolate_shade(
     out
 }
 
+/// Interpolate the per-pixel texture coordinate `(s, t)` for pixel `(x, y)` from a
+/// triangle's texture coefficients — the **non-perspective** path
+/// (`no_perspective_divide(stw >> 16)`, `interpolation.h`/`perspective.h`): walk
+/// the `s16.16` `S`/`T` by `de` down the scanline and `dx` across, then take the
+/// integer part (`>> 16`) as the texel coordinate. The `W` perspective divide is
+/// the deferred perspective slice; the returned coords wrap into `fetch_texel`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "base_x is in range for the cast; the texel coord wraps into fetch_texel"
+)]
+fn interpolate_st(tex: &TexSetup, major_x: i64, y: i32, y_base: i32, x: i32) -> [u32; 2] {
+    let base_x = (major_x >> 16) as i32;
+    let mut st = [0u32; 2];
+    for (c, o) in st.iter_mut().enumerate() {
+        let scan = tex.base[c].wrapping_add(tex.de[c].wrapping_mul(y.wrapping_sub(y_base)));
+        let v = scan.wrapping_add((tex.dx[c] & !0x1f).wrapping_mul(x.wrapping_sub(base_x)));
+        *o = (v >> 16) as u32;
+    }
+    st
+}
+
 /// The RDP's asymmetric 9-bit expand for the combiner's A/B/D inputs: subtract
 /// the 0x80 bias, sign-extend to 9 bits, add the bias back (ParaLLEl-RDP
 /// `special_expand`, `combiner.h`). The multiplier C uses a plain [`sext9`].
@@ -632,6 +654,16 @@ struct ShadeSetup {
     base: [i32; 4],
     dx: [i32; 4],
     de: [i32; 4],
+}
+
+/// The decoded per-triangle texture setup (S/T only; the `W` perspective term is
+/// the deferred perspective slice). `base`/`dx`/`de` are the `s16.16` S/T base at
+/// the top vertex and its per-x and per-major-edge deltas.
+#[derive(Debug, Default, Clone, Copy)]
+struct TexSetup {
+    base: [i32; 2],
+    dx: [i32; 2],
+    de: [i32; 2],
 }
 
 /// Unpack an RGBA8888 register word into `[r, g, b, a]` bytes.
@@ -1381,6 +1413,10 @@ impl Rdp {
         // combiner fed the interpolated shade, not the FILL register (T-33-004
         // PR-B 2b — the first shaded triangle).
         let shade_setup = Self::decode_shade(hi, cmd_base, bus);
+        // Texture block (bit 57): the combiner samples tile 0 at the interpolated
+        // (non-perspective) coordinate. The perspective divide is a later slice.
+        let tex_setup = Self::decode_texture(hi, cmd_base, bus);
+        let has_color = shade_setup.is_some() || tex_setup.is_some();
         let y_base = yh >> 2;
 
         for line in start_line..=end_line {
@@ -1436,12 +1472,20 @@ impl Rdp {
                     y_base,
                     &z,
                     shade_setup.as_ref(),
+                    tex_setup.as_ref(),
                     bus,
                 );
-            } else if let Some(shade) = shade_setup.as_ref() {
+            } else if has_color {
                 #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
                 for x in x0..=x1 {
-                    let color = self.shaded_color(shade, major_x, line, y_base, x);
+                    let color = self.combined_color(
+                        shade_setup.as_ref(),
+                        tex_setup.as_ref(),
+                        major_x,
+                        line,
+                        y_base,
+                        x,
+                    );
                     Self::write_pixel(row_addr, x as u32, bpp, color, bus);
                 }
             } else {
@@ -1552,26 +1596,63 @@ impl Rdp {
         }
     }
 
-    /// Compute a shaded pixel's colour: interpolate the shade, run it through the
-    /// combiner (with the prim/env registers), and return the RGBA8888 result. The
-    /// two-cycle mode comes from `Set Other Modes`; texture (texel0/1) is part 2b's
-    /// texture slice and reads as zero here.
-    fn shaded_color(
+    /// Decode the 8-word texture coefficient block of a `Fill Triangle` (present
+    /// when bit 57 is set) into [`TexSetup`]. It follows the 4-word base plus the
+    /// shade block (if bit 58 set), before the z block. Each word packs `S`/`T`/`W`
+    /// into bits 63:48/47:32/31:16 (`s16.16`); this slice keeps only `S`/`T` (both
+    /// in the hi u32) — the `W` perspective term is the deferred perspective slice.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "the s16.16 coordinate is the raw (int << 16 | frac) bits reinterpreted"
+    )]
+    fn decode_texture<B: VideoBus>(hi: u32, cmd_base: u32, bus: &B) -> Option<TexSetup> {
+        if (hi >> 25) & 1 == 0 {
+            return None;
+        }
+        let has_shade = (hi >> 26) & 1;
+        let ta = cmd_base.wrapping_add((4 + 8 * has_shade) * 8);
+        let w = |word: u32| bus.rdram_read_u32(ta.wrapping_add(word * 4));
+        // S and T are both in the hi u32 of each 64-bit word: S at bits 31:16, T at
+        // 15:0. `c == 0` -> S (shift 16), `c == 1` -> T (shift 0).
+        let field = |u32_word: u32, c: usize| (w(u32_word) >> (16 * (1 - c as u32))) & 0xFFFF;
+        let assemble =
+            |iw: u32, fw: u32, c: usize| ((field(iw * 2, c) << 16) | field(fw * 2, c)) as i32;
+        let mut tex = TexSetup::default();
+        for c in 0..2 {
+            tex.base[c] = assemble(0, 2, c); // int word 0, frac word 2
+            tex.dx[c] = assemble(1, 3, c); // per-x
+            tex.de[c] = assemble(4, 6, c); // per-major-edge
+        }
+        Some(tex)
+    }
+
+    /// Compute a pixel's colour through the combiner from the interpolated shade
+    /// and/or sampled texel (plus the prim/env registers). `shade`/`tex` are the
+    /// decoded setups, `None` when that attribute is absent. The two-cycle mode
+    /// comes from `Set Other Modes`. Texture uses the non-perspective coordinate
+    /// (`interpolate_st`) sampled from tile 0.
+    fn combined_color(
         &self,
-        shade: &ShadeSetup,
+        shade: Option<&ShadeSetup>,
+        tex: Option<&TexSetup>,
         major_x: i64,
         line: i32,
         y_base: i32,
         x: i32,
     ) -> [u8; 4] {
-        let shade_rgba =
-            interpolate_shade(&shade.base, &shade.dx, &shade.de, major_x, line, y_base, x);
-        let inp = CombinerInputs {
-            shade: shade_rgba,
+        let mut inp = CombinerInputs {
             prim: unpack_rgba(self.prim_color),
             env: unpack_rgba(self.env_color),
             ..CombinerInputs::default()
         };
+        if let Some(shade) = shade {
+            inp.shade =
+                interpolate_shade(&shade.base, &shade.dx, &shade.de, major_x, line, y_base, x);
+        }
+        if let Some(tex) = tex {
+            let [s, t] = interpolate_st(tex, major_x, line, y_base, x);
+            inp.texel0 = self.fetch_texel(&self.tiles[0], s, t);
+        }
         self.combine(inp, self.other_modes.cycle_type == 1)
     }
 
@@ -1602,6 +1683,7 @@ impl Rdp {
         y_base: i32,
         z: &ZTriSetup,
         shade: Option<&ShadeSetup>,
+        tex: Option<&TexSetup>,
         bus: &mut B,
     ) {
         let yu = line as u32;
@@ -1620,9 +1702,9 @@ impl Rdp {
             };
             let dr = Self::depth_test(z_px, z.dz, z.dz_compressed, 8, &dinp);
             if dr.depth_pass {
-                // Shaded triangles take the combiner colour; otherwise the FILL register.
-                if let Some(shade) = shade {
-                    let color = self.shaded_color(shade, major_x, line, y_base, x);
+                // Shaded/textured triangles take the combiner colour; else the FILL register.
+                if shade.is_some() || tex.is_some() {
+                    let color = self.combined_color(shade, tex, major_x, line, y_base, x);
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
                 } else {
                     self.fill_pixel(row_addr, xu, bpp, bus);
@@ -4493,5 +4575,61 @@ mod tests {
             z_compress(0x4000),
             "z block decoded at +0x60, not the shade block"
         );
+    }
+
+    /// **A textured triangle samples the tile through the combiner.** A flat texture
+    /// coordinate (`s = t = 0`, scale-independent of the perspective divide) samples
+    /// texel `(0, 0)` — an opaque red RGBA16 — and a texel-passthrough combiner
+    /// (`D = texel0`) writes `0xFF0000FF`, not the FILL register, proving the
+    /// `decode_texture` → `interpolate_st` → `fetch_texel` → combine → write path.
+    #[test]
+    fn textured_triangle_samples_the_texel() {
+        let mut bus = ZBufBus {
+            mem: alloc::vec![0u8; 0x1000],
+            hidden: alloc::vec![0u8; 0x800],
+        };
+        let mut rdp = Rdp::new();
+        rdp.color_image = 0x200;
+        rdp.color_image_size = 3;
+        rdp.color_image_width = 8;
+        rdp.scissor_lrx = 8 << 2;
+        rdp.scissor_lry = 8 << 2;
+        rdp.fill_color = 0xDEAD_BEEF; // must NOT appear
+        // Tile 0: RGBA16 at TMEM 0; texel (0,0) = 0xF801 (opaque red).
+        rdp.tiles[0].format = 0;
+        rdp.tiles[0].size = 2;
+        rdp.tiles[0].tmem_addr = 0;
+        rdp.tiles[0].line = 0;
+        rdp.tmem_write(0, 0xF8);
+        rdp.tmem_write(1, 0x01);
+        // Texel-passthrough combiner: cyc1 D = texel0 (1), A = B (cancel).
+        rdp.combine.cyc1 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 1,
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 1,
+        };
+        let base = 0x600usize;
+        bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
+        bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
+        bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
+        // Texture block at base + 0x20 (no shade): all-zero -> s = t = 0.
+        // opcode 0x0A = texture (bit 57); hi = 0x0880_0010 | (1 << 25).
+        rdp.dispatch(0x0A, 0x0A80_0010, 0x0010_0000, base as u32, &mut bus);
+
+        let px = |bus: &ZBufBus, x: usize, row: usize| -> u32 {
+            let a = 0x200 + row * 32 + x * 4;
+            u32::from_be_bytes([bus.mem[a], bus.mem[a + 1], bus.mem[a + 2], bus.mem[a + 3]])
+        };
+        assert_eq!(
+            px(&bus, 2, 0),
+            0xFF00_00FF,
+            "textured red, not the FILL colour"
+        );
+        assert_eq!(px(&bus, 5, 3), 0xFF00_00FF);
     }
 }
