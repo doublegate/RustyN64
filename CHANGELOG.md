@@ -20,6 +20,18 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — combiner primitive-colour mux conformance vector (Phase 3)
+
+- **The combiner primitive-colour mux is now validated against Angrylion.** A new
+  `prim_combiner_32` conformance vector sets the primitive colour (`Set Prim Color`,
+  RGBA `0x224466FF`) and routes it through the colour combiner (`rgb_d = a_d = prim`)
+  while filling a triangle over a 32-bit RGBA8 target, with a *distinct* flat vertex
+  shade (`0x112233`) that must NOT appear in the output. Because the golden frame shows
+  the primitive colour and not the shade, the vector discriminates the prim mux from the
+  shade path, closing an already-implemented but never-oracle-validated combiner input.
+  RustyN64 matches the Angrylion golden byte-for-byte; no core change was required. The
+  passing corpus grows to 18 vectors (+1 ignored WIP).
+
 ### Added — composite multi-primitive golden frame (Phase 3, toward T-33-006)
 
 - **A composite "first picture" golden frame** now pins a multi-primitive scene end

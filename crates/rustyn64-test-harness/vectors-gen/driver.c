@@ -618,6 +618,27 @@ static const uint32_t V18_CVG_DEST_FULL_16[] = {
     SHADE_BLOCK_FLAT(0xFF, 0x00, 0x00, 0xFF), // flat red shade (16 words)
 };
 
+// V19: a 1-cycle 32-bit shaded triangle whose combiner outputs the PRIMITIVE colour
+// (rgb_d = a_d = prim, select 3), NOT the shade. The shade block is a DISTINCT
+// colour (0x112233) so a combiner that wrongly emitted the shade would show
+// 0x112233 instead of the prim 0x224466 — this discriminates the prim mux input
+// (Set Prim Color 0x3A) from the shade path. Validates the combiner prim input.
+static const uint32_t V19_PRIM_COMBINER_32[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off
+    0x3A000000u, 0x224466FFu, // Set Prim Color: R=0x22 G=0x44 B=0x66 A=0xFF
+    0x3C000000u, 0x000000C3u, // Set Combine: cyc1 rgb_d=(lo>>6)&7=3, a_d=lo&7=3 (both prim).
+                              // 1-cycle mode evaluates the cyc1 selects (combine() at
+                              // rdp/lib.rs applies cyc0 only in 2-cycle); this is the D (add)
+                              // input of (A-B)*C+D, so the pixel is the prim colour.
+    0x3F180007u, 0x00001000u, // Set Color Image: 32-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    SHADE_BLOCK_FLAT(0x11, 0x22, 0x33, 0xFF), // distinct shade (must NOT appear)
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
     // Fill the 8x8 gradient texture (RGBA5551: R = 4x, G = 4y, B = 0, alpha 1).
@@ -702,6 +723,10 @@ int main(int argc, char **argv) {
     Vector v18 = {"cvg_dest_full_16", 0x2000, 0x1000, 8, 8, 2,
                   sizeof(V18_CVG_DEST_FULL_16) / 4, V18_CVG_DEST_FULL_16};
     if (emit_vector(&v18, out_dir)) return 1;
+
+    Vector v19 = {"prim_combiner_32", 0x2000, 0x1000, 8, 8, 4,
+                  sizeof(V19_PRIM_COMBINER_32) / 4, V19_PRIM_COMBINER_32};
+    if (emit_vector(&v19, out_dir)) return 1;
 
     return 0;
 }

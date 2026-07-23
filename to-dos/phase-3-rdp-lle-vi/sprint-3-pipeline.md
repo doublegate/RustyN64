@@ -180,8 +180,12 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       the Angrylion submodule, `make`, `./driver`).
 - [x] A harness runner (`tests/rdp_conformance.rs`) replays each vector and asserts a byte-exact
       framebuffer match. **FILL rectangle passes.**
-- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (17 vectors
-      passing + 1 ignored WIP):** `alpha_compare_16` + `alpha_compare_z_16` (**alpha-compare** write gate
+- [~] Expand the corpus toward ~150 vectors — the v0.4.0 cut criterion. **In progress (18 vectors
+      passing + 1 ignored WIP):** `prim_combiner_32` (the combiner **primitive-colour mux** — Set Prim
+      Color routed through `rgb_d = a_d = prim`, with a *distinct* flat shade that must NOT appear, so
+      the vector discriminates prim from shade; validates an already-implemented mux path against the
+      oracle, no new code),
+      `alpha_compare_16` + `alpha_compare_z_16` (**alpha-compare** write gate
       on the no-Z **and depth** paths, R-11 — a shade-alpha ramp killing low-alpha columns),
       `cvg_dest_full_16` (**cvg_dest = full** coverage write-back, R-9 — partial edge stores full cov),
       `tex_rect_copy_16` + `tex_rect_offset_16` +

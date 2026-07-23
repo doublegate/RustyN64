@@ -389,6 +389,20 @@ fn cvg_dest_full_16_matches_angrylion() {
     );
 }
 
+/// A 1-cycle 32-bit shaded triangle whose combiner outputs the **primitive** colour
+/// (the cyc1 `rgb_d`/`a_d` add-inputs both select `prim` = 3; 1-cycle mode evaluates
+/// the cyc1 selects), not the shade. The shade block is a distinct
+/// colour (`0x112233`), so a combiner that wrongly emitted the shade would show it
+/// instead of the prim `0x224466` — this **discriminates** the primitive combiner
+/// input (`Set Prim Color`) from the shade path. Validates the combiner prim mux.
+#[test]
+fn prim_combiner_32_matches_angrylion() {
+    assert_matches(
+        "prim_combiner_32",
+        include_bytes!("vectors/prim_combiner_32.rvec"),
+    );
+}
+
 /// A **magnified** COPY-mode Texture Rectangle (`DsDx = 2.0`, 0.5 texel/pixel). The
 /// RDP copies **4 pixels per cycle**: within a cycle it reads 4 consecutive texels
 /// (`base..base+3` from a 64-bit TMEM word) and the base advances by `DsDx × 4`
