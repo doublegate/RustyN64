@@ -1312,6 +1312,13 @@ impl Rdp {
     /// alpha. This matches the reference, which reassigns `pixel_color.rgb` only
     /// before the second `blender()` call (parallel-rdp `memory_interfacing.h:536`);
     /// the blender produces no alpha of its own (`blender.h` returns `u8x3`).
+    ///
+    /// **Precondition: only valid for cycle types 0 (1-cycle) and 1 (2-cycle).** Copy
+    /// (2) and Fill (3) bypass the blender on hardware — the pixel comes straight from
+    /// the texel copy / fill register — so the pixel pipeline (T-33-004) must gate on
+    /// `cycle_type` and not route those modes through here. This method is not given a
+    /// fabricated Copy/Fill result, because the honest contract is "not called", not
+    /// "called and returns something"; for cycle type 0 it correctly runs cycle 0 once.
     #[must_use]
     pub fn blend(&self, mut inp: BlendInputs) -> [u8; 3] {
         if self.other_modes.cycle_type == 1 {
