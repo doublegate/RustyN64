@@ -8,7 +8,7 @@ name: Antigravity PR Review
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
   issue_comment:
     types: [created]
 
@@ -19,13 +19,23 @@ permissions:
 
 jobs:
   review:
-    # PR opened/reopened, OR an `/agy-review` comment on a PR from a trusted author.
-    # The comment path is gated on author_association so an untrusted outside user cannot run the
-    # self-hosted runner by commenting `/agy-review` (belt-and-suspenders with the repo's
-    # Settings -> Actions -> "Fork pull request workflows -> require approval for all outside
-    # collaborators"). The `pull_request` trigger is already `opened`/`reopened` only.
+    # A push to (opened/reopened/synchronize) a PR whose AUTHOR is trusted, OR an
+    # `/agy-review` comment BY a trusted user (the commenter — which may be on an
+    # external contributor's PR; that is the point of the on-demand path).
+    #
+    # The two paths gate on different associations on purpose. The `pull_request`
+    # path checks the PR *author* because it runs automatically: this job is on a
+    # SELF-HOSTED runner and checks out the PR head (including `scripts/`), so a fork
+    # PR could otherwise run arbitrary code on the runner. Gating on the author (not
+    # just `opened`/`reopened`) lets `synchronize` auto-re-review every push to a
+    # trusted author's PR without ever auto-running an untrusted fork's code. The
+    # comment path checks the *commenter* so a maintainer can deliberately run a
+    # review on an external PR by typing `/agy-review`. Belt-and-suspenders with
+    # Settings -> Actions -> "Fork pull request workflows -> require approval for all
+    # outside collaborators".
     if: >-
-      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) ||
       (github.event.issue.pull_request != null &&
        startsWith(github.event.comment.body, '/agy-review') &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
