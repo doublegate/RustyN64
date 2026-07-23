@@ -30,7 +30,10 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   so it sidesteps the gaps exposed by the currently ignored `tex_tri_16` triangle
   vector, and RustyN64 matches Angrylion byte-for-byte. This is the **first texture path checked
   against the oracle** (previously only an internal `Load Tile → Texture Rectangle`
-  round-trip). 11 conformance vectors now pass (+ 1 ignored WIP).
+  round-trip). A second copy vector, `tex_rect_offset_16`, blits the same texture
+  to an **offset** sub-rectangle (2,2)..(5,3) of an 8×8 image (the rest background),
+  exercising the `XH`/`YH` destination positioning and the surrounding-pixel
+  behaviour. 12 conformance vectors now pass (+ 1 ignored WIP).
 
 ### Added — textured-triangle conformance (v2 `.rvec` preload) + pinned coordinate divergence (Phase 3, T-33-005)
 

@@ -325,3 +325,15 @@ fn tex_rect_copy_16_matches_angrylion() {
         include_bytes!("vectors/tex_rect_copy_16.rvec"),
     );
 }
+
+/// A COPY-mode Texture Rectangle blitted to an **offset position** — the same 4×2
+/// texture, 1:1-blitted into the (2,2)..(5,3) sub-rectangle of an 8×8 colour image,
+/// the rest staying background 0. Exercises the destination positioning (`XH`/`YH`)
+/// and the surrounding-pixel/scissor behaviour the origin blit did not.
+#[test]
+fn tex_rect_offset_16_matches_angrylion() {
+    assert_matches(
+        "tex_rect_offset_16",
+        include_bytes!("vectors/tex_rect_offset_16.rvec"),
+    );
+}
