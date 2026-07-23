@@ -232,8 +232,13 @@ microcode already boots on the RSP and emits a command list, Phase 2).
 
 **Acceptance criteria:**
 
-- [ ] A real ROM's RDP output is pinned by a committed golden frame (extends `golden_frame.rs`).
-- [ ] The frame is stable across runs (determinism, ADR 0004).
+- [~] A committed golden frame pins a rendered scene, and the frame is stable across runs (determinism,
+  ADR 0004). **Partially done:** `composite_frame.rs` renders a multi-primitive scene (a FILL background
+  and a 1-cycle shaded triangle over it) through the RDP → VI path and pins the 8×8 result against a committed
+  golden hash, asserting both background and foreground pixels and bit-identical re-renders. **Still
+  open:** the *real ROM* half — driving a homebrew/test ROM's own command stream end-to-end. The rdpq
+  microcode boots on the RSP and emits single commands (Phase 2, `microcode.rs`), but assembling a full
+  renderable frame from it (or booting a cart, Phase 5) is the remaining integration.
 
 **Complexity:** M
 
