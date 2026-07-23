@@ -846,61 +846,65 @@ impl Rdp {
     #[must_use]
     pub fn fetch_texel(&self, tile: &TileDescriptor, s: u32, t: u32) -> [u8; 4] {
         let swap = (t & 1) << 2;
-        // Wrapping arithmetic: an oversized (unclipped) `t` must not debug-panic
-        // on overflow — TMEM addresses wrap into the 4 KiB space anyway.
+        // Wrapping arithmetic end to end: an oversized/unclipped `s` or `t` must
+        // not debug-panic on overflow before the TMEM mask applies — a panic would
+        // break the determinism contract (ADR 0004). Every offset below is masked
+        // into the 4 KiB space by `tmem_byte`. The per-column byte offsets for the
+        // three texel widths (16/32-bit, 8-bit, 4-bit-nibble):
         let base = u32::from(tile.tmem_addr)
             .wrapping_mul(8)
             .wrapping_add(u32::from(tile.line).wrapping_mul(8).wrapping_mul(t));
+        let off16 = base.wrapping_add(s.wrapping_mul(2));
+        let off8 = base.wrapping_add(s);
+        let off4 = base.wrapping_add(s >> 1);
         match (tile.format, tile.size) {
-            (0, 2) => decode_rgba16(self.tmem_u16((base + s * 2) ^ swap)), // RGBA16
+            (0, 2) => decode_rgba16(self.tmem_u16(off16 ^ swap)), // RGBA16
             (0, 3) => {
                 // RGBA32 split: R,G low half; B,A high half.
-                let bo = ((base + s * 2) & 0x7FF) ^ swap;
+                let bo = (off16 & 0x7FF) ^ swap;
                 [
                     self.tmem_byte(bo as usize),
-                    self.tmem_byte((bo + 1) as usize),
-                    self.tmem_byte((bo + TMEM_HIGH) as usize),
-                    self.tmem_byte((bo + TMEM_HIGH + 1) as usize),
+                    self.tmem_byte(bo.wrapping_add(1) as usize),
+                    self.tmem_byte(bo.wrapping_add(TMEM_HIGH) as usize),
+                    self.tmem_byte(bo.wrapping_add(TMEM_HIGH + 1) as usize),
                 ]
             }
             (3, 2) => {
                 // IA16: I high byte, A low byte.
-                let w = self.tmem_u16((base + s * 2) ^ swap);
+                let w = self.tmem_u16(off16 ^ swap);
                 let i = (w >> 8) as u8;
                 [i, i, i, (w & 0xFF) as u8]
             }
             (3, 1) => {
                 // IA8: I high nibble, A low nibble (each 4->8).
-                let byte = self.tmem_byte(((base + s) ^ swap) as usize);
+                let byte = self.tmem_byte((off8 ^ swap) as usize);
                 let i = widen4(u32::from(byte) >> 4);
                 [i, i, i, widen4(u32::from(byte) & 0xF)]
             }
             (3, 0) => {
                 // IA4: I top 3 bits (3->8), A bottom bit.
-                let nib = self.nibble_at(((base + (s >> 1)) ^ swap) as usize, s);
+                let nib = self.nibble_at((off4 ^ swap) as usize, s);
                 let i = widen3(u32::from(nib) >> 1);
                 [i, i, i, if nib & 1 != 0 { 0xFF } else { 0 }]
             }
             (4, 1) => {
                 // I8: intensity in all channels, alpha = intensity.
-                let v = self.tmem_byte(((base + s) ^ swap) as usize);
+                let v = self.tmem_byte((off8 ^ swap) as usize);
                 [v, v, v, v]
             }
             (4, 0) => {
                 // I4: 4-bit intensity (4->8), alpha = intensity.
-                let v = widen4(u32::from(
-                    self.nibble_at(((base + (s >> 1)) ^ swap) as usize, s),
-                ));
+                let v = widen4(u32::from(self.nibble_at((off4 ^ swap) as usize, s)));
                 [v, v, v, v]
             }
             (2, 1) => {
                 // CI8: 8-bit index into the TLUT.
-                let ci = self.tmem_byte((((base + s) & 0x7FF) ^ swap) as usize);
+                let ci = self.tmem_byte(((off8 & 0x7FF) ^ swap) as usize);
                 self.tlut_lookup(u32::from(ci))
             }
             (2, 0) => {
                 // CI4: 4-bit index + tile.palette as the high nibble.
-                let nib = self.nibble_at((((base + (s >> 1)) & 0x7FF) ^ swap) as usize, s);
+                let nib = self.nibble_at(((off4 & 0x7FF) ^ swap) as usize, s);
                 // `palette` is already 4-bit from `set_tile` decode; mask defensively
                 // so a directly-constructed descriptor cannot push `ci` out of range.
                 let ci = u32::from(nib) | (u32::from(tile.palette & 0xF) << 4);
@@ -911,9 +915,10 @@ impl Rdp {
     }
 
     /// Read a big-endian `u16` from TMEM at byte offset `b` (both bytes masked
-    /// into the 4 KiB space).
+    /// into the 4 KiB space; `b + 1` wraps rather than overflowing).
     fn tmem_u16(&self, b: u32) -> u32 {
-        (u32::from(self.tmem_byte(b as usize)) << 8) | u32::from(self.tmem_byte((b + 1) as usize))
+        (u32::from(self.tmem_byte(b as usize)) << 8)
+            | u32::from(self.tmem_byte(b.wrapping_add(1) as usize))
     }
 
     /// Select the 4-bit nibble of the TMEM byte at `byte_off` for texel column
@@ -930,7 +935,7 @@ impl Rdp {
     /// `IA16` TLUT type (Other Modes `tlut_type = 1`) is deferred; RGBA16 is
     /// assumed.
     fn tlut_lookup(&self, ci: u32) -> [u8; 4] {
-        decode_rgba16(self.tmem_u16(TMEM_HIGH + ci * 8))
+        decode_rgba16(self.tmem_u16(TMEM_HIGH.wrapping_add(ci.wrapping_mul(8))))
     }
 
     /// Read one byte of TMEM.
@@ -2144,6 +2149,36 @@ mod tests {
         assert_eq!(rdp.tmem_byte(0x809), 0xC1);
         assert_eq!(rdp.tmem_byte(0x80E), 0x07, "entry1 4th copy");
         assert_eq!(rdp.tiles[0].sh, 4, "Load TLUT latches the tile size");
+    }
+
+    /// **`fetch_texel` never debug-panics on oversized coordinates.** An
+    /// unclipped `s`/`t` must wrap into the 4 KiB TMEM space rather than
+    /// overflowing (ADR 0004 determinism). In a debug build, non-wrapping
+    /// arithmetic here would panic; this exercises every format at `u32::MAX`
+    /// coordinates and asserts a deterministic (repeatable) result.
+    #[test]
+    fn fetch_texel_oversized_coords_wrap_deterministically() {
+        let rdp = Rdp::new();
+        for &(fmt, size) in &[
+            (0, 2),
+            (0, 3),
+            (3, 2),
+            (3, 1),
+            (3, 0),
+            (4, 1),
+            (4, 0),
+            (2, 1),
+            (2, 0),
+        ] {
+            let mut tile = tile_fmt(fmt, size);
+            tile.line = 0x1FF;
+            tile.tmem_addr = 0x1FF;
+            tile.palette = 0xF;
+            // Must not panic, and must be deterministic for identical inputs.
+            let a = rdp.fetch_texel(&tile, u32::MAX, u32::MAX);
+            let b = rdp.fetch_texel(&tile, u32::MAX, u32::MAX);
+            assert_eq!(a, b, "fmt {fmt} size {size} is deterministic");
+        }
     }
 
     /// **The dispatcher routes 0x30 to `load_tlut`.** Drives the FIFO dispatch
