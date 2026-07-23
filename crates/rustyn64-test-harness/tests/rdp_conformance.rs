@@ -178,3 +178,31 @@ fn fill_tri_neg_16_matches_angrylion() {
         include_bytes!("vectors/fill_tri_neg_16.rvec"),
     );
 }
+
+/// A **FILL-mode** triangle with fractional edges (left 2.5, right 6.5). FILL mode
+/// renders without sub-pixel accuracy (the wiki: "upper-left rounded down,
+/// lower-right rounded up"), so the fractional edges round to whole pixels and
+/// columns 2–6 fill — which RustyN64's whole-pixel span already matches. (The
+/// *sub-pixel* coverage that would exclude a partially-covered column applies only
+/// in 1-/2-cycle mode; see the coverage rewrite.)
+#[test]
+fn fill_tri_frac_16_matches_angrylion() {
+    assert_matches(
+        "fill_tri_frac_16",
+        include_bytes!("vectors/fill_tri_frac_16.rvec"),
+    );
+}
+
+/// A **1-cycle-mode** shaded triangle with a fractional left edge (2.5) and right
+/// edge (6.5). Here sub-pixel coverage applies: column 2 is excluded (its top-left
+/// sample at 2.0 is outside the span, AA off), columns 3–5 are fully covered, and
+/// column 6 is *partially* covered — Angrylion stores the coverage in the pixel, so
+/// column 6 is `0xf800` (coverage MSB 0) while 3–5 are `0xf801`. Guards the 2c
+/// sub-pixel coverage path (inclusion + coverage write-back).
+#[test]
+fn shade_tri_frac_16_matches_angrylion() {
+    assert_matches(
+        "shade_tri_frac_16",
+        include_bytes!("vectors/shade_tri_frac_16.rvec"),
+    );
+}

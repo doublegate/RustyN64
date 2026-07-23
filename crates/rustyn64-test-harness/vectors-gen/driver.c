@@ -256,6 +256,49 @@ static const uint32_t V4_FILL_TRI_NEG_16[] = {
     0x00050000u, 0x3FFF0000u, // XM = 5.0 (left edge), DxMDy = -1.0
 };
 
+// V5: a FRACTIONAL-edge triangle — a left-major "rectangle" whose left edge sits
+// at x=2.5 and right edge at x=6.5, both vertical, full height. With AA off the
+// RDP draws a pixel only when its top-left sub-sample (at integer x) lies in the
+// half-open span [2.5, 6.5): pixel 2's sample (2.0) is outside, so column 2 is NOT
+// drawn (columns 3-6 are). RustyN64's whole-pixel union approximation wrongly
+// includes column 2 — this vector drives the 2c sub-pixel coverage rewrite.
+static const uint32_t V5_FILL_TRI_FRAC_16[] = {
+    0x2F300000u, 0x00000000u, // Set Other Modes: cycle_type = FILL
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x08800020u, 0x00200000u, // op=0x08, lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL = 0, DxLDy = 0
+    0x00028000u, 0x00000000u, // XH = 2.5 (left edge), DxHDy = 0
+    0x00068000u, 0x00000000u, // XM = 6.5 (right edge), DxMDy = 0
+};
+
+// V6: a 1-CYCLE-mode shaded triangle with a fractional left edge (x=2.5). Unlike
+// FILL mode, 1-cycle mode renders with sub-pixel accuracy: with AA off, a pixel
+// draws only when its top-left sub-sample (integer x) is inside the span, so
+// column 2 (sample at 2.0 < 2.5) is EXCLUDED — columns 3-6 draw. The colour is the
+// combiner output (a flat red shade), not the fill register. This drives the 2c
+// sub-pixel coverage rewrite (RustyN64's whole-pixel union wrongly includes col 2).
+static const uint32_t V6_SHADE_TRI_FRAC_16[] = {
+    0x2F000000u, 0x00000000u, // Set Other Modes: cycle_type=0 (1-cycle), AA off
+    0x3C000000u, 0x00000104u, // Set Combine Mode: cyc1 rgb_d=4/a_d=4 (shade passthrough)
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    // Fill Shaded Triangle 0x0C: 4-word base + 8-word shade block.
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL = 0, DxLDy = 0
+    0x00028000u, 0x00000000u, // XH = 2.5 (left edge), DxHDy = 0
+    0x00068000u, 0x00000000u, // XM = 6.5 (right edge), DxMDy = 0
+    0x00FF0000u, 0x000000FFu, // shade int base: R=0xFF, G=0, B=0, A=0xFF (flat red)
+    0x00000000u, 0x00000000u, // dx int
+    0x00000000u, 0x00000000u, // frac base
+    0x00000000u, 0x00000000u, // dx frac
+    0x00000000u, 0x00000000u, // de int
+    0x00000000u, 0x00000000u, // dy int
+    0x00000000u, 0x00000000u, // de frac
+    0x00000000u, 0x00000000u, // dy frac
+};
+
 int main(int argc, char **argv) {
     const char *out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -274,6 +317,14 @@ int main(int argc, char **argv) {
     Vector v4 = {"fill_tri_neg_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V4_FILL_TRI_NEG_16) / 4, V4_FILL_TRI_NEG_16};
     if (emit_vector(&v4, out_dir)) return 1;
+
+    Vector v5 = {"fill_tri_frac_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V5_FILL_TRI_FRAC_16) / 4, V5_FILL_TRI_FRAC_16};
+    if (emit_vector(&v5, out_dir)) return 1;
+
+    Vector v6 = {"shade_tri_frac_16", 0x2000, 0x1000, 8, 8, 2,
+                 sizeof(V6_SHADE_TRI_FRAC_16) / 4, V6_SHADE_TRI_FRAC_16};
+    if (emit_vector(&v6, out_dir)) return 1;
 
     return 0;
 }

@@ -533,12 +533,15 @@ and `span_setup.comp`, the pure primitives ahead of wiring them into the rasteri
 
 Both primitives are pinned by hand-computed unit tests derived from the oracle's arithmetic
 (full/partial/empty masks, the sticky bit, the negative-coordinate arithmetic shift), **not** from
-this port's own output. Scope (**open residual R-9**): the rasteriser still unions the four
-sub-scanlines into a whole-pixel bounding span, so `compute_coverage` has no runtime caller yet —
-wiring the exact rule changes every triangle's edge pixels (the AA-off top-left-sample test kills a
-degenerate top row the union drew), so the pixel-inclusion rewrite and its re-derived goldens land
-with the coverage integration, validated against the ParaLLEl-RDP conformance vectors (T-33-005). The
-coverage-weighted AA blend and the `cvg_dest` write-back are the remaining slice-2c residual. The
+this port's own output. They are now **wired into the 1-/2-cycle rasteriser** (`pixel_coverage`): the
+edge-walk builds per-Y-subpixel `s.3` edges, and each pixel is gated by its coverage mask — with AA
+off, a pixel draws only when its top-left sub-sample is inside the span — with the coverage count
+stored in the pixel's alpha/coverage bits (`(count − 1) & 7`). FILL/COPY mode keeps the whole-pixel
+span, which is correct (FILL renders "without subpixel accuracy"). Validated against Angrylion by
+`fill_tri_frac_16` (FILL rounds a fractional edge) and `shade_tri_frac_16` (a 1-cycle triangle whose
+fractional left edge excludes a column and whose right edge leaves a column partially covered).
+Scope (**open residual R-9**): the **depth path** still uses full coverage, and the coverage-weighted
+**AA-edge blend**, the other `cvg_dest` modes, **alpha-compare**, and **dither** are not wired. The
 oracle stays **93**.
 
 ### The conformance gate (T-33-005)
