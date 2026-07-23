@@ -1417,13 +1417,13 @@ impl Rdp {
     /// resolves per pixel by size (N64brew *…/Commands* §Set Fill Color):
     /// 32-bit writes the whole colour; 16-bit takes the upper half for even
     /// pixels and the lower half for odd; 8-bit takes byte `x & 3`. Coordinates
-    /// are `u10.2`; FILL mode floors the upper-left and rounds the lower-right up
-    /// (a half-open pixel span — N64brew *…/Commands* §Fill Rectangle). The exact
-    /// sub-pixel edge rules, and the scissor's inclusive-right/exclusive-lower
-    /// FILL rule, are an **open residual** (`docs/accuracy-ledger.md` R-3):
-    /// byte-exact for aligned rectangles, validated bit-for-bit against Angrylion
-    /// via the ParaLLEl-RDP fuzz suite (Sprint 3) and superseded there if it
-    /// diverges.
+    /// are `u10.2`; FILL mode floors the upper-left and draws through the pixel
+    /// **containing** the lower-right coordinate (inclusive), with `yl | 3` forcing
+    /// the last scanline whole (Angrylion `rasterizer.c`). The **scissor** clips
+    /// with an **exclusive** lower-right. This integer-coordinate rule is
+    /// oracle-validated against Angrylion (`docs/accuracy-ledger.md` R-3, the
+    /// seeded-fuzz corpus); the remaining residual is **sub-pixel** (fractional)
+    /// rectangle edges, which the whole-pixel corpus does not exercise.
     fn fill_rectangle<B: VideoBus>(&self, hi: u32, lo: u32, bus: &mut B) {
         let Some(bpp) = self.color_image_bpp() else {
             return; // 4-bit target: the real RDP crashes; we skip.
@@ -1436,11 +1436,18 @@ impl Rdp {
             return;
         }
         // Rectangle: lower-right x/y = hi 23:12 / 11:0, upper-left x/y = lo 23:12
-        // / 11:0 (all u10.2). Floor the upper-left, round the lower-right up.
+        // / 11:0 (all u10.2). Floor the upper-left. The lower-right is **inclusive**
+        // of the pixel that contains the coordinate, and in FILL/COPY mode the RDP
+        // forces the low two bits of `yl` set before the shift (Angrylion
+        // `rasterizer.c` `rdp_fill_rect`: `yl |= 3`, so the final scanline is filled
+        // whole). Both confirmed against the Angrylion conformance oracle (ledger
+        // R-3): a rect whose lower-right lands on an integer pixel boundary still
+        // draws that pixel row/column. Convert the inclusive pixel index to a
+        // half-open bound with `+ 1`; the scissor (below) then clips exclusively.
         let rx0 = ((lo >> 12) & 0xFFF) >> 2;
         let ry0 = (lo & 0xFFF) >> 2;
-        let rx1 = (((hi >> 12) & 0xFFF) + 3) >> 2;
-        let ry1 = ((hi & 0xFFF) + 3) >> 2;
+        let rx1 = (((hi >> 12) & 0xFFF) >> 2) + 1;
+        let ry1 = (((hi & 0xFFF) | 3) >> 2) + 1;
         // Scissor: floor upper-left, round lower-right up.
         let sx0 = u32::from(self.scissor_ulx) >> 2;
         let sy0 = u32::from(self.scissor_uly) >> 2;
@@ -3422,6 +3429,41 @@ mod tests {
         assert_eq!(px(6, 1), [0, 0, 0, 0], "right edge exclusive");
         assert_eq!(px(2, 0), [0, 0, 0, 0], "above scissor");
         assert_eq!(px(2, 3), [0, 0, 0, 0], "lower edge exclusive");
+    }
+
+    /// **The rectangle's own lower-right edge is inclusive** (ledger R-3, oracle
+    /// R). With a scissor larger than the rectangle so the scissor does not clip,
+    /// a `Fill Rectangle` from `(1,1)` to `(3,4)` must draw the pixel *at* `(3,4)`
+    /// — the pixel containing the lower-right coordinate — and leave the pixels one
+    /// step past it (`(4,·)` on X, `(·,5)` on Y) clear. This is the Angrylion
+    /// convention the fuzz corpus pinned: the pre-fix `(coord + 3) >> 2` half-open
+    /// span dropped the boundary row and column, so reverting the fix makes the
+    /// `(3,4)` assertion fail (mutation-checked).
+    #[test]
+    fn fill_rectangle_lower_right_edge_is_inclusive() {
+        let (_, bus) = run_commands(&[
+            set_color_image(0, 3, 8, 0), // 32-bit, width 8
+            set_fill_color(0x1122_3344),
+            set_scissor(0, 0, 8, 8), // larger than the rect: does not clip it
+            fill_rect(1, 1, 3, 4),
+        ]);
+        let px = |x: u32, y: u32| {
+            let a = (y * 8 + x) as usize * 4;
+            &bus.mem[a..a + 4]
+        };
+        // The inclusive corners are drawn.
+        assert_eq!(px(1, 1), [0x11, 0x22, 0x33, 0x44], "upper-left drawn");
+        assert_eq!(
+            px(3, 4),
+            [0x11, 0x22, 0x33, 0x44],
+            "lower-right pixel drawn"
+        );
+        // One step past the inclusive edge is clear.
+        assert_eq!(px(4, 4), [0, 0, 0, 0], "one column past the right edge");
+        assert_eq!(px(3, 5), [0, 0, 0, 0], "one row past the lower edge");
+        // One step before the upper-left is clear.
+        assert_eq!(px(0, 1), [0, 0, 0, 0], "one column before the left edge");
+        assert_eq!(px(1, 0), [0, 0, 0, 0], "one row above the top edge");
     }
 
     /// **A 4-bit color image is not a FILL target** — the real RDP crashes, so

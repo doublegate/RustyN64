@@ -415,3 +415,103 @@ fn tex_rect_mag_16_matches_angrylion() {
         include_bytes!("vectors/tex_rect_mag_16.rvec"),
     );
 }
+
+/// The lower bound on the committed seeded-fuzz corpus. The gate fails if fewer
+/// than this many `.rvec` vectors are found, so a packaging or checkout error that
+/// drops the corpus directory cannot make the oracle gate report success without
+/// having replayed anything (the accuracy oracle must never pass vacuously). Raise
+/// it as families are added; never let it exceed the committed count.
+const MIN_FUZZ_CORPUS: usize = 48;
+
+/// The **seeded-fuzz corpus gate.** Every committed `.rvec` under `tests/vectors/fuzz/`
+/// is a curated candidate from the reproducible generator (`vectors-gen/driver.c`
+/// `--fuzz <dir> <seed> <count>`): only candidates that already matched the Angrylion
+/// golden were committed, so this replays each and asserts the byte-exact match still
+/// holds. It scales to any corpus size without a `#[test]` per vector. The corpus is
+/// committed, so a missing directory or a below-floor count is a failure, not a pass
+/// — the gate must run vectors to succeed ([[vacuous-pass-in-rom-tests]]).
+#[test]
+fn fuzz_corpus_matches_angrylion() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/fuzz");
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("committed fuzz corpus directory {dir} is unreadable: {e}"));
+    let mut names: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rvec"))
+        .collect();
+    names.sort(); // deterministic order
+    for path in &names {
+        let bytes = std::fs::read(path).expect("read fuzz vector");
+        let name = path.file_stem().unwrap().to_string_lossy();
+        assert_matches(&name, &bytes);
+    }
+    assert!(
+        names.len() >= MIN_FUZZ_CORPUS,
+        "fuzz corpus has {} vector(s), below the floor of {MIN_FUZZ_CORPUS} — a \
+         checkout/packaging error may have dropped vectors",
+        names.len(),
+    );
+    eprintln!(
+        "fuzz corpus: {} vector(s) match the Angrylion golden",
+        names.len()
+    );
+}
+
+/// **Curation dev-tool** (not a gate): replay every `.rvec` in `$RUSTYN64_FUZZ_DIR`
+/// and print a PASS/FAIL partition without asserting. Used to sift a freshly
+/// generated candidate batch — only the PASS set is copied into `tests/vectors/fuzz/`
+/// and committed, so an unmodelled RDP corner is dropped rather than baked in. Run:
+/// `RUSTYN64_FUZZ_DIR=/path cargo test -p rustyn64-test-harness --test rdp_conformance
+/// -- --ignored --nocapture curate_fuzz_candidates`.
+#[test]
+#[ignore = "dev tool: sifts an external candidate batch, needs $RUSTYN64_FUZZ_DIR"]
+fn curate_fuzz_candidates() {
+    let dir = std::env::var("RUSTYN64_FUZZ_DIR").expect("set RUSTYN64_FUZZ_DIR");
+    let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("read candidate dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rvec"))
+        .collect();
+    names.sort();
+    let (mut pass, mut fail) = (Vec::new(), Vec::new());
+    for path in &names {
+        let bytes = std::fs::read(path).expect("read candidate");
+        let v = parse(&bytes);
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let got = replay(&v);
+        if got == v.golden_fb {
+            pass.push(name);
+        } else {
+            let bpp = v.bpp as usize;
+            let mut detail = String::from("len mismatch");
+            for i in (0..got.len().min(v.golden_fb.len())).step_by(bpp) {
+                if got[i..i + bpp] != v.golden_fb[i..i + bpp] {
+                    let px = i / bpp;
+                    detail = format!(
+                        "{}x{} px({},{}) got {:02X?} golden {:02X?}",
+                        v.width,
+                        v.height,
+                        px as u32 % v.width,
+                        px as u32 / v.width,
+                        &got[i..i + bpp],
+                        &v.golden_fb[i..i + bpp],
+                    );
+                    break;
+                }
+            }
+            fail.push(format!("{name}: {detail}"));
+        }
+    }
+    eprintln!(
+        "curate: {} pass, {} fail (of {})",
+        pass.len(),
+        fail.len(),
+        names.len()
+    );
+    for f in &fail {
+        eprintln!("  FAIL {f}");
+    }
+    for p in &pass {
+        println!("PASS {p}");
+    }
+}
