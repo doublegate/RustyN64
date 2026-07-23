@@ -20,6 +20,24 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   bit the RustyNES libretro release); the whole workspace compiles, lints, tests, docs,
   and builds `no_std` cleanly on 1.96.0.
 
+### Added — the blender (Phase 3, T-33-003)
+
+- **The RDP evaluates the blender.** `Set Other Modes` (0x2F) decodes the render
+  mode — the cycle type, the two blender cycles' `P/A/M/B` selects, `force_blend`,
+  the Z enables/mode, the coverage-destination mode, `image_read_en`, and the
+  alpha-compare enable — into `OtherModes`, and `blend` evaluates the divide-free
+  `(P * a0 + M * (a1 + 1)) >> 5` per channel, where `P`/`M` mux an RGB triple
+  (pixel/memory/blend/fog) and `a0 = A >> 3`, `a1 = B >> 3` map the alpha selects
+  to the 5-bit blend weights (the `+ 1` on the `M` term is real hardware). 1-cycle
+  mode uses blend cycle 0 alone; 2-cycle feeds cycle 0's RGB forward as cycle 1's
+  pixel input. `Set Blend Color` (0x39) and `Set Fog Color` (0x38) latch the
+  colour registers. Cross-verified against the wiki and ParaLLEl-RDP (MIT) and
+  unit-tested bit-for-bit on hand-computed values. Scope (ledger R-11): the
+  anti-aliased-edge divider LUT, memory-alpha blend-shift, alpha-compare, dither,
+  `color_on_cvg`, and coverage write-back are decoded but unused until the pixel
+  pipeline routes through the blender with real framebuffer/coverage/Z (T-33-004);
+  `blend` has no runtime caller yet, so the oracle stays 93.
+
 ### Added — the colour combiner (Phase 3, T-33-002)
 
 - **The RDP evaluates the colour combiner.** `Set Combine Mode` (0x3C) decodes
