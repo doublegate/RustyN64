@@ -526,8 +526,10 @@ and `span_setup.comp`, the pure primitives ahead of wiring them into the rasteri
   packed as bit `2·Ysub + Xsample` (the oracle's `clip_x0*(1,2,4,8) + clip_x1*(16,32,64,128)` — the
   two X-samples of each Y-subpixel land in adjacent bits, so the order is `Y0X0 Y0X1 Y1X0 Y1X1 …`,
   and bit 0 is the top-left sample). Its popcount is the coverage count (0–8).
-- **`aa_enable`.** `Set Other Modes` bit 3 is now decoded. With AA off the RDP draws a pixel only
-  when the first sub-sample (bit 0, the top-left) is covered.
+- **`aa_enable`.** `Set Other Modes` bit 3 is now decoded (but not yet consumed). It will select
+  the pixel-inclusion rule once the coverage integration wires `compute_coverage` in: with AA off
+  the RDP will draw a pixel only when the first sub-sample (bit 0, the top-left) is covered; with AA
+  on, any covered sub-sample keeps the pixel and its coverage weights the edge blend.
 
 Both primitives are pinned by hand-computed unit tests derived from the oracle's arithmetic
 (full/partial/empty masks, the sticky bit, the negative-coordinate arithmetic shift), **not** from
