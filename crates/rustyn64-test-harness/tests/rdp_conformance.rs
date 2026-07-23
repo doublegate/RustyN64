@@ -286,24 +286,23 @@ fn shade_grad_tri_32_matches_angrylion() {
     );
 }
 
-/// A 1-cycle **textured** triangle (16-bit RGBA5551) — the first vector to validate
-/// texture sampling against Angrylion. An 8×1 ramp texture is preloaded into RDRAM
-/// (v2 `.rvec` preload), loaded into TMEM by `Load Tile`, and sampled across the
-/// triangle by a per-x S gradient (one texel per pixel), passed straight through the
-/// combiner. Exercises Set Texture Image / Set Tile / Load Tile / `interpolate_st` /
-/// `fetch_texel` end-to-end.
+/// A 1-cycle **textured** triangle (16-bit RGBA5551) — intended as the first vector
+/// to validate `interpolate_st` / `fetch_texel` against Angrylion, via the v2 `.rvec`
+/// preload (an 8-texel ramp placed in RDRAM, loaded by `Load Tile`, sampled across
+/// the triangle by a per-x S gradient with texel0 combiner passthrough).
 ///
-/// **`#[ignore]`d — pins a known texture-coordinate divergence (WIP).** The v2
-/// `.rvec` preload plumbing is verified: Angrylion loads the 8-texel ramp into TMEM
-/// correctly (its 16-bit `tmem_formatting` places `tmemidx0 = 0xF801`). RustyN64
-/// samples texel 0 at (2,1) → `0xF801`; Angrylion's golden is `0x0000`, so its
-/// sampler indexes a different (unloaded) texel. Suspected cause: the texel
-/// coordinate scale — `interpolate_st` takes the integer texel as `v >> 16` (plain
-/// s16.16), but the RDP's texel coordinate is s10.5-based. Root-causing (a
-/// coordinate sweep / Angrylion sampler trace) and the fix are the next step; the
-/// vector stays committed and ignored to pin the divergence.
+/// **`#[ignore]`d — the vector's command sequence is MALFORMED (WIP), so its golden
+/// is NOT yet a valid oracle for the sampler.** Direct instrumentation of Angrylion
+/// shows that although `rdp_set_tile` runs with the correct `size = 2`, at sample
+/// time tile 0 reads back **unconfigured** (`size/line/tmem = 0`) and the interpolated
+/// S coordinate is **0 at every pixel**, so the triangle never advances across the
+/// texture. The RustyN64-vs-golden mismatch is therefore a vector-setup artifact, not
+/// a confirmed RustyN64 bug (an earlier note here blamed the texel-coordinate scale;
+/// that is retracted — see ledger R-13). The v2 preload plumbing itself is verified
+/// (an all-white texture renders white through Angrylion). Next: fix the texture
+/// command sequence (the tile-state reset + the zero S coordinate), then re-evaluate.
 #[test]
-#[ignore = "WIP: texture-coordinate scale divergence (interpolate_st v>>16 vs RDP s10.5)"]
+#[ignore = "WIP: malformed texture command sequence (Angrylion sees unconfigured tile + S=0); see ledger R-13"]
 fn tex_tri_16_matches_angrylion() {
     assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
 }

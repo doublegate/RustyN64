@@ -30,15 +30,16 @@ The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
   handle it, and the ten existing v1 vectors stay byte-identical. The preload path
   is verified end-to-end (an all-white texture renders white through Angrylion, and
   Angrylion's 16-bit `tmem_formatting` loads the ramp with `tmemidx0 = 0xF801`).
-- The new `tex_tri_16` vector (a per-pixel S gradient over an 8-texel ramp, texel0
-  passthrough) is the first to exercise `interpolate_st` against Angrylion — and it
-  **diverges**: RustyN64 samples texel 0 at pixel (2,1) → `0xF801`, but Angrylion's
-  golden is `0x0000`, so its sampler indexes a different texel for the same S. The
-  suspected cause is the texel-coordinate scale (`interpolate_st` uses `v >> 16` for
-  a plain s16.16 integer, but the RDP's texel coordinate is s10.5-based). The vector
-  is committed **`#[ignore]`d** to pin the divergence (ledger R-13, the R-14
-  precedent); root-causing and the fix are the follow-up. A `TEX_BLOCK` generator
-  macro joins `SHADE_BLOCK` / `Z_SUFFIX`.
+- The new `tex_tri_16` vector (an 8-texel ramp sampled across a triangle, texel0
+  passthrough) was added to exercise `interpolate_st` against Angrylion, committed
+  **`#[ignore]`d**. Direct instrumentation of Angrylion then showed its command
+  sequence is **malformed** — at sample time Angrylion reads tile 0 as unconfigured
+  (`size = 0`) despite `rdp_set_tile` running with `size = 2`, and the interpolated
+  S coordinate is `0` at every pixel — so its golden is **not yet a valid oracle**
+  for the sampler and the RustyN64-vs-golden mismatch is a vector-setup artifact,
+  **not** a confirmed RustyN64 bug (an interim note blaming the texel-coordinate
+  scale is retracted; see ledger R-13). Fixing the texture command sequence is the
+  follow-up. A `TEX_BLOCK` generator macro joins `SHADE_BLOCK` / `Z_SUFFIX`.
 
 ### Added — conformance corpus: Gouraud-gradient vector + generator macros (Phase 3, T-33-005)
 
