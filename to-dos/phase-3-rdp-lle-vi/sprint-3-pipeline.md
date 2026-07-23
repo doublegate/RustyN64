@@ -1,0 +1,155 @@
+# Sprint 3 — The colour combiner, blender, Z/coverage, and the fuzz 0-diff
+
+**Phase:** Phase 3 — RDP LLE + VI
+**Sprint goal:** complete the per-pixel pipeline — edge-walked triangles, the colour combiner, the
+blender, and Z/coverage — and prove it bit-exact against Angrylion via the ParaLLEl-RDP conformance
+suite. This is the **v0.4.0 cut gate**: a real ROM renders a stable frame matching a committed
+golden, AND the fuzz suite bit-matches the reference (`to-dos/VERSION-PLAN.md` §v0.4.0).
+**Estimated duration:** the largest sprint — several work sessions.
+
+## Reference
+
+Encodings and per-pixel arithmetic come from the N64brew wiki (`Reality Display Processor/`) and
+the ParaLLEl-RDP reference (MIT — `shaders/`, `rdp_device.cpp`, `rdp_renderer.cpp`). The
+conformance harness is `ref-proj/parallel-rdp/rdp_conformance.cpp` + `conformance_utils.hpp`.
+**Licence:** ParaLLEl-RDP is MIT (readable); its bundled `angrylion-rdp-plus` is **non-commercial
+MAME-licensed — study outputs, never vendor its source** (`ref-proj/README.md`). See
+[[rdp-tmem-load-recipe]] and [[rdp-texture-rect-recipe]] for the texture path already built.
+
+## Tickets
+
+### T-33-001 — The edge-walked triangle rasteriser
+
+**Description:** the triangle setup and span walk — `Fill Triangle` (0x08) and its shade/texture/Z
+variants (0x09–0x0F). Decode the edge coefficients (the three edges, `xh/xm/xl` + slopes, `yh/ym/yl`),
+walk spans between the major and minor edges per scanline, and interpolate the per-vertex attributes
+(shade RGBA, S/T/W, Z) declared by the shade/texture/zbuffer flag bits. Flat-fill first, then the
+interpolated attributes. This is the foundation every later ticket renders through.
+
+**Acceptance criteria:**
+
+- [ ] The base triangle (0x08) fills the correct pixels (major/minor edge span walk, left/right-major),
+      byte-exact against a hand-computed small triangle.
+- [ ] The shade (0x0A/0x0E…), texture (0x09/0x0D…), and Z (0x0B…) coefficient blocks are decoded and
+      interpolated per pixel; the multi-word length matches `command_len_words`.
+- [ ] Scissor clipping applies; the `lmajor` flag selects the walk direction.
+
+**Complexity:** XL
+
+---
+
+### T-33-002 — The colour combiner (`Set Combine Mode`, 0x3C)
+
+**Description:** the two-cycle colour/alpha mux. Decode the sub-A/B/C/D selects for colour and alpha
+in both cycles, and evaluate `(A − B) * C + D` per pixel from the combiner inputs (combined, texel0/1,
+shade, primitive, environment, …).
+
+**Acceptance criteria:**
+
+- [ ] Every mux input select decodes and routes correctly (checked against the ParaLLEl-RDP input tables).
+- [ ] `(A − B) * C + D` is evaluated with the correct clamping/rounding per cycle, asserted by the
+      **observable output colour** for a known set of inputs (not a self-reported flag), with the
+      test seeding the destination so a no-op cannot pass.
+- [ ] 1-cycle and 2-cycle modes both work (cycle type from `Set Other Modes`).
+
+**Complexity:** L
+
+---
+
+### T-33-003 — The blender (`Set Other Modes`, 0x2F)
+
+**Description:** decode the big other-modes word (cycle type, blend mode `P*A + M*B`, coverage mode,
+alpha compare, dither, Z mode) and evaluate the blend equation against the framebuffer, with coverage,
+alpha-compare, and the dither modes.
+
+**Acceptance criteria:**
+
+- [ ] `Set Other Modes` fields decode (cycle type, blend selects, alpha-compare, dither, Z-mode).
+- [ ] The blend equation `(P*A + M*B)` writes the correct framebuffer pixel — asserted **value-for-value
+      against a seeded destination** (so a no-op or a passthrough cannot pass), not a status flag.
+- [ ] Alpha compare and the coverage/dither modes behave per the wiki, each pinned by an observable
+      pixel result (e.g. a pixel that alpha-compare must reject stays unwritten).
+
+**Complexity:** L
+
+---
+
+### T-33-004 — Z-buffering, coverage, and primitive depth (0x2E)
+
+**Description:** the Z-buffer test/update (the N64's 15.3 float-ish Z encoding), coverage accumulation
+at edges, and `Set Primitive Depth` (0x2E).
+
+**Acceptance criteria:**
+
+- [ ] Z encode/decode matches the hardware format; the Z test/update honours the Z mode, asserted
+      by the **observable framebuffer/Z-buffer** result of an occluding-vs-occluded pair (a pixel
+      that must and must not be overwritten), not a status flag.
+- [ ] Coverage accumulates at partially-covered edge pixels and feeds the blender.
+- [ ] Primitive depth is used when the triangle carries no per-vertex Z.
+
+**Complexity:** L
+
+---
+
+### T-33-005 — The ParaLLEl-RDP conformance 0-diff (the cut gate)
+
+**Description:** the bit-exactness gate. **Licence-clean approach:** run ParaLLEl-RDP's conformance
+harness (`rdp_conformance.cpp`, which drives Angrylion as the reference) **externally** to generate
+`(command-stream → golden-framebuffer)` vectors, commit **both halves of each vector** — the RDP
+command stream (the input) and the golden framebuffer (the output) — and have the RustyN64 harness
+replay each command stream through its RDP and compare its framebuffer to the committed golden.
+"Outputs, not source" means the corpus contains **no Angrylion source or binary**: the command
+stream is a plain byte blob and the golden framebuffer is Angrylion's rendered *output*, both freely
+committable, keeping Angrylion an external output oracle (`ref-proj/README.md`; module 20
+golden-vector rule) and never a vendored dependency.
+
+**Fixed vectors, not live fuzzing.** The gate replays a **committed, deterministic** corpus so CI is
+reproducible; the *generation* uses the conformance harness's randomised command synthesis, but the
+committed vectors are frozen (a seed + generator version is recorded so the corpus can be
+regenerated/expanded, but CI never runs Angrylion live). A future live-fuzz mode is out of scope for
+the cut gate.
+
+**Acceptance criteria:**
+
+- [ ] A committed corpus of vectors under `tests/golden/rdp-conformance/`, each a **command-stream
+      blob + golden framebuffer** pair, generated by the external harness. The generator (harness
+      commit, seed, RDP config) is documented so the corpus is reproducible; the golden framebuffers
+      are stored **compressed** (e.g. PNG) at small test resolutions to bound repo growth, with Git
+      LFS as the fallback if the corpus outgrows a documented size budget.
+- [ ] A harness runner replays each vector and asserts a **byte-exact framebuffer match** (the
+      decoded pixel buffer, compared value-for-value — not a status flag).
+- [ ] The suite bit-matches across its ~150 vectors — the v0.4.0 cut criterion — or every diff is an
+      explained, ledgered residual with a plan.
+
+**Complexity:** XL — the long pole.
+
+---
+
+### T-33-006 — A real ROM renders a stable golden frame
+
+**Description:** the other half of the cut criterion — a real (homebrew/test) ROM's command stream
+renders a stable frame matching a committed golden, through the full RSP→RDP→VI path (the rdpq
+microcode already boots on the RSP and emits a command list, Phase 2).
+
+**Acceptance criteria:**
+
+- [ ] A real ROM's RDP output is pinned by a committed golden frame (extends `golden_frame.rs`).
+- [ ] The frame is stable across runs (determinism, ADR 0004).
+
+**Complexity:** M
+
+---
+
+## Carried residuals to close here (fuzz-validated)
+
+- **R-3** fill rounding, **R-5** VI scale/AA filters, **R-7** 4-bit / 32-bit-block loads,
+  **R-8** Texture Rectangle Flip / non-16-bit copy / alpha-compare — each re-checked against the
+  conformance vectors and either fixed or re-ledgered with evidence.
+
+## Sprint review checklist
+
+- [ ] All tickets checked off or explicitly deferred (with reason).
+- [ ] The ParaLLEl-RDP conformance suite bit-matches the reference (or every diff is ledgered).
+- [ ] A real ROM renders a stable frame matching a committed golden.
+- [ ] CHANGELOG.md updated; `docs/rdp.md` kept in sync; the phase-close release ceremony runs
+      (VERSION-PLAN §v0.4.0 — the annotated tag + notes on `main`).
