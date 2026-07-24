@@ -13,6 +13,12 @@
 # See ../README.md for setup, the issue #76 PTY workaround, and the ToS caveat.
 set -euo pipefail
 
+# Helpers are defined FIRST: the configuration block below calls log() from the MAX_PROMPT_BYTES
+# clamp, so log() must already exist. (Defined later, a clamp that fires would die with
+# `log: command not found` under set -e instead of warning — a latent misconfiguration trap.)
+log() { printf '[agy-review] %s\n' "$*" >&2; }
+have_text() { [ -s "$1" ] && grep -q '[^[:space:]]' "$1"; }
+
 # --- configuration (all env-overridable from the workflow) ---------------------
 AGY_BIN="${AGY_BIN:-agy}"
 command -v "$AGY_BIN" >/dev/null 2>&1 || AGY_BIN="$HOME/.local/bin/agy"
@@ -36,22 +42,27 @@ MAX_PROMPT_BYTES="${MAX_PROMPT_BYTES:-125000}" # hard ceiling on the INLINED pro
 ARG_SIZE_CEILING=128000                     # hard cap: a configured MAX_PROMPT_BYTES above the
                                            # MAX_ARG_STRLEN-derived safe bound would defeat the guard
                                            # and re-expose E2BIG, so clamp any override down to it.
-if ! [ "$MAX_PROMPT_BYTES" -le "$ARG_SIZE_CEILING" ] 2>/dev/null; then
-  log "MAX_PROMPT_BYTES='${MAX_PROMPT_BYTES}' invalid or above the ${ARG_SIZE_CEILING}-byte ceiling; clamping"
+# Require a POSITIVE integer at or below the ceiling. The `-gt 0` half is load-bearing, not
+# cosmetic: a negative override (e.g. MAX_PROMPT_BYTES=-1) satisfies `-le "$ARG_SIZE_CEILING"`,
+# so without it the clamp is skipped and the `head -c "$MAX_PROMPT_BYTES"` prompt cap below runs
+# as GNU `head -c -1` (print all-but-last-byte) — silently defeating the E2BIG backstop. A
+# non-numeric value trips the `2>/dev/null` and is clamped too.
+if ! { [ "$MAX_PROMPT_BYTES" -gt 0 ] && [ "$MAX_PROMPT_BYTES" -le "$ARG_SIZE_CEILING" ]; } 2>/dev/null; then
+  log "MAX_PROMPT_BYTES='${MAX_PROMPT_BYTES}' invalid, non-positive, or above the ${ARG_SIZE_CEILING}-byte ceiling; clamping"
   MAX_PROMPT_BYTES="$ARG_SIZE_CEILING"
 fi
 STYLE_GUIDE="${STYLE_GUIDE:-.github/agy-review.md}"  # repo-relative; loaded if present
                                            # (dedicated name -- avoids colliding with GEMINI.md/AGENTS.md)
-CONV_DIR="${CONV_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
-LOG="${RUNNER_TEMP:-/tmp}/agy-review.log"
+# Per-run log path. A FIXED name would collide between concurrent jobs whenever
+# RUNNER_TEMP is unset (local runs fall back to /tmp, which is shared) -- and a
+# predictable /tmp path is a symlink/file-tampering target. The run-id / PID
+# suffix keeps it unique per run.
+LOG="${RUNNER_TEMP:-/tmp}/agy-review-${GITHUB_RUN_ID:-$$}.log"
 AGY_LOCK="${AGY_LOCK:-$HOME/.gemini/antigravity-cli/.agy-review.lock}"
 AGY_LOCK_WAIT="${AGY_LOCK_WAIT:-600}"      # seconds to wait for the agy lock before proceeding
 AGY_RETRIES="${AGY_RETRIES:-3}"            # attempts to get a usable agy response
 AGY_RETRY_DELAY="${AGY_RETRY_DELAY:-15}"   # base backoff seconds between retries (grows per attempt)
 MARKER="<!-- antigravity-pr-review -->"
-
-log() { printf '[agy-review] %s\n' "$*" >&2; }
-have_text() { [ -s "$1" ] && grep -q '[^[:space:]]' "$1"; }
 
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY not set}"
 
@@ -63,10 +74,19 @@ case "${GITHUB_EVENT_NAME:-}" in
   issue_comment)
     is_pr="$(jq -r '.issue.pull_request // empty' "$GITHUB_EVENT_PATH")"
     body="$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")"
+    assoc="$(jq -r '.comment.author_association // ""' "$GITHUB_EVENT_PATH")"
     [ -n "$is_pr" ] || { log "comment is not on a PR; skipping"; exit 0; }
     case "$body" in
       /agy-review*) : ;;
       *) log "comment is not an /agy-review command; skipping"; exit 0 ;;
+    esac
+    # Defense in depth: the workflow `if:` already gates on author_association, but this
+    # script is also runnable by hand and by any future caller, so re-check here that the
+    # commenter has write access. A stranger's `/agy-review` must never schedule an agy
+    # run on the self-hosted host — losing this to a workflow-only gate would be silent.
+    case "$assoc" in
+      OWNER|MEMBER|COLLABORATOR) : ;;
+      *) log "comment author association '$assoc' lacks write access; skipping"; exit 0 ;;
     esac
     PR="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
     ;;
@@ -79,11 +99,15 @@ log "reviewing ${REPO}#${PR}"
 
 # Remove every temp file on exit. Pre-declared so the trap is safe under `set -u` even if the
 # script exits before a given file is created.
-diff_file= diff_err= meta_file= prompt_file= out_file= raw= body_file= agy_diff_file=
+diff_file= diff_err= meta_file= prompt_file= out_file= raw= body_file= agy_diff_file= agy_work_dir=
 # Set when the large-diff fallback below creates refs/agy/* so the trap can remove them.
 agy_refs_created=
 cleanup() {
   rm -f "$diff_file" "$diff_err" "$meta_file" "$prompt_file" "$out_file" "$raw" "$body_file" "$agy_diff_file"
+  # Remove the gitignored diff-handoff scratch dir once its file is gone. `rmdir` only unlinks an
+  # empty dir, so a concurrent run's file (a different $$) is never clobbered; a non-empty dir is
+  # gitignored and harmless if left behind.
+  [ -n "$agy_work_dir" ] && rmdir "$agy_work_dir" 2>/dev/null || true
   if [ -n "$agy_refs_created" ] && [ -n "${PR:-}" ]; then
     git update-ref -d "refs/agy/pr-${PR}" 2>/dev/null || true
     git update-ref -d "refs/agy/base-${PR}" 2>/dev/null || true
@@ -95,7 +119,7 @@ trap cleanup EXIT
 # FAIL-CLOSED. A `{}` fallback was harmless when the only field read was the title,
 # but is NOT harmless now that isCrossRepository gates whether an untrusted diff
 # reaches agy: a lookup failure must never be indistinguishable from "same-repo".
-diff_file="$(mktemp)"; meta_file="$(mktemp)"
+diff_file="$(mktemp)"; meta_file="$(mktemp)"; diff_err="$(mktemp)"
 gh pr view "$PR" --repo "$REPO" --json title,isCrossRepository,baseRefName > "$meta_file" \
   || { log "gh pr view failed; refusing to review without knowing the PR's head repo"; exit 1; }
 
@@ -139,7 +163,8 @@ esac
 # the one fetch rather than a persisted credential, so a `persist-credentials:
 # false` checkout stays intact; a hand-run without GH_TOKEN falls through to git's
 # ambient credential helper.
-diff_err="$(mktemp)"
+# ($diff_err was allocated alongside $diff_file / $meta_file above, so the cleanup
+# trap never references it before it exists.)
 if ! gh pr diff "$PR" --repo "$REPO" > "$diff_file" 2>"$diff_err"; then
   if grep -qi 'diff exceeded the maximum number of lines' "$diff_err"; then
     base_ref="$(jq -r '.baseRefName // empty' "$meta_file")"
@@ -239,24 +264,30 @@ case "$AGY_DIFF_MODE" in
 esac
 
 if [ "$use_file" = "1" ]; then
-  # agy's CWD is the repo checkout, so a file written under it is readable by its file tool. Prefer
-  # `.git/` -- git never lists it in `git status`, so the transient diff can't show up as working-tree
-  # pollution if agy inspects repo state -- and fall back to the repo root when `.git` is not a real
-  # directory (a worktree/submodule gitfile). Either way the path is CWD-relative for the prompt.
-  if [ -d "$PWD/.git" ]; then
-    diff_name=".git/agy-review-diff.$$.patch"
-  else
-    diff_name=".agy-review-diff.$$.patch"
-  fi
+  # agy's CWD is the repo checkout, so a file written under it is readable by its file tool. Write it
+  # into a dedicated, gitignored scratch dir (`.agy-review-work/`, listed in .gitignore) rather than
+  # `.git/` (a sandbox may deny tool access to the hidden `.git` dir) or the repo root (an untracked
+  # `.patch` there pollutes `git status` if agy inspects repo state). Being gitignored, the dir never
+  # shows as working-tree pollution; the EXIT trap removes the file and the (now-empty) dir.
+  #
+  # The prompt hands agy an ABSOLUTE path, and the run below adds "$PWD" to agy's workspace via
+  # --add-dir. Both are load-bearing and were proven on the live runner: agy's sandboxed file tool
+  # does NOT resolve a relative path against the shell CWD (it uses its own workspace root), so a
+  # relative `.agy-review-work/...` comes back "does not exist on the filesystem" — the exact
+  # large-diff review failure this fixes. An absolute path resolves on its own, and --add-dir makes
+  # the checkout part of the sandbox workspace; using both is belt-and-suspenders.
+  agy_work_dir="$PWD/.agy-review-work"
+  mkdir -p "$agy_work_dir"
+  diff_name=".agy-review-work/agy-review-diff.$$.patch"
   agy_diff_file="$PWD/$diff_name"
   cp "$diff_file" "$agy_diff_file"
   {
     printf '\n--- UNIFIED DIFF (in a file) ---\n'
-    printf 'The full unified diff for this PR is in the file `%s` in your current working directory\n' "$diff_name"
+    printf 'The full unified diff for this PR is in the file at the absolute path `%s`\n' "$agy_diff_file"
     printf '(it is too large to inline). Read that file IN FULL with your file-reading tool first, then\n'
     printf 'produce the review above from its actual contents. Do not review from the PR title alone.\n'
   } >> "$prompt_file"
-  log "diff is ${diff_bytes} bytes (> ${inline_budget}-byte inline budget); handing it to agy as ${diff_name}"
+  log "diff is ${diff_bytes} bytes (> ${inline_budget}-byte inline budget); handing it to agy as ${agy_diff_file}"
 else
   # Forced inline (AGY_DIFF_MODE=inline) on an over-budget diff: the MAX_PROMPT_BYTES guard below
   # still prevents E2BIG by truncating, but warn since `auto` would have filed it in full instead.
@@ -277,13 +308,25 @@ fi
 # Byte truncation (here or in the MAX_DIFF_BYTES cap above) can slice a multi-byte UTF-8 sequence.
 # agy is a Rust binary and std::env::args() PANICS on a non-UTF-8 argument, which would reintroduce
 # an instant startup failure -- exactly the class of bug this guard exists to prevent. Drop any
-# invalid/partial sequences when iconv is available (glibc + macOS ship it); a no-op when clean.
+# invalid/partial sequences with iconv (glibc + macOS ship it), and fall back to python3 (present on
+# every CI runner) if iconv is absent, so a no-iconv host can't leave a split sequence in the prompt.
+# Explicit branches, not `&& mv || rm`: that idiom masks an mv failure and would then feed agy the
+# original (possibly split) bytes. A successful sanitize must replace the file; a failed mv is fatal
+# (set -e); a failed/absent sanitizer leaves the original and we proceed (it may already be clean, and
+# any residual invalid byte now surfaces via the captured stderr rather than a silent instant crash).
+# The `[ -s ... ]` guard is deliberate: the prompt is always non-empty here (boilerplate at
+# minimum), so a sanitizer that exits 0 but emits ZERO bytes is a malfunction, and mv-ing that
+# empty file over $prompt_file would wipe the prompt and hand agy nothing. Replace only on a
+# non-empty result; otherwise discard it and proceed with the original (already likely clean).
 if command -v iconv >/dev/null 2>&1; then
-  # Explicit branches, not `&& mv || rm`: that idiom masks an mv failure and would then feed agy the
-  # original (possibly split) bytes. A successful iconv must replace the file; a failed mv is fatal
-  # (set -e), a failed iconv leaves the original and we proceed (it may already be clean, and any
-  # residual invalid byte now surfaces via the captured stderr rather than a silent instant crash).
-  if iconv -c -f UTF-8 -t UTF-8 "$prompt_file" > "$prompt_file.utf8" 2>/dev/null; then
+  if iconv -c -f UTF-8 -t UTF-8 "$prompt_file" > "$prompt_file.utf8" 2>/dev/null && [ -s "$prompt_file.utf8" ]; then
+    mv "$prompt_file.utf8" "$prompt_file"
+  else
+    rm -f "$prompt_file.utf8"
+  fi
+elif command -v python3 >/dev/null 2>&1; then
+  if python3 -c 'import sys; sys.stdout.buffer.write(open(sys.argv[1],"rb").read().decode("utf-8","ignore").encode("utf-8"))' \
+       "$prompt_file" > "$prompt_file.utf8" 2>/dev/null && [ -s "$prompt_file.utf8" ]; then
     mv "$prompt_file.utf8" "$prompt_file"
   else
     rm -f "$prompt_file.utf8"
@@ -307,6 +350,18 @@ fi
 # --- run agy headless, under a PTY (works around agy issue #76: -p drops --------
 #     stdout when stdout is not a TTY, e.g. piped/redirected/subprocess) ---------
 flags=( --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --dangerously-skip-permissions )
+# In file-handoff mode agy must read the on-disk diff, and --sandbox otherwise confines its file
+# tool to its own workspace root (NOT the shell CWD) — so add the checkout to the workspace. Only in
+# file mode: an inline review reads nothing from disk, so it keeps zero filesystem access (narrower
+# prompt-injection surface for the common path). Proven necessary on the live runner: without this
+# (and the absolute path above) the large-diff handoff file reads back as "does not exist".
+[ "${use_file:-0}" = "1" ] && flags+=( --add-dir "$PWD" )
+
+# Strip the repo tokens from agy's own environment. agy runs under
+# --dangerously-skip-permissions and ingests an untrusted diff (prompt-injection
+# surface); `gh` and the large-diff fetch run in THIS script, before and after, and
+# agy has no use for GH_TOKEN / GITHUB_TOKEN — so it should not inherit them.
+agy_env=( env -u GH_TOKEN -u GITHUB_TOKEN )
 [ -n "$AGY_MODEL" ]  && flags+=( --model "$AGY_MODEL" )
 [ -n "$AGY_EFFORT" ] && flags+=( --effort "$AGY_EFFORT" )
 
@@ -336,14 +391,17 @@ for (( attempt=1; attempt<=AGY_RETRIES; attempt++ )); do
 
   if command -v unbuffer >/dev/null 2>&1; then
     log "running agy via unbuffer (allocates a PTY) [attempt ${attempt}/${AGY_RETRIES}]"
-    unbuffer "$AGY_BIN" "${flags[@]}" --print "$(cat "$prompt_file")" > "$out_file" 2>>"$LOG" || true
+    "${agy_env[@]}" unbuffer "$AGY_BIN" "${flags[@]}" --print "$(cat "$prompt_file")" > "$out_file" 2>>"$LOG" || true
   else
     log "unbuffer not found; falling back to script(1) [attempt ${attempt}/${AGY_RETRIES}]"
     raw="$(mktemp)"
-    # `script -c` runs its command through `sh -c`, so every path in the command string is quoted for
-    # that inner shell: `'$here'` and `'$prompt_file'` are wrapped in single quotes (the outer double
-    # quotes still expand them) so a repo path containing spaces survives the word-split.
-    AGY_BIN="$AGY_BIN" script -qfec "'$here'/_agy_print.sh '$prompt_file' ${flags[*]}" "$raw" >/dev/null 2>>"$LOG" || true
+    # `script -c` runs its command through `sh -c`. Build that command with `printf '%q '`
+    # so every argument -- including the flag values, which come from env vars
+    # (AGY_MODEL / AGY_EFFORT / AGY_PRINT_TIMEOUT) -- is shell-escaped for the inner shell.
+    # A raw `${flags[*]}` here would let a shell metacharacter in any of those be evaluated
+    # by `sh -c` (command injection); `%q` quotes each token exactly.
+    cmd="$(printf '%q ' "$here/_agy_print.sh" "$prompt_file" "${flags[@]}")"
+    "${agy_env[@]}" AGY_BIN="$AGY_BIN" script -qfec "$cmd" "$raw" >/dev/null 2>>"$LOG" || true
     col -b < "$raw" > "$out_file"
     rm -f "$raw"   # each retry makes a fresh $raw; the EXIT trap only holds the last one
   fi
@@ -351,24 +409,11 @@ for (( attempt=1; attempt<=AGY_RETRIES; attempt++ )); do
   # normalize CRs without sed -i (avoid in-place edit footguns)
   tr -d '\r' < "$out_file" > "$out_file.clean" && mv "$out_file.clean" "$out_file"
 
-  # --- fallback: recover the answer from agy's conversation SQLite store --------
-  #     (belt-and-suspenders for issue #76 on hosts where the PTY trick still
-  #     yields nothing). The schema is NOT officially documented and can change
-  #     between agy versions -- inspect with `sqlite3 <db> .schema` and adjust.
-  if ! have_text "$out_file"; then
-    log "print output empty; trying SQLite conversation fallback"
-    if command -v sqlite3 >/dev/null 2>&1 && [ -d "$CONV_DIR" ]; then
-      db="$(ls -t "$CONV_DIR"/*.db 2>/dev/null | head -1 || true)"
-      if [ -n "${db:-}" ]; then
-        for q in \
-          "SELECT text FROM messages WHERE role='assistant' ORDER BY rowid DESC LIMIT 1;" \
-          "SELECT content FROM messages WHERE role='assistant' ORDER BY rowid DESC LIMIT 1;" \
-          "SELECT body FROM message WHERE role='assistant' ORDER BY rowid DESC LIMIT 1;"; do
-          sqlite3 "$db" "$q" > "$out_file" 2>/dev/null && have_text "$out_file" && break
-        done
-      fi
-    fi
-  fi
+  # NOTE: there is deliberately no SQLite-conversation-store fallback here. agy's
+  # store is keyed by mtime, not session, and on a shared/multi-user runner the
+  # most-recent `.db` can belong to an UNRELATED concurrent local `agy` session --
+  # reading it would post that session's output into a public PR comment (data
+  # leak). The PTY path above plus the retry loop cover agy issue #76 without it.
 
   have_text "$out_file" && break
   if [ "$attempt" -lt "$AGY_RETRIES" ]; then
@@ -409,8 +454,11 @@ body_file="$(mktemp)"
 # --- replace any prior review comment, then post fresh -------------------------
 # A failed delete is logged, not swallowed: silently ignoring it would let a transient API/perms
 # error leave the old comment in place AND post a new one, so runs accumulate duplicates.
+# The author filter is load-bearing, not cosmetic: without it, ANY user could put the
+# marker (an HTML comment) in a PR comment and have this bot delete arbitrary comments on
+# the next run. Only ever delete OUR OWN bot's prior review comments.
 gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
-    --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" 2>/dev/null \
+    --jq ".[] | select(.user.type == \"Bot\" and .user.login == \"github-actions[bot]\") | select(.body | contains(\"${MARKER}\")) | .id" 2>/dev/null \
   | while read -r cid; do
       [ -n "$cid" ] || continue
       if ! gh api -X DELETE "repos/${REPO}/issues/comments/${cid}" >/dev/null 2>&1; then

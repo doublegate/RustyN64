@@ -119,3 +119,6 @@ __pycache__/
 /tests/captures/
 /perf-logs/
 /web/dist/
+
+# Antigravity PR reviewer: large-diff on-disk handoff (transient, removed by the script).
+/.agy-review-work/
