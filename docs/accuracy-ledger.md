@@ -200,6 +200,7 @@ labelled as one until something reads the register on hardware.
 | R-16 | The AI's `AI_STATUS` `COUNT` (bits 14:1), `WC` (bit 19), and `BC` (bit 16) readbacks, and the `AI_BITRATE` bit-clock timing, are a **best-effort** derived model, not oracle-pinned. `COUNT` is derived from `last_tick × video_clock / MASTER_HZ` as a sawtooth from `DACRATE/2` (wiki §COUNT); `WC` toggles on its second half-period; `BC` is not modelled | These are the DAC's internal sample/bit-clock phase, which the CPU "cannot reliably sample rapidly enough" (wiki §BC) — so no public capture pins their exact value, and n64-systemtest has **no AI coverage** to gate against (verified by grep of `ref-proj/n64-systemtest`). The flags software actually polls (`FULL`/`BUSY`/`ENABLED`) are exact (ares `io.cpp`); only the sub-sample readback is nominal | absolute — a register-readback phase, no oracle | **Open (striven, ungated).** `FULL`/`BUSY`/`ENABLED` are unit-tested exactly; `COUNT`/`WC` are derived but unverifiable without a hardware logic-analyser capture (the user asked to strive for cycle-exactness and to search for capture data — none was found). To be pinned if an AI-status capture or an n64-systemtest AI group ever surfaces. Emits a plausible value rather than a fabricated constant. **n64-systemtest impact: not measured** — no AI test drives this path (the suite has no AI coverage), so the oracle count is **unchanged at 93** |
 | R-17 | The AI DMA models the sample **rate** exactly (`MASTER_HZ / (video_clock / (DACRATE + 1))` per sample-pair) but charges **no DMA setup/arbitration latency and no RDRAM bank-state cost**: the transfer begins, and the start-interrupt fires, at the derived sample boundary rather than after the real DMA-engine delay. The underrun behaviour is a defined **hold-and-decay** (integer `× 63/64` per sample) rather than the analog decay curve | The AI DMA is "directly connected to the DAC" and "progresses as samples are physically put through the DAC" (wiki §DMA), so the per-sample rate is the dominant timing term and is exact; the fixed setup latency `M` and the RDRAM bank costs are the same unmeasured constants flagged for the CPU/PI (they belong in this ledger with provenance when measured, never tuned). The decay shape is deterministic and no-`std`-friendly; ares uses `exp(-1/(freq·0.003))` | absolute — an unmeasured latency, not a differential re-phasing | **Open.** The rate and the FIFO/interrupt sequencing are unit- and integration-tested; the setup latency stays unmeasured (measure, don't guess) and the decay is defined-but-unpinned. No AI-timing oracle exists in the committed suites, so nothing gates it yet — to be validated against the project64 `DoubleShot` PCM ROM (Sprint 2) and any AI-timing capture that surfaces. **n64-systemtest impact: not measured** — no AI test drives the DMA-timing path, so the oracle count is **unchanged at 93** |
 | R-15 | The **scissor** lower-right bound in FILL mode is **asymmetric**: the **X** bound is **inclusive** of its boundary pixel while the **Y** bound is **exclusive**, and a rectangle lying entirely at or past the scissor's right edge draws nothing (`allover`). `fill_rectangle` previously clipped both bounds exclusively (`(coord + 3) >> 2`) | Isolated cleanly against the Angrylion oracle by a scissor-clip fuzz batch (rectangles extending past the scissor on each edge). The X clip keeps the pixel containing `scissor.xl` (a rect spanning past `xl = 8.0` fills column 8), but the Y clip drops row `scissor.yl >> 2` (a scissor `yl = 5.0` fills up to row 4). The asymmetry is `edgewalker_for_prims`: the rectangle's `yl` is `\| 3`'d (FILL/COPY) so its own last scanline fills, but the scissor's raw `clip.yl` makes `invaly = k >= yllimit` drop that boundary row; the horizontal clip (`curover = xlsc >= clip.xl << 1`, `allover` ⇒ `!validline`) keeps the boundary column unless the whole span is over it. Read from the oracle's output, not computed | absolute — a rasterisation geometry rule, oracle-confirmed | **Closed for the integer-coordinate FILL scissor (oracle-validated).** `fill_rectangle` now clips X inclusive with the `allover` guard (`rect_xh >= scissor.xl` ⇒ nothing) and Y exclusive, plus a hard width clamp. Pinned by a 48-vector scissor-clip fuzz family (`tests/vectors/fuzz/fz_scis_*`, all byte-exact) and the reconciled `fill_rectangle_is_clipped_to_the_scissor` unit test (which previously asserted an unverified exclusive X edge). Sub-pixel (fractional-coordinate) scissor edges remain unexercised. No n64-systemtest driver (count 93) |
+| R-18 | A **commercial ROM boots and executes real code but does not reach video** (Phase 5 capstone). Through the retail HLE boot (`rom::hle_boot`) the game's own IPL3 runs, the CPU fetches the cartridge's instruction stream, and the PC advances through hundreds of millions of retired instructions across varied routines — but no frame is scanned out: over ~10 s of emulated time `VI_CTRL` stays 0, `VI_ORIGIN` is never set, and **no interrupt of any kind fires** (SM64 witnessed at `retired ≈ 9.4×10⁸`, all MI interrupt lines clear) | The retail OS-boot runtime the game waits on is not yet modelled. A commercial title's boot is interrupt-driven: after its OS initialises, its main loop blocks on the **VI vblank interrupt**, which the emulator only raises once the game programs `VI_CTRL`/`VI_V_INTR` — and the game does not reach that programming, indicating an earlier dependency (the **RI/RDRAM interface** registers used for RDRAM sizing, and/or the OS thread/interrupt setup). This is a cross-subsystem gap spanning the VI vblank loop, the RI registers, and the F3DEX graphics microcode — all **outside the Phase 5 cart/boot/saves boundary** (ADR 0003; the cart phase delivers PI/SI/PIF/CIC + saves, not the OS runtime) | absolute — a coverage boundary across subsystems, not a fitted constant or a timing interval | **Open — characterised, not a regression.** The committable Phase 5 gate (n64-systemtest cart/PIF/SI, save round-trips, homebrew boot) is met; the commercial capstone is asserted at its honest achievable level — `a_commercial_rom_boots_and_executes` (local, `#[ignore]`d) proves the ROM boots and retires ≥ 10⁶ real instructions without panicking, and *reports* the lit-pixel count (0) rather than asserting it. Reaching a title frame is deferred to the VI/RI/F3DEX work of a later phase and validated then. This gap was surfaced by the capstone exactly as the plan's escalation gate intended: **ship v0.6.0 on the committable gates + an honest "boots and executes" capstone, not a faked pass or an unbounded chase.** n64-systemtest impact: none — the boot/video path has no systemtest driver; the suite-wide count is **90** (see C-32) |
 
 Every entry must carry a **classification** of the failing measurement as **absolute** or
 **differential** before any mechanism is proposed (ADR 0005, `engineering-lessons.md` §1.3). A
@@ -1321,6 +1322,52 @@ that way.
 **Attribution.** The construction is ares's, used under ISC. `ref-proj/README.md` records that
 ares is among the projects permissive enough to draw from; simple64, gopher64, n64-tests and
 angrylion-rdp-plus are not, and were not consulted.
+
+---
+
+### C-32 — the HLE boot state and the CIC seeds are cited constants, not measured
+
+**Claim.** `rom::hle_boot` reaches the state a retail IPL3 expects without running the real
+IPL1/IPL2 or the CIC challenge: it copies the cartridge's *own* IPL3 (`ROM 0x40..0x1000`) into
+DMEM and jumps to it, and stands in for the skipped handshake with a fixed set of seeded values.
+Every one of those values is a **cited or documented constant** — none is fitted to make a ROM
+pass, and none is a timing interval.
+
+**The seeded state and its provenance.**
+
+- **CIC seed word → PIF RAM `0x24..0x28`.** Per CIC: 6101 = `0x0004_3F3F`, 6102 = `0x0000_3F3F`,
+  6103 = `0x0000_783F`, 6105 = `0x0000_913F`, 6106 = `0x0000_853F`. The CIC-specific byte
+  (`0x3F`/`0x78`/`0x91`/`0x85`) and the `0x3F` boot-parameter byte are the IPL3 seeds documented
+  on the **N64brew *CIC-NUS* wiki** (§Seeds / IPL3), mirrored under `n64brew_wiki/markdown/`.
+- **COP0 `Status = 0x3400_0000`** (`CU1|CU0|FR` set) and **`Config = 0x7006_E463`** (the
+  IPL3-left value, `K0 = 3` cached) — the post-IPL3 register state; corroborated against the
+  boot sequence in **cen64 `si/cic.c`** and the N64brew *PIF-NUS* boot description.
+- **GPRs `s3..s7`** = `rom_type = 0` (cart), `tv_type = 1` (NTSC), `reset_type = 0` (cold),
+  `s6` = the CIC seed byte, `s7 = 0` — the boot argument block IPL3 hands the game's entry.
+- **PI `DOM1_{LAT,PWD,PGS,RLS}`** are decoded from the ROM header's first word exactly as IPL2
+  programs them (N64brew *Peripheral Interface* §BSD domain registers), not invented.
+
+**Why this is HLE and where the real path lives.** This deliberately skips the PIF ROM
+(IPL1/IPL2) and the CIC lockout challenge — the seed injection is their observable *result*, not
+a reimplementation. The copyright-clean, CI-able default; the real-PIF/IPL path is an
+off-by-default local-only mode (ADR on HLE-vs-real-PIF boot). `simple64`'s `bootrom_hle.c` was
+**studied, not copied** (it is GPLv3, study-only per `ref-proj/README.md`); the drawn-from
+sources are the N64brew wiki and cen64 (both citable/vendorable).
+
+**Measured n64-systemtest impact.** The Phase 5 cart/PIF/SI subsystem this boot path unlocks
+drops the suite-wide failing-assertion count from **93 → 90** (−3), measured with the committed
+runner (`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`,
+917 tests started, 90 failing; Phase-1 categories still `Failed: 0`). This 90 is the **current
+authoritative count** — the older "count unchanged at 93" notes in the entries above were true
+when written and are left as-is (historical, per the ledger's immutability discipline). The
+remaining 90 are the RDP rasteriser (Phase 3 render path, no systemtest driver) and the retail
+OS-boot runtime (R-18), neither in Phase 5's scope.
+
+**Falsifiability.** The boot state is pinned by `hle_boot_seeds_retail_state`, which asserts the
+IPL3 copy, the CIC seed word in PIF RAM, the `s4`/`s6` argument bytes, the full PI DOM1 tuple
+(incl. RLS), and the DMEM entry PC — so changing any seeded constant fails a test. What it does
+**not** prove is that these are the *only* values a real IPL3 leaves; that is bounded by the
+real-PIF path (off by default) and by whatever n64-systemtest boot-state coverage is run.
 
 ---
 

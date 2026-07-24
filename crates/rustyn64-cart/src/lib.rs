@@ -22,8 +22,11 @@
 
 extern crate alloc;
 
+/// The PI (Peripheral Interface) DMA engine + BSD domain timing registers.
 pub mod pi;
+/// The PIF RAM + the SI joybus frame executor (controllers, EEPROM, Pak).
 pub mod pif;
+/// The four on-cartridge save backends (SRAM, FlashRAM, EEPROM, Controller Pak).
 pub mod save;
 
 use alloc::vec::Vec;
@@ -339,9 +342,13 @@ impl Cart {
 
 impl Cartridge for Cart {
     fn pi_read(&mut self, addr: u32) -> u8 {
-        // The DOM2 save window (SRAM / FlashRAM) takes priority; then the ROM
-        // window at domain 1; else the caller applies open bus.
-        if let Some(b) = self.save.pi_read(addr) {
+        // The DOM2 save window (SRAM / FlashRAM) takes priority, but **only**
+        // within that window — otherwise a SRAM/FlashRAM cart's `pi_read` would
+        // answer for the ROM window too (the save's flat store returns `0` past
+        // its end), and the game could never read its own ROM through PI DMA.
+        if (save::SAVE_PI_BASE..ROM_PI_BASE).contains(&addr)
+            && let Some(b) = self.save.pi_read(addr)
+        {
             return b;
         }
         let off = (addr as usize).wrapping_sub(ROM_PI_BASE as usize);

@@ -458,10 +458,12 @@ mod tests {
         // The CIC seed word landed in PIF RAM 0x24..0x28 (0x0000_3F3F).
         assert_eq!(sys.bus.cart.pif_read(0x26), 0x3F);
         assert_eq!(sys.bus.cart.pif_read(0x27), 0x3F);
-        // PI DOM1 from the header word 0x8037_1240: LAT=0x40, PWD=0x12, PGS=7.
+        // PI DOM1 from the header word 0x8037_1240: LAT=0x40, PWD=0x12, PGS=7,
+        // RLS=3 (the low 2 bits). Assert RLS too so dropping its write fails.
         assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_LAT), 0x40);
         assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_PWD), 0x12);
         assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_PGS), 0x07);
+        assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_RLS), 0x03);
         // The PC is at IPL3 in DMEM.
         assert_eq!(sys.cpu.pc, 0xFFFF_FFFF_A400_0040);
     }

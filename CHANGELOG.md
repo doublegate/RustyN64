@@ -27,6 +27,18 @@ timing, the SI joybus, the CIC handshake, and the save backends
   access (with the CRC8), and `0x04`/`0x05` EEPROM blocks. A controller read runs end to end —
   frame staged in RDRAM → `WR64B` DMA to PIF → `RD64B` executes the handshakes → replies DMA'd
   back — verified by a Bus integration test; EEPROM and Controller-Pak round-trip over joybus.
+- **A retail ROM HLE boot** (`rustyn64-test-harness::rom::hle_boot`): copies the cartridge's own
+  IPL3 into DMEM, injects the per-CIC seed into PIF RAM, seeds the post-IPL3 COP0/GPR/PI-DOM1
+  state, and jumps to IPL3 — so a commercial ROM runs its own bootcode. The seeds are cited
+  constants (N64brew *CIC-NUS*/*PIF-NUS*, cen64), ledgered as **C-32**, not tuned.
+
+**Measured effect on n64-systemtest.** This cart/PIF/SI/boot subsystem drops the suite-wide
+failing-assertion count from **93 → 90** (−3), measured with the committed runner
+(`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`; 917 tests
+started, 90 failing; Phase-1 categories still `Failed: 0`). The commercial-boot capstone is
+characterised honestly: a commercial ROM **boots and executes** real code (hundreds of millions
+of retired instructions) but does not yet reach video — a cross-subsystem VI/RI/F3DEX gap ledgered
+as **R-18**, deferred to a later phase, and outside the Phase 5 cart boundary (ADR 0003).
 
 ## [0.5.0] - 2026-07-24 "Resonance"
 

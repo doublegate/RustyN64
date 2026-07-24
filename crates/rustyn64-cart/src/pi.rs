@@ -51,6 +51,10 @@ pub const PI_BSD_DOM1_PGS: u32 = 0x0460_001C;
 pub const PI_BSD_DOM1_RLS: u32 = 0x0460_0020;
 /// `PI_BSD_DOM2_LAT` — domain-2 latency (the SRAM / `FlashRAM` bus).
 pub const PI_BSD_DOM2_LAT: u32 = 0x0460_0024;
+/// `PI_BSD_DOM2_PWD` — domain-2 pulse width.
+pub const PI_BSD_DOM2_PWD: u32 = 0x0460_0028;
+/// `PI_BSD_DOM2_PGS` — domain-2 page size.
+pub const PI_BSD_DOM2_PGS: u32 = 0x0460_002C;
 /// `PI_BSD_DOM2_RLS` — domain-2 release (end of the register block).
 pub const PI_BSD_DOM2_RLS: u32 = 0x0460_0030;
 
@@ -157,7 +161,8 @@ impl Pi {
             }
             // The BSD domain timing registers store and read back (masked to
             // their field widths). The length registers read back as 0x7F on
-            // hardware; returning 0 for those is a documented simplification.
+            // hardware (N64brew *Peripheral Interface* §PI_RD_LEN/PI_WR_LEN);
+            // returning 0 for those is a documented simplification, not modelled.
             addr => {
                 if let Some((d, field)) = Self::dom_field(addr) {
                     match field {
@@ -206,8 +211,8 @@ impl Pi {
             }
             addr => {
                 // The BSD domain timing registers store the written value
-                // (masked to their field widths); they affect DMA duration via
-                // `transfer_cycles`, not just readback.
+                // (masked to their field widths). Deriving DMA duration from
+                // them is a follow-up; the DMA still completes immediately.
                 if let Some((d, field)) = Self::dom_field(addr) {
                     match field {
                         0 => self.dom_lat[d] = val as u8,
@@ -363,8 +368,8 @@ mod tests {
     /// **The BSD domain timing registers store and read back**, masked to their
     /// field widths (LAT/PWD 8-bit, PGS 4-bit, RLS 2-bit), for both DOM1 and
     /// DOM2 independently. IPL2 programs DOM1 from the ROM header (LAT 64, PWD
-    /// 18, PGS 7, RLS 3 for official ROMs), so a game that reads them back must
-    /// see what it wrote.
+    /// 18, PGS 7, RLS 3 for official ROMs — N64brew *Peripheral Interface*
+    /// §Domains), so a game that reads them back must see what it wrote.
     #[test]
     fn the_bsd_domain_timing_registers_store_and_read_back() {
         let mut pi = Pi::new();
@@ -382,13 +387,22 @@ mod tests {
         assert_eq!(pi.read(PI_BSD_DOM1_PGS), 0xF);
         pi.write(PI_BSD_DOM1_RLS, 0xFF);
         assert_eq!(pi.read(PI_BSD_DOM1_RLS), 0x3);
-        // DOM2 is independent of DOM1.
+        // DOM2 is independent of DOM1 across every field.
         pi.write(PI_BSD_DOM2_LAT, 0x20);
         assert_eq!(pi.read(PI_BSD_DOM2_LAT), 0x20);
+        pi.write(PI_BSD_DOM2_PWD, 0x21);
+        assert_eq!(pi.read(PI_BSD_DOM2_PWD), 0x21);
+        pi.write(PI_BSD_DOM2_PGS, 0xFF);
+        assert_eq!(pi.read(PI_BSD_DOM2_PGS), 0xF, "DOM2 PGS is 4-bit");
         assert_eq!(
             pi.read(PI_BSD_DOM1_LAT),
             64,
             "DOM2 write did not touch DOM1"
+        );
+        assert_eq!(
+            pi.read(PI_BSD_DOM1_PWD),
+            0x12,
+            "DOM2 write did not touch DOM1 PWD"
         );
         assert_eq!(pi.read(PI_BSD_DOM2_RLS), 0, "unwritten DOM2 RLS reads 0");
     }

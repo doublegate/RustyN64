@@ -2,9 +2,9 @@
 //!
 //! Two access paths (`docs/cart.md`, `ref-docs/research-report.md` §6):
 //! - **PI-bus (DOM2 @ `0x0800_0000`):** SRAM (flat) and FlashRAM (a command
-//!   state machine). Driven through [`SaveDevice::pi_read`]/[`SaveDevice::pi_write`].
+//!   state machine). Driven through `SaveDevice::pi_read`/`pi_write`.
 //! - **Joybus (SI/PIF):** EEPROM 4k/16k and the Controller Pak (flat blocks).
-//!   Driven through [`SaveDevice::eeprom_read_block`] etc. by the joybus module.
+//!   Driven through `SaveDevice::eeprom_read_block` etc. by the joybus module.
 //!
 //! Every backend round-trips a write and reload byte-for-byte — the accuracy
 //! oracle (the RustyNES battery-save analog). FlashRAM is modelled as its real
@@ -93,9 +93,12 @@ impl FlashRam {
             }
             0x4B => {
                 // Sector Erase Setup: the low bits index a page in the sector.
+                // Clamp to the 8 real sectors — a guest can write any 16-bit page
+                // index, and an out-of-range sector base would panic the erase.
                 self.chip_erase = false;
                 let page = (cmd & 0xFFFF) as usize;
-                self.erase_sector = Some((page / FLASH_SECTOR_PAGES) * FLASH_SECTOR);
+                let sector = (page / FLASH_SECTOR_PAGES).min(FLASH_SIZE / FLASH_SECTOR - 1);
+                self.erase_sector = Some(sector * FLASH_SECTOR);
             }
             0x78 => {
                 // Execute the pending erase → all-ones, then Status mode.
@@ -136,8 +139,10 @@ impl FlashRam {
         match self.mode {
             FlashMode::ReadArray => self.array.get(off).copied().unwrap_or(0xFF),
             FlashMode::Status => {
-                // The 8-bit status is repeated; low byte carries the OK bits.
-                if off == 3 { self.status } else { 0 }
+                // The status burst is the pattern `00 <status>` repeated, so the
+                // status byte sits at every ODD offset (1, 3, 5, …), 0 at even
+                // (n64brew `Flash.md` §Status Mode).
+                if off & 1 == 1 { self.status } else { 0 }
             }
             // A minimal, stable silicon ID (byte-indexed chip). Real IDs vary;
             // this is a documented stand-in read via the 8-byte DMA path.

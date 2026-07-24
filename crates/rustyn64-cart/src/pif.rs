@@ -216,13 +216,13 @@ impl Pif {
                     self.mark_no_device(resp, rx_len);
                 }
             }
-            (4, 0x04) if tx_len >= 2 => {
+            (4, 0x04) if tx_len >= 2 && matches!(save, SaveDevice::Eeprom(_)) => {
                 let mut block = [0u8; 8];
                 save.eeprom_read_block(self.ram[cmd + 1], &mut block);
                 let n = rx_len.min(8);
                 self.ram[resp..resp + n].copy_from_slice(&block[..n]);
             }
-            (4, 0x05) if tx_len >= 10 => {
+            (4, 0x05) if tx_len >= 10 && matches!(save, SaveDevice::Eeprom(_)) => {
                 let mut data = [0u8; 8];
                 data.copy_from_slice(&self.ram[cmd + 2..cmd + 10]);
                 save.eeprom_write_block(self.ram[cmd + 1], &data);
