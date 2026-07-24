@@ -19,7 +19,8 @@ scoped:
 | Save-state restore continues bit-identically (**Phase 6** capstone) | **met** — the whole `System` is serde-serialisable; a two-run trace compare (`tests/savestate.rs`) proves snapshot→continue→restore→continue is bit-identical on a homebrew ROM (committable) and on a booted **commercial** ROM (full RSP/RDP/AI/cart machine, local-only). Rewind and run-ahead are byte-identical to a plain `run_frame` when off | `cargo test -p rustyn64-test-harness --test savestate` |
 | A commercial ROM is playable natively **with a picture** (VERSION-PLAN's literal cut criterion) | **deferred (ledger R-18)** — a commercial title boots and executes real code through the shell but scans out no frame; the cross-subsystem VI-vblank / RI-register / F3DEX gap is outside Phase 6's frontend scope and is validated when the Phase 3/7 rasteriser + microcode work closes it. v0.7.0 ships on the demonstrated-playable path above, not a faked commercial pass | `cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored` (local) |
 
-**Phases 1, 2, 3, 4, and 5 are complete.** Phase 5 delivers the cartridge + I/O boundary — the
+**The earlier phases' exit criteria all remain met** (unchanged oracle results). Phase 5, for
+reference, delivers the cartridge + I/O boundary — the
 PI bus (BSD domain timing), the SI joybus, all four save backends, the CIC handshake, and **two
 boot paths**: the copyright-clean **HLE boot** (default, CI-able) and a **faithful real-PIF
 boot** that runs the console's real IPL1/IPL2 from the PIF ROM and verifies the IPL2 checksum

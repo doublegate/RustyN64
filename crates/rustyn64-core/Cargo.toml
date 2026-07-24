@@ -13,7 +13,7 @@ std = []
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde-big-array = "0.5"
-rustyn64-snapshot = { path = "../rustyn64-snapshot" }
+rustyn64-snapshot = { path = "../rustyn64-snapshot", version = "0.7.0" }
 rustyn64-cpu = { path = "../rustyn64-cpu", version = "0.7.0", default-features = false }
 rustyn64-rsp = { path = "../rustyn64-rsp", version = "0.7.0", default-features = false }
 rustyn64-rdp = { path = "../rustyn64-rdp", version = "0.7.0", default-features = false }

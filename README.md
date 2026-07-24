@@ -421,7 +421,7 @@ title frame that R-18 defers). The release ladder is
 
 ## Roadmap
 
-Nine phases. **Phases 0–3 are complete**; **Phase 4 is next**:
+Nine phases. **Phases 0–6 are complete**; **Phase 7 is next**:
 
 - **Phase 0 — Foundation** *(complete)* — workspace, CI, the Bus and scheduler, and the acquired
   and licence-classified reference corpus.
