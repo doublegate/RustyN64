@@ -9,6 +9,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Fixed — textured triangles render (Phase 3, R-13 resolved)
+
+- **Textured triangles now match Angrylion**, closing the long-`#[ignore]`d
+  `tex_tri_16` divergence. Two root causes, both fixed together: (1) the texture
+  triangle vectors used `Set Other Modes` with `bi_lerp0 = 0`, which selects the
+  RDP's YUV colour-convert texture path — with the convert coefficients unset it
+  zeroes an RGBA texel, so Angrylion rendered an all-black triangle (a vector bug,
+  not a core gap); the vectors now set `bi_lerp0 = 1`. (2) RustyN64's
+  `interpolate_st` used the interpolated coordinate `v >> 16` directly as the texel
+  index, but the RDP texel coordinate is **s.5**, so the index is `(v >> 16) >> 5`
+  (32× too fast before). With both, `tex_tri_16` (un-ignored) and a new constant-
+  coordinate `tex_tri_fixed_16` pass byte-for-byte against Angrylion. The ledger's
+  R-13 diagnosis — wrong three times (a phantom "1-cycle TEXEL0 pipeline", a
+  "malformed vector", a premature "coordinate ruled out") — is corrected in full.
+
 ### Added — the first real ROM renders a frame (Phase 3, T-33-006)
 
 - **A real ROM now boots and renders a verified frame.** `tests/roms/homebrew/render_fill.z64`

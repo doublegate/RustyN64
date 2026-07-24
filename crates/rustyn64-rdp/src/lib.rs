@@ -303,7 +303,14 @@ fn interpolate_st(
     } else {
         (stw[0], stw[1])
     };
-    [s as u32, t as u32]
+    // The RDP texel coordinate is s.5 — the low 5 bits are the sub-texel fraction,
+    // so the integer texel index is the coordinate >> 5 (Angrylion
+    // texture_pipeline_cycle: sfrac = sss & 0x1f, fetch_texel_quadro takes sss >> 5;
+    // ledger R-13). RustyN64 point-samples, so it drops the fraction. A negative or
+    // oversized coordinate stays wrapping-safe: fetch_texel masks every offset into
+    // the 4 KiB TMEM space (see fetch_texel_oversized_coords_wrap_deterministically),
+    // and exact clamp/mirror for out-of-tile coordinates is the open R-13 residual.
+    [(s >> 5) as u32, (t >> 5) as u32]
 }
 
 /// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
@@ -5399,8 +5406,11 @@ mod tests {
         bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
         bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
         bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
-        // Shade block at +0x20 (8 words). Texture block at +0x60: s.i = 1 -> column 1.
-        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&(0x0001u32 << 16).to_be_bytes());
+        // Shade block at +0x20 (8 words). Texture block at +0x60: the RDP texel
+        // coordinate is s.5, so S = 32 (`0x20`) selects texel index 32 >> 5 = 1
+        // (green). This is the R-13 coordinate scale — under the old `v >> 16`
+        // (no `>> 5`) this same field would have selected column 1 directly.
+        bus.mem[base + 0x60..base + 0x64].copy_from_slice(&(0x0020u32 << 16).to_be_bytes());
         // opcode 0x0E = shade (bit 58) + texture (bit 57); hi = 0x0880_0010 | (1<<26) | (1<<25).
         rdp.dispatch(0x0E, 0x0E80_0010, 0x0010_0000, base as u32, &mut bus);
 

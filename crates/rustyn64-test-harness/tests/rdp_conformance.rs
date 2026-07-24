@@ -286,28 +286,36 @@ fn shade_grad_tri_32_matches_angrylion() {
     );
 }
 
-/// A 1-cycle **textured** triangle (16-bit RGBA5551) — intended as the first vector
-/// to validate `interpolate_st` / `fetch_texel` against Angrylion, via the v2 `.rvec`
-/// preload (an 8-texel ramp placed in RDRAM, loaded by `Load Tile`, sampled across
-/// the triangle by a per-x S gradient with texel0 combiner passthrough).
-///
-/// **`#[ignore]`d — pins a REAL texture-path divergence RustyN64 does not yet model.**
-/// The vector is **well-formed** (two earlier notes claiming a coordinate-scale bug,
-/// then a malformed vector, are both retracted — the "malformed" one came from reading
-/// an earlier *shade* vector's debug output). Correctly instrumented, Angrylion here
-/// configures tile 0 (`size = 2`), advances the S coordinate (`SSS = 0..5` across the
-/// columns), and fetches texel 0 = `(255,0,0,255)` = red **correctly** — yet the output
-/// differs from RustyN64. The cause is two RDP behaviours RustyN64 does not model:
-/// (1) the **1-cycle TEXEL0 pipeline** — Angrylion swaps `texel0_color = texel1_color`
-/// before the combine, so a `TEXEL0` passthrough in 1-cycle mode is *pipelined*, not the
-/// just-fetched texel; and (2) the **s10.5 texel-coordinate scale** — `SSS` spans < one
-/// texel, so Angrylion point-samples texel 0 across the triangle while RustyN64's
-/// `interpolate_st` (`v >> 16`) advances one texel per pixel. See ledger R-13. The v2
-/// preload plumbing itself is verified (an all-white texture renders white).
+/// A 1-cycle **textured** triangle (16-bit RGBA5551) — the first vector to validate
+/// `interpolate_st` / `fetch_texel` against Angrylion, via the v2 `.rvec` preload (an
+/// 8-texel ramp placed in RDRAM, loaded by `Load Tile`, sampled with a texel0
+/// combiner passthrough). It has an S gradient of `1.0` per pixel, but because the
+/// RDP texel coordinate is **s.5** the texel index is `SSS >> 5`, so `SSS = 0..5`
+/// across the columns all resolve to texel 0 (red) — the golden is a solid-red
+/// triangle. **R-13 (RESOLVED).** This vector was `#[ignore]`d for a long time behind
+/// a thrice-wrong diagnosis; the real story was two things: (1) the vector used
+/// `Set Other Modes` with `bi_lerp0 = 0`, which selects the RDP's YUV colour-convert
+/// path — with the convert coefficients unset that zeroes an RGBA texel, so Angrylion
+/// rendered an all-black triangle (not a RustyN64 gap — a vector bug); fixed by
+/// setting `bi_lerp0 = 1`. (2) RustyN64's `interpolate_st` used `v >> 16` directly as
+/// the texel index (no `>> 5`), 32× too fast — fixed. Both land together and this now
+/// passes.
 #[test]
-#[ignore = "WIP: real 1-cycle TEXEL0-pipeline + s10.5 coordinate-scale gaps RustyN64 doesn't model; see ledger R-13"]
 fn tex_tri_16_matches_angrylion() {
     assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
+}
+
+/// A textured triangle with a **constant** texture coordinate (`dsdx = 0`, `S = 0`),
+/// so every covered pixel samples texel 0 = red — independent of the R-13 `>> 5`
+/// coordinate scale. It isolates the texture *sampler* (Load Tile → TMEM →
+/// `fetch_texel` → texel0 combiner) end to end from the coordinate advance, and it is
+/// the minimal proof that the `bi_lerp0 = 1` fix makes the RGBA texel path render.
+#[test]
+fn tex_tri_fixed_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_fixed_16",
+        include_bytes!("vectors/tex_tri_fixed_16.rvec"),
+    );
 }
 
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
