@@ -3,11 +3,19 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.4.0 "Rasteriser"** — this commit is the v0.4.0 release; the
-`v0.4.0` tag is cut from it on merge to `main`.
+**Current release:** **v0.5.0 "Resonance"** — this commit is the v0.5.0 release; the
+`v0.5.0` tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
+v0.4.0 "Rasteriser".)
 
-**Phases 1, 2, and 3 are complete.** All six exit criteria (two per phase) are met, and each is an
-oracle result with a committed runner rather than a self-assessment:
+**Phases 1, 2, 3, and 4 are complete.** All eight exit criteria (two per phase) are met, and each
+is an oracle result with a committed runner rather than a self-assessment. Phase 4's two:
+
+| Criterion | Result | Reproduce |
+| --- | --- | --- |
+| The real RSP audio microcode produces PCM (**Phase 4**) | **met** — the vendored libdragon mixer (`rsp_mixer.S`) runs its resampling/volume/mixing DSP on the LLE RSP and DMAs back a golden-pinned, deterministic mixed 16-bit stereo PCM buffer; no RSP gaps | `cargo test -p rustyn64-test-harness --test mixer_microcode` |
+| A real ROM plays audio through the AI (**Phase 4**) | **met** — a committed bare-metal ROM CPU-feeds a PCM buffer and programs the AI, which DMAs it out; the emitted stream matches byte-for-byte, deterministically, with the AI interrupt firing | `cargo test -p rustyn64-test-harness --test audio_play_rom` |
+
+The earlier phases' criteria (unchanged):
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
