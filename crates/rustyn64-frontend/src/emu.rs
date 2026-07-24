@@ -187,9 +187,15 @@ impl EmuCore {
             i64::from(raw.cast_signed()).cast_unsigned()
         });
         let payload = rom.get(0x1000..).unwrap_or(&[]);
-        // Copy through a checked slice so an (impossibly) sub-4 KiB RDRAM can't
-        // panic the `[0x1000..]` range: real RDRAM is 4/8 MiB, so this always hits.
-        if let Some(dst) = self.system.bus.rdram.get_mut(0x1000..) {
+        // Real IPL3 copies ROM[0x1000..] into RDRAM at the header entry's physical
+        // offset (KSEG0/KSEG1 → `entry & 0x1FFF_FFFF`) and jumps there. Deriving
+        // the load destination from the entry keeps the copy and the jump
+        // consistent for any bare-metal image, not just ones that happen to link
+        // at 0x1000 (our demo ROMs do: entry 0x8000_1000 → offset 0x1000). The
+        // checked `get_mut` also makes an (impossibly) small RDRAM a no-op copy
+        // rather than a panic on the range slice.
+        let dst_off = (entry & 0x1FFF_FFFF) as usize;
+        if let Some(dst) = self.system.bus.rdram.get_mut(dst_off..) {
             let n = payload.len().min(dst.len());
             dst[..n].copy_from_slice(&payload[..n]);
         }
