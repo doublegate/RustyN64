@@ -266,10 +266,8 @@ impl Rsp {
             0o50 => self.store(&d, 1),
             0o51 => self.store(&d, 2),
             0o53 => self.store(&d, 4),
-            // COP2. The moves are implemented; the computational instructions
-            // (bit 25 set) are the rest of Sprint 2 and retire inertly, which is
-            // what hardware does with anything it does not implement -- there is
-            // no exception mechanism to report it with.
+            // COP2 — both the SU/VU moves and the computational vector
+            // instructions (bit 25 set) dispatch through `cop2` to the VU.
             0o22 => self.cop2(&d),
             // The vector load/store family. `opcode` is at 15..11 where `rd`
             // sits, `element` at 10..7, and the offset is a **signed 7-bit**
@@ -358,7 +356,7 @@ impl Rsp {
         self.vector_mem(d.op == 0o72, d.rd as u32, d.rs, d.rt, element, d.imm & 0x7F);
     }
 
-    /// The COP2 escape: SU/VU moves today, computational instructions to come.
+    /// The COP2 escape: the SU/VU moves and the computational vector instructions.
     ///
     /// Bit 25 separates the two groups. When it is set the instruction is a
     /// computational one, whose `element` field is a *broadcast modifier*; when

@@ -158,10 +158,13 @@ cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-feature
 Workspace lints: clippy `pedantic` + `nursery` at warn, `missing_docs` warn, `unsafe_code` warn.
 Edition 2024, toolchain pinned to 1.96.0. New public items need rustdoc or the doc gate fails.
 Feature flags: `test-roms` (committed CC0/homebrew suites) and `commercial-roms` (local dumps;
-ROMs gitignored under `tests/roms/external/`, only screenshots/`.snap` committed). **Both gate
-zero code today** — no `cfg(feature = ...)` exists for either, so `--features test-roms` runs
-exactly the same tests as a bare `cargo test --workspace`. Same for the per-crate `std` features:
-every chip crate is unconditionally `#![no_std]`, so `--no-default-features` is currently a no-op.
+ROMs gitignored under `tests/roms/external/`, only screenshots/`.snap` committed). `test-roms`
+now gates exactly **one** probe (`crates/rustyn64-test-harness/src/lib.rs`
+`#[cfg(feature = "test-roms")]`, which the CI `test-roms` job asserts ran) — no *production* code
+is gated, so `--features test-roms` runs the same emulation tests as a bare `cargo test
+--workspace` plus that one probe. `commercial-roms` still gates **zero** code (the commercial
+tests are gated by `#[ignore]` + runtime file checks instead). Same for the per-crate `std`
+features: every chip crate is unconditionally `#![no_std]`, so `--no-default-features` is a no-op.
 markdownlint runs via `.pre-commit-config.yaml` (cli pinned **v0.49.1**) — it is NOT in any CI job.
 **So any change touching `*.md` must run it locally**, or the only gate it has never runs at all:
 

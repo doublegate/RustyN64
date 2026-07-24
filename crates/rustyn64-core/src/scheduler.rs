@@ -310,9 +310,13 @@ impl System {
     /// AI/interface DMA progress — all on the SAME `&mut self.bus`.
     fn step_rcp(&mut self) {
         // The chips each see only their narrow trait of `self.bus`.
-        // TODO(v0.x): LLE RSP scalar+vector execution — `Rsp::tick` is a stub.
+        // The LLE RSP runs the microcode scalar+vector stream (Phase 2).
         self.bus.rsp_tick();
-        // TODO(v0.x): LLE RDP rasterizer — `Rdp::tick` is a stub.
+        // The RDP consumes the DPC command stream and rasterises the implemented
+        // commands (FILL, triangles, texture rects, sync); the live path is still
+        // incomplete — remaining opcodes are recognised-not-dispatched (T-31-004)
+        // and per-command timing is deferred. See ledger R-18 for the end-to-end
+        // commercial-video gap.
         self.bus.rdp_tick();
         // AI / interface sub-clock advance — derives sample emission off the
         // canonical `master_ticks` (ADR 0006), like the VI scan below.
