@@ -492,6 +492,15 @@ impl Bus {
         self.boot_nmi_halt
     }
 
+    /// Warm-reset the real-PIF boot latches so a reset restarts IPL1→IPL2: clear
+    /// the NMI freeze and unlock the PIF ROM (`PIF-NUS.md` §Console Reset). No-op
+    /// under HLE (nothing is latched). The CPU's reset vector is restored by
+    /// [`crate::System::reset`], which recreates the CPU at `0xBFC0_0000`.
+    pub const fn reset_boot_latches(&mut self) {
+        self.boot_nmi_halt = false;
+        self.cart.pif_reset_boot();
+    }
+
     /// Read an SI register (`SI_DRAM_ADDR` / `SI_STATUS`; the PIF-address
     /// registers are write-triggers and read back as 0).
     const fn si_read(&self, addr: u32) -> u32 {

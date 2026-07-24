@@ -125,6 +125,16 @@ impl Pif {
             .unwrap_or(0)
     }
 
+    /// Warm-reset the transient real-PIF boot state so a reset can re-run
+    /// IPL1→IPL2 (`PIF-NUS.md` §Console Reset: the PIF **unlocks the PIF ROM** on
+    /// the reset NMI). Clears the ROM lockout and the latched checksum; keeps the
+    /// installed boot ROM and the registered CIC checksum — the cartridge is still
+    /// inserted, so the CIC would re-hand-off the same values.
+    pub const fn reset_boot(&mut self) {
+        self.rom_locked = false;
+        self.boot_acquired = None;
+    }
+
     /// Register the CIC's 6-byte IPL2 checksum for the real-PIF boot verify.
     pub const fn set_boot_checksum(&mut self, checksum: [u8; 6]) {
         self.boot_checksum = Some(checksum);
@@ -593,6 +603,37 @@ mod tests {
             pif.boot_rom_read(0),
             0,
             "the PIF ROM is off the bus after lockout"
+        );
+    }
+
+    #[test]
+    fn a_warm_reset_unlocks_the_rom_so_ipl1_can_re_run() {
+        let mut pif = Pif::new();
+        let mut dump = alloc::vec![0u8; PIF_ROM_LEN];
+        dump[0] = 0x3C;
+        pif.load_boot_rom(&dump);
+        pif.set_boot_checksum(SUM_6102);
+        // Boot once: lock the ROM and latch a checksum.
+        pif.ram[0x32..0x38].copy_from_slice(&SUM_6102);
+        pif.ram[CMD_BYTE] = 0x10 | 0x20;
+        assert!(!pif.boot_command());
+        assert_eq!(pif.boot_rom_read(0), 0, "ROM locked after the first boot");
+        // Warm reset: the PIF unlocks the ROM and drops the latch, so IPL1 reads
+        // again — but keeps the installed ROM and the registered CIC checksum.
+        pif.reset_boot();
+        assert_eq!(pif.boot_rom_read(0), 0x3C, "ROM readable again after reset");
+        assert!(
+            pif.has_boot_rom(),
+            "the installed boot ROM survives a warm reset"
+        );
+        // The latch is gone, so a fresh acquire compares the newly-written value.
+        pif.ram[0x32..0x38].copy_from_slice(&SUM_6102);
+        pif.ram[CMD_BYTE] = 0x20;
+        assert!(!pif.boot_command());
+        pif.ram[CMD_BYTE] |= 0x40;
+        assert!(
+            !pif.boot_command(),
+            "the retained CIC checksum still matches"
         );
     }
 }

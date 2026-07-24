@@ -145,6 +145,9 @@ fn a_commercial_rom_boots_through_the_real_pif() {
             continue;
         };
         let Ok(image) = std::fs::read(&rom_path) else {
+            // A positively-found .z64 that fails to read is a real error, not an
+            // absence — say so, so it can't be mistaken for "nothing staged".
+            eprintln!("[{folder}] failed to read {}, skipping", rom_path.display());
             continue;
         };
         any = true;

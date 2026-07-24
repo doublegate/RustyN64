@@ -413,6 +413,12 @@ impl Cart {
         self.pif.boot_command()
     }
 
+    /// Warm-reset the transient PIF boot state (unlock the ROM, drop the latched
+    /// checksum) so a reset can re-run IPL1→IPL2.
+    pub const fn pif_reset_boot(&mut self) {
+        self.pif.reset_boot();
+    }
+
     /// The parsed cartridge header.
     #[must_use]
     pub const fn header(&self) -> &RomHeader {

@@ -184,6 +184,11 @@ impl System {
         // the new zero — otherwise its delta baseline stays in the old timeline
         // and the VI interrupt is suppressed until the run catches up.
         self.bus.vi.reset_scan();
+        // Unlock the PIF ROM and clear the boot NMI freeze so a warm reset can
+        // re-run IPL1→IPL2 on the real-PIF path (the PIF unlocks its ROM on the
+        // reset NMI, `PIF-NUS.md` §Console Reset). No-op under HLE. `Cpu::new`
+        // above already put the PC back at the reset vector `0xBFC0_0000`.
+        self.bus.reset_boot_latches();
         // TODO(T-CORE-03): warm-reset the remaining Bus subsystems (RSP halt,
         // clear DMA) without zeroing RDRAM — see `docs/scheduler.md`.
     }
