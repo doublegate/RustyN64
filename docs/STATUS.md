@@ -179,8 +179,10 @@ is staged only — an oracle on disk that no gate executes yet.
 **What remains in COP1.** The register file (`FR` views), the control registers,
 the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the compares, the
 conversions, and the `BC1F`/`BC1T`/`BC1FL`/`BC1TL` FP branches all decode and
-execute, and the COP1 category of n64-systemtest passes `Failed: 0`. `BC1` was
-the last decoded-but-no-op hazard and is now resolved (ledger **R-2** / C-25). The
+execute, and the COP1 category of n64-systemtest passes `Failed: 0` (reproduce:
+`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`).
+`BC1` was the last decoded-but-no-op hazard and is now resolved (ledger **R-2** /
+C-25). The
 single remaining unimplemented operation is `SQRT` (funct 4), covered below.
 
 What **is** done: the unmaskable unimplemented-operation cause (bit 17) is

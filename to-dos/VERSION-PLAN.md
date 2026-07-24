@@ -7,7 +7,8 @@ against at every rung.
 
 ## Where this project actually is
 
-**RustyN64 has cut seven releases so far** — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
+**RustyN64 has cut seven feature releases so far** (plus `v0.4.1`, a documentation-only patch —
+eight tags in all) — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
 (Phase 1, the complete VR4300), `v0.3.0` "Microcode" (Phase 2, the LLE RSP + real graphics
 microcode emitting an RDP command list), `v0.4.0` "Rasteriser" (Phase 3, the LLE RDP + VI —
 164 conformance vectors bit-matching Angrylion and a real ROM rendering a golden frame) plus

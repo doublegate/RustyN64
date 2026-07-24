@@ -183,8 +183,10 @@ impl Rsp {
     /// allocations on every RCP step**, behind a comment that claimed there were
     /// none.
     pub fn tick(&mut self) -> su::StepResult {
-        // The vector unit is Sprint 2; the scalar unit runs today, which is
-        // enough to execute a microcode that sets up, DMAs and breaks.
+        // `su_step` fetches and decodes one instruction and dispatches it — the
+        // scalar ops directly, and the COP2 / vector load-store family through to
+        // the VU (`cop2`, `vector_memory`). So a single `tick` runs the full
+        // scalar+vector engine, which is why the RSP category is `Failed: 0`.
         self.su_step()
     }
 }
