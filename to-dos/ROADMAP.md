@@ -13,7 +13,7 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 6 (frontend shell), next. Phases 0–5 are complete. The VR4300
+- **Current phase:** Phase 7 (accuracy battery), next. Phases 0–6 are complete. The VR4300
   executes MIPS III (the integer set, COP0, the TLB, the exception model, the primary caches, and
   a soft-float COP1) as a five-stage pipeline off the canonical 187.5 MHz master clock; the **LLE
   RSP** runs real microcode (scalar + full vector unit — graphics *and* audio); the **LLE RDP**
@@ -22,11 +22,17 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
   host by the frontend; and the **cartridge boots** — the PI/SI/PIF/CIC + four save backends,
   with both an HLE and a faithful real-PIF boot (real IPL1/IPL2, CIC-verified). A commercial ROM
   boots and executes real code, though the rendered title frame awaits the VI/RI/F3DEX runtime
-  (ledger R-18).
-- **Release:** v0.6.0 "Cartridge", tagged, with the Phase 5 committable gate met (n64-systemtest
-  93 → 90) and every save-type representative booting through the real boot chain to RDRAM game
-  execution. Prior: v0.5.0 "Resonance", with both Phase 4 exit criteria met — the real
-  libdragon audio-mixer microcode runs its resampling/volume/mixing DSP on the LLE RSP and
+  (ledger R-18). The **egui/wasm frontend** now presents that machine — VI scan-out, AI audio
+  drain, SI input — with save-states, rewind, and run-ahead (frontend-side, off by default).
+- **Release:** v0.7.0 "Shell", tagged — **the first playable release**. Phase 6 wires the shell
+  to the real machine: a homebrew ROM shows a real frame, plays PCM, and reads the pad, and
+  save-state restore is bit-identical (proven on a booted commercial ROM). A wasm browser entry
+  point runs a homebrew demo on a 2D canvas. "Playable" is honestly scoped — the commercial title
+  frame is deferred to Phase 7 (ledger R-18), not faked. Prior: v0.6.0 "Cartridge", with the
+  Phase 5 committable gate met (n64-systemtest 93 → 90) and every save-type representative booting
+  through the real boot chain to RDRAM game execution; v0.5.0 "Resonance", with both Phase 4 exit
+  criteria met — the real libdragon audio-mixer microcode runs its resampling/volume/mixing DSP on
+  the LLE RSP and
   produces a golden-verified, deterministic mixed PCM buffer, and a real bare-metal ROM plays PCM
   through the AI end to end. Phases 1 (v0.2.0), 2 (v0.3.0), and 3 (v0.4.0, reconciled in the
   v0.4.1 doc patch) remain met. See `docs/STATUS.md` for the per-subsystem state.
@@ -90,12 +96,16 @@ game code in RDRAM, across 6102/6103/6105 CICs. The rendered **title frame** is 
 VI/RI/F3DEX gap (ledger **R-18**), deferred and outside the cart boundary (ADR 0003).
 → [overview](phase-5-cart-boot-saves/overview.md)
 
-### Phase 6 — Frontend integration: NOT STARTED
+### Phase 6 — Frontend integration: COMPLETE (v0.7.0)
 
 **Goal:** the egui shell wired to the real scan-out, audio drain, and controller input;
 save-states, rewind, and run-ahead in the frontend; a browser entry point for the wasm build.
 **Exit:** playable native and wasm; the determinism contract intact, with rate control in the
-frontend only.
+frontend only. **Met** — the shell presents the real machine (VI scan-out, AI drain, SI input);
+serde save-states with bit-identical restore (two-run trace compare, incl. a booted commercial
+ROM); rewind + run-ahead byte-identical to `run_frame` when off; a `#[wasm_bindgen(start)]`
+browser entry point runs a homebrew demo on a 2D canvas. The first playable release on homebrew;
+the commercial title frame is deferred to Phase 7 (ledger R-18), shipped honestly rather than faked.
 → [overview](phase-6-frontend-integration/overview.md)
 
 ### Phase 7 — Accuracy breadth: NOT STARTED

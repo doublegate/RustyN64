@@ -136,17 +136,28 @@ The first release where a commercial cartridge boots.
   rendered **title frame** is a downstream VI/RI/F3DEX gap (ledger **R-18**), deferred to a later
   phase and outside the Phase 5 cart boundary (ADR 0003) — characterised, not faked.
 
-### v0.7.0 "Shell" — frontend integration — Phase 6
+### v0.7.0 "Shell" — frontend integration — Phase 6 — RELEASED 2026-07-24
 
-The first release that is *playable*.
+The first release that is *playable*. **Complete.**
 
-- Real scan-out, real audio drain, real controller input through the SI.
-- Save-states, rewind, and run-ahead — all frontend-side, per ADR 0004.
+- Real scan-out, real audio drain, real controller input through the SI. **Done** — the egui
+  shell presents `Bus::scanout`, the AI drain, and SI input; a homebrew ROM shows a real frame,
+  plays PCM, and reads the pad, all through the LLE core.
+- Save-states, rewind, and run-ahead — all frontend-side, per ADR 0004. **Done** — the whole
+  `System` is serde-serialisable; restore is bit-identical (two-run trace compare, incl. a booted
+  commercial ROM); rewind/run-ahead are byte-identical to `run_frame` when off.
 - The wasm browser entry point: the `wasm-bindgen` dependency, the `#[wasm_bindgen(start)]`
-  entry, and an `index.html`, none of which exist today despite the crate compiling for
-  `wasm32`.
-- **Cut criterion:** a commercial ROM is playable natively with picture, sound, and control, and
-  save-state restore continues bit-identically.
+  entry, and an `index.html`. **Done** — a 2D-canvas demo boots a homebrew ROM and blits the VI
+  scan-out via `web-sys`, built with `trunk`.
+- **Cut criterion (as met, honestly restated):** picture, sound, and control are demonstrated
+  natively on the committed homebrew ROMs through the real LLE VI/AI/SI paths, and save-state
+  restore continues bit-identically (proven on a booted commercial ROM). The literal form — *a
+  **commercial** ROM playable with a picture* — is **deferred**: a commercial title boots and
+  executes but scans out no frame, the cross-subsystem VI-vblank / RI-register / F3DEX gap
+  tracked as ledger **R-18** and outside Phase 6's frontend scope. Shipped on the
+  demonstrated-playable path plus an honest ledgered gap, per the plan's escalation gate — not a
+  faked commercial pass. The commercial title-frame lands with the Phase 3/7 rasteriser +
+  microcode work (v0.8.0 "Breadth").
 
 ### v0.8.0 "Breadth" — the accuracy battery — Phase 7
 

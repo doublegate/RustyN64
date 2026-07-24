@@ -6,7 +6,26 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-Work toward `v0.7.0 "Shell"` — frontend integration (Phase 6).
+Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
+
+## [0.7.0] - 2026-07-24 "Shell"
+
+**The first playable release.** Phase 6 wires the egui shell to the real machine:
+the VI scan-out drives the window, the AI audio drain feeds the output ring, and
+SI controller input reaches the game — so a homebrew ROM shows a real rendered
+picture, plays real PCM, and responds to the pad, end to end through the LLE core.
+The frontend adds save-states, rewind, and run-ahead (all frontend-side and
+off by default, ADR 0004, so output stays byte-identical), and a wasm browser
+entry point that runs the emulator on a 2D canvas.
+
+**Honest scope of "playable":** picture, sound, and control are demonstrated on
+the committed homebrew ROMs through the real LLE VI/AI/SI paths, and save-state
+restore is bit-identical (proven on a booted **commercial** ROM). A commercial
+title does **not** yet reach a rendered frame — it boots and executes real code
+but scans out nothing, the cross-subsystem VI-vblank / RI-registers / F3DEX
+gap tracked as accuracy-ledger **R-18**, deferred to the Phase 3/7 rasteriser +
+microcode work. This ships on the demonstrated-playable path plus an honest
+ledgered gap, not a faked commercial pass.
 
 ### Added — wasm browser entry point (Phase 6, Sprint 3)
 
@@ -2740,5 +2759,6 @@ This tag exists so the foundation is a fixed, citable point rather than an ever-
   compares the two and fails on drift, which is otherwise invisible until someone runs
   `trunk build`.
 
-[Unreleased]: https://github.com/doublegate/RustyN64/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/doublegate/RustyN64/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/doublegate/RustyN64/releases/tag/v0.7.0
 [0.1.0]: https://github.com/doublegate/RustyN64/releases/tag/v0.1.0
