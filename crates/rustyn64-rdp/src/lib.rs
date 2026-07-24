@@ -303,10 +303,13 @@ fn interpolate_st(
     } else {
         (stw[0], stw[1])
     };
-    // The RDP texel coordinate is **s.5** — the low 5 bits are the sub-texel
-    // fraction, so the integer texel index is the coordinate `>> 5` (Angrylion
-    // `texture_pipeline_cycle`: `sfrac = sss & 0x1f`, `fetch_texel_quadro` takes
-    // `sss >> 5`; ledger R-13). RustyN64 point-samples, so it drops the fraction.
+    // The RDP texel coordinate is s.5 — the low 5 bits are the sub-texel fraction,
+    // so the integer texel index is the coordinate >> 5 (Angrylion
+    // texture_pipeline_cycle: sfrac = sss & 0x1f, fetch_texel_quadro takes sss >> 5;
+    // ledger R-13). RustyN64 point-samples, so it drops the fraction. A negative or
+    // oversized coordinate stays wrapping-safe: fetch_texel masks every offset into
+    // the 4 KiB TMEM space (see fetch_texel_oversized_coords_wrap_deterministically),
+    // and exact clamp/mirror for out-of-tile coordinates is the open R-13 residual.
     [(s >> 5) as u32, (t >> 5) as u32]
 }
 
