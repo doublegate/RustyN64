@@ -14,7 +14,8 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   (krom, Unlicense, `tests/roms/peterlemon-timing/`) as **curated, self-judging
   timing oracles**, with a runner (`tests/peterlemon_timing.rs`). Each ROM times
   a fixed loop of one instruction against a hardware-expected value baked into
-  the ROM and draws green (pass) / red (fail); the runner boots it, scans the
+  the ROM and draws green (pass) / red (fail); the runner
+  (`crates/rustyn64-test-harness/tests/peterlemon_timing.rs`) boots it, scans the
   verdict frame out through the real VI, and counts pass/fail pixels.
 - These are the measuring instrument for the open cycle-timing residuals **C-1**
   (`M`, memory-access time) and **C-29** (FPU stall rates). Unlike

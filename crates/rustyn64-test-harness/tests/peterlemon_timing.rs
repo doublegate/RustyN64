@@ -28,12 +28,30 @@
 use rustyn64_core::System;
 use rustyn64_test_harness::rom;
 
-const CPU_ROM: &str = "../../tests/roms/peterlemon-timing/CPUTIMINGNTSC.z64";
-const CP1_ROM: &str = "../../tests/roms/peterlemon-timing/CP1TIMINGNTSC.z64";
+// Anchored at the crate manifest dir so resolution is independent of the CWD
+// `cargo test` / `cargo test --workspace` runs from.
+const CPU_ROM: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/roms/peterlemon-timing/CPUTIMINGNTSC.z64"
+);
+const CP1_ROM: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/roms/peterlemon-timing/CP1TIMINGNTSC.z64"
+);
 
 /// Master ticks to run before giving up. These ROMs time a few dozen loops then
 /// draw once and spin; generous so the whole battery + draw completes.
 const BUDGET_TICKS: u64 = 2_000_000_000;
+
+/// A lit glyph pixel is classified by its dominant channel: the fonts are
+/// saturated red / green on black.
+const CHANNEL_HI: u8 = 160;
+/// The other two channels must be below this for a clean red/green classification.
+const CHANNEL_LO: u8 = 96;
+/// Enough drawn glyph pixels to count as "reached a verdict grid" (CPU variant).
+const MIN_VERDICT_PIXELS: usize = 100;
+/// Enough retired instructions to count as "executed the battery" (FPU variant).
+const MIN_BATTERY_RETIRED: u64 = 100_000_000;
 
 /// Boot a PeterLemon timing ROM, run it to its result frame, and return
 /// `(red_pixels, green_pixels, retired, vi_programmed)`.
@@ -68,11 +86,9 @@ fn run(path: &str) -> (usize, usize, u64, bool) {
         let n = (w as usize * h as usize * 4).min(rgba.len());
         for px in rgba[..n].chunks_exact(4) {
             let (r, g, b) = (px[0], px[1], px[2]);
-            // The fonts are saturated red / green on black. Classify a lit glyph
-            // pixel by its dominant channel.
-            if r > 160 && g < 96 && b < 96 {
+            if r > CHANNEL_HI && g < CHANNEL_LO && b < CHANNEL_LO {
                 red += 1;
-            } else if g > 160 && r < 96 && b < 96 {
+            } else if g > CHANNEL_HI && r < CHANNEL_LO && b < CHANNEL_LO {
                 green += 1;
             }
         }
@@ -91,7 +107,7 @@ fn run(path: &str) -> (usize, usize, u64, bool) {
 fn cpu_timing_rom_runs_to_a_verdict() {
     let (red, green, retired, vi) = run(CPU_ROM);
     assert!(
-        vi && (red + green) > 100,
+        vi && (red + green) > MIN_VERDICT_PIXELS,
         "CPUTIMINGNTSC did not draw a verdict grid (red={red}, green={green}, \
          retired={retired}, vi={vi}) — no measurement to report"
     );
@@ -115,7 +131,7 @@ fn cpu_timing_rom_runs_to_a_verdict() {
 fn cp1_timing_rom_executes_without_hanging() {
     let (red, green, retired, vi) = run(CP1_ROM);
     assert!(
-        vi && retired > 100_000_000,
+        vi && retired > MIN_BATTERY_RETIRED,
         "CP1TIMINGNTSC did not execute (retired={retired}, vi={vi})"
     );
     println!(
