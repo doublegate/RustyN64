@@ -169,7 +169,7 @@ is staged only — an oracle on disk that no gate executes yet.
 | --- | --- | --- |
 | VR4300 integer core, pipeline, delay slots, errata, SysAD | **done** (Sprint 1) | Phase 1 |
 | VR4300 COP0, TLB, exception model | **done** (Sprint 2) | Phase 1 |
-| VR4300 COP1 (FPU) | **done** — `Failed: 0` on the COP1 category; `SQRT` (funct 4) is the one unwired operation (see below) | Phase 1 (Sprint 3) |
+| VR4300 COP1 (FPU) | **done** — `Failed: 0` on the COP1 category; every COP1 operation including `SQRT` (funct 4, `pipeline::fp_sqrt` on the soft-float core) is implemented | Phase 1 (Sprint 3) |
 | CPU golden-log 0-diff | **done** (T-HARNESS-01) — `tests/golden/n64-systemtest.log`, captured from ares at the ELF entry; gate is `--test golden_log` | Phase 1 |
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
 | RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts (incl. in a taken branch's delay slot), DMA and the register file work. Spec `docs/rsp.md`; regressions in `su::tests` and n64-systemtest `RSP BREAK`/`SP …` | Phase 2 |
@@ -182,8 +182,9 @@ conversions, and the `BC1F`/`BC1T`/`BC1FL`/`BC1TL` FP branches all decode and
 execute, and the COP1 category of n64-systemtest passes `Failed: 0` (reproduce:
 `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`).
 `BC1` was the last decoded-but-no-op hazard and is now resolved (ledger **R-2** /
-C-25). The
-single remaining unimplemented operation is `SQRT` (funct 4), covered below.
+C-25). **`SQRT` (funct 4) is implemented too** (`pipeline::fp_sqrt` → `softfloat::sqrt`,
+tested in `fpr.rs` and `softfloat.rs`), so **no COP1 operation is unwired** — the
+COP1 set is complete.
 
 What **is** done: the unmaskable unimplemented-operation cause (bit 17) is
 produced for subnormal operands and results, for `FS = 1` with underflow or
@@ -197,15 +198,15 @@ and the compares and conversions decode and execute — **all sixteen
 `C.cond.fmt` tests pass outright**. NaN classification follows the VR4300's
 inverted convention (ledger C-12), not IEEE-754:2008.
 
-**`SQRT` (funct 4) is the only COP1 operation that is neither decoded nor
-implemented**, so it is not an instance of the pattern below. The conversions
-and the `C.cond.fmt` compares *were* — implemented in `fpu.rs` and unreachable —
-until this sprint, and `ABS`, `MOV` and `NEG` before them; `MOV` alone cost
-~100 failures, because a
-*decoded-but-no-op* instruction is invisible to `cargo test` and the compiler
-emits one at every FP call boundary. That pattern has now cost two separate
-investigations; when adding a decode arm, enumerate the neighbouring funct
-space rather than only the encoding that prompted the change.
+**The decoded-but-no-op hazard, for the record** (every COP1 op is now wired, so
+this is history, not a live gap). The conversions and the `C.cond.fmt` compares
+*were* implemented in `fpu.rs` yet unreachable, and `ABS`, `MOV` and `NEG` before
+them; `SQRT` (funct 4) was the last, wired to `pipeline::fp_sqrt` in T-13-005.
+`MOV` alone cost ~100 failures, because a *decoded-but-no-op* instruction is
+invisible to `cargo test` and the compiler emits one at every FP call boundary.
+That pattern has cost two separate investigations; when adding a decode arm,
+enumerate the neighbouring funct space rather than only the encoding that
+prompted the change.
 | RDP LLE (software reference rasterizer) + VI scan-out | **done** — texture / combiner / blender / coverage pipeline; 164 conformance vectors bit-match Angrylion; a real ROM renders a golden frame (T-33-006) | Phase 3 |
 | AI audio DMA double-buffer | **done** — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug (Sprint 1); the real mixer microcode produces PCM on the RSP (Sprint 2); the frontend drain + resampler landed in Phase 6 | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | **done** (v0.6.0) — PI/SI DMA, the CIC handshake, all four save backends incl. the FlashRAM command machine, and both HLE and real-PIF boot | Phase 5 |

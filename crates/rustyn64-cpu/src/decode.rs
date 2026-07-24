@@ -1046,9 +1046,10 @@ pub const fn decode(word: u32) -> Decoded {
                     ..base
                 },
                 // Format 16 = single, 17 = double. `funct` 0..=3 are
-                // ADD/SUB/MUL/DIV and 5..=7 are ABS/MOV/NEG; `funct` 4 is
-                // `SQRT`, still unwired, and everything above 7 (the
-                // conversions and `C.cond.fmt`) stays `Cop1Unimplemented`.
+                // ADD/SUB/MUL/DIV, 5..=7 are ABS/MOV/NEG, and `funct` 4 is
+                // `SQRT` (wired to `pipeline::fp_sqrt`, T-13-005) — all decode to
+                // `Op::FpArith`. Everything above 7 (the conversions and
+                // `C.cond.fmt`) is handled by its own decode arms.
                 //
                 // **`MOV` matters far more than its size suggests.** It is
                 // funct 6, so admitting only `<= 3` made every `MOV.fmt` a
