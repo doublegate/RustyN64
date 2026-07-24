@@ -1,0 +1,8 @@
+The homebrew ROM fixtures in this directory (their MIPS assembly sources, build
+scripts, and the assembled .z64 build outputs) are original work of the RustyN64
+project, licensed identically to the rest of the repository:
+
+    MIT OR Apache-2.0
+
+at your option. See the repository-root LICENSE-MIT and LICENSE-APACHE for the
+full texts. These are not third-party ROMs; they carry no external copyright.

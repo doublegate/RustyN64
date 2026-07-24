@@ -30,7 +30,7 @@ MAX_BYTES=$((2 * 1024 * 1024))
 # be redistributable (MIT / BSD / Zlib / CC0 / public domain). Copyleft (GPL) and
 # unlicensed corpora stay in the gitignored tests/roms/external/ tier, and
 # commercial ROMs never enter the tree at all. See tests/roms/README.md.
-ALLOW_RE='^tests/roms/n64-systemtest/'
+ALLOW_RE='^tests/roms/(n64-systemtest|homebrew)/'
 
 # Allowlisted ROMs are exempt from MAX_BYTES (a test ROM legitimately runs to a
 # few MB), but capped so a commercial dump cannot hide behind the allowlist.

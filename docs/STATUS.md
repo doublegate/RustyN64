@@ -213,8 +213,9 @@ entropy, threads and unordered collections anywhere in the core.
 The distinction matters: "oracle available" means the ROM is on disk; it says
 nothing about whether the emulator can execute it. Both must be true before a
 gate reports a real number — true today for `basic.z64`, n64-systemtest, the
-golden log, and the synthetic `golden_frame`; not yet for the real-ROM visual
-goldens and the accuracy battery.
+golden log, the synthetic `golden_frame`, and the **first real-ROM visual golden**
+(`real_rom_frame.rs`, a homebrew ROM that CPU-renders a frame through the VI); not
+yet for an RDP-driven real-ROM frame or the accuracy battery.
 
 See `docs/testing-strategy.md` for the oracle and the five test layers.
 

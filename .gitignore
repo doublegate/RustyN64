@@ -97,6 +97,9 @@ __pycache__/
 # in scripts/check_no_roms.sh, and see tests/roms/README.md for the tier rules.
 # Copyleft and unlicensed corpora do NOT get a negation -- they stay external.
 !/tests/roms/n64-systemtest/*.z64
+# Our own MIT OR Apache-2.0 homebrew fixtures (assembled from committed sources
+# under tests/roms/homebrew/): our code, so committable like any other output.
+!/tests/roms/homebrew/**/*.z64
 
 # ...then hard-exclude the external tier again, so no negation above can ever
 # accidentally re-include a commercial dump. Order matters: this comes last.

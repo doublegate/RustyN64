@@ -254,13 +254,21 @@ microcode already boots on the RSP and emits a command list, Phase 2).
 
 **Acceptance criteria:**
 
-- [~] A committed golden frame pins a rendered scene, and the frame is stable across runs (determinism,
-  ADR 0004). **Partially done:** `composite_frame.rs` renders a multi-primitive scene (a FILL background
-  and a 1-cycle shaded triangle over it) through the RDP → VI path and pins the 8×8 result against a committed
-  golden hash, asserting both background and foreground pixels and bit-identical re-renders. **Still
-  open:** the *real ROM* half — driving a homebrew/test ROM's own command stream end-to-end. The rdpq
-  microcode boots on the RSP and emits single commands (Phase 2, `microcode.rs`), but assembling a full
-  renderable frame from it (or booting a cart, Phase 5) is the remaining integration.
+- [x] A committed golden frame pins a rendered scene, and the frame is stable across runs (determinism,
+  ADR 0004). **Done via a synthetic scene:** `composite_frame.rs` renders a multi-primitive scene (a FILL
+  background and a 1-cycle shaded triangle over it) through the RDP → VI path and pins the 8×8 result
+  against a committed golden hash, asserting both background and foreground pixels and bit-identical
+  re-renders.
+- [x] **A real ROM boots and renders a verified frame** (`real_rom_frame.rs`). `tests/roms/homebrew/render_fill.z64`
+  — our own license-clean MIPS assembly (source + build script committed) — boots through the harness
+  direct-load path, and the **real VR4300** executes its instructions to program the VI and CPU-fill a
+  32×24 framebuffer with a per-pixel gradient; the **real VI** scans it out to the exact expected RGBA8
+  frame, deterministically. Nothing is synthesised — this is the CPU → RDRAM → VI scan-out path driven by
+  a real ROM's own code, which is the T-33-006 "real ROM renders a stable frame" milestone.
+- [~] **Still open — an RDP-driven real-ROM frame.** `render_fill.z64` renders via the CPU, not the RDP,
+  so it does not yet exercise the LLE rasteriser end-to-end from a ROM. A ROM that drives the RDP (via
+  the rdpq microcode on the RSP, or direct DPC command lists from the CPU) is the natural follow-up, and
+  needs the texture path (ledger R-13) for anything textured.
 
 **Complexity:** M
 
