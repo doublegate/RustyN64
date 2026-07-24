@@ -174,3 +174,39 @@ pub fn real_pif_boot(system: &mut System, rom: &[u8], pif_rom: &[u8]) -> Result<
     // the PC — that is the whole point of running the real boot ROM.
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cart::Cic;
+
+    #[test]
+    fn too_small_a_rom_is_rejected_before_any_slice() {
+        let mut sys = System::new(0);
+        // Shorter than the 0x1000 header + IPL3 — must error, not panic on a slice.
+        assert_eq!(hle_boot(&mut sys, &[0u8; 0x40]), Err(BootError::TooSmall));
+        assert_eq!(hle_boot(&mut sys, &[]), Err(BootError::TooSmall));
+    }
+
+    #[test]
+    fn real_pif_boot_rejects_a_short_pif_rom() {
+        let mut sys = System::new(0);
+        let rom = [0u8; 0x1000];
+        assert_eq!(
+            real_pif_boot(&mut sys, &rom, &[0u8; 16]),
+            Err(BootError::TooSmall),
+            "a PIF ROM shorter than its window is rejected"
+        );
+    }
+
+    #[test]
+    fn cic_seed_covers_every_variant() {
+        // The low byte is the IPL2 seed the boot leaves in PIF RAM; bits 8-15 the
+        // IPL3 seed (cen64 si/cic.c). Pin all five arms so a typo fails here.
+        assert_eq!(cic_seed(Cic::Cic6101), 0x0004_3F3F);
+        assert_eq!(cic_seed(Cic::Cic6102), 0x0000_3F3F);
+        assert_eq!(cic_seed(Cic::Cic6103), 0x0000_783F);
+        assert_eq!(cic_seed(Cic::Cic6105), 0x0000_913F);
+        assert_eq!(cic_seed(Cic::Cic6106), 0x0000_853F);
+    }
+}
