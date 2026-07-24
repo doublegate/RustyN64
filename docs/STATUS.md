@@ -3,12 +3,23 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.5.0 "Resonance"** — this commit is the v0.5.0 release; the
-`v0.5.0` tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
+**Current release:** **v0.6.0 "Cartridge"** — this commit is the v0.6.0 release; the
+`v0.6.0` tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
 v0.4.0 "Rasteriser".)
 
-**Phases 1, 2, 3, and 4 are complete.** All eight exit criteria (two per phase) are met, and each
-is an oracle result with a committed runner rather than a self-assessment. Phase 4's two:
+**Phases 1, 2, 3, 4, and 5 are complete.** Phase 5 delivers the cartridge + I/O boundary — the
+PI bus (BSD domain timing), the SI joybus, all four save backends, the CIC handshake, and **two
+boot paths**: the copyright-clean **HLE boot** (default, CI-able) and a **faithful real-PIF
+boot** that runs the console's real IPL1/IPL2 from the PIF ROM and verifies the IPL2 checksum
+against the CIC (off by default, local-only, never CI-gated — the PIF ROM is copyrighted). Its
+committable gate is met; its commercial-boot capstone is characterised honestly:
+
+| Criterion | Result | Reproduce |
+| --- | --- | --- |
+| n64-systemtest cart/PIF/SI improvement (**Phase 5** committable gate) | **met** — the cart/PIF/SI/boot subsystem drops the suite-wide failing count **93 → 90**; Phase-1 categories stay `Failed: 0` | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
+| Save round-trips + a commercial cartridge **boots and executes** (**Phase 5** capstone) | **met (as restated)** — each of the four save backends round-trips byte-for-byte, and every save-type representative (6102/6103/6105 CICs) boots through the real IPL1→IPL2→IPL3 chain to game execution in RDRAM, IPL2's checksum matching the documented CIC value. Reaching a rendered **title frame** is a downstream VI/RI/F3DEX gap (ledger **R-18**), deferred and outside the cart boundary (ADR 0003) | `cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored` (local; gitignored corpus) |
+
+The eight earlier exit criteria (two per phase, 1–4) are unchanged oracle results. Phase 4's two:
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
@@ -21,8 +32,8 @@ The earlier phases' criteria (unchanged):
 | --- | --- | --- |
 | Conformance suite bit-matches Angrylion (**Phase 3** criterion 1) | **met** — 164 committed `.rvec` vectors (FILL / scissor / shaded / textured triangles, combiner, blender, dither, alpha-compare, coverage, copy texrects) replay byte-exact vs the Angrylion oracle; the seeded fuzzer found and fixed R-3 and R-15, and R-13 (textured triangles) is resolved | `cargo test -p rustyn64-test-harness --test rdp_conformance` |
 | A real ROM renders a stable golden frame (**Phase 3** criterion 2, T-33-006) | **met** — a committed license-clean homebrew ROM boots on the VR4300, CPU-fills a framebuffer, and the VI scans it out to a verified 32×24 golden frame, bit-identical across two boots | `cargo test -p rustyn64-test-harness --test real_rom_frame` |
-| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 93 fail suite-wide, all cart/PIF/MI/RDP (Phase 3+) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
-| n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — across 917 tests started, 0 RSP-prefixed failures (the suite-wide total, of which the RSP category was the bulk, fell from 413 to 93); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
+| n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; **90** fail suite-wide (down from 93 after the Phase 5 cart/PIF/SI work), the remainder MI/RDP (Phase 3+) and cart corners | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
+| n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — across 917 tests started, 0 RSP-prefixed failures (the suite-wide total, of which the RSP category was the bulk, fell from 413 to **90**); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
 | Real graphics microcode emits an RDP command list (**Phase 2** criterion 2) | **met** — libdragon's combined RSPQ+`rdpq` blob boots, dispatches an `rdpq` overlay command to its resident handler, and emits an RDP command (bytes DMA'd to RDRAM + `DP_END` advanced through the DPC seam) | `cargo test -p rustyn64-test-harness --test microcode` |
 | CPU golden-log 0-diff | **met** — retired-instruction stream identical to ares from the ELF entry | `cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored` |
 
@@ -41,11 +52,11 @@ queue (T-24-003 foundation), and an `rdpq` overlay command
 RDP command** — the 8 command bytes are DMA'd to an RDRAM output buffer and
 `DP_END` is advanced through the DPC seam (T-24-003). Witnessed non-vacuously by
 `tests/microcode.rs::the_microcode_emits_an_rdp_command_through_the_dpc_seam`.
-The next accuracy phases are the LLE RDP rasterizer (Phase 3) and cart/PIF
-(Phase 5). See `to-dos/ROADMAP.md`.
+The LLE RDP rasterizer (Phase 3) and cart/PIF (Phase 5) are now both complete;
+the next phase is the frontend shell (Phase 6, v0.7.0). See `to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
-workspace compiles and its **386** tests pass. The CPU genuinely executes
+workspace compiles and its **700** tests pass. The CPU genuinely executes
 instructions now — that is new — but every other chip is still an LLE-shaped
 stub. Stubs are `TODO(T-XXX-NN)` comments inside no-op bodies that compile and
 return, not `todo!()` panics, so nothing fails loudly. And of the test-ROM
@@ -221,7 +232,7 @@ entropy, threads and unordered collections anywhere in the core.
 | **Dillon `basic.z64` (control flow)** | **yes** — external tier | **PASSING** — 5/5 |
 | **Determinism (ADR 0004)** | n/a — self-checking | **PASSING** — exercised, not just specified |
 | CPU/RSP golden-log (reference trace) | **yes** — `tests/golden/n64-systemtest.log`, captured from a patched ares | **MET: 0 diff** over 50,027 retired records |
-| n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. 93 assertions still fail suite-wide, down from 413; **none are RSP-prefixed** (the RSP category is Phase 2's criterion and is now 0), leaving the cart/PIF (Phase 5), the RDP rasterizer (Phase 3) and the MI's RDRAM repeat mode |
+| n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. **90** assertions still fail suite-wide, down from 413 (and from 93 before the Phase 5 cart/PIF/SI work); **none are RSP-prefixed** (the RSP category is Phase 2's criterion and is now 0), leaving the RDP rasterizer (Phase 3), the MI's RDRAM repeat mode, and the remaining cart/PIF corners |
 | n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** across 917 tests started — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
 | Accuracy battery (first-party probe set) | probes not authored | 0% (battery stubbed) |

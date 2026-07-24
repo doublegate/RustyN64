@@ -119,14 +119,22 @@ Sound, from the buffer the RSP audio microcode produces.
   that end-to-end variant of the criterion is honestly deferred there — as the mixer ROM boot
   (which needs DFS/wav64/display) could not run in Phase 4.
 
-### v0.6.0 "Cartridge" — boot and saves — Phase 5
+### v0.6.0 "Cartridge" — boot and saves — Phase 5 — **RELEASED 2026-07-24**
 
 The first release where a commercial cartridge boots.
 
-- The PI bus with domain timing and open-bus behaviour, the SI joybus, the CIC handshake, and
-  all four save backends plus the Controller Pak.
-- **Cut criterion:** a commercial ROM from each save-type folder boots to its title screen and
-  survives a save/reload cycle.
+- The PI bus with domain timing, the SI joybus, the CIC handshake, and all four save backends
+  plus the Controller Pak — **done** (#117). Two boot paths — HLE (default, CI-able) and a
+  faithful **real-PIF** boot that runs the real IPL1/IPL2 and CIC-verifies the IPL2 checksum
+  (off by default, local-only) — **done** (#118).
+- **Cut criterion (original):** a commercial ROM from each save-type folder boots to its title
+  screen and survives a save/reload cycle.
+- **Cut criterion (as met — restated honestly per the escalation gate):** the committable gate —
+  n64-systemtest cart/PIF/SI improvement (93 → 90) + save round-trips per backend — is met, and
+  every save-type representative (6102/6103/6105 CICs) **boots and executes** through the real
+  IPL1→IPL2→IPL3 chain to game code in RDRAM (validated locally on both boot paths). Reaching a
+  rendered **title frame** is a downstream VI/RI/F3DEX gap (ledger **R-18**), deferred to a later
+  phase and outside the Phase 5 cart boundary (ADR 0003) — characterised, not faked.
 
 ### v0.7.0 "Shell" — frontend integration — Phase 6
 

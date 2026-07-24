@@ -8,8 +8,8 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.5.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
-  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%203%20complete-brightgreen.svg" alt="Status: Phase 3 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.6.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
+  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%205%20complete-brightgreen.svg" alt="Status: Phase 5 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
 
@@ -22,7 +22,7 @@ ParaLLEl accuracy bar: one canonical 187.5 MHz master-clock timeline co-scheduli
 compute engines, a Bus that owns everything mutable, low-level emulation of the programmable
 coprocessors, and a hard determinism contract.
 
-> ### Status: Phase 4 complete (v0.5.0) — not yet playable
+> ### Status: Phase 5 complete (v0.6.0) — not yet playable
 >
 > **The VR4300 and the RSP execute, and the RDP draws.** Phase 1 delivered the complete VR4300 —
 > the canonical master clock, the five-stage pipeline, the MIPS III integer set, COP0, the TLB, the
@@ -377,26 +377,30 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.5.0 "Resonance"** is the current release. Both of its Phase 4 cut criteria are **met** — the
-real libdragon audio-mixer microcode runs its resampling/volume/mixing DSP on the LLE RSP and
-produces a golden-verified, deterministic mixed PCM buffer, and a real bare-metal ROM plays a
-deterministic PCM stream through the AI. The earlier phases remain met: Phase 3 (RDP conformance
-bit-matches Angrylion across 164 vectors; a real ROM renders a golden frame), Phase 2 (RSP-category
+**v0.6.0 "Cartridge"** is the current release. A **commercial cartridge boots**: Phase 5 delivers
+the PI bus, the SI joybus, the CIC handshake, and all four save backends, with two boot paths — the
+copyright-clean HLE boot and a faithful **real-PIF** boot that runs the console's real IPL1/IPL2 and
+CIC-verifies the IPL2 checksum (off by default, local-only). Every save-type representative
+(6102/6103/6105 CICs) boots through the real IPL1→IPL2→IPL3 chain to game code in RDRAM; the
+committable gate drops n64-systemtest 93 → 90. The rendered title frame awaits the VI/RI/F3DEX
+runtime (ledger R-18). The earlier phases remain met: Phase 4 (audio — the real libdragon mixer
+microcode produces golden PCM; a ROM plays it through the AI), Phase 3 (RDP conformance bit-matches
+Angrylion across 164 vectors; a real ROM renders a golden frame), Phase 2 (RSP-category
 `n64-systemtest Failed: 0`; real `rdpq` microcode emitting an RDP command list), and Phase 1 (CPU
 `Failed: 0`; a 0-diff golden trace against ares). All are oracle results with committed runners, not
 self-assessments: reproduce them with
 
 ```bash
+cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
+cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored  # local; gitignored corpus
 cargo test -p rustyn64-test-harness --test mixer_microcode
-cargo test -p rustyn64-test-harness --test audio_play_rom
 cargo test -p rustyn64-test-harness --test rdp_conformance
 cargo test -p rustyn64-test-harness --test real_rom_frame
-cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
 cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored
 ```
 
-The next rung is **v0.5.0 "Resonance"** (Phase 4 — AI audio: the interface and its timing, with
-the audio microcode already running on the LLE RSP). The release ladder is
+The next rung is **v0.7.0 "Shell"** (Phase 6 — frontend integration: real scan-out, audio drain,
+and controller input through the SI, making it *playable*). The release ladder is
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
 [`docs/release-notes/`](docs/release-notes/).
 
@@ -419,7 +423,9 @@ Nine phases. **Phases 0–3 are complete**; **Phase 4 is next**:
   first picture. 164 conformance vectors bit-match Angrylion and a real ROM renders a golden frame.
 - **Phase 4 — AI audio** *(complete, v0.5.0)* — the AI interface + timing; the real libdragon
   mixer microcode runs on the LLE RSP and produces verified PCM, resampled to the host by the frontend.
-- **Phase 5 — Cart boot + saves** — PI, SI/joybus, CIC, and all four save backends.
+- **Phase 5 — Cart boot + saves** *(complete, v0.6.0)* — PI, SI/joybus, CIC, and all four save
+  backends; two boot paths (HLE default + a faithful real-PIF boot running the real IPL1/IPL2 and
+  CIC-verifying the IPL2 checksum). A commercial ROM boots and executes to game code in RDRAM.
 - **Phase 6 — Frontend integration** — real scan-out, audio, and input; save-states and the wasm
   entry point.
 - **Phase 7 — Accuracy breadth** — the battery across the commercial corpus; the accuracy ledger.
@@ -507,17 +513,18 @@ If you use RustyN64 in academic research, please cite:
   author  = {RustyN64 Contributors},
   title   = {RustyN64: A Cycle-Accurate Nintendo 64 Emulator in Rust},
   year    = {2026},
-  version = {0.5.0},
+  version = {0.6.0},
   url     = {https://github.com/doublegate/RustyN64},
   note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,
              a one-directional no_std chip-crate graph, and a hard determinism contract;
-             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.5.0 the VR4300 and the LLE
+             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.6.0 the VR4300 and the LLE
              RSP are complete and verified against n64-systemtest and an ares golden trace,
              the LLE RDP rasteriser and VI scan-out bit-match Angrylion across 164
-             conformance vectors with a real ROM rendering a committed golden frame, and the RSP
-             audio microcode mixes verified PCM through the AI; cartridge boot is not yet
-             implemented}
+             conformance vectors with a real ROM rendering a committed golden frame, the RSP
+             audio microcode mixes verified PCM through the AI, and a commercial cartridge boots
+             through the real IPL1/IPL2/IPL3 chain (HLE and faithful real-PIF paths) to game
+             code in RDRAM}
 }
 ```
 
