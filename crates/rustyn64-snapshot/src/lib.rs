@@ -17,16 +17,22 @@
 
 extern crate alloc;
 
-/// serde `with` module for a `Box<[u8; N]>`: (de)serialise as a byte sequence.
+/// serde `with` module for a `Box<[u8; N]>`.
 ///
 /// `#[serde(with = "rustyn64_snapshot::boxed_bytes")]` on a `Box<[u8; N]>` field.
+/// (De)serialisation delegates to [`serde_big_array::BigArray`], which reads
+/// **exactly `N`** elements as a fixed tuple — no length-prefixed `Vec` that a
+/// malformed / hostile save-state could use to trigger an unbounded allocation
+/// before the length check (CWE-400). The `[u8; N]` lands on the stack and is
+/// then boxed.
 pub mod boxed_bytes {
     use alloc::boxed::Box;
-    use alloc::vec::Vec;
 
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serializer};
+    use serde_big_array::BigArray;
 
-    /// Serialise the boxed array as a borrowed byte slice.
+    /// Serialise the boxed array as a fixed-length array (bounded, no length
+    /// prefix an attacker could inflate).
     ///
     /// # Errors
     /// Propagates the serializer's error.
@@ -38,37 +44,51 @@ pub mod boxed_bytes {
         value: &Box<[u8; N]>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        // `[u8]` serialises compactly (a bytes seq) in every format.
-        value.as_slice().serialize(serializer)
+        BigArray::serialize(value.as_ref(), serializer)
     }
 
-    /// Deserialise a byte sequence back into a `Box<[u8; N]>`, erroring on a
-    /// wrong length (a corrupt / mismatched-version save-state).
+    /// Deserialise exactly `N` bytes back into a `Box<[u8; N]>` (bounded).
     ///
     /// # Errors
-    /// A [`serde::de::Error`] if the sequence is not exactly `N` bytes.
+    /// A [`serde::de::Error`] if the input is not exactly `N` elements.
     pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
         deserializer: D,
     ) -> Result<Box<[u8; N]>, D::Error> {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        let boxed: Box<[u8]> = bytes.into_boxed_slice();
-        boxed
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("boxed_bytes: wrong length for [u8; N]"))
+        let arr: [u8; N] = BigArray::deserialize(deserializer)?;
+        Ok(Box::new(arr))
     }
 }
 
 /// serde `with` module for an `Option<Box<[u8; N]>>`: `None` stays `None`, `Some`
-/// (de)serialises through [`boxed_bytes`].
+/// (de)serialises through the bounded fixed-array path of [`boxed_bytes`].
 ///
 /// `#[serde(with = "rustyn64_snapshot::opt_boxed_bytes")]` on the field.
 pub mod opt_boxed_bytes {
     use alloc::boxed::Box;
-    use alloc::vec::Vec;
+    use core::marker::PhantomData;
 
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::de::Deserialize;
+    use serde::{Deserializer, Serialize, Serializer};
+    use serde_big_array::BigArray;
 
-    /// Serialise `Option<Box<[u8; N]>>` as an optional byte sequence.
+    /// A borrowed `[u8; N]` that serialises via [`BigArray`] (for `Some`).
+    struct BorrowBig<'a, const N: usize>(&'a [u8; N]);
+    impl<const N: usize> Serialize for BorrowBig<'_, N> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            BigArray::serialize(self.0, s)
+        }
+    }
+
+    /// An owned `Box<[u8; N]>` that deserialises via [`BigArray`] (bounded).
+    struct OwnBig<const N: usize>(Box<[u8; N]>, PhantomData<()>);
+    impl<'de, const N: usize> Deserialize<'de> for OwnBig<N> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            let arr: [u8; N] = BigArray::deserialize(d)?;
+            Ok(Self(Box::new(arr), PhantomData))
+        }
+    }
+
+    /// Serialise `Option<Box<[u8; N]>>`, preserving absence.
     ///
     /// # Errors
     /// Propagates the serializer's error.
@@ -76,25 +96,20 @@ pub mod opt_boxed_bytes {
         value: &Option<Box<[u8; N]>>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        // Serialise as Option<&[u8]> so absence is preserved.
-        value.as_ref().map(|b| b.as_slice()).serialize(serializer)
+        value
+            .as_ref()
+            .map(|b| BorrowBig(b.as_ref()))
+            .serialize(serializer)
     }
 
-    /// Deserialise an optional byte sequence back into `Option<Box<[u8; N]>>`.
+    /// Deserialise `Option<Box<[u8; N]>>` (bounded fixed-array when present).
     ///
     /// # Errors
-    /// A [`serde::de::Error`] if a present sequence is not exactly `N` bytes.
+    /// A [`serde::de::Error`] if a present value is not exactly `N` elements.
     pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
         deserializer: D,
     ) -> Result<Option<Box<[u8; N]>>, D::Error> {
-        Option::<Vec<u8>>::deserialize(deserializer)?
-            .map(|bytes| {
-                let boxed: Box<[u8]> = bytes.into_boxed_slice();
-                boxed
-                    .try_into()
-                    .map_err(|_| serde::de::Error::custom("opt_boxed_bytes: wrong length"))
-            })
-            .transpose()
+        Ok(Option::<OwnBig<N>>::deserialize(deserializer)?.map(|w| w.0))
     }
 }
 

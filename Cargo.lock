@@ -2346,6 +2346,7 @@ name = "rustyn64-snapshot"
 version = "0.6.0"
 dependencies = [
  "serde",
+ "serde-big-array",
  "serde_json",
 ]
 

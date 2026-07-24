@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde-big-array = "0.5"
 
 [lints]
 workspace = true
