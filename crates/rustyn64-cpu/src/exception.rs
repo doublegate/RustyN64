@@ -27,6 +27,7 @@
 
 use crate::cop0::{Cop0, reg};
 use crate::pipeline::Exception;
+use serde::{Deserialize, Serialize};
 
 /// `Cause.ExcCode` values (UM Table 6-2, p. 172).
 ///
@@ -72,7 +73,7 @@ pub mod exc_code {
 /// Only three kinds exist, because the vector table has only three rows. Every
 /// exception that is not a TLB refill takes the general vector, including a TLB
 /// refill that arrives with `EXL` already set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum VectorKind {
     /// The common vector, offset `0x180`.
     General,
@@ -242,7 +243,7 @@ pub const fn writes_tlb_context(exc: Exception) -> bool {
 }
 
 /// The result of dispatching an exception.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Dispatch {
     /// Where to fetch next.
     pub vector: u64,

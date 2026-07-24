@@ -9,9 +9,10 @@ use crate::Exception;
 use crate::alu::{self, HiLo, MulDiv};
 use crate::decode::{Decoded, Op};
 use crate::mem::{LoadKind, StoreKind};
+use serde::{Deserialize, Serialize};
 
 /// What an executed instruction wants written back.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum WriteBack {
     /// Nothing to commit.
     #[default]
@@ -36,7 +37,7 @@ pub enum WriteBack {
 /// `EX` resolves the effective address and hands the access to `DC`; it does not
 /// touch the bus itself. That split is the point of the pipeline — `DC` is the
 /// cycle the scheduler interleaves the RCP around (ADR 0007).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MemOp {
     /// An aligned load into `dest`.
     Load {
@@ -144,7 +145,7 @@ pub enum MemOp {
 /// which is the whole point of the architectural delay slot. What `EX` decides is
 /// where the fetch *after* the delay slot goes, and whether the delay slot runs
 /// at all.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Redirect {
     /// Where to fetch next.
     pub target: u64,
@@ -171,7 +172,7 @@ pub struct Redirect {
 /// DC** and a **write happens in WB**. Performing both in `EX` would make that
 /// interlock unexpressible, which is the same mistake ADR 0007 exists to prevent
 /// one level up.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Cop0Access {
     /// Read COP0 register `src` into GPR `dest`, in `DC`.
     Read {
@@ -204,7 +205,7 @@ pub enum Cop0Access {
 }
 
 /// The COP1 control moves (T-12-006). Arithmetic is Sprint 3.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Cop1Access {
     /// `MFC1`/`DMFC1` — move an FPR to a GPR.
     ReadFpr {
@@ -255,7 +256,7 @@ pub enum Cop1Access {
 }
 
 /// The four TLB instructions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TlbOp {
     /// `TLBR` — entry → COP0 registers.
     Read,
@@ -268,7 +269,7 @@ pub enum TlbOp {
 }
 
 /// The outcome of executing one instruction in `EX`.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Executed {
     /// What to commit at `WB`.
     pub write_back: WriteBack,

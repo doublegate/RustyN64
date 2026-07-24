@@ -5,8 +5,10 @@
 //! site can forget it — a scattered `if rd != 0` is how a write to `$zero`
 //! eventually slips through and corrupts the architectural zero.
 
+use serde::{Deserialize, Serialize};
+
 /// General-purpose registers plus the `HI`/`LO` multiply-divide pair.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Regs {
     /// 32 general-purpose 64-bit registers. Index 0 is architecturally zero;
     /// prefer [`Regs::read`] / [`Regs::write`] over touching this directly.

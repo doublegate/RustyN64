@@ -16,6 +16,8 @@
 //! acts on the rounding mode or the enable bits until COP1 arithmetic lands.
 //! Adding an arithmetic path here would make this ticket Sprint 3 by stealth.
 
+use serde::{Deserialize, Serialize};
+
 /// `FCR0` — the FPU implementation/revision register.
 ///
 /// Read-only. `Imp` (bits 15:8) is **`0x0A`**, and the revision half is `0x00`.
@@ -61,7 +63,7 @@ pub const FCSR_MASK: u32 = 0x0183_FFFF;
 /// Deliberately **only** the control registers: the 32 floating-point data
 /// registers arrive with the arithmetic in Sprint 3, and putting them here now
 /// would be state nothing reads.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Cop1Control {
     /// `FCR31`, the Floating-point Control/Status Register.
     fcsr: u32,

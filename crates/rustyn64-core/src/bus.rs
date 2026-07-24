@@ -23,6 +23,7 @@ use rustyn64_cart::{Cart, Cartridge, RdramBus};
 use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
 use rustyn64_rsp::Rsp;
+use serde::{Deserialize, Serialize};
 
 use crate::vi::{self, Vi};
 
@@ -39,7 +40,7 @@ pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
 /// The RCP MIPS-interface (MI) interrupt lines. Each bit, when set and unmasked,
 /// drives the VR4300 IP2 interrupt. Skeleton — the masking register is a TODO.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiInterrupt {
     /// SP (RSP) interrupt.
     pub sp: bool,
@@ -80,7 +81,7 @@ impl MiInterrupt {
 /// The SP / DP / VI / AI / PI / SI / RI / MI register blocks the CPU memory-maps
 /// in `$0400_0000..$04FF_FFFF`. Skeleton: each is a placeholder for its real
 /// register set (a roadmap phase).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct RcpRegs {
     /// MI — MIPS interface (interrupt lines + mask + RCP version).
     pub mi_intr: MiInterrupt,
@@ -93,6 +94,7 @@ pub struct RcpRegs {
 }
 
 /// Everything mutable lives here — the single owner.
+#[derive(Serialize, Deserialize)]
 pub struct Bus {
     /// Main system RDRAM (boxed slice: 8 MiB, heap-allocated without a stack
     /// temporary).

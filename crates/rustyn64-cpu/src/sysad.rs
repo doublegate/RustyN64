@@ -24,6 +24,8 @@
 //! "**1 to 2** `PCycle`s: synchronize with `SClock`" indeterminacy the manual
 //! charges in Table 11-1.
 
+use serde::{Deserialize, Serialize};
+
 /// Which half of a transaction is on the wire.
 ///
 /// # The polarity, and a contradiction that turns out not to be one
@@ -41,7 +43,7 @@
 /// sources. The wiki simply uses "Command" for the cycle the manual calls a data
 /// identifier. We follow the **manual's** naming, since it is the vendor spec and
 /// the rest of this crate cites it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Phase {
     /// The address cycle: `SysCmd4 = 0`, carrying a command in `SysCmd(3:0)`.
     Address,
@@ -58,7 +60,7 @@ impl Phase {
 }
 
 /// Transfer size, encoded in `SysCmd(1:0)` of a request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Width {
     /// 32-bit single transfer. All 8/16/24/32-bit reads are issued as this; the
     /// CPU does the shifting internally.
@@ -103,7 +105,7 @@ impl Width {
 }
 
 /// The order a block transfer's 64-bit halves arrive in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum BlockOrder {
     /// Lowest address first.
     Sequential,
@@ -136,7 +138,7 @@ pub const fn block_order(width: Width, addr: u32) -> BlockOrder {
 /// Modelled as a small state machine rather than an atomic operation, so the
 /// scheduler can advance the RCP *between* the address and data phases — the
 /// property that makes a device able to observe the bus mid-transaction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Transaction {
     /// Physical address.
     pub addr: u32,

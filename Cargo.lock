@@ -142,6 +142,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -167,6 +176,9 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "block2"
@@ -1151,6 +1163,12 @@ checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
+
+[[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jni"
@@ -2236,6 +2254,8 @@ name = "rustyn64-audio"
 version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -2243,6 +2263,9 @@ name = "rustyn64-cart"
 version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
+ "rustyn64-snapshot",
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -2258,6 +2281,9 @@ dependencies = [
  "rustyn64-cpu",
  "rustyn64-rdp",
  "rustyn64-rsp",
+ "rustyn64-snapshot",
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -2265,6 +2291,9 @@ name = "rustyn64-cpu"
 version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
+ "rustyn64-snapshot",
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -2297,6 +2326,9 @@ version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
  "rustyn64-cart",
+ "rustyn64-snapshot",
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -2304,12 +2336,24 @@ name = "rustyn64-rsp"
 version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
+ "rustyn64-snapshot",
+ "serde",
+ "serde-big-array",
+]
+
+[[package]]
+name = "rustyn64-snapshot"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "rustyn64-test-harness"
 version = "0.6.0"
 dependencies = [
+ "bincode",
  "insta",
  "rustyn64-core",
 ]
@@ -2371,6 +2415,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2388,6 +2441,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.2",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.151"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
 ]
 
 [[package]]
@@ -3638,3 +3704,9 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "zmij"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"

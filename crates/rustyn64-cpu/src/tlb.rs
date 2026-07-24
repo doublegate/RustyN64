@@ -26,6 +26,7 @@
 //! explicitly says it must.
 
 use crate::cop0::{Cop0, reg};
+use serde::{Deserialize, Serialize};
 
 /// The bits of a virtual address that `EntryHi.VPN2` can hold: VA(39:0).
 ///
@@ -52,7 +53,7 @@ pub const ITLB_ENTRIES: usize = 2;
 pub const ITLB_MISS_PCYCLES: u32 = 3;
 
 /// One JTLB entry: a `VPN2` tag plus the even and odd page it maps.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     /// `PageMask`, selecting the page size.
     pub page_mask: u32,
@@ -82,7 +83,7 @@ pub struct Entry {
 }
 
 /// One half of an entry — the even or odd page.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PageEntry {
     /// Page frame number.
     pub pfn: u32,
@@ -106,7 +107,7 @@ impl PageEntry {
 }
 
 /// Why a translation failed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TlbFault {
     /// No entry matched — TLB refill (`TLBL`/`TLBS`, refill vector).
     Refill,
@@ -118,7 +119,7 @@ pub enum TlbFault {
 }
 
 /// A successful translation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Translated {
     /// The physical address.
     pub addr: u32,
@@ -127,7 +128,7 @@ pub struct Translated {
 }
 
 /// The joint TLB plus its instruction micro-TLB.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Tlb {
     /// The 32 joint entries.
     entries: [Entry; JTLB_ENTRIES],

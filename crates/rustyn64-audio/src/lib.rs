@@ -32,6 +32,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use serde::{Deserialize, Serialize};
 
 /// The canonical master clock (`MASTER_HZ`, ADR 0006), duplicated here because
 /// the chip-crate graph forbids `rustyn64-audio` depending on `rustyn64-core`.
@@ -57,7 +58,7 @@ pub const VIDEO_CLOCK_NTSC: u32 = 48_681_812;
 pub const VIDEO_CLOCK_PAL: u32 = 49_656_530;
 
 /// The emulated console region, selecting the AI video clock.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Region {
     /// NTSC (~60 Hz), the common region.
     #[default]
@@ -89,7 +90,7 @@ pub trait AudioBus {
 }
 
 /// One stereo output frame (interleaved signed 16-bit L, R).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StereoSample {
     /// Left channel.
     pub left: i16,
@@ -99,7 +100,7 @@ pub struct StereoSample {
 
 /// The result an AI register write hands back to the Bus, which owns the MI
 /// interrupt lines the AI itself cannot name.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AiIrq {
     /// The write had no interrupt effect.
     #[default]
@@ -113,7 +114,7 @@ pub enum AiIrq {
 
 /// Audio Interface state: the two-deep DMA FIFO, the DAC rate divider, and the
 /// derived-timing sample emission.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Audio {
     // --- The two-deep DMA FIFO (front = index 0). ---
     /// RDRAM base of each queued transfer (24-bit, 8-byte aligned). Slot 0 is

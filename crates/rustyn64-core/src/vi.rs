@@ -17,6 +17,7 @@
 //! per-register write masks are not yet applied (ledger R-4). Reference:
 //! `n64brew_wiki/markdown/Video Interface.md`.
 
+use serde::{Deserialize, Serialize};
 /// `VI_CTRL` (`0x0440_0000`): pixel type, AA/serrate/dither config. `TYPE == 0`
 /// turns the VI off (no interrupt is ever generated).
 pub const VI_CTRL: u32 = 0;
@@ -69,7 +70,7 @@ pub const VI_REG_COUNT: usize = 16;
 pub const VI_FIELD_HZ: u64 = 60;
 
 /// The Video Interface register file (the `0x0440_0000` block).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vi {
     /// The sixteen 32-bit registers, indexed by word offset. `pub(crate)` so
     /// every external access goes through [`Vi::read`]/[`Vi::write`] — which is

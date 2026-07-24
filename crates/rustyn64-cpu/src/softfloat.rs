@@ -72,13 +72,14 @@
 )]
 
 use crate::fpu::{Flags, Rounding};
+use serde::{Deserialize, Serialize};
 
 /// The parameters of an IEEE-754 binary interchange format.
 ///
 /// Held as data rather than as a type parameter so that one implementation
 /// serves both precisions. A second copy of this logic specialised per format
 /// is exactly how the two diverge.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Format {
     /// Significand bits **including** the implicit leading one (24 / 53).
     pub p: u32,
@@ -228,7 +229,7 @@ fn unpack(bits: u64, f: Format) -> Unpacked {
 }
 
 /// A computed result: the encoding plus what producing it raised.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Rounded {
     /// The result's encoding, in the low [`Format::width`] bits.
     pub bits: u64,

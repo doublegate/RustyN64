@@ -27,8 +27,10 @@
 //! reserved-instruction exception, which is visible, rather than executing as a
 //! `NOP`, which silently produces wrong results.
 
+use serde::{Deserialize, Serialize};
+
 /// The decoded operation. Only the integer subset so far; see the module docs.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Op {
     /// Not (yet) a recognised encoding — raises a reserved-instruction
     /// exception rather than behaving as a `NOP`.
@@ -598,7 +600,7 @@ impl Op {
 /// **fields** whether or not they are used as sources
 /// (see [`crate::pipeline::load_interlocks`]). Resolving them away would make
 /// that check impossible to state correctly.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Decoded {
     /// The operation.
     pub op: Op,

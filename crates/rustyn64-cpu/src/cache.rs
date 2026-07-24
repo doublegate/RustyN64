@@ -42,6 +42,8 @@
 //! dirty valid line are indistinguishable to `Index_Load_Tag`. That is hardware
 //! behaviour, not an omission — see [`Dcache::load_tag`].
 
+use serde::{Deserialize, Serialize};
+
 /// Instruction-cache line size, in bytes (UM §11.2).
 pub const ICACHE_LINE: u32 = 32;
 /// Data-cache line size, in bytes (UM §11.2).
@@ -61,7 +63,7 @@ const DCACHE_VALID_STATE: u32 = 3;
 /// `tag` holds the physical frame number, PA(31:12), and survives invalidation:
 /// `Index_Invalidate` clears `valid` and leaves `tag` alone, which is directly
 /// observable through `Index_Load_Tag` and is asserted by n64-systemtest.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct Line<const N: usize> {
     /// Physical frame number, PA(31:12).
     tag: u32,
@@ -70,6 +72,7 @@ struct Line<const N: usize> {
     /// Whether the line has been written since it was filled (D-cache only).
     dirty: bool,
     /// The line's bytes, in memory order.
+    #[serde(with = "serde_big_array::BigArray")]
     data: [u8; N],
 }
 
@@ -109,17 +112,19 @@ const fn unpack_tag(tag_lo: u32, valid_state: u32) -> (u32, bool) {
 /// into the cache would widen that borrow across the whole pipeline. Instead a
 /// fill or write-back is described here and performed by the caller, which
 /// already has the bus.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Writeback<const N: usize> {
     /// Physical address of the line's first byte.
     pub addr: u32,
     /// The line's bytes.
+    #[serde(with = "serde_big_array::BigArray")]
     pub data: [u8; N],
 }
 
 /// The 8 KiB write-back data cache.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Dcache {
+    #[serde(with = "serde_big_array::BigArray")]
     lines: [Line<16>; DCACHE_LINES],
 }
 
@@ -299,8 +304,9 @@ impl Dcache {
 }
 
 /// The 16 KiB instruction cache.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Icache {
+    #[serde(with = "serde_big_array::BigArray")]
     lines: [Line<32>; ICACHE_LINES],
 }
 

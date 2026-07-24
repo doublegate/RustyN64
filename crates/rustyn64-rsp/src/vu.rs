@@ -14,13 +14,14 @@
 //! treating a lane as the unit, silently rounds every odd offset.
 
 use crate::Rsp;
+use serde::{Deserialize, Serialize};
 
 /// The VU's three control registers (N64brew *RSP CPU Core* §Control registers).
 ///
 /// `VCO` and `VCC` are 16 bits, `VCE` is 8. They are flag registers rather than
 /// data: each instruction defines what it reads and writes, so there is no
 /// useful general description of their contents.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Control {
     /// Carry / overflow, 16 bits — two flags per lane.
     pub vco: u16,
@@ -38,7 +39,7 @@ pub struct Control {
 /// combines. `pending` is what distinguishes "a high half was just staged" from
 /// "there is a stale value in the latch" — without it, an `L` instruction issued
 /// on its own would silently consume whatever the last `H` left behind.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Divide {
     /// The high half staged by a `VRCPH`/`VRSQH`.
     pub input: u16,

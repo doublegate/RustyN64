@@ -33,6 +33,8 @@ pub mod command;
 
 pub use rustyn64_cart::RdramBus;
 
+use serde::{Deserialize, Serialize};
+
 /// The narrow bus the RDP sees.
 ///
 /// RDRAM access (for the framebuffer + texture fetches) plus the
@@ -633,7 +635,7 @@ const OP_SET_COLOR_IMAGE: u8 = 0x3F;
 
 /// One cycle of the blender: the `P`/`M` colour selects and the `A`/`B` alpha
 /// selects for `P * A + M * (B + 1)` (`Set Other Modes`, 0x2F). Each is 2-bit.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlendCycle {
     /// `P` (1a) colour select: 0 pixel, 1 memory, 2 blend, 3 fog.
     pub p: u8,
@@ -653,7 +655,7 @@ pub struct BlendCycle {
 /// remaining decoded-but-unused fields — the AA-edge divider LUT, the
 /// interpenetrating-Z blend-shift, `color_on_cvg`, and coverage write-back — are
 /// the **open residual R-11**.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "these are independent hardware mode bits from Set Other Modes, not a state machine"
@@ -690,7 +692,7 @@ pub struct OtherModes {
 }
 
 /// The resolved per-pixel blender input colours (each RGBA8888).
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlendInputs {
     /// The combiner's output ("pixel colour").
     pub pixel: [u8; 4],
@@ -706,7 +708,7 @@ pub struct BlendInputs {
 
 /// The Z-buffer read and render-mode flags [`Rdp::depth_test`] needs beyond the
 /// incoming pixel's own `z`/`dz` (grouped so the signature stays legible).
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct DepthInputs {
     /// The 14-bit compressed depth already stored for this pixel.
     pub current_depth: u16,
@@ -726,7 +728,7 @@ pub struct DepthInputs {
 
 /// The outcome of a per-pixel depth test: whether the pixel is written, and the
 /// blend/coverage state the blender consumes.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DepthResult {
     /// The pixel passes the depth test and is written.
     pub depth_pass: bool,
@@ -743,7 +745,7 @@ pub struct DepthResult {
 /// The decoded per-triangle depth setup for the per-pixel path: the `s15.16`
 /// z-coefficient and its per-x / per-major-edge deltas, plus the primitive `dz`
 /// (linear) and `dz_compressed` (4-bit stored form) for the test and writeback.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[allow(
     clippy::similar_names,
     reason = "dzdx / dzde / dz are the N64 RDP's own z-coefficient names"
@@ -759,7 +761,7 @@ struct ZTriSetup {
 /// The decoded per-triangle shade setup for the per-pixel path: the `s15.16` RGBA
 /// base colour (at the top vertex) and its per-x (`dx`) and per-major-edge (`de`)
 /// deltas. The per-scanline `dy` term (sub-pixel snap) is part 2c.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 struct ShadeSetup {
     base: [i32; 4],
     dx: [i32; 4],
@@ -769,7 +771,7 @@ struct ShadeSetup {
 /// The decoded per-triangle texture setup: `S`/`T`/`W` (`W` for the perspective
 /// divide). `base`/`dx`/`de` are the `s16.16` base at the top vertex and its per-x
 /// and per-major-edge deltas.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 struct TexSetup {
     base: [i32; 3],
     dx: [i32; 3],
@@ -954,7 +956,7 @@ fn apply_rgb_dither(rgb: [u8; 4], dith: i32) -> [u8; 4] {
 /// The four RGB input selects and the four alpha input selects for
 /// `(A − B) * C + D` (`Set Combine Mode`, 0x3C). A/B/D RGB are 4-bit (D 3-bit),
 /// C RGB is 5-bit; the alpha selects are all 3-bit.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CombineCycle {
     /// RGB `A` (muladd) select.
     pub rgb_a: u8,
@@ -975,7 +977,7 @@ pub struct CombineCycle {
 }
 
 /// The two-cycle colour-combiner configuration (`Set Combine Mode`, 0x3C).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CombineMode {
     /// Cycle-0 selects (the first stage in 2-cycle mode).
     pub cyc0: CombineCycle,
@@ -988,7 +990,7 @@ pub struct CombineMode {
 /// The combiner muxes these by the [`CombineCycle`] selects. Exotic inputs
 /// (noise, LOD frac, the key/convert constants) are not modelled yet (**open
 /// residual R-10**) and read as zero.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct CombinerInputs {
     /// The previous cycle's output (cycle 0's result feeds cycle 1's `Combined`).
     pub combined: [u8; 4],
@@ -1021,7 +1023,7 @@ pub const TMEM_SIZE: usize = 4096;
 // clamp + one mirror per S/T axis); they are decoded straight from command bits
 // 8/9/18/19, so an enum would misrepresent the register rather than clarify it.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TileDescriptor {
     /// Texel format: RGBA=0, YUV=1, CI=2, IA=3, I=4 (`Set Tile` bits 55:53).
     pub format: u8,
@@ -1072,7 +1074,7 @@ pub struct TileDescriptor {
 /// (other-modes and the combiner latches are still to come), so adding a field
 /// must not be a breaking change. Construct via [`Rdp::new`]; the workspace
 /// never uses a struct literal.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Rdp {
     /// DP command FIFO start (`DPC_START`).
@@ -1163,6 +1165,7 @@ pub struct Rdp {
     /// [`Rdp`]'s `Default` cheap, which matters because `Bus::rdp_tick` does a
     /// `core::mem::take` every RCP step — a `None` placeholder is swapped in with
     /// no 4 KiB allocation or copy, while the real TMEM box moves by pointer.
+    #[serde(with = "rustyn64_snapshot::opt_boxed_bytes")]
     tmem: Option<alloc::boxed::Box<[u8; TMEM_SIZE]>>,
 }
 

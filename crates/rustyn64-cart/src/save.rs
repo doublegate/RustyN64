@@ -18,6 +18,8 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
+use serde::{Deserialize, Serialize};
+
 use crate::SaveType;
 
 /// PI base of the DOM2 save window (SRAM / FlashRAM).
@@ -32,7 +34,7 @@ const FLASH_SECTOR_PAGES: usize = 128;
 const FLASH_SECTOR: usize = FLASH_SECTOR_PAGES * FLASH_PAGE;
 
 /// The FlashRAM chip's operating mode (n64brew `Flash.md`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum FlashMode {
     /// Power-on: reads at the base return the data array.
     #[default]
@@ -46,9 +48,10 @@ enum FlashMode {
 }
 
 /// The FlashRAM state machine.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FlashRam {
     array: Box<[u8]>,
+    #[serde(with = "serde_big_array::BigArray")]
     page_buffer: [u8; FLASH_PAGE],
     mode: FlashMode,
     /// The last-set erase target (a page offset within the sector to erase, or
@@ -168,7 +171,7 @@ impl FlashRam {
 }
 
 /// A cartridge save backend, sized + typed from the resolved [`SaveType`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub enum SaveDevice {
     /// No on-cart save.
     #[default]

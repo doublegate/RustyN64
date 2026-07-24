@@ -48,13 +48,14 @@ use crate::mem;
 use crate::regs::Regs;
 use crate::softfloat;
 use crate::tlb::Tlb;
+use serde::{Deserialize, Serialize};
 
 /// The five pipeline stages, in hardware order (UM §4.1, Figure 4-1).
 ///
 /// Note the names: **IC** and **DC**, not `IF`/`DF`. The manual's whole interlock
 /// and exception taxonomy is stated stage-relative, so these spellings are what
 /// make a citation resolvable.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Stage {
     /// Instruction Cache fetch.
     Ic,
@@ -74,7 +75,7 @@ pub enum Stage {
 /// interlocks and exceptions (Figure 4-11: Faults = Interlocks ∪ Exceptions,
 /// split into Stalls vs Abort), and CEN64 follows that wider usage. What rides in
 /// a latch here is only the aborting subset, so it carries the narrower name.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Exception {
     /// An interrupt was accepted (`Cause.IP` unmasked, `IE` set, `EXL`/`ERL` clear).
     Interrupt,
@@ -175,7 +176,7 @@ enum FpCommit {
 ///
 /// Held as a named enum rather than a bare cycle count so a stall is always
 /// attributable — "why did this stall" is answerable from a trace.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Interlock {
     /// Load interlock — 1 cycle (UM §4.6.5).
     ///
@@ -234,7 +235,7 @@ pub enum Interlock {
 ///
 /// It lands with T-11-002, when stages can stall independently and a partial
 /// resume becomes meaningful.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Stall {
     /// `PCycle`s remaining.
     pub cycles: u32,
@@ -244,7 +245,7 @@ pub struct Stall {
 
 /// State carried across one inter-stage boundary — what travels *with* an
 /// instruction as it advances.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Latch {
     /// Is an instruction present at this boundary? A bubble is `false`.
     pub occupied: bool,
@@ -316,7 +317,7 @@ fn fr_of(cop0: &Cop0) -> bool {
 
 /// An exception captured at its raising site, with the context the epilogue
 /// needs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct Pending {
     /// What happened.
     exc: Exception,
@@ -329,7 +330,7 @@ struct Pending {
 }
 
 /// The four inter-stage latches plus the pipeline control state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 // The bools are independent hardware lines and latches -- `prev_was_run`,
 // `flush_pending`, `nmi_pending`, `ll_bit`. Clippy suggests folding them into a
 // state machine; they do not form one, because any combination is reachable and

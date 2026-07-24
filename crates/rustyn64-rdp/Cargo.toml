@@ -11,7 +11,10 @@ default = ["std"]
 std = []
 
 [dependencies]
-bitflags = "2"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde-big-array = "0.5"
+rustyn64-snapshot = { path = "../rustyn64-snapshot" }
+bitflags = { version = "2", features = ["serde"] }
 rustyn64-cart = { path = "../rustyn64-cart", version = "0.6.0", default-features = false }
 
 [lints]

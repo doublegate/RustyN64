@@ -8,6 +8,28 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.7.0 "Shell"` — frontend integration (Phase 6).
 
+### Added — save-state serialisation (Phase 6, Sprint 2)
+
+- **The whole machine state is now serde-serialisable** (ADR 0004): `serde`
+  `Serialize`/`Deserialize` derives across every state type in `rustyn64-cpu`,
+  `-rsp`, `-rdp`, `-audio`, `-cart`, and `-core` (`System`/`Bus`/`Vi`), so a
+  `System` round-trips through any serde format. The chip crates stay `#![no_std]`
+  (serde's `alloc` feature).
+- **New `rustyn64-snapshot` leaf crate** with `#[serde(with)]` helpers for the
+  `Box<[u8; N]>` backing stores (RSP DMEM/IMEM, RDP TMEM, the PIF boot ROM) —
+  boxed *arrays* serde's built-in impls don't cover — keeping the field types and
+  hot-path indexing unchanged.
+- **The cartridge ROM is excluded from snapshots** (`#[serde(skip)]`): it is
+  immutable and up to 64 MiB, so serialising it in every snapshot would make the
+  rewind ring enormous. A restore deserialises an empty ROM and the caller
+  re-attaches the loaded image via `Cart::reattach_rom` (a save-state is valid
+  alongside the same ROM — the normal emulator contract).
+- **Bit-identical restore is proven by a two-run trace compare**
+  (`tests/savestate.rs`): a homebrew ROM validates the CPU/RDRAM/VI path
+  (committable), and a booted commercial ROM validates the full machine
+  (RSP/RDP/AI/cart, local-only) — snapshot, continue, restore, continue, and the
+  fingerprints must match. A missed state field diverges and fails the test.
+
 ### Changed — the frontend boots and runs games (Phase 6, Sprint 1)
 
 - **The retail boot moved into the core** (`rustyn64_core::boot`, ADR 0010): `hle_boot`,

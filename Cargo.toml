@@ -8,6 +8,7 @@ resolver = "2"
 exclude = ["ref-proj", "n64brew_wiki"]
 members = [
     "crates/rustyn64-core",
+    "crates/rustyn64-snapshot",
     "crates/rustyn64-cpu",
     "crates/rustyn64-rsp",
     "crates/rustyn64-rdp",

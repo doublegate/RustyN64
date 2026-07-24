@@ -16,6 +16,7 @@ rustyn64-core = { path = "../rustyn64-core", version = "0.6.0" }
 
 [dev-dependencies]
 insta = "1"
+bincode = "1"
 
 [lints]
 workspace = true

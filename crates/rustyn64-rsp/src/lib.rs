@@ -37,6 +37,8 @@
 
 extern crate alloc;
 
+use serde::{Deserialize, Serialize};
+
 pub mod sp;
 pub mod su;
 pub mod vu;
@@ -49,7 +51,7 @@ pub const SP_MEM_SIZE: usize = 4 * 1024;
 /// Holds the SU register file, the VU vector register file + accumulator, the
 /// program counter into IMEM, the halted flag, and the DMEM/IMEM scratch. The
 /// execution engine itself is a roadmap TODO.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rsp {
     /// Scalar unit: 32 × 32-bit general registers.
     pub su_regs: [u32; 32],
@@ -62,8 +64,10 @@ pub struct Rsp {
     /// Halted (`SP_STATUS.halt`) — the RSP idles until the CPU clears it.
     pub halted: bool,
     /// 4 KiB data memory.
+    #[serde(with = "rustyn64_snapshot::boxed_bytes")]
     pub dmem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
     /// 4 KiB instruction memory.
+    #[serde(with = "rustyn64_snapshot::boxed_bytes")]
     pub imem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
     /// The SP interface registers, shared by the CPU's memory-mapped window and
     /// the RSP's own COP0 -- one set of physical registers, so one field.
