@@ -18,7 +18,7 @@
 // Address math truncates by design when narrowing 32-bit physical addresses.
 #![allow(clippy::cast_possible_truncation)]
 
-use rustyn64_audio::{Audio, AudioBus};
+use rustyn64_audio::{AiIrq, Audio, AudioBus, StereoSample};
 use rustyn64_cart::{Cart, Cartridge, RdramBus};
 use rustyn64_cpu::Bus as CpuBus;
 use rustyn64_rdp::{Rdp, VideoBus};
@@ -266,11 +266,19 @@ impl Bus {
         self.rdp = rdp;
     }
 
-    /// Step the AI against this bus's narrow [`AudioBus`] view (split-borrow).
-    pub fn audio_tick(&mut self) {
+    /// Step the AI against this bus's narrow [`AudioBus`] view (split-borrow),
+    /// advancing the DAC to `master_ticks` so sample emission is derived from
+    /// the one canonical clock (ADR 0006) rather than an independent counter.
+    pub fn audio_tick(&mut self, master_ticks: u64) {
         let mut audio = core::mem::take(&mut self.audio);
-        audio.tick(self);
+        audio.tick(master_ticks, self);
         self.audio = audio;
+    }
+
+    /// Drain the stereo stream the AI has emitted since the last drain — the
+    /// frontend pushes it into the host ring and resamples (ADR 0004).
+    pub fn drain_audio_samples(&mut self) -> alloc::vec::Vec<StereoSample> {
+        self.audio.drain()
     }
 
     /// Diagnostic: count of RCP-chip steps taken (RSP ticks). The scheduler's
@@ -411,6 +419,26 @@ impl Bus {
     /// handles.
     const fn is_vi_register(addr: u32) -> bool {
         addr >= Self::VI_REGS_BASE && addr < 0x0450_0000
+    }
+
+    /// Base of the AI register block (`0x0450_0000`); the SI/RI follow above.
+    pub const AI_REGS_BASE: u32 = 0x0450_0000;
+
+    /// Is this address in the AI register block? Six registers span
+    /// `0x0450_0000..0x0450_0018`; the rest of the `0x045x_xxxx` window mirrors
+    /// them (the three-bit decode `(addr >> 2) & 7` in [`Audio::read_reg`]).
+    const fn is_ai_register(addr: u32) -> bool {
+        addr >= Self::AI_REGS_BASE && addr < 0x0460_0000
+    }
+
+    /// Write an AI register, applying its interrupt effect to the MI: enqueuing
+    /// the first buffer raises `MI_INTR.ai`; a write to `AI_STATUS` lowers it.
+    fn ai_write(&mut self, addr: u32, val: u32) {
+        match self.audio.write_reg((addr >> 2) & 7, val) {
+            AiIrq::Raise => self.rcp.mi_intr.ai = true,
+            AiIrq::Lower => self.rcp.mi_intr.ai = false,
+            AiIrq::None => {}
+        }
     }
 
     /// Write a VI register; a write to `VI_V_CURRENT` acknowledges the VI
@@ -747,6 +775,9 @@ impl CpuBus for Bus {
         if Self::is_vi_register(addr) {
             return (self.vi.read(addr >> 2) >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_ai_register(addr) {
+            return (self.audio.read_reg((addr >> 2) & 7) >> (8 * (3 - (addr & 3)))) as u8;
+        }
         if addr & !3 == Self::SP_PC {
             return (self.rsp.sp.pc() >> (8 * (3 - (addr & 3)))) as u8;
         }
@@ -816,6 +847,9 @@ impl CpuBus for Bus {
         }
         if Self::is_vi_register(addr) {
             return self.vi.read(addr >> 2);
+        }
+        if Self::is_ai_register(addr) {
+            return self.audio.read_reg((addr >> 2) & 7);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -968,6 +1002,10 @@ impl CpuBus for Bus {
         }
         if Self::is_vi_register(addr) {
             self.vi_write(addr, val);
+            return;
+        }
+        if Self::is_ai_register(addr) {
+            self.ai_write(addr, val);
             return;
         }
         if addr & !3 == Self::SP_PC {
@@ -1151,6 +1189,56 @@ mod tests {
         bus.rcp.mi_intr.ai = true;
         bus.rcp.mi_mask.ai = true;
         assert!(CpuBus::poll_irq(&mut bus));
+    }
+
+    /// **The AI register block is CPU-addressable and drives audio end to end.**
+    /// Programming `AI_DACRATE`/`AI_CONTROL`/`AI_DRAM_ADDR`/`AI_LENGTH` through
+    /// the memory-mapped path at `0x0450_0000` starts a transfer that raises
+    /// `MI_INTR.ai` on enqueue, mirrors `AI_LENGTH` on the write-only registers,
+    /// acknowledges on an `AI_STATUS` write, and emits the RDRAM samples as the
+    /// derived-timing DAC advances.
+    #[test]
+    fn ai_registers_drive_audio_through_the_cpu_bus() {
+        let mut bus = Bus::new();
+        // Two stereo pairs at RDRAM 0x2000.
+        CpuBus::write_u32(&mut bus, 0x0000_2000, 0x1111_2222);
+        CpuBus::write_u32(&mut bus, 0x0000_2004, 0x3333_4444);
+        // Program the AI: ~44 kHz, DMA enabled, buffer at 0x2000, 8 bytes.
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x10, 1103); // AI_DACRATE
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x08, 1); // AI_CONTROL
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE, 0x2000); // AI_DRAM_ADDR
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x04, 8); // AI_LENGTH
+        assert!(
+            bus.rcp.mi_intr.ai,
+            "enqueuing the first buffer raises the AI line"
+        );
+        // Write-only registers read back the AI_LENGTH mirror (remaining bytes).
+        assert_eq!(CpuBus::read_u32(&mut bus, Bus::AI_REGS_BASE + 0x10), 8);
+        // AI_STATUS reports BUSY and ENABLED.
+        let status = CpuBus::read_u32(&mut bus, Bus::AI_REGS_BASE + 0x0C);
+        assert_ne!(status & (1 << 30), 0, "BUSY");
+        assert_ne!(status & (1 << 25), 0, "ENABLED");
+        // A write to AI_STATUS acknowledges the interrupt.
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x0C, 0);
+        assert!(!bus.rcp.mi_intr.ai, "an AI_STATUS write acks the interrupt");
+        // Advance the DAC and drain the emitted samples.
+        let period = rustyn64_audio::MASTER_HZ / u64::from(bus.audio.sample_rate());
+        bus.audio_tick(period * 2);
+        let samples = bus.drain_audio_samples();
+        assert_eq!(
+            samples[0],
+            StereoSample {
+                left: 0x1111,
+                right: 0x2222
+            }
+        );
+        assert_eq!(
+            samples[1],
+            StereoSample {
+                left: 0x3333,
+                right: 0x4444
+            }
+        );
     }
 
     /// **A `Sync Full` command drives the DP interrupt through to the CPU.** A

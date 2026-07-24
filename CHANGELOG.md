@@ -9,6 +9,27 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.5.0 "Resonance"` — AI audio (Phase 4), from the buffer the RSP
 audio microcode already produces (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+### Added — the Audio Interface (Phase 4, Sprint 1)
+
+- **`rustyn64-audio` implements the AI** (was a skeleton): the register block at
+  `0x0450_0000` (`AI_DRAM_ADDR`/`AI_LENGTH`/`AI_CONTROL`/`AI_STATUS`/`AI_DACRATE`/
+  `AI_BITRATE`), the two-deep DMA FIFO, and derived-timing sample emission off the
+  canonical `master_ticks` (ADR 0006). Every write-only register reads back the
+  `AI_LENGTH` mirror; an `AI_STATUS` write acks the interrupt.
+- **The AI interrupt fires when a transfer *starts*, not when it drains** — enqueuing
+  the first buffer raises `MI_INTR.ai` immediately; a queued buffer raises it on
+  promotion (wiki §DMA, ares).
+- **The DAC rate is derived**, `video_clock / (AI_DACRATE + 1)`, with per-region
+  video-clock constants (`VIDEO_CLOCK_NTSC = 48_681_812`, `VIDEO_CLOCK_PAL =
+  49_656_530`; documented provenance, not tuned).
+- **The delayed-carry hardware bug is reproduced** (a 13/11-bit address split with a
+  one-sample-deferred carry) with a named test that fails if it is "corrected".
+- **Underrun is observable** (hold-and-decay + an `underruns()` counter) rather than a
+  silent stop. The Bus decodes the AI register block and exposes
+  `drain_audio_samples()` for the frontend.
+- Ledgered residuals **R-16** (`AI_STATUS` `COUNT`/`WC`/`BC` best-effort, no oracle)
+  and **R-17** (no DMA setup latency; defined-but-unpinned underrun decay).
+
 ## [0.4.1] - 2026-07-23
 
 A documentation-only patch: the Phase 3 close left the planning and status docs describing
