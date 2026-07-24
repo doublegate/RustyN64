@@ -38,8 +38,10 @@
 //! Collapsing the first two is invisible until something reads the register at
 //! a different width, which is precisely what those tests do.
 
+use serde::{Deserialize, Serialize};
+
 /// The 32 physical floating-point general registers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Fpr {
     /// Raw FGR storage. Prefer the accessors: they apply the `FR` view, which
     /// direct indexing silently gets wrong for `FR = 0` doubles.

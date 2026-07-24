@@ -31,6 +31,8 @@ pub mod save;
 
 use alloc::vec::Vec;
 
+use serde::{Deserialize, Serialize};
+
 /// The shared RDRAM memory bus, as seen by chips that DMA into/out of main RAM.
 ///
 /// The RDP (framebuffer + texture fetches via the RDRAM) and the PI/SI DMA
@@ -78,7 +80,7 @@ pub trait RdramBus {
 /// Detected from the per-game database (the IPL/ROM has no reliable in-header
 /// save-type field, unlike the iNES mapper byte) — keyed off the cart serial /
 /// CRC. `None` means the title saves only to the Controller Pak (or not at all).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
 pub enum SaveType {
     /// No on-cart save chip.
     #[default]
@@ -114,7 +116,7 @@ impl SaveType {
 /// The PIF and the CIC exchange a seeded challenge/response at boot; the variant
 /// fixes the seed + checksum the IPL3 expects. Skeleton — the handshake itself
 /// is a roadmap phase.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
 pub enum Cic {
     /// 6101 (early NTSC: Star Fox 64).
     Cic6101,
@@ -137,7 +139,7 @@ pub enum Cic {
 /// to compare against the value IPL2 computes — a mismatch NMI-halts the CPU.
 /// These are documented constants, not the SM5 firmware; the seed bytes
 /// cross-check the per-CIC seed values the HLE boot path already injects.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CicBootSecrets {
     /// The 8-bit IPL2 seed (used by IPL2's checksum over the cart's IPL3).
     pub ipl2_seed: u8,
@@ -215,7 +217,7 @@ impl Cic {
 /// `.z64` is big-endian (native), `.n64` is little-endian (byte-swapped),
 /// `.v64` is byte-swapped within each 16-bit halfword. The loader normalizes
 /// everything to big-endian internally.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum RomFormat {
     /// `.z64` — big-endian, the canonical internal order.
     Z64BigEndian,
@@ -240,7 +242,7 @@ impl RomFormat {
 }
 
 /// Parsed cartridge header (the first 0x40 bytes of the ROM image).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RomHeader {
     /// Internal game title (0x20..0x34, space-padded ASCII).
     pub title: [u8; 20],
@@ -278,7 +280,7 @@ impl RomHeader {
 }
 
 /// Error type for cartridge loading / parsing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CartError {
     /// The ROM image is shorter than a 0x40-byte header.
     ShortHeader,
@@ -313,9 +315,16 @@ pub trait Cartridge {
 }
 
 /// PI cart + PIF/CIC + save state — the concrete board.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Cart {
     /// The normalized (big-endian) ROM image.
+    ///
+    /// **Excluded from save-states** (`#[serde(skip)]`): the ROM is immutable and
+    /// up to 64 MiB, so serialising it in every snapshot would make the rewind
+    /// ring enormous. A restore deserialises an empty ROM; the frontend re-attaches
+    /// the currently-loaded image via [`Cart::reattach_rom`]. A save-state is thus
+    /// only valid alongside the same ROM — the normal emulator contract.
+    #[serde(skip)]
     rom: Vec<u8>,
     /// Parsed header (title / game code / save+CIC selection).
     header: RomHeader,
@@ -355,6 +364,23 @@ impl Cart {
             save,
             pif,
         })
+    }
+
+    /// Re-attach a ROM image after a save-state restore (which deserialises an
+    /// empty ROM — the ROM field is `#[serde(skip)]`'d). The `rom` bytes are the
+    /// normalized big-endian image (what `Cart::load` stores, i.e. what
+    /// `rom_image` returns); the frontend keeps the loaded image and re-inserts it
+    /// here so cart/PI reads resolve again. All other cart state (save, PIF,
+    /// header) came from the snapshot and is left untouched.
+    pub fn reattach_rom(&mut self, rom: alloc::vec::Vec<u8>) {
+        self.rom = rom;
+    }
+
+    /// The normalized (big-endian) ROM image, for the frontend to stash so it can
+    /// [`Cart::reattach_rom`] after a restore.
+    #[must_use]
+    pub fn rom_image(&self) -> &[u8] {
+        &self.rom
     }
 
     /// The PIF's 64-byte RAM (the SI DMA copies it to/from RDRAM).

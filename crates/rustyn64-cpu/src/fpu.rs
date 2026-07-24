@@ -41,13 +41,15 @@
 //     and flags the hardware does not.
 #![allow(clippy::cast_precision_loss, clippy::float_cmp)]
 
+use serde::{Deserialize, Serialize};
+
 /// Which VR4300 stepping a console carries.
 ///
 /// The only behaviour that currently depends on it is the **FP multiplication
 /// erratum**, and that dependency is why this is modelled as console state
 /// rather than folded into `mul`: an unconditional erratum would make every
 /// multiply on *every* console wrong, and most consoles do not have it.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Stepping {
     /// A later stepping, with the multiplication erratum **fixed**.
     ///
@@ -121,7 +123,7 @@ pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
 // architectural field IS five independent conditions that can co-occur (an
 // overflow is also inexact), and naming them costs nothing at this size.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Flags {
     /// Invalid operation — a signalling NaN, or an undefined form like `0 × ∞`.
     pub invalid: bool,
@@ -189,7 +191,7 @@ impl Flags {
 }
 
 /// The rounding mode from `FCSR.RM` (UM §7.2.4).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Rounding {
     /// Round to nearest, ties to even. The IEEE default and `FCSR.RM = 0`.
     Nearest,
@@ -222,7 +224,7 @@ impl Rounding {
     clippy::derived_hash_with_manual_eq,
     clippy::derive_partial_eq_without_eq
 )]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Outcome<T> {
     /// The computed value.
     pub value: T,
@@ -543,7 +545,7 @@ pub const fn neg_d(a: f64) -> f64 {
 ///
 /// Named rather than three bools, because exactly one is true and a bool triple
 /// makes the impossible states representable.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Relation {
     /// `fs < ft`.
     Less,

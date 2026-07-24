@@ -31,6 +31,7 @@
 
 use crate::Rsp;
 use crate::sp::{self, STATUS_INTBREAK};
+use serde::{Deserialize, Serialize};
 
 /// What one scalar step asked the rest of the machine to do.
 ///
@@ -38,7 +39,7 @@ use crate::sp::{self, STATUS_INTBREAK};
 /// reports rather than acts, and `rustyn64-core::Bus` carries it out. This is
 /// the same shape the PI engine uses, and it is what lets the RSP be stepped in
 /// isolation.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StepResult {
     /// A transfer an `MTC0` to a length register started.
     pub dma: Option<sp::Dma>,
@@ -64,6 +65,7 @@ pub struct StepResult {
 }
 
 /// Decoded fields, named as the MIPS encoding names them.
+#[derive(Serialize, Deserialize)]
 struct Fields {
     op: u32,
     rs: usize,

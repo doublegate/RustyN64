@@ -30,6 +30,7 @@
 //! so undefined fields are a documented zero, not entropy.
 
 use crate::decode::Decoded;
+use serde::{Deserialize, Serialize};
 
 /// COP0 register numbers, by name.
 ///
@@ -247,7 +248,7 @@ pub const ARCH_MASK: [u64; 32] = {
 };
 
 /// The VR4300 system control coprocessor register file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Cop0 {
     /// Raw register storage. Prefer [`Cop0::read`] / [`Cop0::write`]: they apply
     /// the width and writable-bit rules that make the values architectural.
@@ -666,7 +667,7 @@ impl Cop0 {
 ///
 /// Split out so the decoder names them rather than the executor re-deriving them
 /// from raw bits.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Cop0Op {
     /// `MFC0 rt, rd` — 32-bit read, sign-extended.
     Mfc0,

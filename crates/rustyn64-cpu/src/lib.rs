@@ -30,6 +30,8 @@
 
 extern crate alloc;
 
+use serde::{Deserialize, Serialize};
+
 pub mod addr;
 pub mod alu;
 pub mod cache;
@@ -76,7 +78,7 @@ pub use sysad::{BlockOrder, Phase, Transaction, Width, block_order};
 /// 0005 refactor, which concerns resolution finer than one `PClock`.
 ///
 /// TODO(T-11-008): the transaction model that actually uses this.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum BusPhase {
     /// The command half — the CPU drives `SYSCMD` and the address.
     Command,
@@ -198,7 +200,7 @@ pub trait Bus {
 ///
 /// This is the **skeleton** register file only; the decode/execute pipeline,
 /// the CP0 TLB, and the CP1 FPU are roadmap phases left as marked TODOs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cpu {
     /// The register file: 32 GPRs plus `HI`/`LO`. `$zero`'s hardwiring lives in
     /// [`Regs::read`]/[`Regs::write`] so no call site can forget it.

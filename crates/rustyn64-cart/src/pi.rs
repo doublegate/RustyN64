@@ -28,6 +28,8 @@
 //!   RDRAM**. Getting them the wrong way round makes the first ROM load write
 //!   the ROM's own image over itself with uninitialised RDRAM.
 
+use serde::{Deserialize, Serialize};
+
 /// Base of the PI register block.
 pub const PI_BASE: u32 = 0x0460_0000;
 
@@ -71,7 +73,7 @@ pub const STATUS_W_RESET: u32 = 1 << 0;
 pub const STATUS_W_CLR_INTR: u32 = 1 << 1;
 
 /// A transfer the PI has been asked to perform.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Transfer {
     /// RDRAM address.
     pub dram: u32,
@@ -84,7 +86,7 @@ pub struct Transfer {
 }
 
 /// The PI register file and DMA state.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Pi {
     dram_addr: u32,
     cart_addr: u32,

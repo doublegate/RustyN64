@@ -56,6 +56,7 @@
 //! the inert-API hazard `docs/engineering-lessons.md` §3.2 describes.
 
 use crate::tlb::{Tlb, TlbFault};
+use serde::{Deserialize, Serialize};
 
 /// Whether an access goes through the caches.
 ///
@@ -63,7 +64,7 @@ use crate::tlb::{Tlb, TlbFault};
 /// because the *segment* determines it, and recomputing that later from a
 /// physical address is impossible — the information is gone once KSEG0 and KSEG1
 /// have both become the same number.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Cached {
     /// Through the cache (KSEG0, and mapped segments per their TLB entry).
     Yes,
@@ -72,7 +73,7 @@ pub enum Cached {
 }
 
 /// A translated address.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct Physical {
     /// The physical address.
     pub addr: u32,
@@ -81,7 +82,7 @@ pub struct Physical {
 }
 
 /// Which segment a virtual address falls in, and how it translates.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Segment {
     /// Unmapped: physical address is the virtual one minus the segment base.
     Direct {
@@ -105,7 +106,7 @@ pub enum Segment {
 }
 
 /// The privilege mode an access is made in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Mode {
     /// `Status.KSU == 0`, or `EXL`/`ERL` set.
     Kernel,
@@ -116,7 +117,7 @@ pub enum Mode {
 }
 
 /// Everything outside the address itself that decides how it translates.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Access {
     /// The privilege mode.
     pub mode: Mode,
@@ -290,7 +291,7 @@ const fn xkphys(vaddr: u64) -> Segment {
 /// fault to the refill vector. Collapsing them would send a user program that
 /// touched a kernel address to the refill handler, where a well-behaved kernel
 /// maps the page and grants the access it was never allowed to make.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TranslateError {
     /// The address is not valid in this privilege mode: `AdEL`/`AdES`.
     Address,

@@ -19,9 +19,10 @@
 //! that are wrong only for unaligned addresses, which is a miserable bug to find.
 
 use crate::alu::sext32;
+use serde::{Deserialize, Serialize};
 
 /// Width and signedness of an aligned load.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum LoadKind {
     /// `LB` — signed byte.
     SignedByte,
@@ -79,7 +80,7 @@ impl LoadKind {
 }
 
 /// Width of an aligned store.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum StoreKind {
     /// `SB` — byte.
     Byte,

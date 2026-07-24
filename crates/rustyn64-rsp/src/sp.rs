@@ -19,6 +19,8 @@
 //! flag's **set and clear bits together leaves it unchanged**. n64-systemtest
 //! checks this for every flag it can reach.
 
+use serde::{Deserialize, Serialize};
+
 /// `SP_STATUS.HALTED` — the RSP is paused and fetches nothing.
 pub const STATUS_HALTED: u32 = 1 << 0;
 /// `SP_STATUS.BROKE` — a `BREAK` has executed since this was last cleared.
@@ -65,7 +67,7 @@ pub mod reg {
 /// own RDRAM, and a chip reaching back into its owner is the dependency cycle
 /// `docs/architecture.md` exists to prevent. The PI engine returns a transfer
 /// description for the same reason.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Dma {
     /// DMEM/IMEM byte offset, with bit 12 selecting IMEM.
     pub sp_addr: u32,
@@ -86,7 +88,7 @@ pub struct Dma {
 }
 
 /// The SP interface registers.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SpRegs {
     /// The flag word, in its **read** layout.
     status: u32,

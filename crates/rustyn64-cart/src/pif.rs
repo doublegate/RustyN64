@@ -18,6 +18,8 @@
 
 use alloc::boxed::Box;
 
+use serde::{Deserialize, Serialize};
+
 use crate::save::SaveDevice;
 
 /// PIF RAM size (bytes). The last byte (`0x3F`) is the command bitmask.
@@ -49,14 +51,16 @@ const ID_EEPROM_4K: [u8; 2] = [0x00, 0x80];
 const ID_EEPROM_16K: [u8; 2] = [0x00, 0xC0];
 
 /// The PIF: its 64-byte RAM plus the per-channel accessory-change latch.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pif {
+    #[serde(with = "serde_big_array::BigArray")]
     ram: [u8; PIF_RAM_LEN],
     /// Whether each controller port reports a Controller Pak present.
     pak_present: [bool; 4],
     /// The boot ROM (IPL1/IPL2), present only on the real-PIF boot path. `None`
     /// under HLE (the default), where boot skips IPL1/IPL2 entirely — so the
     /// default machine allocates nothing here and the PIF-ROM window reads back 0.
+    #[serde(with = "rustyn64_snapshot::opt_boxed_bytes")]
     boot_rom: Option<Box<[u8; PIF_ROM_LEN]>>,
     /// The CIC's 6-byte IPL2 checksum, registered at real-PIF boot. The PIF
     /// compares IPL2's computed checksum against it on the verify command; `None`

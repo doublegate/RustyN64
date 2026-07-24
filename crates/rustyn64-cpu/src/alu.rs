@@ -19,6 +19,7 @@
 //! "fixed", so the intent survives a well-meaning future reader.
 
 use crate::Exception;
+use serde::{Deserialize, Serialize};
 
 /// Sign-extend a 32-bit result into the 64-bit register file.
 ///
@@ -236,7 +237,7 @@ pub const fn dsra(v: u64, sa: u32) -> u64 {
 // --------------------------------------------------------- multiply / divide
 
 /// The `HI`/`LO` register pair, written by every multiply and divide.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HiLo {
     /// `HI` — the high half, or the division remainder.
     pub hi: u64,
@@ -413,7 +414,7 @@ pub const fn muldiv_stall_cycles(op: MulDiv) -> u32 {
 }
 
 /// The multiply/divide family, for cost lookup.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum MulDiv {
     /// `MULT` — 32-bit signed multiply.
     Mult,

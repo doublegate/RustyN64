@@ -11,7 +11,9 @@ default = ["std"]
 std = []
 
 [dependencies]
-bitflags = "2"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde-big-array = "0.5"
+bitflags = { version = "2", features = ["serde"] }
 
 [lints]
 workspace = true

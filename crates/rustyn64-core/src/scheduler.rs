@@ -54,6 +54,7 @@
 
 use crate::bus::Bus;
 use rustyn64_cpu::Cpu;
+use serde::{Deserialize, Serialize};
 
 /// The canonical master tick rate: **187.5 MHz**, the LCM of the CPU and RCP clocks.
 ///
@@ -125,7 +126,7 @@ impl SplitMix64 {
 ///
 /// The hardware basis is UM Table 11-1's "**1 to 2** `PCycles`: synchronize with
 /// `SClock`" line, an indeterminacy the vendor documents at exactly this boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct Phases {
     cpu: u64,
     rcp: u64,
@@ -146,7 +147,7 @@ impl Phases {
 /// Owns the run loop and ties the CPU to the Bus on one timeline.
 ///
 /// Determinism contract: same seed + ROM + input ⇒ bit-identical A/V (ADR 0004).
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct System {
     /// The CPU.
     pub cpu: Cpu,
