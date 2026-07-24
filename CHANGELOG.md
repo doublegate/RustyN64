@@ -29,6 +29,20 @@ audio microcode already produces (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-
   `drain_audio_samples()` for the frontend.
 - Ledgered residuals **R-16** (`AI_STATUS` `COUNT`/`WC`/`BC` best-effort, no oracle)
   and **R-17** (no DMA setup latency; defined-but-unpinned underrun decay).
+- **A real ROM plays PCM through the AI** (Phase 4, Sprint 2) — a committed
+  license-clean bare-metal ROM (`tests/roms/homebrew/audio_play.z64`) CPU-generates a
+  128-pair stereo buffer and programs the AI to DMA it out; the harness
+  (`audio_play_rom.rs`) boots it on the real VR4300 and pins the emitted stream
+  byte-for-byte, deterministically, with the AI interrupt firing. The CPU → RDRAM → AI
+  path end to end, with no RSP microcode — the de-risking rung before the mixer gate.
+- **The real libdragon audio-mixer microcode runs on the LLE RSP and produces PCM**
+  (Phase 4, Sprint 2) — `rsp_mixer.S` is vendored (`third_party/libdragon-rsp/`,
+  Unlicense) and assembled to a committed blob. Driven by a hand-built one-channel
+  settings block + sample bank through the rspq overlay path, the mixer's real
+  resampling / volume-filter / mixing DSP executes on our RSP and DMAs back a mixed
+  16-bit stereo PCM buffer, pinned as a golden and verified deterministic
+  (`mixer_microcode.rs`). No RSP gaps surfaced — this is the full real-microcode audio
+  gate. There is no per-game audio HLE (ADR 0002): the same LLE RSP mixes the audio.
 
 ## [0.4.1] - 2026-07-23
 

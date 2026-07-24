@@ -152,9 +152,13 @@ crate (`docs/rsp.md`, ADR 0002). The *host*-rate resample (N64 output rate → t
   underrun; determinism. **Done.**
 - **Bus integration** (`rustyn64-core`) — the register block driven through the CPU
   memory-mapped path, end to end. **Done.**
-- **Real bare-metal PCM ROM** — project64/N64-Tests `DoubleShot` (CPU-fed PCM,
-  programs the AI directly, no RSP microcode). External/run-only. **Sprint 2.**
-- **RSP audio-microcode integration** — run real audio microcode (libdragon mixer)
-  and compare the mixed PCM buffer against a golden. **Sprint 2.**
-- **Determinism** — same seed + ROM + input ⇒ bit-identical AI output stream before
-  the frontend resample. **Done (unit); ROM-level Sprint 3.**
+- **Real bare-metal PCM ROM** — our own `audio_play.z64` (CPU-fed PCM, programs the
+  AI directly, no RSP microcode); the emitted stream matches the buffer byte-for-byte
+  (`audio_play_rom.rs`). **Done (Sprint 2).**
+- **RSP audio-microcode integration** — the real libdragon **mixer** microcode
+  (`rsp_mixer.S`) runs on our LLE RSP, driven by a hand-built channel table + sample
+  bank through the rspq overlay path, and produces a mixed 16-bit stereo PCM buffer
+  pinned as a golden (`mixer_microcode.rs`). **Done (Sprint 2).**
+- **Determinism** — same seed + ROM + input ⇒ bit-identical stream: for the AI
+  (`audio_play_rom.rs`) and for the mixer's PCM output (`mixer_microcode.rs`).
+  **Done.**
