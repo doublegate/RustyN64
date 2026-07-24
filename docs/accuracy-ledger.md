@@ -96,6 +96,18 @@ so a single-test curated ROM is not available to sidestep the hang. **Next step 
 diagnose the post-917 hang (likely a `Count`/`Compare` or interlock timing loop), then re-run for
 the baseline. The toolchain is no longer the blocker; the emulator's timing is.
 
+**A working curated oracle now exists (update 2026-07-24).** Rather than fight the n64-systemtest
+hang, the PeterLemon `CPUTIMINGNTSC` / `CP1TIMINGNTSC` ROMs (krom, Unlicense, committed under
+`tests/roms/peterlemon-timing/`) each time a fixed loop of one instruction with `Count`, compare
+against a **hardware-expected value baked into the ROM**, and draw green (pass) / red (fail). They
+**run to a verdict in the emulator in seconds** (no hang), driven by
+`crates/rustyn64-test-harness/tests/peterlemon_timing.rs`. **Baseline:** `CPUTIMINGNTSC` draws an
+**all-red** frame today (0 green / 11 111 red glyph pixels) — our cycle timing is wrong for *every*
+covered instruction, which is precisely the open `M` gap. This is the instrument to derive `M` and
+per-instruction timing against, and the pass/fail frame is the falsifiable target Stage D drives to
+all-green. (`CP1TIMINGNTSC`, the C-29 FPU oracle, executes cleanly ~10⁹ instructions but its slower
+battery needs a larger budget to draw its full grid — a Stage-D follow-up.)
+
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
 **2 PCycles, and the manual says so.** UM §4.7 (p. 114), the opening sentence of the section:

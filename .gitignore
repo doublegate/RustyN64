@@ -100,6 +100,9 @@ __pycache__/
 # Our own MIT OR Apache-2.0 homebrew fixtures (assembled from committed sources
 # under tests/roms/homebrew/): our code, so committable like any other output.
 !/tests/roms/homebrew/**/*.z64
+# PeterLemon (krom) CPU/CP1 instruction-timing test ROMs — Unlicense (public
+# domain), so committable as curated timing oracles (see tests/roms/peterlemon-timing/README.md).
+!/tests/roms/peterlemon-timing/*.z64
 
 # ...then hard-exclude the external tier again, so no negation above can ever
 # accidentally re-include a commercial dump. Order matters: this comes last.
