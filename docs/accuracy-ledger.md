@@ -1371,6 +1371,56 @@ real-PIF path (off by default) and by whatever n64-systemtest boot-state coverag
 
 ---
 
+### C-33 — the real-PIF boot executes IPL1/IPL2/IPL3, with the PIF-SM5 behaviourally modelled
+
+**Claim.** `rom::real_pif_boot` boots a retail cartridge the way hardware does: the CPU runs the
+**real IPL1 and IPL2** from the console's PIF boot ROM (mapped at `0x1FC0_0000`) starting at the
+reset vector `0xBFC0_0000`, then jumps into the cartridge's own IPL3 — no state seeding, no HLE
+jump. This is the faithful counterpart to the HLE path (C-32); it is off by default, local-only,
+and never CI-gated (it needs the copyrighted PIF ROM, which is never committed).
+
+**What is executed vs. modelled.**
+
+- **Executed for real (guest code):** IPL1 (52 instructions from the PIF ROM: RSP/PI/AI reset,
+  copy IPL2 to IMEM, jump), IPL2 (from IMEM: read the seed hand-off, lock the PIF ROM, compute
+  the 6-byte IPL2 checksum over IPL3, have the PIF verify it, jump to IPL3), and the cart's IPL3.
+  The disassembly of the local dump (`bfc00000`+ / `bfc006xx`) was traced to confirm the exact
+  handshake.
+- **Modelled behaviourally (the PIF-SM5, from `PIF-NUS.md`, not by running its 4-bit firmware):**
+  the power-on hand-off (the two seeds written to PIF RAM `0x24-0x27`), and the reset-mode
+  command byte (`0x3F`): `0x10` ROM lockout (the PIF-ROM window then reads 0), `0x20` acquire
+  (latch the checksum IPL2 wrote to `0x32-0x37`, zero it, set the `0x80` ack IPL2 spins on), and
+  `0x40` run (compare against the CIC's checksum; a mismatch freezes the CPU via NMI —
+  `Bus::boot_nmi_halt`, `Scheduler::step_due_here`).
+- **The CIC** is identified from the cartridge IPL3's **CRC-32** (`Cic::from_ipl3`, cen64's
+  `si/cic.c` fingerprint table — the core reads only the ROM's own code, never a per-game DB;
+  ADR 0003/0004). Its boot outputs are documented constants: the per-CIC IPL2/IPL3 seeds and the
+  6-byte IPL2 checksum (`Cic::boot_secrets`, `PIF-NUS.md` §checksum table). The IPL2-seed byte is
+  the **corrected** value (6103 = `0x78`, 6105 = `0x91`, …), not cen64's legacy all-`0x3F` seed
+  byte — the real IPL2 consumes it, so the legacy value would compute a mismatch.
+
+**Not modelled (bounded, and not needed to boot).** The SM5 firmware itself is not emulated
+(there is no decapped-ROM dependency); the post-boot **running challenge** — the 6105/7105 "X105"
+protocol behind command `0x08` — is not modelled. Per `CIC-NUS.md` the running challenge is a
+dummy bit-inversion on every CIC except 6105/7105 and *"no known software relies on"* it, and the
+**boot** IPL2 checksum is the same algorithm for all CICs — so booting does not need either.
+
+**Validated locally, and what the validation proves.** The
+`a_commercial_rom_boots_through_the_real_pif` capstone boots the first ROM of every save-type
+folder (6102/6103/6105 CICs) and asserts each reaches game execution in RDRAM (KSEG0), with the
+PIF ROM locked and **no NMI freeze** — i.e. IPL2's computed checksum matched the
+hardware-documented CIC value. That match is a strong independent check: it can only hold if the
+CPU reproduced IPL2's checksum **bit-exactly** over the real IPL3 *and* the seed/CIC detection
+were right. The `boot_command` handshake is unit-tested with a mutation check — a deliberately
+wrong checksum must NMI-halt (`boot_run_halts_on_a_wrong_checksum`), so the match is not vacuous.
+
+**n64-systemtest impact: none.** The real-PIF path is off by default and n64-systemtest uses the
+ELF/HLE load path; CIC detection on its homebrew IPL3 (CRC absent from the table) falls back to
+6102 as before. The suite-wide count stays **90** (measured; see C-32). This entry is a new
+faithful capability, not a change to any gated result.
+
+---
+
 ---
 
 ## 5. Deliberate deviations from hardware

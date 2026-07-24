@@ -16,12 +16,22 @@
     reason = "joybus prose names PIF/EEPROM/CRC/DMA/RX/TX constantly"
 )]
 
+use alloc::boxed::Box;
+
 use crate::save::SaveDevice;
 
 /// PIF RAM size (bytes). The last byte (`0x3F`) is the command bitmask.
 pub const PIF_RAM_LEN: usize = 64;
 /// The command byte offset within PIF RAM.
 const CMD_BYTE: usize = 0x3F;
+
+/// PIF **boot** ROM size (bytes) — IPL1 + IPL2.
+///
+/// Memory-mapped at `0x1FC0_0000..0x1FC0_07C0` during boot only (`PIF-NUS.md`
+/// §Internal ROMs). The 64-byte PIF RAM (`PIF_RAM_LEN`) is the tail of the same
+/// 2 KiB PIF space and is modelled separately. Used only on the real-PIF boot
+/// path; `None` under HLE.
+pub const PIF_ROM_LEN: usize = 0x7C0;
 
 /// Frame control bytes (`PIF-NUS.md` §Joybus frame).
 const TX_END: u8 = 0xFE; // end of the command list
@@ -44,6 +54,20 @@ pub struct Pif {
     ram: [u8; PIF_RAM_LEN],
     /// Whether each controller port reports a Controller Pak present.
     pak_present: [bool; 4],
+    /// The boot ROM (IPL1/IPL2), present only on the real-PIF boot path. `None`
+    /// under HLE (the default), where boot skips IPL1/IPL2 entirely — so the
+    /// default machine allocates nothing here and the PIF-ROM window reads back 0.
+    boot_rom: Option<Box<[u8; PIF_ROM_LEN]>>,
+    /// The CIC's 6-byte IPL2 checksum, registered at real-PIF boot. The PIF
+    /// compares IPL2's computed checksum against it on the verify command; `None`
+    /// under HLE (nothing runs IPL2). See [`Pif::boot_command`].
+    boot_checksum: Option<[u8; 6]>,
+    /// The checksum IPL2 wrote to PIF RAM `0x32-0x37`, latched by the `0x20`
+    /// (acquire) command and compared on the `0x40` (run) command.
+    boot_acquired: Option<[u8; 6]>,
+    /// Set once IPL2 issues the `0x10` ROM-lockout command; the PIF-ROM window
+    /// then reads back 0 (the real PIF removes it from the serial bus).
+    rom_locked: bool,
 }
 
 impl Default for Pif {
@@ -53,13 +77,102 @@ impl Default for Pif {
 }
 
 impl Pif {
-    /// Power-on PIF (RAM cleared, no pak).
+    /// Power-on PIF (RAM cleared, no pak, no boot ROM).
     #[must_use]
     pub const fn new() -> Self {
         Self {
             ram: [0; PIF_RAM_LEN],
             pak_present: [false; 4],
+            boot_rom: None,
+            boot_checksum: None,
+            boot_acquired: None,
+            rom_locked: false,
         }
+    }
+
+    /// Install the PIF boot ROM (IPL1/IPL2) for the real-PIF boot path. Accepts
+    /// the raw dump; only the first [`PIF_ROM_LEN`] bytes (the ROM window) are
+    /// kept — a longer dump that also carries the 64-byte RAM tail is truncated.
+    /// Too-short input leaves the ROM absent (the real-PIF boot then cannot run).
+    pub fn load_boot_rom(&mut self, bytes: &[u8]) {
+        if bytes.len() < PIF_ROM_LEN {
+            return;
+        }
+        let mut rom = Box::new([0u8; PIF_ROM_LEN]);
+        rom.copy_from_slice(&bytes[..PIF_ROM_LEN]);
+        self.boot_rom = Some(rom);
+    }
+
+    /// Is a real PIF boot ROM installed?
+    #[must_use]
+    pub const fn has_boot_rom(&self) -> bool {
+        self.boot_rom.is_some()
+    }
+
+    /// Read a byte of the PIF boot ROM (`0x1FC0_0000 + off`, `off < PIF_ROM_LEN`).
+    /// Reads back 0 when no ROM is installed (HLE), once IPL2 has locked the ROM
+    /// (`0x10` command), or `off` is out of range — the same value the unmapped
+    /// PIF-ROM window returned before this path existed.
+    #[must_use]
+    pub fn boot_rom_read(&self, off: usize) -> u8 {
+        if self.rom_locked {
+            return 0;
+        }
+        self.boot_rom
+            .as_ref()
+            .and_then(|rom| rom.get(off))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Register the CIC's 6-byte IPL2 checksum for the real-PIF boot verify.
+    pub const fn set_boot_checksum(&mut self, checksum: [u8; 6]) {
+        self.boot_checksum = Some(checksum);
+    }
+
+    /// **Process a reset-mode PIF command-byte write** during the real-PIF boot,
+    /// returning `true` if the checksum verify FAILED and the caller must NMI-halt
+    /// the CPU (`PIF-NUS.md` §Console startup 8.7). No-op (returns `false`) unless
+    /// a boot ROM is installed, so the run-mode joybus path is unaffected.
+    ///
+    /// The command bits (`PIF-NUS.md` reset-mode table, cross-checked against the
+    /// SM5 firmware and the IPL2 stores at `bfc006xx`):
+    /// - `0x10` **ROM lockout** — remove the PIF-ROM from the bus (reads 0 after).
+    /// - `0x20` **acquire checksum** — latch the 6 bytes IPL2 wrote to `0x32-0x37`,
+    ///   zero them in PIF RAM, and set bit `0x80` to acknowledge (IPL2 spins on it).
+    /// - `0x40` **run checksum** — compare the latched value against the CIC's; a
+    ///   mismatch halts the CPU, a match lets IPL2's unconditional jump reach IPL3.
+    ///
+    /// Each handled bit is cleared after processing; bit `0x80` is PIF-owned.
+    pub fn boot_command(&mut self) -> bool {
+        if self.boot_rom.is_none() {
+            return false;
+        }
+        let cmd = self.ram[CMD_BYTE];
+
+        if cmd & 0x10 != 0 {
+            self.rom_locked = true;
+            self.ram[CMD_BYTE] &= !0x10;
+        }
+
+        if cmd & 0x20 != 0 {
+            let mut got = [0u8; 6];
+            got.copy_from_slice(&self.ram[0x32..0x38]);
+            self.boot_acquired = Some(got);
+            self.ram[0x32..0x38].fill(0); // PIF zeroes the checksum after reading
+            self.ram[CMD_BYTE] = (self.ram[CMD_BYTE] & !0x20) | 0x80; // ack
+        }
+
+        if cmd & 0x40 != 0 {
+            self.ram[CMD_BYTE] &= !0x40;
+            // Mismatch only when both are known and differ; absent data never
+            // spuriously halts a genuine boot.
+            if let (Some(got), Some(expected)) = (self.boot_acquired, self.boot_checksum) {
+                return got != expected;
+            }
+        }
+
+        false
     }
 
     /// Report a Controller Pak on port `channel` (0–3) — the info status byte
@@ -351,6 +464,135 @@ mod tests {
             pif.ram[resp + 32],
             data_crc(&expected),
             "present pak returns the CRC"
+        );
+    }
+
+    #[test]
+    fn boot_rom_is_absent_by_default_and_reads_zero() {
+        let pif = Pif::new();
+        assert!(!pif.has_boot_rom(), "HLE default installs no boot ROM");
+        assert_eq!(pif.boot_rom_read(0), 0, "absent ROM reads 0");
+        assert_eq!(pif.boot_rom_read(PIF_ROM_LEN - 1), 0);
+    }
+
+    #[test]
+    fn boot_rom_loads_and_reads_back_the_window() {
+        let mut pif = Pif::new();
+        // A dump longer than the ROM window (carrying the 64-byte RAM tail) is
+        // truncated to the window; a byte pattern makes the mapping observable.
+        let mut dump = alloc::vec![0u8; PIF_ROM_LEN + PIF_RAM_LEN];
+        for (i, b) in dump.iter_mut().enumerate() {
+            *b = (i & 0xFF) as u8;
+        }
+        pif.load_boot_rom(&dump);
+        assert!(pif.has_boot_rom());
+        assert_eq!(pif.boot_rom_read(0), 0x00);
+        assert_eq!(pif.boot_rom_read(1), 0x01);
+        assert_eq!(pif.boot_rom_read(0x100), 0x00);
+        assert_eq!(
+            pif.boot_rom_read(PIF_ROM_LEN - 1),
+            ((PIF_ROM_LEN - 1) & 0xFF) as u8
+        );
+        // Out of range still reads 0, not the truncated tail.
+        assert_eq!(pif.boot_rom_read(PIF_ROM_LEN), 0);
+    }
+
+    #[test]
+    fn too_short_a_dump_leaves_the_boot_rom_absent() {
+        let mut pif = Pif::new();
+        pif.load_boot_rom(&[0xAB; 16]);
+        assert!(
+            !pif.has_boot_rom(),
+            "a short dump must not install a partial ROM"
+        );
+    }
+
+    /// The CIC 6102 IPL2 checksum (`PIF-NUS.md` §checksum table).
+    const SUM_6102: [u8; 6] = [0xA5, 0x36, 0xC0, 0xF1, 0xD8, 0x59];
+
+    /// Put the PIF in real-PIF boot mode with a registered CIC checksum.
+    fn booting_pif(checksum: [u8; 6]) -> Pif {
+        let mut pif = Pif::new();
+        pif.load_boot_rom(&[0u8; PIF_ROM_LEN]); // presence enables the boot path
+        pif.set_boot_checksum(checksum);
+        pif
+    }
+
+    #[test]
+    fn boot_acquire_latches_zeroes_and_acks_the_checksum() {
+        let mut pif = booting_pif(SUM_6102);
+        // IPL2 writes its computed checksum to 0x32-0x37, then sets 0x20.
+        pif.ram[0x32..0x38].copy_from_slice(&SUM_6102);
+        pif.ram[CMD_BYTE] = 0x20;
+        assert!(!pif.boot_command(), "acquire never halts");
+        assert_eq!(&pif.ram[0x32..0x38], &[0u8; 6], "PIF zeroes the checksum");
+        assert_eq!(
+            pif.ram[CMD_BYTE] & 0x80,
+            0x80,
+            "ack bit set (IPL2 spins on it)"
+        );
+        assert_eq!(pif.ram[CMD_BYTE] & 0x20, 0, "acquire bit cleared");
+    }
+
+    #[test]
+    fn boot_run_boots_on_a_matching_checksum() {
+        let mut pif = booting_pif(SUM_6102);
+        pif.ram[0x32..0x38].copy_from_slice(&SUM_6102);
+        pif.ram[CMD_BYTE] = 0x20;
+        assert!(!pif.boot_command());
+        pif.ram[CMD_BYTE] |= 0x40;
+        assert!(
+            !pif.boot_command(),
+            "a matching checksum lets IPL2 reach IPL3"
+        );
+        assert_eq!(pif.ram[CMD_BYTE] & 0x40, 0, "run bit cleared");
+    }
+
+    #[test]
+    fn boot_run_halts_on_a_wrong_checksum() {
+        // Mutation check: a checksum that differs from the CIC's must NMI-halt —
+        // if this passed with a matching one the guard would be vacuous.
+        let mut pif = booting_pif(SUM_6102);
+        pif.ram[0x32..0x38].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]);
+        pif.ram[CMD_BYTE] = 0x20;
+        assert!(!pif.boot_command());
+        pif.ram[CMD_BYTE] |= 0x40;
+        assert!(
+            pif.boot_command(),
+            "a wrong checksum freezes the CPU via NMI"
+        );
+    }
+
+    #[test]
+    fn boot_command_is_inert_without_a_boot_rom() {
+        // Under HLE (no boot ROM) the reset-mode path must not touch the command
+        // byte, so the run-mode joybus protocol is unaffected.
+        let mut pif = Pif::new();
+        pif.set_boot_checksum(SUM_6102);
+        pif.ram[CMD_BYTE] = 0x20 | 0x40;
+        assert!(!pif.boot_command(), "no boot ROM => inert");
+        assert_eq!(
+            pif.ram[CMD_BYTE],
+            0x20 | 0x40,
+            "command byte untouched under HLE"
+        );
+    }
+
+    #[test]
+    fn rom_lockout_makes_the_boot_rom_read_zero() {
+        let mut pif = Pif::new();
+        let mut dump = alloc::vec![0u8; PIF_ROM_LEN];
+        dump[0] = 0x3C; // a non-zero byte 0 so the change is observable
+        pif.load_boot_rom(&dump);
+        pif.set_boot_checksum(SUM_6102);
+        assert_eq!(pif.boot_rom_read(0), 0x3C, "readable before lockout");
+        pif.ram[CMD_BYTE] = 0x10; // IPL2's ROM-lockout command
+        assert!(!pif.boot_command());
+        assert_eq!(pif.ram[CMD_BYTE] & 0x10, 0, "lockout bit cleared");
+        assert_eq!(
+            pif.boot_rom_read(0),
+            0,
+            "the PIF ROM is off the bus after lockout"
         );
     }
 }

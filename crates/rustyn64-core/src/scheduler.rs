@@ -255,7 +255,11 @@ impl System {
     /// sees it. Reversing this changes which engine observes whose write first
     /// and is a determinism-visible change.
     fn step_due_here(&mut self) {
-        if Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER) {
+        // A failed real-PIF boot checksum freezes the CPU via NMI until power-off
+        // (`PIF-NUS.md`). Stop stepping it; the RCP keeps running, as on hardware.
+        if Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER)
+            && !self.bus.boot_nmi_halt()
+        {
             // `count_ticks` is derived from `master_ticks`, never incremented,
             // and the CPU turns it into the guest-writable `Count` (ADR 0006).
             let count_now = self.count_ticks();

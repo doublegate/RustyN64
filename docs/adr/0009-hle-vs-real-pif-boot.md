@@ -1,7 +1,8 @@
 # 0009 — HLE default boot, with a real-PIF path behind an off-by-default flag
 
-Status: **Proposed** — accepted on merge of the PR that introduces this file;
-immutable thereafter (design; the HLE path ships in this PR, the real-PIF path is staged)
+Status: **Accepted** — both paths implemented (see the dated Update below).
+Immutable thereafter (design). The decision (two paths, HLE default) is unchanged;
+only the staged real-PIF path has since landed.
 Date: 2026-07-24
 Deciders: repo owner
 Supersedes: none · Superseded by: none
@@ -101,3 +102,29 @@ of it; the real-PIF path is the faithful reproduction for those who supply the R
 - **Sprint 2 — the real-PIF path.** Execute the local PIF ROM with the CIC modelled, behind
   an off-by-default flag; validate locally against the HLE state on ROMs the owner supplies.
   Never CI-gated.
+
+## Update — 2026-07-24: the real-PIF path is implemented
+
+The Sprint-2 real-PIF path above has landed (`rom::real_pif_boot`); the decision is unchanged,
+this records that the staged work is done. What was built, and how far the faithful model goes,
+is documented in `docs/accuracy-ledger.md` **C-33**. In short:
+
+- The PIF **boot ROM** (IPL1/IPL2) is mapped at `0x1FC0_0000` and the CPU executes it for real
+  from the reset vector — no state seeding, no jump into IPL3. IPL1 copies IPL2 to IMEM; IPL2
+  locks the ROM, has the PIF verify its computed IPL2 checksum, and jumps into the cart's IPL3.
+- The **CIC is identified from the cartridge IPL3's CRC-32** (`Cic::from_ipl3`, cen64's
+  fingerprint table), so the right per-CIC seed and 6-byte IPL2 checksum are used — not the
+  legacy all-`0x3F` seed byte, which the real IPL2 would compute a mismatch against.
+- The **PIF-SM5 boot behaviours** IPL2 depends on are modelled behaviourally from the documented
+  protocol (`PIF-NUS.md`): the seed hand-off to PIF RAM `0x24`, the `0x10` ROM lockout, and the
+  `0x20`/`0x40` checksum acquire/ack/run handshake — with an NMI freeze on a genuine mismatch.
+  The SM5 firmware itself is **not** executed, and the post-boot running challenge (the 6105
+  X105 protocol) is not modelled — neither is needed to boot, and the boot checksum is the same
+  algorithm for all CICs.
+- **Validated locally:** every save-type representative in the commercial corpus (6102/6103/6105
+  CICs) boots through the real IPL1→IPL2→IPL3 chain to game execution in RDRAM, with the
+  IPL2 checksum matching the hardware-documented CIC value (no NMI freeze) — which also
+  cross-validates that the CPU reproduces IPL2's checksum bit-exactly over the real IPL3.
+
+The real-PIF path remains **off by default, local-only, and never CI-gated** (it needs the
+copyrighted PIF ROM), exactly as the decision above specifies.

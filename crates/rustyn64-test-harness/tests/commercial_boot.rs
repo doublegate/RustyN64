@@ -102,3 +102,93 @@ fn a_commercial_rom_boots_and_executes() {
         eprintln!("no commercial ROMs staged — capstone skipped (local-only)");
     }
 }
+
+/// **A commercial ROM boots through the real PIF ROM** (local capstone, faithful
+/// path). Unlike the HLE capstone above, this installs the console's real
+/// IPL1/IPL2 and boots from the reset vector `0xBFC0_0000`, so the CPU runs the
+/// genuine boot chain: IPL1 (from the PIF ROM) → IPL2 (from IMEM, which locks the
+/// PIF ROM and has the PIF verify the IPL2 checksum against the CIC's) → the
+/// cartridge's own IPL3 → the game in RDRAM.
+///
+/// Asserts the boot actually completed the real chain — the CPU is executing in
+/// RDRAM (KSEG0, `0x8xxx_xxxx`), the PIF ROM has been locked off the bus, and the
+/// checksum verify did **not** NMI-freeze the CPU (i.e. the CPU reproduced the
+/// documented CIC checksum over the real IPL3). Needs both the gitignored PIF ROM
+/// dump and a commercial ROM; skips gracefully when either is absent.
+#[test]
+#[ignore = "local-only: reads the gitignored PIF ROM + commercial corpus"]
+fn a_commercial_rom_boots_through_the_real_pif() {
+    const TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
+
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/roms/external/commercial");
+    let Ok(pif_rom) = std::fs::read(base.join("bios/pifdata.bin")) else {
+        eprintln!("no PIF ROM dump staged — real-PIF capstone skipped (local-only)");
+        return;
+    };
+
+    let mut any = false;
+    for folder in [
+        "eeprom-4k",
+        "eeprom-16k",
+        "sram",
+        "flashram",
+        "controller-pak",
+    ] {
+        let Ok(entries) = std::fs::read_dir(base.join(folder)) else {
+            continue;
+        };
+        let Some(rom_path) = entries
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "z64"))
+        else {
+            continue;
+        };
+        let Ok(image) = std::fs::read(&rom_path) else {
+            continue;
+        };
+        any = true;
+        let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
+
+        let mut sys = System::new(0);
+        rom::real_pif_boot(&mut sys, &image, &pif_rom).expect("real-PIF boot setup");
+        assert_eq!(
+            sys.cpu.pc, 0xFFFF_FFFF_BFC0_0000,
+            "[{folder}] {name}: the CPU must start at the PIF reset vector"
+        );
+
+        // Run a couple of seconds of emulated time — long enough for the whole
+        // IPL1/IPL2/IPL3 chain to hand off to the game.
+        for _ in 0..120 {
+            let target = sys.master_ticks().saturating_add(TICKS_PER_FRAME);
+            sys.run_until(target);
+        }
+
+        let pc = sys.cpu.pc & 0xFFFF_FFFF;
+        eprintln!(
+            "[{folder}] {name}: pc={pc:#010x} retired={} nmi={} pif_rom_byte0={:#x}",
+            sys.cpu.retired,
+            sys.bus.boot_nmi_halt(),
+            sys.bus.cart.pif_boot_rom_read(0),
+        );
+        assert!(
+            !sys.bus.boot_nmi_halt(),
+            "[{folder}] {name}: the IPL2 checksum verify NMI-froze the CPU — the \
+             CPU did not reproduce the CIC checksum over the real IPL3"
+        );
+        assert_eq!(
+            sys.bus.cart.pif_boot_rom_read(0),
+            0,
+            "[{folder}] {name}: IPL2 must have locked the PIF ROM off the bus"
+        );
+        assert_eq!(
+            pc & 0xE000_0000,
+            0x8000_0000,
+            "[{folder}] {name}: the CPU should be executing the game in RDRAM \
+             (KSEG0) after the real boot chain, but pc={pc:#010x}"
+        );
+    }
+    if !any {
+        eprintln!("no commercial ROMs staged — real-PIF capstone skipped (local-only)");
+    }
+}

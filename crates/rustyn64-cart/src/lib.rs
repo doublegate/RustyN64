@@ -129,6 +129,87 @@ pub enum Cic {
     Cic6106,
 }
 
+/// The boot secrets a CIC hands the PIF at power-on.
+///
+/// From `n64brew_wiki/markdown/PIF-NUS.md` §checksum table: the two 8-bit seeds
+/// and the 6-byte IPL2 checksum. On the real-PIF path the PIF writes the seeds
+/// into PIF RAM (IPL2 reads them to run its own checksum) and keeps the checksum
+/// to compare against the value IPL2 computes — a mismatch NMI-halts the CPU.
+/// These are documented constants, not the SM5 firmware; the seed bytes
+/// cross-check the per-CIC seed values the HLE boot path already injects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CicBootSecrets {
+    /// The 8-bit IPL2 seed (used by IPL2's checksum over the cart's IPL3).
+    pub ipl2_seed: u8,
+    /// The 8-bit IPL3 seed (used by IPL3's checksum over the first MiB).
+    pub ipl3_seed: u8,
+    /// The 6-byte IPL2 checksum the PIF expects the CPU to reproduce.
+    pub ipl2_checksum: [u8; 6],
+}
+
+/// Standard CRC-32 (reflected, poly `0xEDB8_8320`) — the fingerprint used to
+/// identify a cartridge's CIC from its IPL3 (cen64 `si/cic.c` `si_crc32`).
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                0xEDB8_8320 ^ (crc >> 1)
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+impl Cic {
+    /// Identify the CIC from the cartridge IPL3 (`rom[0x40..0x1000]`) by its
+    /// CRC-32 — the standard fingerprint (cen64 `si/cic.c`, N64brew *CIC-NUS*).
+    /// The core never consults a per-game database (ADR 0003/0004); this reads
+    /// only the ROM's own boot code. An unknown IPL3 (homebrew, e.g.
+    /// n64-systemtest, which ships its own) falls back to 6102 — the seed only
+    /// feeds the boot handshake, and a custom IPL3 does not depend on the stock
+    /// checksum path (the same fallback cen64 documents).
+    #[must_use]
+    pub fn from_ipl3(rom: &[u8]) -> Self {
+        let Some(ipl3) = rom.get(0x40..0x1000) else {
+            return Self::Cic6102;
+        };
+        // CRC values: cen64 `si/cic.c`. 7102 and the three iQue variants share
+        // the 6101 seed; 8303 (64DD), the common 6102 fingerprint `0x90BB_6CB5`,
+        // and every unknown/homebrew IPL3 all resolve to 6102 (the last arm).
+        match crc32(ipl3) {
+            0x6170_A4A1 | 0x009E_9EA3 | 0xCD19_FEF1 | 0xB98C_ED9A | 0xE71C_2766 => Self::Cic6101,
+            0x0B05_0EE0 => Self::Cic6103,
+            0x98BC_2C86 => Self::Cic6105,
+            0xACC8_580A => Self::Cic6106,
+            // `0x90BB_6CB5` (6102) folds into this default — the same variant.
+            _ => Self::Cic6102,
+        }
+    }
+
+    /// The [`CicBootSecrets`] for this variant. All modelled variants are the
+    /// NTSC members; the 7xxx PAL twins share the same seeds and checksums, so
+    /// region is a separate axis (the PIF SM5 ROM, not the CIC, is region-locked).
+    #[must_use]
+    pub const fn boot_secrets(self) -> CicBootSecrets {
+        let (ipl2_seed, ipl3_seed, ipl2_checksum) = match self {
+            Self::Cic6101 => (0x3F, 0x3F, [0x45, 0xCC, 0x73, 0xEE, 0x31, 0x7A]),
+            Self::Cic6102 => (0x3F, 0x3F, [0xA5, 0x36, 0xC0, 0xF1, 0xD8, 0x59]),
+            Self::Cic6103 => (0x78, 0x78, [0x58, 0x6F, 0xD4, 0x70, 0x98, 0x67]),
+            Self::Cic6105 => (0x91, 0x91, [0x86, 0x18, 0xA4, 0x5B, 0xC2, 0xD3]),
+            Self::Cic6106 => (0x85, 0x85, [0x2B, 0xBA, 0xD4, 0xE6, 0xEB, 0x74]),
+        };
+        CicBootSecrets {
+            ipl2_seed,
+            ipl3_seed,
+            ipl2_checksum,
+        }
+    }
+}
+
 /// ROM image byte order, derived from the magic in the first four bytes.
 ///
 /// `.z64` is big-endian (native), `.n64` is little-endian (byte-swapped),
@@ -185,12 +266,13 @@ impl RomHeader {
         title.copy_from_slice(&rom[0x20..0x34]);
         let mut game_code = [0u8; 4];
         game_code.copy_from_slice(&rom[0x3B..0x3F]);
-        // TODO(T-CART-02): resolve save_type + cic from the per-game DB by serial/CRC.
+        // The CIC is fingerprinted from the ROM's own IPL3 (not a per-game DB).
+        // TODO(T-CART-02): resolve save_type from the per-game DB by serial/CRC.
         Ok(Self {
             title,
             game_code,
             save_type: SaveType::None,
-            cic: Cic::default(),
+            cic: Cic::from_ipl3(rom),
         })
     }
 }
@@ -301,6 +383,34 @@ impl Cart {
     /// controller port words and the cart's save backend.
     pub fn pif_execute(&mut self, controllers: &[u32; 4]) {
         self.pif.execute(controllers, &mut self.save);
+    }
+
+    /// Install the PIF boot ROM (IPL1/IPL2) for the real-PIF boot path.
+    pub fn pif_load_boot_rom(&mut self, bytes: &[u8]) {
+        self.pif.load_boot_rom(bytes);
+    }
+
+    /// Read a byte of the PIF boot ROM (`0x1FC0_0000 + off`); 0 when absent (HLE).
+    #[must_use]
+    pub fn pif_boot_rom_read(&self, off: usize) -> u8 {
+        self.pif.boot_rom_read(off)
+    }
+
+    /// Is a real PIF boot ROM installed (real-PIF boot path active)?
+    #[must_use]
+    pub const fn pif_has_boot_rom(&self) -> bool {
+        self.pif.has_boot_rom()
+    }
+
+    /// Register the CIC's IPL2 checksum for the real-PIF boot verify.
+    pub const fn pif_set_boot_checksum(&mut self, checksum: [u8; 6]) {
+        self.pif.set_boot_checksum(checksum);
+    }
+
+    /// Process a reset-mode PIF command-byte write (real-PIF boot); returns `true`
+    /// if the checksum verify failed and the CPU must be NMI-halted.
+    pub fn pif_boot_command(&mut self) -> bool {
+        self.pif.boot_command()
     }
 
     /// The parsed cartridge header.
@@ -439,5 +549,46 @@ mod tests {
     #[test]
     fn version_is_non_empty() {
         assert!(!version().is_empty());
+    }
+
+    #[test]
+    fn crc32_matches_the_standard_check_vector() {
+        // The canonical CRC-32 check value for the ASCII string "123456789".
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn an_unknown_ipl3_falls_back_to_6102() {
+        // An all-zero IPL3 is not in the fingerprint table — homebrew ships its
+        // own boot code, so 6102 is the documented fallback (cen64).
+        let rom = alloc::vec![0u8; 0x1000];
+        assert_eq!(Cic::from_ipl3(&rom), Cic::Cic6102);
+        // Too short to hold an IPL3 → same fallback, no panic.
+        assert_eq!(Cic::from_ipl3(&[0u8; 0x40]), Cic::Cic6102);
+    }
+
+    #[test]
+    fn boot_secrets_match_the_pif_nus_table() {
+        // N64brew PIF-NUS §checksum table — the IPL2 seeds differ per CIC (the
+        // real IPL2 consumes them), and the 6-byte checksum is the authenticator.
+        assert_eq!(
+            Cic::Cic6102.boot_secrets().ipl2_checksum,
+            [0xA5, 0x36, 0xC0, 0xF1, 0xD8, 0x59]
+        );
+        assert_eq!(Cic::Cic6102.boot_secrets().ipl2_seed, 0x3F);
+        assert_eq!(Cic::Cic6103.boot_secrets().ipl2_seed, 0x78);
+        assert_eq!(Cic::Cic6105.boot_secrets().ipl2_seed, 0x91);
+        assert_eq!(Cic::Cic6106.boot_secrets().ipl2_seed, 0x85);
+        // In every known CIC the IPL2 and IPL3 seeds coincide.
+        for cic in [
+            Cic::Cic6101,
+            Cic::Cic6102,
+            Cic::Cic6103,
+            Cic::Cic6105,
+            Cic::Cic6106,
+        ] {
+            let s = cic.boot_secrets();
+            assert_eq!(s.ipl2_seed, s.ipl3_seed, "seeds coincide for {cic:?}");
+        }
     }
 }
