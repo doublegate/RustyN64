@@ -304,8 +304,9 @@ impl System {
         self.bus.rsp_tick();
         // TODO(v0.x): LLE RDP rasterizer — `Rdp::tick` is a stub.
         self.bus.rdp_tick();
-        // AI / interface sub-clock advance.
-        self.bus.audio_tick();
+        // AI / interface sub-clock advance — derives sample emission off the
+        // canonical `master_ticks` (ADR 0006), like the VI scan below.
+        self.bus.audio_tick(self.master_ticks);
         // The PI's asynchronous direct-I/O write finalises on this clock.
         self.bus.pi_tick();
         // The VI scan position advances off `master_ticks` (the one fractional
@@ -321,6 +322,14 @@ impl System {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    /// `rustyn64-audio` duplicates `MASTER_HZ` (the chip-crate graph forbids it
+    /// depending on `-core`); this pins the two copies together so the AI's DAC
+    /// period cannot silently drift from the canonical clock.
+    #[test]
+    fn audio_crate_master_hz_matches() {
+        assert_eq!(rustyn64_audio::MASTER_HZ, MASTER_HZ);
+    }
 
     /// The divisors must be exact. A wrong one is silent and poisons everything.
     #[test]

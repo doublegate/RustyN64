@@ -64,9 +64,11 @@ gate.
   complete inside its address phase.
 - `rustyn64-rsp` and `rustyn64-rdp` **execute**: the RSP runs real microcode
   (scalar + full vector unit) and the RDP rasterises the command list through the
-  texture / combiner / blender / coverage pipeline with VI scan-out. The remaining
-  chip crate, `rustyn64-audio` (AI), is still a **LLE-shaped stub** (decode/execute
-  marked TODO).
+  texture / combiner / blender / coverage pipeline with VI scan-out. `rustyn64-audio`
+  (AI) **implements the interface** (Phase 4, Sprint 1) — the register block at
+  `0x0450_0000`, the two-deep DMA FIFO, the derived DAC rate, the interrupt-on-start,
+  and the delayed-carry bug — but has **not yet been driven by real RSP audio
+  microcode** (Sprint 2), so no game audio plays end-to-end yet.
 - `rustyn64-cart`: real ROM-format detection + byte-order normalization
   (`.z64`/`.n64`/`.v64`), header parse, and the `SaveType`/`Cic`/`RomFormat`
   enums. PI/SI DMA, CIC handshake, and FlashRAM are stubbed.
@@ -167,7 +169,7 @@ emits one at every FP call boundary. That pattern has now cost two separate
 investigations; when adding a decode arm, enumerate the neighbouring funct
 space rather than only the encoding that prompted the change.
 | RDP LLE (software reference rasterizer) + VI scan-out | **done** — texture / combiner / blender / coverage pipeline; 164 conformance vectors bit-match Angrylion; a real ROM renders a golden frame (T-33-006) | Phase 3 |
-| AI audio DMA double-buffer | stub | Phase 4 |
+| AI audio DMA double-buffer | **interface done** (Sprint 1) — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug; awaits microcode-driven audio (Sprint 2) | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
 | Frontend egui shell (binary prints a placeholder) | stub | Phase 6 |
 | Accuracy battery / breadth / reach | stub | Phases 7–8 |
