@@ -68,7 +68,8 @@ impl Frame {
 pub struct EmuCore {
     /// The deterministic core.
     system: System,
-    /// The staged video framebuffer (placeholder until the RDP scanout lands).
+    /// The staged video framebuffer, filled each frame from the core's real VI
+    /// scan-out (`Bus::scanout`) — the LLE RDP/VI path, not a test pattern.
     frame: Frame,
     /// Drained audio samples (interleaved stereo f32), consumed by the ring.
     audio: Vec<f32>,
@@ -79,7 +80,7 @@ pub struct EmuCore {
     /// rate conversion stays continuous (click-free) across frames. Frontend-only
     /// state — the deterministic core never sees it (ADR 0004).
     resample_pos: f64,
-    /// Produced-frame counter (drives the skeleton's test pattern).
+    /// Produced-frame counter, surfaced via `frame_count` for the status bar.
     frames: u64,
     /// `true` while paused (the pacer keeps running, the core does not advance).
     paused: bool,
@@ -119,15 +120,19 @@ impl EmuCore {
         self.system.bus.audio.underruns()
     }
 
-    /// Load a normalized ROM image into the cart.
+    /// Load and **HLE-boot** a ROM: parse the cart, seed the retail boot state,
+    /// and jump into the cart's real IPL3 (`rustyn64_core::boot::hle_boot`) so the
+    /// game actually runs. Without the boot the CPU would sit at the PIF reset
+    /// vector fetching zeros.
     ///
     /// # Errors
-    /// Returns the [`rustyn64_core::cart::CartError`] from the loader on an
-    /// unrecognized byte order or a truncated header.
-    pub fn load_rom(&mut self, raw: &[u8]) -> Result<(), rustyn64_core::cart::CartError> {
-        let cart = rustyn64_core::cart::Cart::load(raw)?;
-        self.system.bus.cart = cart;
+    /// Returns [`rustyn64_core::boot::BootError`] on a too-small image or a cart
+    /// the loader cannot parse (unrecognised byte order / truncated header).
+    pub fn load_rom(&mut self, raw: &[u8]) -> Result<(), rustyn64_core::boot::BootError> {
+        // A warm reset first so a re-load starts from a clean power-on timeline;
+        // `hle_boot` then installs the cart and seeds the boot state + entry PC.
         self.system.reset();
+        rustyn64_core::boot::hle_boot(&mut self.system, raw)?;
         self.loaded = true;
         self.frames = 0;
         Ok(())
@@ -448,6 +453,44 @@ mod tests {
         assert!(
             emu.frame().rgba[..n].iter().all(|&b| b == 0),
             "black frame while the VI is off"
+        );
+    }
+
+    /// **The frontend boots a real game** through `EmuCore::load_rom` → the core's
+    /// HLE boot → the cart's own IPL3, so the CPU ends up executing game code in
+    /// RDRAM (`0x8xxx_xxxx`) rather than spinning at the PIF reset vector. Local
+    /// only: reads the gitignored commercial corpus, skips gracefully when absent.
+    ///
+    /// This is the Sprint-1 proof that the shell can *run* a cartridge — before
+    /// the boot-to-core move, `load_rom` left the CPU fetching zeros at
+    /// `0xBFC0_0000`. (Reaching a rendered frame is a separate, R-18 gap: a
+    /// commercial ROM boots and executes but does not program the VI yet.)
+    #[test]
+    #[ignore = "local-only: reads the gitignored commercial corpus"]
+    fn the_frontend_boots_a_commercial_rom_into_rdram() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64"
+        );
+        let Ok(raw) = std::fs::read(path) else {
+            eprintln!("no commercial ROM staged — frontend boot test skipped");
+            return;
+        };
+        let mut emu = EmuCore::new(0);
+        emu.load_rom(&raw).expect("HLE boot");
+        for _ in 0..60 {
+            emu.run_frame();
+        }
+        let pc = emu.system.cpu.pc & 0xFFFF_FFFF;
+        assert_eq!(
+            pc & 0xE000_0000,
+            0x8000_0000,
+            "the frontend must boot the game into RDRAM, not spin at the reset vector (pc={pc:#010x})"
+        );
+        assert!(
+            emu.system.cpu.retired > 1_000_000,
+            "the game must actually execute (retired={})",
+            emu.system.cpu.retired
         );
     }
 }

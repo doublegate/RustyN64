@@ -1,15 +1,27 @@
-//! Direct ROM loading, bypassing the boot sequence (T-11-006).
+//! ROM loading for the test harness — the ELF direct-load, plus a re-export of
+//! the core's retail boot.
 //!
-//! On hardware, IPL3 copies the ROM into RDRAM and jumps to its entry point.
-//! Phase 1 has no CIC handshake and no PI DMA, so the harness does that copy
-//! itself — which is exactly what the phase plan anticipated ("test ROMs are
-//! loaded directly, with the boot sequence stubbed").
+//! Two distinct things live at this seam (ADR 0010):
 //!
-//! This is a **harness** facility, deliberately not a core one. The core must
-//! never depend on it, or the determinism contract would acquire a load-path
-//! dependency (`docs/engineering-lessons.md` §3.4).
+//! - **The retail boot** (HLE + real-PIF) is real console behaviour, so it now
+//!   lives in [`rustyn64_core::boot`] where the frontend can boot a game too. It
+//!   is re-exported here for the harness's existing callers.
+//! - **The ELF direct-load** (`load_direct` / `seed_ipl3_handoff` / `load_elf`)
+//!   is a genuine *test* shortcut: n64-systemtest ships an ELF payload with no
+//!   IPL3, so the harness places its program segments directly and seeds the
+//!   handoff state. This stays here — the core must **never** acquire a test
+//!   load-path dependency, or the determinism contract would too
+//!   (`docs/engineering-lessons.md` §3.4). The [`hle_boot`] wrapper below routes
+//!   an ELF ROM to this path and every other ROM to the core's retail boot.
 
 use rustyn64_core::System;
+use rustyn64_core::boot::BootError;
+
+// The retail boot (HLE + real-PIF) now lives in `rustyn64-core::boot` so the
+// frontend can boot a game too; the harness re-exports it and keeps the ELF
+// direct-load below (a genuine test facility the core must not depend on). The
+// `hle_boot` wrapper further down adds the ELF-payload dispatch for n64-systemtest.
+pub use rustyn64_core::boot::{cic_seed, real_pif_boot};
 
 /// Bytes IPL3 copies from the cartridge into RDRAM.
 ///
@@ -51,6 +63,17 @@ pub enum LoadError {
         /// The virtual address that could not be placed.
         vaddr: u32,
     },
+}
+
+impl From<BootError> for LoadError {
+    fn from(err: BootError) -> Self {
+        match err {
+            // The harness only routes valid (non-ELF) ROMs to the core boot, so a
+            // parse error is as fatal as TooSmall here; the ELF error variants are
+            // produced by `seed_ipl3_handoff`, not this path.
+            BootError::TooSmall | BootError::Cart(_) => Self::TooSmall,
+        }
+    }
 }
 
 /// Load `rom` into RDRAM the way IPL3 would, and set the PC to `entry`.
@@ -204,156 +227,22 @@ pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadE
     Ok(elf_offset)
 }
 
-/// The CIC seed word IPL2 leaves in PIF RAM `0x24` (from which the HLE boot
-/// reads the `s3`–`s7` GPRs). Values from cen64 `si/cic.c`.
-#[must_use]
-pub const fn cic_seed(cic: rustyn64_core::cart::Cic) -> u32 {
-    use rustyn64_core::cart::Cic;
-    match cic {
-        Cic::Cic6101 => 0x0004_3F3F,
-        Cic::Cic6102 => 0x0000_3F3F,
-        Cic::Cic6103 => 0x0000_783F,
-        Cic::Cic6105 => 0x0000_913F,
-        Cic::Cic6106 => 0x0000_853F,
-    }
-}
-
-/// **HLE-boot a retail ROM.**
+/// **HLE-boot a ROM** (harness entry point).
 ///
-/// Seed the state IPL3 expects, copy the cart's *real* IPL3 (ROM `0x40..0x1000`)
-/// into RSP DMEM, and jump to it at `0xA400_0040`. IPL3 then copies the game to
-/// RDRAM and jumps to the header entry — running the cart's own bootcode rather
-/// than a reimplementation of it. This skips only
-/// IPL1/IPL2 (the PIF ROM) and the CIC challenge, which the seed injection stands
-/// in for (`ref-proj/simple64/.../pif/bootrom_hle.c`, studied not copied).
-///
-/// An ELF-payload ROM (n64-systemtest) is instead handed to
-/// [`seed_ipl3_handoff`], whose segments need program-header placement.
+/// Dispatches an ELF-payload ROM (n64-systemtest) to [`seed_ipl3_handoff`] and
+/// any other ROM to the core's retail [`rustyn64_core::boot::hle_boot`]. The
+/// retail boot itself lives in the core so the frontend can share it; this
+/// wrapper only adds the test ELF path.
 ///
 /// # Errors
-/// [`LoadError::TooSmall`] if the image is shorter than a `0x1000` boot header.
+/// [`LoadError::TooSmall`] if the image is shorter than a `0x1000` boot header,
+/// or an ELF error from [`seed_ipl3_handoff`] on a malformed ELF payload.
 pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), LoadError> {
-    use rustyn64_core::cpu::cop0::reg;
-
     if find_elf_offset(rom).is_some() {
         seed_ipl3_handoff(system, rom)?;
         return Ok(());
     }
-    if rom.len() < 0x1000 {
-        return Err(LoadError::TooSmall);
-    }
-
-    // Insert the cartridge; PI reads and IPL3's DMA see the ROM through it.
-    let cart = rustyn64_core::cart::Cart::load(rom).map_err(|_| LoadError::TooSmall)?;
-    let cic = cart.header().cic;
-    system.bus.cart = cart;
-
-    // Inject the CIC seed into PIF RAM 0x24..0x28 (the boot reads it for s3–s7).
-    let seed = cic_seed(cic);
-    for (i, b) in seed.to_be_bytes().into_iter().enumerate() {
-        system.bus.cart.pif_write(0x24 + i, b);
-    }
-
-    // COP0: Status = CU1|CU0|FR, Config = the IPL3-left value (K0=3 cached).
-    system
-        .cpu
-        .pipeline
-        .cop0
-        .set_hardware(reg::STATUS, 0x3400_0000);
-    system
-        .cpu
-        .pipeline
-        .cop0
-        .set_hardware(reg::CONFIG, 0x7006_E463);
-
-    // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
-    // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.
-    system.cpu.regs.write(19, 0);
-    system.cpu.regs.write(20, 1);
-    system.cpu.regs.write(21, 0);
-    system.cpu.regs.write(22, u64::from((seed >> 8) & 0xFF));
-    system.cpu.regs.write(23, 0);
-
-    // PI DOM1 bus timing from the ROM header's first word (as IPL2 does).
-    let cfg = u32::from_be_bytes([rom[0], rom[1], rom[2], rom[3]]);
-    system
-        .bus
-        .pi
-        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_LAT, cfg & 0xFF);
-    system
-        .bus
-        .pi
-        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_PWD, (cfg >> 8) & 0xFF);
-    system
-        .bus
-        .pi
-        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_PGS, (cfg >> 16) & 0x0F);
-    system
-        .bus
-        .pi
-        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_RLS, (cfg >> 20) & 0x03);
-
-    // Copy the real IPL3 into DMEM (`0x40..0x1000`) and jump to it.
-    let ipl3 = &rom[0x40..0x1000];
-    system.bus.rsp.dmem[0x40..0x40 + ipl3.len()].copy_from_slice(ipl3);
-    system.cpu.set_pc(0xFFFF_FFFF_A400_0040);
-    Ok(())
-}
-
-/// **Real-PIF boot a retail ROM** — the faithful path (off by default, local).
-///
-/// Where [`hle_boot`] *seeds* the post-IPL3 state and jumps straight into the
-/// cartridge's IPL3, this runs the console's **real IPL1 and IPL2** from the
-/// supplied PIF boot ROM: it installs that ROM at `0x1FC0_0000`, models the
-/// PIF-SM5's power-on hand-off (writes the CIC seed word the CIC would have
-/// relayed into PIF RAM `0x24`, and registers the CIC's IPL2 checksum so the PIF
-/// can adjudicate IPL2's verify command), and leaves the CPU at its reset vector
-/// `0xBFC0_0000`. The CPU then fetches IPL1 → copies IPL2 to IMEM → runs IPL2 →
-/// verifies the checksum → jumps into the cart's own IPL3, exactly as hardware
-/// does (`n64brew_wiki/markdown/PIF-NUS.md` §Console startup).
-///
-/// The PIF boot ROM is copyrighted and is **never committed**; a caller supplies
-/// a local dump. On a genuine cartridge the checksum matches and boot proceeds;
-/// a mismatch makes the PIF freeze the CPU via NMI ([`Bus::boot_nmi_halt`]).
-///
-/// [`Bus::boot_nmi_halt`]: rustyn64_core::Bus::boot_nmi_halt
-///
-/// # Errors
-/// [`LoadError::TooSmall`] if `rom` is shorter than a `0x1000` boot header or
-/// `pif_rom` is shorter than the PIF-ROM window.
-pub fn real_pif_boot(system: &mut System, rom: &[u8], pif_rom: &[u8]) -> Result<(), LoadError> {
-    if rom.len() < 0x1000 || pif_rom.len() < rustyn64_core::cart::pif::PIF_ROM_LEN {
-        return Err(LoadError::TooSmall);
-    }
-
-    let cart = rustyn64_core::cart::Cart::load(rom).map_err(|_| LoadError::TooSmall)?;
-    let cic = cart.header().cic;
-    system.bus.cart = cart;
-
-    // Install the real IPL1/IPL2 so the CPU fetches them from the reset vector.
-    system.bus.cart.pif_load_boot_rom(pif_rom);
-
-    // Model the PIF-SM5 power-on hand-off: after the CIC exchange, the PIF writes
-    // the boot-info word to PIF RAM 0x24-0x27, which IPL2 reads — byte 0x27 = the
-    // IPL2 seed (IPL2 feeds it to its checksum), byte 0x26 = the IPL3 seed. These
-    // come from [`CicBootSecrets`], NOT the legacy `cic_seed` word: cen64's seed
-    // packs 0x3F into the IPL2-seed byte for every CIC (harmless when the checksum
-    // is HLE'd, wrong when the real IPL2 consumes it), which N64brew corrects. The
-    // upper bits (region / reset-type / 64DD) stay 0 for a cold NTSC cart boot.
-    let secrets = cic.boot_secrets();
-    system.bus.cart.pif_write(0x24, 0x00);
-    system.bus.cart.pif_write(0x25, 0x00);
-    system.bus.cart.pif_write(0x26, secrets.ipl3_seed);
-    system.bus.cart.pif_write(0x27, secrets.ipl2_seed);
-    // Command byte 0x3F bit 0x80 is the PIF's "busy" gate IPL2 spins on; a zeroed
-    // PIF RAM already has it clear, so IPL2's startup sync passes immediately.
-
-    // Register the CIC's IPL2 checksum so the PIF adjudicates IPL2's verify.
-    system.bus.cart.pif_set_boot_checksum(secrets.ipl2_checksum);
-
-    // The CPU is already at 0xBFC0_0000 (System::new's reset vector); do NOT set
-    // the PC — that is the whole point of running the real boot ROM.
-    Ok(())
+    rustyn64_core::boot::hle_boot(system, rom).map_err(LoadError::from)
 }
 
 /// Find the ELF header's offset within a ROM image.

@@ -7,9 +7,9 @@
 //! `Arc<Mutex<EmuCore>>` handle; a `wgpu` fullscreen-triangle pass blits the
 //! N64 video framebuffer with 4:3 aspect correction.
 //!
-//! v0.1 is a SKELETON: the shell + input map + framebuffer plumbing are real,
-//! but the emulation is stubbed (the LLE RSP/RDP are roadmap phases). See
-//! `README.md` and `docs/STATUS.md` for the honest current state.
+//! The shell presents the real machine — the VI scan-out, the AI audio drain, and
+//! SI controller input (Phases 3–5). Save-states, rewind, run-ahead, and the wasm
+//! demo are the remaining Phase 6 work. See `docs/STATUS.md` for the current state.
 //!
 //! Usage: `rustyn64 [ROM.z64]` — pass a ROM to load at start, or launch bare and
 //! use File -> Open ROM. The default keymap is documented in `input.rs`.
@@ -26,15 +26,15 @@ use std::process::ExitCode;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
-    // Minimal argv handling for v0.1: an optional ROM path, plus `--help` /
-    // `--version`. The clap-4 styled CLI + the ratatui help TUI are a roadmap
-    // item (they land with the rest of the native CLI UX).
+    // Minimal argv handling: an optional ROM path, plus `--help` / `--version`.
+    // The clap-4 styled CLI + the ratatui help TUI are a roadmap item (they land
+    // with the rest of the native CLI UX).
     let mut rom: Option<PathBuf> = None;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!(
-                    "RustyN64 v{} — a cycle-accurate N64 emulator (v0.1 skeleton).\n\n\
+                    "RustyN64 v{} — a cycle-accurate N64 emulator.\n\n\
                      Usage: rustyn64 [ROM.z64|.n64|.v64]\n\n\
                      Launch bare and use File -> Open ROM, or pass a ROM path.\n\
                      P1 keys: arrows = analog stick, IJKL = D-pad, X = A, Z = B,\n\

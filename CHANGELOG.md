@@ -6,7 +6,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-Nothing yet — work toward `v0.7.0 "Shell"` (Phase 6, frontend integration) begins here.
+Work toward `v0.7.0 "Shell"` — frontend integration (Phase 6).
+
+### Changed — the frontend boots and runs games (Phase 6, Sprint 1)
+
+- **The retail boot moved into the core** (`rustyn64_core::boot`, ADR 0010): `hle_boot`,
+  `real_pif_boot`, `cic_seed`, and a `BootError` are now core APIs the frontend and the test
+  harness both consume. Only the ELF direct-load (an n64-systemtest test shortcut) stays in
+  the harness, which keeps a thin `hle_boot` wrapper for the ELF dispatch and re-exports the
+  rest — no behaviour change to any existing test (n64-systemtest Phase-1 categories still
+  `Failed: 0`).
+- **`EmuCore::load_rom` now HLE-boots the ROM**, so the shell actually runs a game. Before
+  this it did `Cart::load` + `reset`, leaving the CPU at the PIF reset vector `0xBFC0_0000`
+  fetching zeros — the shell could not run a cartridge at all. A commercial ROM now boots and
+  executes to game code in RDRAM through the frontend (local integration test); reaching a
+  rendered frame is the separate VI/RI/F3DEX gap (ledger R-18).
+- The frontend's `EmuCore` presents the **real** machine — the VI scan-out (`Bus::scanout`),
+  the AI audio drain, and SI controller input — not a test pattern; stale "v0.1 skeleton /
+  emulation stubbed / LLE not implemented" comments (including the user-visible `--help` text)
+  were corrected to match.
 
 ## [0.6.0] - 2026-07-24 "Cartridge"
 

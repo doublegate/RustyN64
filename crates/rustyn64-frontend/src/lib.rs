@@ -22,13 +22,15 @@
 //! - The frontend owns rate-control + run-ahead (the determinism contract —
 //!   never in the core).
 //!
-//! # v0.1 SKELETON status
+//! # Status (Phase 6 — frontend integration)
 //!
-//! This is a structural skeleton. The shell, the input map, the audio ring, and
-//! the framebuffer plumbing are real and compile; the **emulation itself is
-//! stubbed** — `rustyn64-core` advances its scheduler but the LLE RSP/RDP that
-//! would produce a real picture are roadmap phases, so the video framebuffer is
-//! a frontend-side placeholder until the RDP scanout lands.
+//! The shell presents the **real machine**: the video framebuffer is filled from
+//! the core's VI scan-out (`Bus::scanout`, the LLE RDP/VI path landed in Phase 3),
+//! the audio ring is fed by the real AI drain (Phase 4), and controller input
+//! reaches the game through the SI joybus (Phase 5). All rate control, pacing, and
+//! resampling live here in the frontend; the deterministic core never learns what
+//! time it is (ADR 0004). Save-states, rewind, run-ahead, and the wasm browser
+//! entry point are the remaining Phase 6 work (`to-dos/phase-6-frontend-integration/`).
 //!
 //! # v-next: a shared `rusty-frontend-core` crate
 //!
@@ -43,9 +45,9 @@
 // The N64 VI scanout resolution is variable (common modes 320x240 and
 // 640x480); the cast in the blit's aspect math truncates by design.
 #![allow(clippy::cast_precision_loss)]
-// The skeleton's deterministic test-pattern framebuffer (emu.rs) and the joybus
-// analog-stick packing (input.rs) intentionally round-trip narrow integers
-// (u32->u8 modulo, i8<->u8 reinterpret); these casts are by design, not bugs.
+// The VI scan-out RGBA conversion (emu.rs) and the joybus analog-stick packing
+// (input.rs) intentionally round-trip narrow integers (u32->u8 modulo, i8<->u8
+// reinterpret); these casts are by design, not bugs.
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,

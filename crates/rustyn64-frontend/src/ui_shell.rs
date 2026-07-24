@@ -162,17 +162,17 @@ impl Shell {
         });
     }
 
-    /// The stub VR4300 debugger window. The real per-chip register views (VR4300
-    /// COP0/COP1, the RSP scalar/vector regs, the RDP command stream) are
-    /// roadmap; v0.1 shows a placeholder + the elapsed timebase. Rendered as a
-    /// floating [`egui::Window`] (egui 0.34 has no nested `SidePanel` over a
-    /// `run_ui` root).
+    /// The stub debugger window. The core's chips are implemented (VR4300, LLE
+    /// RSP + RDP), but the per-chip register *views* (COP0/COP1, the RSP
+    /// scalar/vector regs, the RDP command stream) are still roadmap; this shows a
+    /// placeholder + the elapsed timebase. Rendered as a floating [`egui::Window`]
+    /// (egui 0.34 has no nested `SidePanel` over a `run_ui` root).
     fn debugger_panel(ctx: &egui::Context, state: &ShellState) {
         egui::Window::new("Debugger (stub)")
             .default_width(260.0)
             .show(ctx, |ui| {
                 ui.label("VR4300 register view: roadmap.");
-                ui.label("RSP / RDP panels: roadmap (LLE not yet implemented).");
+                ui.label("RSP / RDP register panels: roadmap (the chips are implemented).");
                 ui.separator();
                 egui::Grid::new("dbg_grid").striped(true).show(ui, |ui| {
                     ui.label("master ticks");
