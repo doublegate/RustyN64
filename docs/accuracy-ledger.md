@@ -1350,7 +1350,7 @@ pass, and none is a timing interval.
 **Why this is HLE and where the real path lives.** This deliberately skips the PIF ROM
 (IPL1/IPL2) and the CIC lockout challenge — the seed injection is their observable *result*, not
 a reimplementation. The copyright-clean, CI-able default; the real-PIF/IPL path is an
-off-by-default local-only mode (ADR on HLE-vs-real-PIF boot). `simple64`'s `bootrom_hle.c` was
+off-by-default local-only mode (ADR 0009). `simple64`'s `bootrom_hle.c` was
 **studied, not copied** (it is GPLv3, study-only per `ref-proj/README.md`); the drawn-from
 sources are the N64brew wiki and cen64 (both citable/vendorable).
 

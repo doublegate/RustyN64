@@ -30,7 +30,9 @@ timing, the SI joybus, the CIC handshake, and the save backends
 - **A retail ROM HLE boot** (`rustyn64-test-harness::rom::hle_boot`): copies the cartridge's own
   IPL3 into DMEM, injects the per-CIC seed into PIF RAM, seeds the post-IPL3 COP0/GPR/PI-DOM1
   state, and jumps to IPL3 — so a commercial ROM runs its own bootcode. The seeds are cited
-  constants (N64brew *CIC-NUS*/*PIF-NUS*, cen64), ledgered as **C-32**, not tuned.
+  constants (N64brew *CIC-NUS*/*PIF-NUS*, cen64), ledgered as **C-32**, not tuned. The
+  boot strategy — HLE default, with a real-PIF path staged behind an off-by-default flag —
+  is recorded in **ADR 0009**.
 
 **Measured effect on n64-systemtest.** This cart/PIF/SI/boot subsystem drops the suite-wide
 failing-assertion count from **93 → 90** (−3), measured with the committed runner
