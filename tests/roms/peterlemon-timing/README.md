@@ -32,11 +32,15 @@ cargo test -p rustyn64-test-harness --release --test peterlemon_timing -- --igno
 ```
 
 These are **measurements, not gates** (`#[ignore]`d). Today `CPUTIMINGNTSC` draws
-an **all-red** frame — our cycle timing is wrong for every instruction, which is
-exactly the open C-1/C-29 residuals. Stage D (Phase 7) drives it toward all-green;
-this ROM is the oracle that says when it gets there. `CP1TIMINGNTSC` executes
-cleanly (~10⁹ instructions, no hang — the point) but its slower FPU battery needs
-a larger budget to draw its full verdict, wired in Stage-D follow-up.
+an **all-red** frame — an *aggregate* verdict that our `Count` deltas do not match
+the ROM's expected values for the instructions it covers. It does **not** by itself
+isolate C-1 (`M`) or prove each instruction is individually wrong (the ROM compares
+absolute deltas, which conflate loop overhead, a possible fixed offset, and
+per-instruction error); isolating `M` needs the differential *measured-vs-expected*
+deltas. What it gives today is a fast, non-hanging, falsifiable target that Stage D
+(Phase 7) drives toward all-green. `CP1TIMINGNTSC` executes cleanly (~10⁹
+instructions, no hang — the point) but its slower FPU battery needs a larger budget
+to draw its full verdict, wired in Stage-D follow-up.
 
 ## Provenance & licence
 

@@ -96,14 +96,19 @@ fn run(path: &str) -> (usize, usize, u64, bool) {
     (red, green, sys.cpu.retired, vi_programmed)
 }
 
-/// The CPU instruction-timing oracle. Asserts the ROM **reached its verdict
-/// frame** (drew its green/red result grid — a strong execution witness, not a
-/// vacuous "it started"), then reports the pass/fail pixel counts. The counts
-/// are a measurement, not a gate: today the frame is all-red (our cycle timing
-/// is wrong for every instruction), which is the C-1 (`M`) / C-29 signal Stage D
-/// drives to all-green.
+/// The CPU instruction-timing oracle. Asserts the ROM **drew a verdict grid**
+/// (a substantial green/red glyph area — a real execution witness, not a vacuous
+/// "it started"; the ROM spins after drawing, so the full-budget run captures the
+/// finished frame), then reports the pass/fail pixel counts.
+///
+/// This is an **aggregate** verdict, not a per-instruction measurement: an
+/// all-red frame says our `Count` deltas do not match the ROM's baked-in expected
+/// values for the covered instructions, but it does not by itself isolate C-1
+/// (`M`) or prove each instruction is individually wrong (see ledger §C-1). The
+/// falsifiable target is all-green; deriving `M` needs the differential
+/// measured-vs-expected deltas, a Stage-D follow-up.
 #[test]
-#[ignore = "curated timing oracle; a measurement, run explicitly"]
+#[ignore = "curated timing oracle; an aggregate measurement, run explicitly"]
 fn cpu_timing_rom_runs_to_a_verdict() {
     let (red, green, retired, vi) = run(CPU_ROM);
     assert!(
@@ -113,8 +118,10 @@ fn cpu_timing_rom_runs_to_a_verdict() {
     );
     println!(
         "CPUTIMINGNTSC: {green} green (pass) vs {red} red (fail) glyph pixels, \
-         {retired} retired. All-green ⇒ CPU instruction timing matches hardware; \
-         red ⇒ the C-1/C-29 gap. MEASUREMENT, not a gate (Stage D closes it)."
+         {retired} retired. Aggregate verdict — all-green ⇒ every covered \
+         instruction's timing matches the ROM's expected `Count` delta; red ⇒ a \
+         mismatch (not yet an isolated `M` measurement, ledger §C-1). Stage D \
+         drives it to all-green."
     );
 }
 
