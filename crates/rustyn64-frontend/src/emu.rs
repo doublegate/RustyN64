@@ -11,8 +11,15 @@
 //! [`rustyn64_core::Bus::scanout`], which converts the framebuffer at `VI_ORIGIN`
 //! to RGBA8 (the LLE RDP/VI path). While the VI is off or unconfigured (cold
 //! boot / no ROM), scan-out reports `(0, 0)` and a black frame at the default
-//! resolution is shown. Audio is still a frontend-side placeholder until the
-//! AI/RSP drain lands.
+//! resolution is shown.
+//!
+//! # Audio source
+//!
+//! `produce_audio` drains the AI's emitted stereo stream ([`rustyn64_core::Bus::drain_audio_samples`])
+//! and resamples it from the N64 output rate to the host device rate
+//! (`resample_stereo`), staging interleaved f32 for the `cpal` ring. The
+//! resample is the frontend's non-deterministic host-timing stage (ADR 0004);
+//! the core only ever emits on the emulated timeline.
 
 use rustyn64_core::System;
 use rustyn64_core::audio::StereoSample;
