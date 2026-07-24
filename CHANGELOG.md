@@ -8,6 +8,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — a working CPU/FPU instruction-timing oracle (gap-analysis Stage C)
+
+- **Committed the PeterLemon `CPUTIMINGNTSC` / `CP1TIMINGNTSC` timing ROMs**
+  (krom, Unlicense, `tests/roms/peterlemon-timing/`) as **curated, self-judging
+  timing oracles**, with a runner (`tests/peterlemon_timing.rs`). Each ROM times
+  a fixed loop of one instruction against a hardware-expected value baked into
+  the ROM and draws green (pass) / red (fail); the runner
+  (`crates/rustyn64-test-harness/tests/peterlemon_timing.rs`) boots it, scans the
+  verdict frame out through the real VI, and counts pass/fail pixels.
+- These are the measuring instrument for the open cycle-timing residuals **C-1**
+  (`M`, memory-access time) and **C-29** (FPU stall rates). Unlike
+  n64-systemtest's `--features timing` build (which does not terminate in the
+  emulator), `CPUTIMINGNTSC` **runs to a verdict in seconds** — today an all-red
+  frame, quantifying the gap Stage D drives to all-green. Ledger §C-1 updated.
+
 ### Changed — documentation reconciliation (gap-analysis Stage A)
 
 - **Reconciled the status docs to the v0.7.0 state** (no behaviour change).

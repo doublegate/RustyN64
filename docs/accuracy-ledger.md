@@ -96,6 +96,25 @@ so a single-test curated ROM is not available to sidestep the hang. **Next step 
 diagnose the post-917 hang (likely a `Count`/`Compare` or interlock timing loop), then re-run for
 the baseline. The toolchain is no longer the blocker; the emulator's timing is.
 
+**A working curated oracle now exists (update 2026-07-24).** Rather than fight the n64-systemtest
+hang, the PeterLemon `CPUTIMINGNTSC` / `CP1TIMINGNTSC` ROMs (krom, Unlicense, committed under
+`tests/roms/peterlemon-timing/`) each time a fixed loop of one instruction with `Count`, compare
+against a **hardware-expected value baked into the ROM**, and draw green (pass) / red (fail). They
+**run to a verdict in the emulator in seconds** (no hang), driven by
+`crates/rustyn64-test-harness/tests/peterlemon_timing.rs`. **Provisional aggregate baseline** (not
+a measurement of `M`): `CPUTIMINGNTSC` draws an **all-red** frame today (0 green / 11 111 red glyph
+pixels). That is an *aggregate* pass/fail — it says the emulator's `Count` deltas do **not** match
+the ROM's baked-in expected values for the instructions it covers, but a red verdict alone does not
+isolate `M`, nor prove each instruction is individually wrong: the mismatch could be a fixed
+per-loop offset, the loop-overhead timing, or a genuine per-instruction error, and this ROM
+compares *absolute* deltas that conflate them. So **C-1 stays "not yet measured"** — deriving `M`
+needs the differential *measured-vs-expected* `Count` deltas (read the ROM's `COUNTWORD` /
+per-instruction values), which the green/red frame does not surface. What the oracle gives today is
+a fast, non-hanging, falsifiable target the Stage-D timing work drives toward all-green, and the
+place to read those differential deltas from. (`CP1TIMINGNTSC`, the C-29 FPU oracle, executes
+cleanly ~10⁹ instructions but its slower battery needs a larger budget to draw its full grid — a
+Stage-D follow-up.)
+
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
 **2 PCycles, and the manual says so.** UM §4.7 (p. 114), the opening sentence of the section:
