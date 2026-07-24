@@ -6,8 +6,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-The next rung is `v0.4.0 "Rasteriser"` — the LLE RDP and VI, the first picture
-(see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+The next rung is `v0.5.0 "Resonance"` — AI audio (Phase 4), from the buffer the RSP
+audio microcode already produces (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+## [0.4.0] - 2026-07-23 "Rasteriser"
+
+The first release that produces a picture. The LLE RDP renders through the per-pixel
+pipeline and the VI scans it out. **Both cut criteria are met** ([`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)
+§v0.4.0): a **real ROM renders a stable committed golden frame** (`real_rom_frame.rs` —
+a homebrew ROM boots on the VR4300, CPU-fills a framebuffer, and the VI scans it out),
+and the **conformance suite bit-matches Angrylion** (164 vectors: FILL rectangles,
+the asymmetric scissor clip, FILL/shaded/**textured** triangles, dither, alpha-compare,
+coverage write-back, the combiner mux, and copy-mode texture rectangles). Two real
+accuracy bugs were found by the seeded fuzzer and fixed (the FILL rectangle inclusive
+edge, R-3; the asymmetric scissor clip, R-15), and textured triangles now render (R-13).
+Still open for later phases: perspective-correct and bilinear texturing, an RDP-driven
+real-ROM frame, and cartridge boot.
 
 ### Fixed — textured triangles render (Phase 3, R-13 resolved)
 
