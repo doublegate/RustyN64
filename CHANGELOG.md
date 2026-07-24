@@ -6,9 +6,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-Work toward `v0.6.0 "Cartridge"` — boot and saves (Phase 5): the PI bus with domain
-timing, the SI joybus, the CIC handshake, and the save backends
-(see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+Nothing yet — work toward `v0.7.0 "Shell"` (Phase 6, frontend integration) begins here.
+
+## [0.6.0] - 2026-07-24 "Cartridge"
+
+**A commercial cartridge boots.** Phase 5 delivers the cartridge + I/O boundary: the PI
+bus with BSD domain timing, the SI joybus, all four save backends, the CIC handshake, and
+**two boot paths** — the copyright-clean HLE boot (default, CI-able) and a **faithful
+real-PIF boot** that runs the console's real IPL1/IPL2 from the PIF ROM and verifies the
+IPL2 checksum against the CIC (off by default, local-only). Every save-type representative
+in the commercial corpus (6102/6103/6105 CICs) boots through the real IPL1→IPL2→IPL3 chain
+to game execution in RDRAM.
+
+n64-systemtest drops **93 → 90** failing assertions; Phase-1 categories stay `Failed: 0`.
+Reaching a rendered title frame is a downstream VI/RI/F3DEX gap tracked honestly as
+accuracy-ledger **R-18**, deferred to a later phase and outside the Phase 5 cart boundary
+(ADR 0003). All emulation stays byte-identical to v0.5.0 when no cartridge boot is driven.
 
 ### Added — cart (Phase 5, Sprint 1)
 
