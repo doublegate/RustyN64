@@ -2300,6 +2300,7 @@ dependencies = [
 name = "rustyn64-frontend"
 version = "0.6.0"
 dependencies = [
+ "bincode",
  "bytemuck",
  "cpal",
  "directories",

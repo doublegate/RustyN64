@@ -138,6 +138,37 @@ impl EmuCore {
         Ok(())
     }
 
+    /// Serialise the whole machine to a save-state blob.
+    ///
+    /// The cartridge ROM is excluded (it is immutable and up to 64 MiB); it is
+    /// re-attached on [`EmuCore::restore`] from the loaded image. Save-states,
+    /// rewind, and run-ahead are frontend-owned — the core has no notion of
+    /// wall-clock time or snapshots (ADR 0004).
+    ///
+    /// # Panics
+    /// Never in practice: `System` derives `Serialize` for every field, so
+    /// bincode encoding of an in-memory value cannot fail.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<u8> {
+        bincode::serialize(&self.system).expect("System is serde-serialisable")
+    }
+
+    /// Restore a save-state blob over the current machine, re-attaching the
+    /// currently-loaded ROM (the blob excludes it). Returns `false` on a
+    /// malformed or mismatched blob, leaving the machine untouched.
+    #[must_use]
+    pub fn restore(&mut self, blob: &[u8]) -> bool {
+        let Ok(mut restored) = bincode::deserialize::<System>(blob) else {
+            return false;
+        };
+        // Re-attach the ROM the snapshot skipped, from the live cart.
+        let rom = self.system.bus.cart.rom_image().to_vec();
+        restored.bus.cart.reattach_rom(rom);
+        self.system = restored;
+        // The staged frame/audio are regenerated on the next `run_frame`.
+        true
+    }
+
     /// `true` once a ROM has been loaded.
     #[must_use]
     pub const fn is_loaded(&self) -> bool {

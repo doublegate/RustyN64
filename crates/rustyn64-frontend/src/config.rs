@@ -76,6 +76,10 @@ pub struct Config {
     pub seed: u64,
     /// Whether the debugger panel starts visible.
     pub debugger_open: bool,
+    /// Rewind ring config (off by default — the byte-identity contract).
+    pub rewind: crate::savestate::RewindConfig,
+    /// Run-ahead config (0 frames = off by default).
+    pub run_ahead: crate::savestate::RunAhead,
 }
 
 impl Default for Config {
@@ -86,6 +90,8 @@ impl Default for Config {
             volume: 1.0,
             seed: 0,
             debugger_open: false,
+            rewind: crate::savestate::RewindConfig::default(),
+            run_ahead: crate::savestate::RunAhead::default(),
         }
     }
 }

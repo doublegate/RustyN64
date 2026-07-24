@@ -66,6 +66,9 @@ struct App {
     shell: Shell,
     emu: Arc<Mutex<EmuCore>>,
     input: Arc<SharedInput>,
+    /// Save-state / rewind requests the emu thread serves (F2 save, F4 load,
+    /// Backspace rewind). Shared with the emu thread.
+    save_controls: Arc<crate::savestate::SaveStateControls>,
     /// Pressed logical keys this instant (the input collector reads these).
     keys_down: HashSet<Key>,
     #[cfg(feature = "emu-thread")]
@@ -94,6 +97,7 @@ impl App {
             shell,
             emu,
             input: Arc::new(SharedInput::new()),
+            save_controls: Arc::new(crate::savestate::SaveStateControls::default()),
             keys_down: HashSet::new(),
             #[cfg(feature = "emu-thread")]
             emu_thread: None,
@@ -332,6 +336,9 @@ impl ApplicationHandler for App {
                 Arc::clone(&self.input),
                 ring,
                 self.config.region,
+                self.config.rewind,
+                self.config.run_ahead,
+                Arc::clone(&self.save_controls),
             ));
         }
 
@@ -364,6 +371,20 @@ impl ApplicationHandler for App {
             } => {
                 let key = key_event.logical_key;
                 if key_event.state.is_pressed() {
+                    // Save-state hotkeys (edge-triggered on first press): F2 saves
+                    // to the slot, F4 loads it, Backspace rewinds one step. The
+                    // emu thread serves the request on its next frame.
+                    if !self.keys_down.contains(&key) {
+                        use winit::keyboard::{Key as WKey, NamedKey};
+                        match &key {
+                            WKey::Named(NamedKey::F2) => self.save_controls.request_save(),
+                            WKey::Named(NamedKey::F4) => self.save_controls.request_load(),
+                            WKey::Named(NamedKey::Backspace) => {
+                                self.save_controls.request_rewind();
+                            }
+                            _ => {}
+                        }
+                    }
                     self.keys_down.insert(key);
                 } else {
                     self.keys_down.remove(&key);
