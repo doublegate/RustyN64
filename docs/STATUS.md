@@ -85,7 +85,7 @@ not the same as a wired gate.
 ## What works today
 
 - The Cargo workspace: all `rustyn64-*` crates build; `cargo test --workspace`
-  passes 135 tests.
+  passes 712 tests.
 - `rustyn64-core`: the `Bus` (owns RDRAM + every chip + the RCP/MI register
   state), and the **canonical 187.5 MHz scheduler** (ADR 0006) — `master_ticks`
   is the only incremented counter; CPU (÷2), RCP (÷3) and COP0 `Count` (÷4)
@@ -106,14 +106,17 @@ not the same as a wired gate.
   `0x0450_0000`, the two-deep DMA FIFO, the derived DAC rate, the interrupt-on-start,
   and the delayed-carry bug. The **real libdragon mixer microcode** (`rsp_mixer.S`)
   now runs on the LLE RSP and produces a verified mixed PCM buffer (Phase 4, Sprint 2),
-  and a real bare-metal ROM plays PCM through the AI end to end — what remains for a
-  playable game is the frontend audio drain + resampler (Sprint 3).
+  and a real bare-metal ROM plays PCM through the AI end to end. The frontend audio
+  drain + resampler landed in Phase 6 (v0.7.0), so the AI path is complete.
 - `rustyn64-cart`: real ROM-format detection + byte-order normalization
-  (`.z64`/`.n64`/`.v64`), header parse, and the `SaveType`/`Cic`/`RomFormat`
-  enums. PI/SI DMA, CIC handshake, and FlashRAM are stubbed.
+  (`.z64`/`.n64`/`.v64`), header parse, the `SaveType`/`Cic`/`RomFormat` enums, and
+  (Phase 5, v0.6.0) the PI/SI DMA, the CIC handshake, all four save backends
+  including the FlashRAM command machine, and both HLE and real-PIF boot.
 - `rustyn64-test-harness`: the golden-log differ, `run_until_complete`, the
-  accuracy scorer, and the frame comparator — all present; the golden source +
-  probe battery are **stubbed** pending a reference trace.
+  accuracy scorer, and the frame comparator — all present. The golden source
+  exists (the CPU golden-log 0-diff vs ares is met); the **first-party probe
+  battery is still stubbed** (`AccuracyScorer::default_battery_stub`), authored in
+  Phase 7.
 - The chip stack is `#![no_std]` + `alloc` and cross-compiles to
   `thumbv7em-none-eabihf`; only the frontend carries `std` + `unsafe`.
 
@@ -127,8 +130,8 @@ actually stands.
 | Repository | `github.com/doublegate/RustyN64`, **public**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
 | CI | **Green, verified.** All jobs pass on `ubuntu`/`macOS`/`windows`: `setup`, `test` (fmt + clippy + test + `no_std`), `rustdoc` (`-D warnings`, an independent job so a doc break cannot ride in behind a green test job), `test-roms`, `no-commercial-roms`, `wasm-bindgen-pin`. Split light/full: the `test-roms` job and the macOS/Windows matrix run only on push-to-main, the merge queue, `release/*` PRs, dispatch, and a weekly cron. |
 | Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
-| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0`–`v0.4.0` are all tagged and released. |
-| wasm | Compiles for `wasm32-unknown-unknown`, but there is **no browser entry point** (no `wasm-bindgen` dep, no `#[wasm_bindgen(start)]`, no `index.html`), so `trunk build` cannot produce a demo. Phase 6. |
+| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0` through `v0.7.0` are all tagged and released (`v0.2.0` onward published checksummed three-target binaries). |
+| wasm | Compiles for `wasm32-unknown-unknown` **and has a browser entry point** (`#[wasm_bindgen(start)]` in `crates/rustyn64-frontend/src/wasm.rs`, `web/index.html`); `trunk build` produces a 2D-canvas demo that boots a homebrew ROM and blits the VI scan-out. The full in-browser winit/wgpu/egui shell is roadmap. |
 | Hardware reference | `n64brew_wiki/` — offline mirror of the N64brew Wiki (324 pages, 96 media, gitignored). Rebuild with `scripts/mirror_n64brew_wiki.py`. |
 | Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licences vary and several forbid copying** — read `ref-proj/README.md` first. |
 
@@ -153,7 +156,7 @@ upstream `LICENSE` beside it.
 `dillon-n64-tests` corpus runs end to end, judged by its completion protocol
 (T-11-006). The **n64-systemtest** ROM runs under the committed `--test
 systemtest` runner and reports a real count (Phase 1 categories `Failed: 0`; RSP
-category `Failed: 0`; 93 suite-wide). The **golden-log** gate (`--test
+category `Failed: 0`; 90 suite-wide). The **golden-log** gate (`--test
 golden_log`) replays 50,027 retired records at 0 diff against ares. A fourth,
 the **synthetic visual golden** (`--test golden_frame`, T-31-005), executes the
 FILL → VI scan-out path against a committed frame hash. The rest of the corpus
@@ -166,25 +169,19 @@ is staged only — an oracle on disk that no gate executes yet.
 | --- | --- | --- |
 | VR4300 integer core, pipeline, delay slots, errata, SysAD | **done** (Sprint 1) | Phase 1 |
 | VR4300 COP0, TLB, exception model | **done** (Sprint 2) | Phase 1 |
-| VR4300 COP1 (FPU) | **partial** — see below | Phase 1 (Sprint 3) |
+| VR4300 COP1 (FPU) | **done** — `Failed: 0` on the COP1 category; `SQRT` (funct 4) is the one unwired operation (see below) | Phase 1 (Sprint 3) |
 | CPU golden-log 0-diff | **done** (T-HARNESS-01) — `tests/golden/n64-systemtest.log`, captured from ares at the ELF entry; gate is `--test golden_log` | Phase 1 |
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
 | RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts (incl. in a taken branch's delay slot), DMA and the register file work. Spec `docs/rsp.md`; regressions in `su::tests` and n64-systemtest `RSP BREAK`/`SP …` | Phase 2 |
 | RSP vector unit (COP2, accumulator, `VRCP`/`VRSQ`) | **implemented** — the full VU: multiplies, accumulating forms, add/sub/carry, compares, the clip compares (`VCL`/`VCH`/`VCR`), `VMRG`/`VRND`/`VMULQ`/`VMACQ`, the reciprocals, the whole vector load/store family, and the reserved "VZERO" opcodes. Spec `docs/rsp.md`; regressions in `vu`'s `compare_tests`/`clip_tests`/`vzero_tests`/… and the n64-systemtest RSP category | Phase 2 |
 | RDP DPC command registers | **implemented** — `DPC_START`/`END`/`CURRENT`/`STATUS` at `0x0410_0000`, the `START_VALID` double-latch + `FREEZE`; driven both by the CPU **and** by the RSP microcode's COP0 `c8`–`c15` (routed via `StepResult::dp_write` → `Bus::rsp_tick` → `Rdp::dpc_write`, the RSP not being allowed to name `Rdp`). The rasterizer behind them is **implemented** (Phase 3). Provenance N64brew *Reality Display Processor/Interface*; spec `docs/rdp.md`; regressions in `rustyn64-rdp` tests + n64-systemtest `RSP STATUS: start-valid` + `microcode::…emits_an_rdp_command…` | Phase 2 / Phase 3 |
 
-**What "partial" means for COP1.** The register file (`FR` views), the control
-registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the
-compares and the conversions decode and execute. Two things do **not** work,
-and neither is visible from a green `cargo test`:
-
-- **`BC1F`/`BC1T` are decoded but not executed.** They reach
-  `Op::Cop1Unimplemented`, which retires as a **silent no-op** rather than
-  raising — so an FP branch never redirects. The compare tests read `FCSR.C`
-  through `CFC1` and pass without them, but real code branches on it. This is
-  the decoded-but-no-op shape that has already cost two investigations.
-- **37 COP1 assertions remain**, in the `CVT.S`/`CVT.L` families — narrower
-  edge cases rather than a missing operation.
+**What remains in COP1.** The register file (`FR` views), the control registers,
+the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the compares, the
+conversions, and the `BC1F`/`BC1T`/`BC1FL`/`BC1TL` FP branches all decode and
+execute, and the COP1 category of n64-systemtest passes `Failed: 0`. `BC1` was
+the last decoded-but-no-op hazard and is now resolved (ledger **R-2** / C-25). The
+single remaining unimplemented operation is `SQRT` (funct 4), covered below.
 
 What **is** done: the unmaskable unimplemented-operation cause (bit 17) is
 produced for subnormal operands and results, for `FS = 1` with underflow or
@@ -208,10 +205,10 @@ emits one at every FP call boundary. That pattern has now cost two separate
 investigations; when adding a decode arm, enumerate the neighbouring funct
 space rather than only the encoding that prompted the change.
 | RDP LLE (software reference rasterizer) + VI scan-out | **done** — texture / combiner / blender / coverage pipeline; 164 conformance vectors bit-match Angrylion; a real ROM renders a golden frame (T-33-006) | Phase 3 |
-| AI audio DMA double-buffer | **interface done** (Sprint 1) — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug. **Real mixer microcode produces PCM on the RSP** (Sprint 2); awaits the frontend drain/resampler (Sprint 3) | Phase 4 |
-| PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
-| Frontend egui shell (binary prints a placeholder) | stub | Phase 6 |
-| Accuracy battery / breadth / reach | stub | Phases 7–8 |
+| AI audio DMA double-buffer | **done** — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug (Sprint 1); the real mixer microcode produces PCM on the RSP (Sprint 2); the frontend drain + resampler landed in Phase 6 | Phase 4 |
+| PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | **done** (v0.6.0) — PI/SI DMA, the CIC handshake, all four save backends incl. the FlashRAM command machine, and both HLE and real-PIF boot | Phase 5 |
+| Frontend egui shell | **done** (v0.7.0) — presents the real machine (VI scan-out, AI drain, SI input) with save-states / rewind / run-ahead; a wasm browser demo | Phase 6 |
+| Accuracy battery / breadth / reach | **stub** — the first-party probe battery, the commercial-corpus breadth, and the reach features are Phases 7–8 | Phases 7–8 |
 
 ## Chip → crate map
 
@@ -276,8 +273,9 @@ matrix.
 Save-type coverage target (per-game DB resolved): EEPROM 4k/16k, SRAM, FlashRAM,
 Controller Pak (`docs/cart.md`). All five backends have regression ROMs staged
 under `tests/roms/external/commercial/`, one folder per backend, with save types
-resolved by MD5 against the mupen64plus catalogue rather than guessed. None are
-implemented yet (Phase 5).
+resolved by MD5 against the mupen64plus catalogue rather than guessed. **All four
+backends are implemented and round-trip byte-for-byte** (Phase 5, v0.6.0); the
+save-type DB lookup itself (identity only) is a Phase-7 item (`T-CART-02`).
 
 ## Version policy
 
@@ -297,8 +295,11 @@ implemented yet (Phase 5).
   3. **Resolution finer than one PClock** — the deferred ADR 0005 refactor. Does
      not exist, is not scheduled, and is the one expected to break byte-identity
      and save-state compatibility.
-- v1.0.0 is the production cut (Phases 1–8 complete; README/CHANGELOG/docs/STATUS
-  in sync; release matrix + Pages green). See `to-dos/ROADMAP.md`. Of those
-  release-readiness items, **Pages is already green** and the release matrix has
-  now run for real: `v0.1.0`–`v0.4.0` are all tagged, and `release.yml` has
-  published checksummed binaries across the three-target matrix.
+- v1.0.0 is the production cut (**Phases 1–7 complete** + the engineering rungs;
+  README/CHANGELOG/docs/STATUS in sync; release matrix + Pages green). **Phase 8
+  (reach — netplay, achievements, TAS, scripting, shaders) is deliberately NOT in
+  the v1.0.0 gate** — it is v1.1.0 onward (VERSION-PLAN §Post-v1.0). See
+  `to-dos/ROADMAP.md`. Of those release-readiness items, **Pages is already green**
+  and the release matrix has run for real: `v0.1.0` through `v0.7.0` are all
+  tagged, and `release.yml` has published checksummed binaries across the
+  three-target matrix (`v0.2.0` onward).

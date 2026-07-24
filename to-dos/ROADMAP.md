@@ -124,10 +124,12 @@ additive and off by default.
 
 ## Milestones beyond the phases
 
-- **v1.0.0** — the production cut: Phases 1-8 complete; README, CHANGELOG, `docs/`, and
-  `docs/STATUS.md` in sync; the release matrix and Pages green. Of those readiness items, Pages
-  is already green, and the release workflow has now run for real: `v0.1.0` through `v0.4.1` are
-  all tagged, and `v0.2.0` onward published checksummed binaries for the three-target matrix.
+- **v1.0.0** — the production cut: **Phases 1-7 complete** + the engineering rungs (v0.9.0);
+  README, CHANGELOG, `docs/`, and `docs/STATUS.md` in sync; the release matrix and Pages green.
+  **Phase 8 (reach) is deliberately NOT in the v1.0.0 gate** — it is v1.1.0 onward
+  (VERSION-PLAN §Post-v1.0). Of those readiness items, Pages is already green, and the release
+  workflow has run for real: `v0.1.0` through `v0.7.0` are all tagged, and `v0.2.0` onward
+  published checksummed binaries for the three-target matrix.
 - **Beyond v1.0** — the sub-cycle bus-timing refactor (ADR 0005), *only if* hard residuals
   from Phase 7 warrant it. The one release expected to break byte-identity and save-state
   compatibility; it will be announced in advance.

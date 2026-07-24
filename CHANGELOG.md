@@ -8,6 +8,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Changed — documentation reconciliation (gap-analysis Stage A)
+
+- **Reconciled the status docs to the v0.7.0 state** (no behaviour change).
+  Corrected stale "stub" claims for subsystems that now execute: the RSP module
+  doc (`rustyn64-rsp` — the vector unit runs), the scheduler comments
+  (`Rsp::tick`/`Rdp::tick`), and `docs/STATUS.md` (the "What is stubbed" table,
+  the COP1 "partial" narrative → done-except-`SQRT`, the cart/AI/frontend rows).
+  Fixed count drift (712 tests, 90 suite-wide) and the release history (`v0.1.0`
+  through `v0.7.0` tagged). Resolved the Phase-8-in-v1.0.0 wording clash:
+  **v1.0.0 = Phases 1–7 + engineering rungs; Phase 8 (reach) is v1.1.0 onward**
+  (VERSION-PLAN §Post-v1.0). Corrected the `AGENTS.md` `test-roms` note (it now
+  gates one probe).
+
 ## [0.7.0] - 2026-07-24 "Shell"
 
 **The first playable release.** Phase 6 wires the egui shell to the real machine:

@@ -7,10 +7,11 @@
 //! — interpret the microcode instruction-by-instruction, the cen64 / ares model)
 //! rather than HLE microcode recognition.
 //!
-//! The **scalar unit runs** ([`su`]) and the SP interface registers are
-//! modelled ([`sp`]). The **vector unit does not yet exist** — the 48-bit
-//! accumulator, the `VRCP`/`VRSQ` tables and the clamping rules are Sprint 2,
-//! so a COP2 instruction currently retires inertly.
+//! Both the **scalar unit** ([`su`]) and the full **8-lane vector unit** ([`vu`])
+//! run: the 48-bit accumulator, the `VRCP`/`VRSQ` reciprocal ROM tables, the
+//! clamping rules, and the whole vector load/store family are implemented, and
+//! the SP interface registers are modelled ([`sp`]). The RSP category of
+//! n64-systemtest passes `Failed: 0` (Phase 2).
 //!
 //! The RSP never borrows the rest of the machine. [`Rsp::tick`] *returns* what
 //! it wants done — a DMA to perform, an interrupt to raise — and
@@ -26,9 +27,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![allow(clippy::cast_possible_truncation, clippy::cast_lossless)]
-// Skeleton step methods are deliberately non-`const` and will use `&mut self`
-// once the SU/VU execution lands; accept the pedantic suggestions at module
-// level rather than salt every stub.
+// Several step methods take `&mut self` and are not all `const`; accept the
+// pedantic suggestions at module level rather than annotate each one.
 #![allow(
     clippy::missing_const_for_fn,
     clippy::unused_self,
@@ -46,11 +46,11 @@ pub mod vu;
 /// Size of RSP DMEM / IMEM (each 4 KiB).
 pub const SP_MEM_SIZE: usize = 4 * 1024;
 
-/// RSP architectural state (skeleton).
+/// RSP architectural state.
 ///
 /// Holds the SU register file, the VU vector register file + accumulator, the
 /// program counter into IMEM, the halted flag, and the DMEM/IMEM scratch. The
-/// execution engine itself is a roadmap TODO.
+/// execution engine (SU + VU) runs the microcode instruction stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rsp {
     /// Scalar unit: 32 × 32-bit general registers.

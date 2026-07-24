@@ -7,15 +7,18 @@ against at every rung.
 
 ## Where this project actually is
 
-**RustyN64 has cut four releases so far** — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
+**RustyN64 has cut seven releases so far** — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
 (Phase 1, the complete VR4300), `v0.3.0` "Microcode" (Phase 2, the LLE RSP + real graphics
-microcode emitting an RDP command list), and `v0.4.0` "Rasteriser" (Phase 3, the LLE RDP + VI —
-164 conformance vectors bit-matching Angrylion and a real ROM rendering a golden frame), followed
-by `v0.4.1`, a documentation-only patch that adds no new scope. Unlike
-the point at which RustySNES's plan was written — where a large amount of working emulation had
-accumulated inside one perpetual `[Unreleased]` section — this ladder was written *forwards* from
-an empty tree. The VR4300, RSP, and RDP now execute; the AI and cart boot are still LLE-shaped
-stubs (Phases 4–5).
+microcode emitting an RDP command list), `v0.4.0` "Rasteriser" (Phase 3, the LLE RDP + VI —
+164 conformance vectors bit-matching Angrylion and a real ROM rendering a golden frame) plus
+`v0.4.1`, a documentation-only patch; `v0.5.0` "Resonance" (Phase 4, AI audio — the real mixer
+microcode producing golden PCM on the RSP); `v0.6.0` "Cartridge" (Phase 5, cart boot + all four
+saves, HLE and real-PIF); and `v0.7.0` "Shell" (Phase 6, the frontend — the first playable
+release on homebrew). Unlike the point at which RustySNES's plan was written — where a large
+amount of working emulation had accumulated inside one perpetual `[Unreleased]` section — this
+ladder was written *forwards* from an empty tree. The VR4300, RSP, RDP, AI, and cart boot all
+execute; the remaining gap is the fully-integrated commercial-video path (ledger R-18) and the
+Phase-7 accuracy breadth.
 
 That difference matters for how this ladder should be read. RustySNES's plan was written
 *backwards* from a large body of shipped work that needed sequencing into tags. This one is
