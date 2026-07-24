@@ -75,6 +75,27 @@ how a fitted constant becomes a fudge factor.
 
 **Owner:** T-11-008.
 
+**Oracle status (2026-07-24, gap-analysis Stage C).** The measuring instrument for `M` (and
+C-29) is n64-systemtest's `timing` set, which is gated behind a `--features timing` build and
+is **not** in the committed base ROM. That build is now reproducible on this machine:
+
+```bash
+rustup toolchain install nightly-2022-07-10 --component rust-src   # the pinned toolchain
+cargo +stable install nust64                                        # the ROM packager
+cd ref-proj/n64-systemtest && cargo run --release --features timing # -> target/.../n64-systemtest.z64
+```
+
+The ROM builds cleanly (2.7 MB, header reports `timing=1`). **But the full timing suite does not
+terminate in the emulator**: it starts the base 917 tests and then a timing-dependent path hangs
+(no end-of-run summary at 12×10⁹ master ticks / ~350 s wall-clock, vs the base ROM finishing its
+917 in ~125 s). This is itself a signal — the emulator's cycle timing is wrong enough that a
+timing test loops — and it makes a clean baseline **chicken-and-egg**: the measurement the timing
+set would give is what the C-1/C-29/T-11-002/003 work needs, but that same work is what lets the
+suite run to completion. n64-systemtest's `timing` feature is monolithic (`timing = ["quick"]`),
+so a single-test curated ROM is not available to sidestep the hang. **Next step (Stage D):**
+diagnose the post-917 hang (likely a `Count`/`Compare` or interlock timing loop), then re-run for
+the baseline. The toolchain is no longer the blocker; the emulator's timing is.
+
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
 **2 PCycles, and the manual says so.** UM §4.7 (p. 114), the opening sentence of the section:
