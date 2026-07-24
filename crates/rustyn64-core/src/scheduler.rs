@@ -184,6 +184,11 @@ impl System {
         // the new zero — otherwise its delta baseline stays in the old timeline
         // and the VI interrupt is suppressed until the run catches up.
         self.bus.vi.reset_scan();
+        // Unlock the PIF ROM and clear the boot NMI freeze so a warm reset can
+        // re-run IPL1→IPL2 on the real-PIF path (the PIF unlocks its ROM on the
+        // reset NMI, `PIF-NUS.md` §Console Reset). No-op under HLE. `Cpu::new`
+        // above already put the PC back at the reset vector `0xBFC0_0000`.
+        self.bus.reset_boot_latches();
         // TODO(T-CORE-03): warm-reset the remaining Bus subsystems (RSP halt,
         // clear DMA) without zeroing RDRAM — see `docs/scheduler.md`.
     }
@@ -255,7 +260,11 @@ impl System {
     /// sees it. Reversing this changes which engine observes whose write first
     /// and is a determinism-visible change.
     fn step_due_here(&mut self) {
-        if Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER) {
+        // A failed real-PIF boot checksum freezes the CPU via NMI until power-off
+        // (`PIF-NUS.md`). Stop stepping it; the RCP keeps running, as on hardware.
+        if Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER)
+            && !self.bus.boot_nmi_halt()
+        {
             // `count_ticks` is derived from `master_ticks`, never incremented,
             // and the CPU turns it into the guest-writable `Count` (ADR 0006).
             let count_now = self.count_ticks();

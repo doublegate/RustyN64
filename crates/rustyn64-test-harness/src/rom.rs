@@ -300,6 +300,62 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), LoadError> {
     Ok(())
 }
 
+/// **Real-PIF boot a retail ROM** — the faithful path (off by default, local).
+///
+/// Where [`hle_boot`] *seeds* the post-IPL3 state and jumps straight into the
+/// cartridge's IPL3, this runs the console's **real IPL1 and IPL2** from the
+/// supplied PIF boot ROM: it installs that ROM at `0x1FC0_0000`, models the
+/// PIF-SM5's power-on hand-off (writes the CIC seed word the CIC would have
+/// relayed into PIF RAM `0x24`, and registers the CIC's IPL2 checksum so the PIF
+/// can adjudicate IPL2's verify command), and leaves the CPU at its reset vector
+/// `0xBFC0_0000`. The CPU then fetches IPL1 → copies IPL2 to IMEM → runs IPL2 →
+/// verifies the checksum → jumps into the cart's own IPL3, exactly as hardware
+/// does (`n64brew_wiki/markdown/PIF-NUS.md` §Console startup).
+///
+/// The PIF boot ROM is copyrighted and is **never committed**; a caller supplies
+/// a local dump. On a genuine cartridge the checksum matches and boot proceeds;
+/// a mismatch makes the PIF freeze the CPU via NMI ([`Bus::boot_nmi_halt`]).
+///
+/// [`Bus::boot_nmi_halt`]: rustyn64_core::Bus::boot_nmi_halt
+///
+/// # Errors
+/// [`LoadError::TooSmall`] if `rom` is shorter than a `0x1000` boot header or
+/// `pif_rom` is shorter than the PIF-ROM window.
+pub fn real_pif_boot(system: &mut System, rom: &[u8], pif_rom: &[u8]) -> Result<(), LoadError> {
+    if rom.len() < 0x1000 || pif_rom.len() < rustyn64_core::cart::pif::PIF_ROM_LEN {
+        return Err(LoadError::TooSmall);
+    }
+
+    let cart = rustyn64_core::cart::Cart::load(rom).map_err(|_| LoadError::TooSmall)?;
+    let cic = cart.header().cic;
+    system.bus.cart = cart;
+
+    // Install the real IPL1/IPL2 so the CPU fetches them from the reset vector.
+    system.bus.cart.pif_load_boot_rom(pif_rom);
+
+    // Model the PIF-SM5 power-on hand-off: after the CIC exchange, the PIF writes
+    // the boot-info word to PIF RAM 0x24-0x27, which IPL2 reads — byte 0x27 = the
+    // IPL2 seed (IPL2 feeds it to its checksum), byte 0x26 = the IPL3 seed. These
+    // come from [`CicBootSecrets`], NOT the legacy `cic_seed` word: cen64's seed
+    // packs 0x3F into the IPL2-seed byte for every CIC (harmless when the checksum
+    // is HLE'd, wrong when the real IPL2 consumes it), which N64brew corrects. The
+    // upper bits (region / reset-type / 64DD) stay 0 for a cold NTSC cart boot.
+    let secrets = cic.boot_secrets();
+    system.bus.cart.pif_write(0x24, 0x00);
+    system.bus.cart.pif_write(0x25, 0x00);
+    system.bus.cart.pif_write(0x26, secrets.ipl3_seed);
+    system.bus.cart.pif_write(0x27, secrets.ipl2_seed);
+    // Command byte 0x3F bit 0x80 is the PIF's "busy" gate IPL2 spins on; a zeroed
+    // PIF RAM already has it clear, so IPL2's startup sync passes immediately.
+
+    // Register the CIC's IPL2 checksum so the PIF adjudicates IPL2's verify.
+    system.bus.cart.pif_set_boot_checksum(secrets.ipl2_checksum);
+
+    // The CPU is already at 0xBFC0_0000 (System::new's reset vector); do NOT set
+    // the PC — that is the whole point of running the real boot ROM.
+    Ok(())
+}
+
 /// Find the ELF header's offset within a ROM image.
 ///
 /// The search starts at [`ROM_PAYLOAD_OFFSET`], **not** at zero. The first

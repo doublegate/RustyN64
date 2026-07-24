@@ -133,6 +133,12 @@ pub struct Bus {
     pi_write_countdown: u32,
     /// `SI_DRAM_ADDR` — the RDRAM side of a PIF-RAM SI DMA.
     si_dram_addr: u32,
+    /// Set when the PIF's real-PIF boot checksum verify fails: the real PIF
+    /// freezes the CPU via NMI until power-off (`PIF-NUS.md` §Console startup).
+    /// The scheduler stops stepping the CPU once this latches. Only the real-PIF
+    /// path can set it (a genuine ROM matches and never does); always `false`
+    /// under HLE and in normal operation.
+    boot_nmi_halt: bool,
     /// The RSP coprocessor.
     pub rsp: Rsp,
     /// The RDP rasterizer.
@@ -179,6 +185,7 @@ impl Default for Bus {
             pi_write_latch: 0,
             pi_write_countdown: 0,
             si_dram_addr: 0,
+            boot_nmi_halt: false,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rdram_hidden: None,
             rsp: Rsp::new(),
@@ -452,6 +459,11 @@ impl Bus {
         addr >= Self::SI_BASE && addr < 0x0490_0000
     }
 
+    /// Base of the PIF address space — the PIF **boot ROM** (IPL1/IPL2) window
+    /// `0x1FC0_0000..0x1FC0_07C0`, mapped only during the real-PIF boot; under HLE
+    /// no ROM is installed and it reads back 0 (the prior behaviour).
+    const PIF_ROM_BASE: u32 = 0x1FC0_0000;
+
     /// The 64-byte PIF RAM window (`0x1FC0_07C0..0x1FC0_0800`) — the tail of the
     /// PIF address space, where the CPU reads/writes the joybus command block.
     const PIF_RAM_BASE: u32 = 0x1FC0_07C0;
@@ -459,6 +471,34 @@ impl Bus {
     /// Is this a PIF-block address (`0x1FC0_0000..0x1FC0_0800` — ROM then RAM)?
     const fn is_pif(addr: u32) -> bool {
         addr >= 0x1FC0_0000 && addr < 0x1FC0_0800
+    }
+
+    /// PIF-RAM command-byte offset (the last byte, `0x3F`).
+    const PIF_CMD_BYTE: usize = 0x3F;
+
+    /// Let the PIF act on a reset-mode command when the CPU write touched the
+    /// command byte (real-PIF boot only; a no-op under HLE and in run mode).
+    /// Latches the NMI freeze if IPL2's checksum verify fails.
+    fn pif_boot_command_if_cmd(&mut self, off: usize) {
+        if off == Self::PIF_CMD_BYTE && self.cart.pif_boot_command() {
+            self.boot_nmi_halt = true;
+        }
+    }
+
+    /// Has the PIF frozen the CPU via NMI after a failed real-PIF boot checksum?
+    /// Always `false` under HLE, in run mode, and for a genuine ROM.
+    #[must_use]
+    pub const fn boot_nmi_halt(&self) -> bool {
+        self.boot_nmi_halt
+    }
+
+    /// Warm-reset the real-PIF boot latches so a reset restarts IPL1→IPL2: clear
+    /// the NMI freeze and unlock the PIF ROM (`PIF-NUS.md` §Console Reset). No-op
+    /// under HLE (nothing is latched). The CPU's reset vector is restored by
+    /// [`crate::System::reset`], which recreates the CPU at `0xBFC0_0000`.
+    pub const fn reset_boot_latches(&mut self) {
+        self.boot_nmi_halt = false;
+        self.cart.pif_reset_boot();
     }
 
     /// Read an SI register (`SI_DRAM_ADDR` / `SI_STATUS`; the PIF-address
@@ -852,7 +892,10 @@ impl CpuBus for Bus {
             return if addr >= Self::PIF_RAM_BASE {
                 self.cart.pif_read((addr - Self::PIF_RAM_BASE) as usize)
             } else {
-                0
+                // PIF boot ROM (IPL1/IPL2): mapped only on the real-PIF path; 0
+                // under HLE (no ROM installed).
+                self.cart
+                    .pif_boot_rom_read((addr - Self::PIF_ROM_BASE) as usize)
             };
         }
         if addr & !3 == Self::SP_PC {
@@ -941,7 +984,15 @@ impl CpuBus for Bus {
                     self.cart.pif_read(off + 3),
                 ]);
             }
-            return 0; // PIF ROM: unmapped under HLE boot.
+            // PIF boot ROM (IPL1/IPL2): mapped only on the real-PIF path (0 under
+            // HLE). This is the CPU instruction-fetch path from the reset vector.
+            let off = (addr - Self::PIF_ROM_BASE) as usize;
+            return u32::from_be_bytes([
+                self.cart.pif_boot_rom_read(off),
+                self.cart.pif_boot_rom_read(off + 1),
+                self.cart.pif_boot_rom_read(off + 2),
+                self.cart.pif_boot_rom_read(off + 3),
+            ]);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -990,8 +1041,9 @@ impl CpuBus for Bus {
         }
         if Self::is_pif(addr) {
             if addr >= Self::PIF_RAM_BASE {
-                self.cart
-                    .pif_write((addr - Self::PIF_RAM_BASE) as usize, val);
+                let off = (addr - Self::PIF_RAM_BASE) as usize;
+                self.cart.pif_write(off, val);
+                self.pif_boot_command_if_cmd(off);
             }
             return;
         }
@@ -1123,6 +1175,9 @@ impl CpuBus for Bus {
                 for (i, b) in val.to_be_bytes().into_iter().enumerate() {
                     self.cart.pif_write(off + i, b);
                 }
+                // IPL2 writes the command *word* at PIF-RAM 0x3C (`sw` to
+                // 0xBFC007FC), so a word store is the usual boot-command path.
+                self.pif_boot_command_if_cmd(off + 3);
             }
             return;
         }

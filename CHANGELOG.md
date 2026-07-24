@@ -42,6 +42,27 @@ characterised honestly: a commercial ROM **boots and executes** real code (hundr
 of retired instructions) but does not yet reach video — a cross-subsystem VI/RI/F3DEX gap ledgered
 as **R-18**, deferred to a later phase, and outside the Phase 5 cart boundary (ADR 0003).
 
+### Added — the real-PIF boot (Phase 5, Sprint 2)
+
+- **A faithful real-PIF boot** (`rustyn64-test-harness::rom::real_pif_boot`): the CPU executes
+  the console's **real IPL1 and IPL2** from the PIF boot ROM (mapped at `0x1FC0_0000`) from the
+  reset vector `0xBFC0_0000`, then jumps into the cartridge's own IPL3 — no state seeding. IPL1
+  copies IPL2 to IMEM; IPL2 locks the PIF ROM, has the PIF verify its computed IPL2 checksum, and
+  hands off to IPL3.
+- **CIC identification from the IPL3 CRC-32** (`rustyn64-cart::Cic::from_ipl3`, cen64's
+  fingerprint table) — the core reads only the ROM's own boot code, never a per-game DB
+  (ADR 0003/0004). The per-CIC IPL2/IPL3 seeds and 6-byte IPL2 checksum (`Cic::boot_secrets`,
+  N64brew *PIF-NUS* table) use the **corrected** IPL2-seed byte, which the real IPL2 consumes.
+- **The PIF-SM5 boot command handshake** (`Pif::boot_command`): the seed hand-off, the `0x10`
+  ROM lockout, and the `0x20`/`0x40` checksum acquire/ack/run, with an NMI freeze on a genuine
+  mismatch (`Bus::boot_nmi_halt`, gated in the scheduler). Modelled behaviourally from the
+  documented protocol; the SM5 firmware is not run and the 6105 X105 running challenge is not
+  modelled (neither is needed to boot). Ledgered as **C-33**.
+- **Validated locally:** every save-type representative (6102/6103/6105 CICs) boots through the
+  real IPL1→IPL2→IPL3 chain to game execution in RDRAM, with the IPL2 checksum matching the
+  hardware-documented CIC value — off by default, local-only, never CI-gated (the PIF ROM is
+  copyrighted and never committed). **n64-systemtest impact: none** (count stays **90**).
+
 ## [0.5.0] - 2026-07-24 "Resonance"
 
 Sound, from the buffer the RSP audio microcode produces (Phase 4). The Audio Interface is

@@ -70,26 +70,41 @@ Power-on runs a three-stage Initial Program Loader
    point (executing from `0xA4000040`). The standard 6102/7101 bootcode covers
    ~88% of games.
 
-RustyN64 **stubs the boot** by default (load ROM, set the RDRAM/CPU state IPL3
-would, apply the per-CIC entry-point adjustment, seed the PIF-RAM CIC-result byte
-the game polls), with an optional real-IPL path later
-(`ref-docs/research-report.md` §6, §Open questions 2).
+RustyN64 has **two boot paths** (ADR 0009), both implemented:
+
+- **HLE boot** (`rom::hle_boot`) — the default. Skips IPL1/IPL2, copies the cart's
+  real IPL3 into DMEM, seeds the post-IPL3 CPU/COP0/PI-DOM1 state and the CIC seed
+  word into PIF RAM `0x24`, and jumps to IPL3 at `0xA4000040`. Copyright-clean and
+  CI-able; the seeds are cited constants (accuracy-ledger **C-32**).
+- **Real-PIF boot** (`rom::real_pif_boot`) — faithful, **off by default, local-only,
+  never CI-gated** (it needs the copyrighted PIF ROM, never committed). Installs the
+  real IPL1/IPL2 at `0x1FC0_0000` and runs the CPU from the reset vector
+  `0xBFC0_0000`: IPL1 → IPL2 (checksum-verified against the CIC) → the cart's IPL3.
+  The PIF-SM5's boot behaviours (seed hand-off, ROM lockout, checksum acquire/run)
+  are modelled behaviourally from `PIF-NUS.md`; the SM5 firmware is not run
+  (accuracy-ledger **C-33**). Validated locally across 6102/6103/6105 CICs.
 
 ### PIF + CIC lockout
 
 Every cart carries a CIC-NUS chip; the PIF and CIC run a continuous seed/checksum
 handshake and the PIF can **halt the CPU** if the check fails
-(`ref-docs/research-report.md` §6). Variants and their effect:
+(`ref-docs/research-report.md` §6). The **CIC is identified from the cartridge
+IPL3's CRC-32** (`Cic::from_ipl3`, cen64's fingerprint table) — the core reads only
+the ROM's own boot code, never a per-game DB (ADR 0003/0004). Variants:
 
-| CIC (NTSC / PAL) | Notes |
-| --- | --- |
-| 6101 | early NTSC (Star Fox 64) |
-| 6102 / 7101 | the common variant (~88% of games) |
-| 6103 / 7103 | RAM entry point **+ `0x100000`** |
-| 6105 / 7105 | different challenge protocol (X105 ramp) |
-| 6106 / 7106 | RAM entry point **+ `0x200000`** |
+| CIC (NTSC / PAL) | IPL2 seed | Notes |
+| --- | --- | --- |
+| 6101 | `0x3F` | early NTSC (Star Fox 64); shares its seed with 7102 / iQue |
+| 6102 / 7101 | `0x3F` | the common variant (~88% of games); the table fallback |
+| 6103 / 7103 | `0x78` | RAM entry point **+ `0x100000`** |
+| 6105 / 7105 | `0x91` | different **running** challenge (X105); boot checksum is standard |
+| 6106 / 7106 | `0x85` | RAM entry point **+ `0x200000`** |
 
-The per-CIC entry-point offset must be applied when stubbing the boot.
+On the real-PIF path the PIF holds the CIC's 6-byte IPL2 checksum
+(`Cic::boot_secrets`, N64brew *PIF-NUS* table) and adjudicates IPL2's verify command
+(`Pif::boot_command`): a genuine match lets IPL2 reach IPL3; a mismatch freezes the
+CPU via NMI (`Bus::boot_nmi_halt`). The seeds use the **corrected** per-CIC IPL2-seed
+byte (not cen64's legacy all-`0x3F`), because the real IPL2 consumes it.
 
 ### SI / controllers / PIF RAM
 
