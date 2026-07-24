@@ -467,7 +467,7 @@ static const uint16_t TEX8_RAMP[8] = {
     0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u, // magenta, cyan, yellow, grey
 };
 static const uint32_t V11_TEX_TRI_16[] = {
-    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, AA off, dither off, persp off
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
     0x3C000000u, 0x00000041u, // Set Combine Mode: rgb_d=1 / a_d=1 (texel0 passthrough)
     0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
     0x35100400u, 0x00000030u, // Set Tile 0: 16-bit, line=2 (64-bit words), tmem=0, mask_s=3
@@ -481,6 +481,30 @@ static const uint32_t V11_TEX_TRI_16[] = {
     0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
     // S base 0, T base 0, W base 1.0; dx.S = 1.0 (one texel per pixel); rest 0.
     TEX_BLOCK(0, 0, 1, 1, 0, 0, 0, 0, 0),
+};
+
+// V22 (R-13 fix probe): tex_tri_16 but with Set Other Modes bi_lerp0 = 1 (bit 11,
+// 0x2F0000F0 -> 0x2F0008F0) and a CONSTANT coordinate (dsdx = 0, S = 0 -> texel 0
+// = red 0xF801). tex_tri_16 rendered black because bi_lerp0 = 0 selects the RDP's
+// YUV colour-convert path (tex.c), which with unset convert coefficients zeroes an
+// RGBA texel. With bi_lerp0 = 1 Angrylion does the normal RGBA fetch, so this
+// should render red -- a WORKING textured-triangle reference (the missing setup
+// that made every textured-triangle vector degenerate).
+static const uint32_t V22_TEX_TRI_FIXED_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: rgb_d=1 / a_d=1 (texel0 passthrough)
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000030u, // Set Tile 0: 16-bit, line 2, mask_s=3
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: SL=0 TL=0 SH=7 TH=0
+    0x34000000u, 0x0001C000u, // Load Tile 0
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // CONSTANT S/T = 0: every pixel samples texel 0 = red.
+    TEX_BLOCK(0, 0, 1, 0, 0, 0, 0, 0, 0),
 };
 
 // V12: a COPY-mode Texture Rectangle (16-bit) — the first texture path validated
@@ -846,6 +870,11 @@ int main(int argc, char **argv) {
     Vector v10 = {"shade_grad_tri_32", 0x2000, 0x1000, 8, 8, 4,
                   sizeof(V10_SHADE_GRAD_TRI_32) / 4, V10_SHADE_GRAD_TRI_32};
     if (emit_vector(&v10, out_dir)) return 1;
+
+    Vector v22 = {"tex_tri_fixed_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V22_TEX_TRI_FIXED_16) / 4, V22_TEX_TRI_FIXED_16,
+                  0x3000, 8, TEX8_RAMP};
+    if (emit_vector(&v22, out_dir)) return 1;
 
     Vector v11 = {"tex_tri_16", 0x2000, 0x1000, 8, 8, 2,
                   sizeof(V11_TEX_TRI_16) / 4, V11_TEX_TRI_16,
