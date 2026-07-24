@@ -169,6 +169,48 @@ impl EmuCore {
         true
     }
 
+    /// Load a **bare-metal homebrew** image for the wasm demo (no cartridge /
+    /// IPL3): copy the payload past the 4 KiB header into RDRAM and jump to the
+    /// header's entry point. A demo facility for our committed homebrew ROMs, not
+    /// the retail boot ([`EmuCore::load_rom`]) — those go through the real IPL3.
+    ///
+    /// Every read is length-checked, so a short or empty image degrades
+    /// gracefully rather than panicking: a `< 12`-byte image yields entry `0`, and
+    /// a `< 0x1000`-byte image copies an empty payload. This is deliberate — the
+    /// only caller passes a committed, compile-time [`include_bytes!`] ROM, so a
+    /// fallible signature would add error handling at a call site that cannot fail.
+    pub fn load_bare_metal_demo(&mut self, rom: &[u8]) {
+        self.system.reset();
+        // Entry point: header offset 0x08, big-endian, sign-extended to 64 bits.
+        let entry = rom.get(8..12).map_or(0, |b| {
+            let raw = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+            i64::from(raw.cast_signed()).cast_unsigned()
+        });
+        let payload = rom.get(0x1000..).unwrap_or(&[]);
+        // Real IPL3 copies ROM[0x1000..] into RDRAM at the header entry's physical
+        // offset (KSEG0/KSEG1 → `entry & 0x1FFF_FFFF`) and jumps there. Deriving
+        // the load destination from the entry keeps the copy and the jump
+        // consistent for any bare-metal image, not just ones that happen to link
+        // at 0x1000 (our demo ROMs do: entry 0x8000_1000 → offset 0x1000). The
+        // checked `get_mut` also makes an (impossibly) small RDRAM a no-op copy
+        // rather than a panic on the range slice.
+        let dst_off = (entry & 0x1FFF_FFFF) as usize;
+        if let Some(dst) = self.system.bus.rdram.get_mut(dst_off..) {
+            let n = payload.len().min(dst.len());
+            dst[..n].copy_from_slice(&payload[..n]);
+        }
+        self.system.cpu.set_pc(entry);
+        self.loaded = true;
+        self.frames = 0;
+    }
+
+    /// The most-recently produced frame's RGBA8 pixels and active dimensions,
+    /// for a caller that blits directly (e.g. the wasm canvas demo).
+    #[must_use]
+    pub fn frame_rgba(&self) -> (&[u8], u32, u32) {
+        (&self.frame.rgba, self.frame.w, self.frame.h)
+    }
+
     /// `true` once a ROM has been loaded.
     #[must_use]
     pub const fn is_loaded(&self) -> bool {
@@ -375,6 +417,39 @@ mod tests {
         let emu = EmuCore::new(0);
         assert_eq!(emu.frame().w, FB_DEFAULT_W);
         assert_eq!(emu.frame().h, FB_DEFAULT_H);
+    }
+
+    #[test]
+    fn bare_metal_demo_boots_and_frame_rgba_is_exact_size() {
+        // The committed licence-clean homebrew the wasm demo blits: it CPU-fills a
+        // framebuffer and programs the VI, so a frame renders through the LLE path.
+        // The VI becoming programmed (w,h > 0) transitively proves the loader set
+        // the entry PC and copied the payload — the code only runs if both are right.
+        const DEMO: &[u8] = include_bytes!("../../../tests/roms/homebrew/render_fill.z64");
+        let mut emu = EmuCore::new(0);
+        emu.load_bare_metal_demo(DEMO);
+        assert!(emu.is_loaded());
+        // Drive frames until the VI is configured and scans out a real picture.
+        for _ in 0..8 {
+            emu.run_frame();
+        }
+        let (rgba, w, h) = emu.frame_rgba();
+        assert!(w > 0 && h > 0, "demo ROM should program the VI");
+        // The invariant the wasm blit relies on: the backing buffer always holds
+        // at least the active w*h*4 bytes, so an exact-size ImageData never fails.
+        assert!(rgba.len() >= (w * h * 4) as usize);
+    }
+
+    #[test]
+    fn bare_metal_demo_survives_a_truncated_image() {
+        // A short image must degrade gracefully (no panic / no corruption): the
+        // loader length-checks every read, so this is a no-op-ish load, and a
+        // subsequent frame must still run without panicking.
+        let mut emu = EmuCore::new(0);
+        emu.load_bare_metal_demo(&[0u8; 4]);
+        assert!(emu.is_loaded());
+        emu.run_frame();
+        assert_eq!(emu.frame_count(), 1);
     }
 
     fn sample(l: i16, r: i16) -> StereoSample {

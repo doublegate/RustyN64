@@ -8,6 +8,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.7.0 "Shell"` — frontend integration (Phase 6).
 
+### Added — wasm browser entry point (Phase 6, Sprint 3)
+
+- **The emulator runs in a browser** (`src/wasm.rs`, `#[wasm_bindgen(start)]`,
+  built with `trunk` from `web/index.html`). A 2D-canvas demo boots a committed
+  licence-clean homebrew ROM (`render_fill.z64`), runs one emulated frame per
+  `requestAnimationFrame`, and blits the VI scan-out to a `<canvas>` through
+  `web-sys` `ImageData` (`EmuCore::frame_rgba`) — proving the LLE core runs and
+  renders in the browser. `EmuCore::load_bare_metal_demo` cold-loads the ROM
+  payload past its header for the demo path.
+- **Native host deps are gated off wasm** (`cpal`/`gilrs`/`rfd`/`directories`
+  behind `cfg(not(target_arch = "wasm32"))`); wasm-only deps (`wasm-bindgen`,
+  `console_error_panic_hook`, `web-sys`) behind `cfg(target_arch = "wasm32")`.
+  The `wasm-bindgen` pin (`=0.2.126`) is kept byte-identical to
+  `web/Trunk.toml`'s CLI pin (the `wasm-bindgen-pin` gate). The full
+  winit/wgpu/egui in-browser shell remains roadmap.
+
 ### Added — save-states, rewind, run-ahead (Phase 6, Sprint 2 UX)
 
 - **The frontend can save, load, rewind, and run-ahead** (ADR 0004, all

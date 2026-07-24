@@ -122,3 +122,6 @@ __pycache__/
 
 # Antigravity PR reviewer: large-diff on-disk handoff (transient, removed by the script).
 /.agy-review-work/
+
+# Trunk wasm build output (frontend browser demo)
+crates/rustyn64-frontend/web/dist/

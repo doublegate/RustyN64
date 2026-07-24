@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RustyN64 — browser demo</title>
+    <link data-trunk rel="rust" href="../Cargo.toml" data-target-name="rustyn64_frontend" data-cargo-no-default-features data-wasm-opt="z" />
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        background: #101014;
+        color: #d0d0d8;
+        font: 14px/1.5 system-ui, sans-serif;
+      }
+      h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.02em; }
+      p { margin: 0; opacity: 0.7; max-width: 44ch; text-align: center; }
+      #rustyn64-canvas {
+        image-rendering: pixelated;
+        width: 640px;
+        max-width: 90vw;
+        aspect-ratio: 4 / 3;
+        background: #000;
+        border: 1px solid #2a2a32;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>RustyN64 — cycle-accurate N64 emulator (browser demo)</h1>
+    <!-- The wasm `start` entry (src/wasm.rs) boots a committed homebrew ROM and
+         blits the VI scan-out here each animation frame. -->
+    <canvas id="rustyn64-canvas" width="320" height="240"></canvas>
+    <p>
+      A license-clean homebrew ROM running on the LLE core, rendered through the
+      VI scan-out. The full in-browser shell (menus, ROM loading, audio) is on the
+      roadmap.
+    </p>
+  </body>
+</html>
