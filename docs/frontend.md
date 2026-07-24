@@ -80,10 +80,24 @@ and a memory viewer over RDRAM — the N64 analogs of the RustyNES debugger pane
 
 ## Save-states / rewind / run-ahead
 
-Serialize the whole `System` (deterministic core state) for save-states; ring of
-snapshots for rewind; run-ahead snapshots+re-simulates to hide input latency. All
-orchestration is frontend-side; the core only needs to be (de)serializable and
-deterministic (ADR 0004).
+**Implemented** (frontend-side, ADR 0004). The whole `System` is serde-serialisable
+(the core just needs to be (de)serialisable + deterministic); the frontend picks
+the wire format (bincode) and owns all orchestration:
+
+- **Save-states** — `EmuCore::snapshot`/`restore` (`bincode` over `System`). The
+  cart ROM is `#[serde(skip)]`'d and re-attached on restore, so a blob is small
+  (RDRAM-dominated) and valid alongside the same ROM.
+- **Rewind** — `savestate::RewindRing`, a bounded ring that captures a snapshot
+  every N frames (config `RewindConfig`, capacity-bounded); `Backspace` rewinds
+  one step.
+- **Run-ahead** — `savestate::RunAhead` runs the emulation a few frames ahead on
+  the latest input, presents the speculative video frame, then restores to the
+  committed point (speculative audio discarded so it is never heard twice).
+
+The emu thread drives a `SaveStateCoordinator` (rewind capture + run-ahead +
+save/load) each frame; with rewind off and run-ahead 0 (the defaults) it is a
+plain `run_frame`, so output stays byte-identical. Hotkeys: **F2** save, **F4**
+load, **Backspace** rewind.
 
 ## WebAssembly
 

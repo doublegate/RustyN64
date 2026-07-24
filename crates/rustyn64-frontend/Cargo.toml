@@ -42,6 +42,10 @@ workspace = true
 
 [dependencies]
 rustyn64-core = { path = "../rustyn64-core", version = "0.6.0" }
+# Save-state (de)serialisation: the whole `System` is serde-serialisable, and the
+# frontend picks the wire format (compact, deterministic) — ADR 0004 puts
+# save-states, rewind, and run-ahead here, never in the core.
+bincode = "1"
 
 # Frontend stack. The egui trio must move together (egui-wgpu and egui-winit
 # both require an exactly-matching `egui`), and wgpu is NOT independent of them.

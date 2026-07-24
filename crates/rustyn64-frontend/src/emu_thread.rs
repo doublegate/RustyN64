@@ -7,9 +7,11 @@
 //! the region's target frame interval. The winit thread only reads the staged
 //! framebuffer (under a brief lock) and presents.
 //!
-//! Rate control + run-ahead orchestration belong HERE (frontend-side), never in
-//! the core — the determinism contract. The v0.1 loop is a simple wall-clock
-//! pacer; the resampler servo + run-ahead snapshots are roadmap.
+//! Rate control, save-states, rewind, and run-ahead orchestration belong HERE
+//! (frontend-side), never in the core — the determinism contract. The loop is a
+//! wall-clock pacer driving a [`SaveStateCoordinator`] (rewind capture +
+//! run-ahead + save/load), which is a plain `run_frame` when both are off. The
+//! resampler servo is still a roadmap refinement.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +23,7 @@ use crate::audio::AudioRing;
 use crate::config::Region;
 use crate::emu::EmuCore;
 use crate::input::SharedInput;
+use crate::savestate::{RewindConfig, RunAhead, SaveStateControls, SaveStateCoordinator};
 
 /// A handle to the running emulation thread. Dropping it signals the thread to
 /// stop and joins it.
@@ -46,6 +49,9 @@ impl EmuThread {
         input: Arc<SharedInput>,
         ring: Option<Arc<AudioRing>>,
         region: Region,
+        rewind: RewindConfig,
+        run_ahead: RunAhead,
+        controls: Arc<SaveStateControls>,
     ) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let run_flag = Arc::clone(&running);
@@ -55,15 +61,19 @@ impl EmuThread {
             .spawn(move || {
                 let frame_interval = Duration::from_secs_f64(1.0 / region.target_fps());
                 let mut next = Instant::now();
+                // Save-states, rewind, and run-ahead are driven here (frontend-side,
+                // ADR 0004); with rewind off and run-ahead 0 the coordinator is a
+                // plain `run_frame` + drain, so output stays byte-identical.
+                let mut coordinator = SaveStateCoordinator::new(rewind, run_ahead, controls);
                 while run_flag.load(Ordering::Relaxed) {
-                    // Latch input, run one frame, drain audio — under a brief lock.
+                    // Latch input, run one frame (coordinator handles rewind /
+                    // run-ahead / save / load), drain audio — under a brief lock.
                     let ports = input.load_all();
                     let audio = emu.lock().map_or_else(
                         |_| Vec::new(),
                         |mut core| {
                             core.set_controllers(ports);
-                            core.run_frame();
-                            core.drain_audio()
+                            coordinator.step(&mut core)
                         },
                     );
                     if let Some(ring) = ring.as_ref() {

@@ -65,6 +65,7 @@ pub mod emu_thread;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gfx;
 pub mod input;
+pub mod savestate;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ui_shell;
 

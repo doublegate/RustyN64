@@ -8,6 +8,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.7.0 "Shell"` — frontend integration (Phase 6).
 
+### Added — save-states, rewind, run-ahead (Phase 6, Sprint 2 UX)
+
+- **The frontend can save, load, rewind, and run-ahead** (ADR 0004, all
+  frontend-side and off by default). `EmuCore::snapshot`/`restore` (bincode over
+  `System`, re-attaching the ROM); `savestate::RewindRing` (a bounded ring
+  capturing a snapshot every N frames); `savestate::RunAhead` (present a
+  speculatively-advanced frame on the latest input, then restore the real
+  timeline, discarding speculative audio). The emu thread drives a
+  `SaveStateCoordinator` — a plain `run_frame` when both are off, so output stays
+  byte-identical. Hotkeys: **F2** save, **F4** load, **Backspace** rewind;
+  `Config` gains `rewind` + `run_ahead`.
+
 ### Added — save-state serialisation (Phase 6, Sprint 2)
 
 - **The whole machine state is now serde-serialisable** (ADR 0004): `serde`
