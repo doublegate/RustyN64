@@ -20,6 +20,12 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   **v1.0.0 = Phases 1–7 + engineering rungs; Phase 8 (reach) is v1.1.0 onward**
   (VERSION-PLAN §Post-v1.0). Corrected the `AGENTS.md` `test-roms` note (it now
   gates one probe).
+- **Correction:** the Stage A pass briefly recorded `SQRT` (COP1 funct 4) as the
+  one unwired operation, trusting a stale `decode.rs` comment. `SQRT` is in fact
+  fully implemented (`pipeline::fp_sqrt` → `softfloat::sqrt`, and
+  `the_n64_systemtest_sqrt_vectors_hold` passes) — **no COP1 operation is
+  unwired**. Fixed the `decode.rs` comment, `docs/STATUS.md`, and the stale MI
+  "masking register is a TODO" comment (the mask is implemented + tested).
 
 ## [0.7.0] - 2026-07-24 "Shell"
 

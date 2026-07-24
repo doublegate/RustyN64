@@ -38,8 +38,11 @@ const fn expand5(v5: u8) -> u8 {
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
-/// The RCP MIPS-interface (MI) interrupt lines. Each bit, when set and unmasked,
-/// drives the VR4300 IP2 interrupt. Skeleton — the masking register is a TODO.
+/// The RCP MIPS-interface (MI) interrupt lines.
+///
+/// Each bit, when set and unmasked (via [`RcpRegs::mi_mask`]), drives the VR4300
+/// IP2 interrupt. The mask register is implemented (`MI_MASK` set/clear pairs; it
+/// gates the IP2 line).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiInterrupt {
     /// SP (RSP) interrupt.
@@ -89,8 +92,12 @@ pub struct RcpRegs {
     pub mi_mask: MiInterrupt,
     /// `MI_MODE`'s storage bits (the repeat count and flags).
     pub mi_mode: u32,
-    // TODO(T-CORE-02): SP_STATUS/DMA regs, DPC regs, VI_* scanout regs,
-    // AI_* regs, PI_* DMA regs, SI_* joybus regs, RI_* RDRAM-controller regs.
+    // The SP, DP (DPC), VI, AI, PI, SI, and MI register blocks are all decoded
+    // (see the `is_*_register` methods + the read/write dispatch). Still undecoded:
+    // the RI RDRAM-controller block (`0x0470_0000`) and the RDRAM-config registers
+    // (`0x03F0_0000`). n64-systemtest has no RI/RDRAM-register group, so these have
+    // no suite oracle — they are validated by commercial-boot progress (ledger R-18)
+    // rather than pinned here, and land with that work.
 }
 
 /// Everything mutable lives here — the single owner.
