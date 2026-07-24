@@ -47,8 +47,13 @@ and the RDP) is documented in `docs/architecture.md` fact 2/3.
 - **PIF RAM** — 64 bytes at the top of the PIF block; the command block the CPU
   fills and the SI DMA executes.
 - **CIC** — the lockout variant + the seed/checksum handshake state.
-- **Saves** — the backing store sized by `SaveType`; FlashRAM additionally needs
-  a small command state machine (erase/write/status).
+- **Saves** — **implemented** (`crates/rustyn64-cart/src/save.rs`): the
+  `SaveDevice` enum backs SRAM (flat 32 KiB, PI DOM2), FlashRAM (the real
+  erase/program/status command machine over its CIR at `0x0801_0000`), EEPROM
+  4k/16k (flat, joybus 8-byte blocks), and the Controller Pak (flat 32 KiB,
+  joybus 32-byte blocks). SRAM/FlashRAM route through `Cart::pi_write`/`pi_read`
+  (the Bus's direct-I/O + DMA paths); the joybus backends are driven by the SI/PIF
+  module. Each round-trips byte-for-byte (unit tests).
 
 ## Behavior
 

@@ -23,8 +23,8 @@
 extern crate alloc;
 
 pub mod pi;
+pub mod save;
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 /// The shared RDRAM memory bus, as seen by chips that DMA into/out of main RAM.
@@ -226,18 +226,20 @@ pub trait Cartridge {
     }
 }
 
-/// PI cart + PIF/CIC + save state — the skeleton concrete board.
+/// PI cart + PIF/CIC + save state — the concrete board.
 #[derive(Debug, Default)]
 pub struct Cart {
     /// The normalized (big-endian) ROM image.
     rom: Vec<u8>,
     /// Parsed header (title / game code / save+CIC selection).
     header: RomHeader,
-    /// Battery-backed save backing store (sized by [`RomHeader::save_type`]).
-    save: Box<[u8]>,
-    // TODO(T-CART-01): PI DMA engine state, PIF RAM (64 bytes), CIC seed/state,
-    // FlashRAM mode machine — see `docs/cart.md`.
+    /// The active save backend (PI-bus SRAM/FlashRAM or joybus EEPROM/Pak).
+    save: save::SaveDevice,
+    // TODO(T-CART-01): PIF RAM (64 bytes), CIC seed/state — see `docs/cart.md`.
 }
+
+/// PI domain-1 base (the cartridge ROM window).
+const ROM_PI_BASE: u32 = 0x1000_0000;
 
 impl Cart {
     /// Construct an empty cart at power-on.
@@ -255,7 +257,7 @@ impl Cart {
         let format = RomFormat::detect(raw).ok_or(CartError::UnknownFormat)?;
         let rom = normalize_to_big_endian(raw, format);
         let header = RomHeader::parse(&rom)?;
-        let save = alloc::vec![0u8; header.save_type.size_bytes()].into_boxed_slice();
+        let save = save::SaveDevice::new(header.save_type);
         Ok(Self { rom, header, save })
     }
 
@@ -265,16 +267,32 @@ impl Cart {
         &self.header
     }
 
-    /// The save backing store (empty for [`SaveType::None`]).
+    /// The persistable save backing bytes (empty for [`SaveType::None`]).
     #[must_use]
-    pub const fn save(&self) -> &[u8] {
-        // `Box<[u8]>` derefs to `&[u8]`; expose read access for the frontend.
-        &self.save
+    pub fn save(&self) -> &[u8] {
+        self.save.backing()
+    }
+
+    /// Mutable access to the save device (the joybus module drives EEPROM/Pak).
+    #[must_use]
+    pub fn save_device_mut(&mut self) -> &mut save::SaveDevice {
+        &mut self.save
+    }
+
+    /// A whole-word PI write (direct-I/O or DMA). Routes the `FlashRAM` Command
+    /// Internal Register (`0x0801_0000`) as a 32-bit command; other DOM2-window
+    /// writes fall to the byte path. ROM-window writes are ignored (read-only).
+    pub fn pi_write_word(&mut self, addr: u32, word: u32) {
+        if addr & !3 == save::FLASH_CIR {
+            self.save.flash_cir(word);
+        } else {
+            for (i, b) in word.to_be_bytes().into_iter().enumerate() {
+                self.pi_write(addr.wrapping_add(i as u32), b);
+            }
+        }
     }
 
     /// Advance one unit of cart time (PI/SI DMA progress).
-    ///
-    /// Hot path: keep allocation-free.
     pub fn tick(&mut self) {
         // TODO(T-CART-01): step any in-flight PI/SI DMA transfer.
     }
@@ -282,9 +300,22 @@ impl Cart {
 
 impl Cartridge for Cart {
     fn pi_read(&mut self, addr: u32) -> u8 {
-        // Skeleton cart-ROM read at the PI domain-1 base (`$1000_0000`).
-        let off = (addr as usize).wrapping_sub(0x1000_0000);
+        // The DOM2 save window (SRAM / FlashRAM) takes priority; then the ROM
+        // window at domain 1; else the caller applies open bus.
+        if let Some(b) = self.save.pi_read(addr) {
+            return b;
+        }
+        let off = (addr as usize).wrapping_sub(ROM_PI_BASE as usize);
         self.rom.get(off).copied().unwrap_or(0)
+    }
+
+    fn pi_write(&mut self, addr: u32, val: u8) {
+        // Byte writes reach SRAM and the FlashRAM page buffer; the ROM is
+        // read-only (writes ignored). The FlashRAM CIR is word-only — see
+        // `pi_write_word`.
+        if (save::SAVE_PI_BASE..ROM_PI_BASE).contains(&addr) && addr & !3 != save::FLASH_CIR {
+            self.save.pi_write(addr, val);
+        }
     }
 
     fn save_type(&self) -> SaveType {

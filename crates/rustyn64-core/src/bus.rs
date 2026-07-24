@@ -985,6 +985,12 @@ impl CpuBus for Bus {
             if !self.pi_io_busy() {
                 self.pi_write_latch = val;
                 self.pi_write_countdown = Self::PI_WRITE_CYCLES;
+                // A direct-I/O write must reach a *writable* PI device: SRAM, the
+                // FlashRAM page buffer, or the FlashRAM Command register. The cart
+                // ignores writes to the read-only ROM window, so this is safe to
+                // call for any PI-bus address. (The latch above models the
+                // read-back-while-busy timing; this performs the actual store.)
+                self.cart.pi_write_word(addr, val);
             }
             return;
         }
@@ -1529,6 +1535,33 @@ mod pi_tests {
         assert!(
             !bus.rcp.mi_intr.pi,
             "and the MI line must follow -- otherwise IP2 stays high forever"
+        );
+    }
+
+    /// **A direct-I/O write to the DOM2 window persists to the SRAM save and
+    /// reads back.** SRAM lives on the PI bus at `0x0800_0000`; a `SW` there must
+    /// store into the save backing (the read-only ROM window ignores writes).
+    /// Reads during the write's busy window return the latch, so the test ticks
+    /// past `PI_WRITE_CYCLES` before reading the persisted value.
+    #[test]
+    fn a_direct_io_write_persists_to_the_sram_save() {
+        let mut bus = Bus::new();
+        *bus.cart.save_device_mut() =
+            rustyn64_cart::save::SaveDevice::new(rustyn64_cart::SaveType::Sram);
+
+        CpuBus::write_u32(&mut bus, 0x0800_1000, 0xDEAD_BEEF);
+        for _ in 0..Bus::PI_WRITE_CYCLES {
+            bus.pi_tick();
+        }
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, 0x0800_1000),
+            0xDEAD_BEEF,
+            "the SRAM store must survive the direct-I/O finalisation"
+        );
+        // And it is visible in the persistable backing (for the host save file).
+        assert_eq!(
+            &bus.cart.save()[0x1000..0x1004],
+            &0xDEAD_BEEFu32.to_be_bytes()
         );
     }
 

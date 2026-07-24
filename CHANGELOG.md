@@ -6,9 +6,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-The next rung is `v0.6.0 "Cartridge"` — boot and saves (Phase 5): the PI bus with domain
+Work toward `v0.6.0 "Cartridge"` — boot and saves (Phase 5): the PI bus with domain
 timing, the SI joybus, the CIC handshake, and the save backends
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+### Added — cart (Phase 5, Sprint 1)
+
+- **The PI BSD domain-timing registers** (`PI_BSD_DOM1/2` LAT/PWD/PGS/RLS,
+  `0x0460_0014`–`0x0460_0030`) store and read back with field-width masking.
+- **The four save backends** (`rustyn64-cart::save::SaveDevice`): SRAM (flat, PI DOM2),
+  **FlashRAM** as its real erase/program/status command machine (CIR at `0x0801_0000`;
+  program is bit-clearing AND, so a page must be erased first), EEPROM 4k/16k (joybus
+  8-byte blocks), and the Controller Pak (joybus 32-byte blocks). SRAM/FlashRAM are wired
+  through the Bus's direct-I/O + DMA PI paths; a direct-I/O write now persists to the save
+  rather than only latching. Each round-trips byte-for-byte.
 
 ## [0.5.0] - 2026-07-24 "Resonance"
 
