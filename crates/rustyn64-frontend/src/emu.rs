@@ -169,6 +169,33 @@ impl EmuCore {
         true
     }
 
+    /// Load a **bare-metal homebrew** image for the wasm demo (no cartridge /
+    /// IPL3): copy the payload past the 4 KiB header into RDRAM and jump to the
+    /// header's entry point. A demo facility for our committed homebrew ROMs, not
+    /// the retail boot ([`EmuCore::load_rom`]) — those go through the real IPL3.
+    pub fn load_bare_metal_demo(&mut self, rom: &[u8]) {
+        self.system.reset();
+        // Entry point: header offset 0x08, big-endian, sign-extended to 64 bits.
+        let entry = rom.get(8..12).map_or(0, |b| {
+            let raw = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+            i64::from(raw.cast_signed()).cast_unsigned()
+        });
+        let payload = rom.get(0x1000..).unwrap_or(&[]);
+        let cap = self.system.bus.rdram.len().saturating_sub(0x1000);
+        let n = payload.len().min(cap);
+        self.system.bus.rdram[0x1000..0x1000 + n].copy_from_slice(&payload[..n]);
+        self.system.cpu.set_pc(entry);
+        self.loaded = true;
+        self.frames = 0;
+    }
+
+    /// The most-recently produced frame's RGBA8 pixels and active dimensions,
+    /// for a caller that blits directly (e.g. the wasm canvas demo).
+    #[must_use]
+    pub fn frame_rgba(&self) -> (&[u8], u32, u32) {
+        (&self.frame.rgba, self.frame.w, self.frame.h)
+    }
+
     /// `true` once a ROM has been loaded.
     #[must_use]
     pub const fn is_loaded(&self) -> bool {

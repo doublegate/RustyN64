@@ -68,6 +68,8 @@ pub mod input;
 pub mod savestate;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ui_shell;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 /// Maximum N64 VI framebuffer width (640x480 hi-res mode). The blit allocates
 /// for this and uploads the active sub-rectangle each frame.

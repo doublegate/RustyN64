@@ -101,8 +101,25 @@ load, **Backspace** rewind.
 
 ## WebAssembly
 
-A wasm build (winit + wgpu canvas) mirrors the RustyNES web target. Host-specific
-non-determinism (resample, rate control) stays frontend-side there too.
+A wasm browser entry point ships in `src/wasm.rs` (`#[wasm_bindgen(start)]`),
+built with `trunk` from `web/index.html`. It is a **2D-canvas demo**, not the
+full shell: it boots a committed licence-clean homebrew ROM
+(`render_fill.z64`), runs one emulated frame per `requestAnimationFrame`, and
+blits the VI scan-out to a `<canvas>` through `web-sys`'s `ImageData`
+(`EmuCore::frame_rgba`). This proves the LLE core runs and renders in a browser.
+
+The full winit/wgpu/egui shell on wasm needs async wgpu init and the browser
+audio/input/file-picker APIs; it is the roadmap for the in-browser shell (the
+native host deps — `cpal`/`gilrs`/`rfd`/`directories` — are already gated to
+`cfg(not(target_arch = "wasm32"))`, and `wgpu` carries the `webgl` feature for
+that future). Host-specific non-determinism (resample, rate control) stays
+frontend-side there too.
+
+Build (`crates/rustyn64-frontend/web/`): `trunk build --release`. The
+`wasm-bindgen` **library** version in `Cargo.lock` and the `wasm_bindgen` **CLI**
+pin in `web/Trunk.toml` must be byte-identical (both `0.2.126`) — a mismatch
+fails `trunk build` and the `wasm-bindgen-pin` CI job while wasm clippy still
+passes.
 
 ## Edge cases and gotchas
 
