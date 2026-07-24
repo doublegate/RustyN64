@@ -20,6 +20,13 @@ timing, the SI joybus, the CIC handshake, and the save backends
   8-byte blocks), and the Controller Pak (joybus 32-byte blocks). SRAM/FlashRAM are wired
   through the Bus's direct-I/O + DMA PI paths; a direct-I/O write now persists to the save
   rather than only latching. Each round-trips byte-for-byte.
+- **The SI joybus subsystem** (`rustyn64-cart::pif` + the Bus SI block at `0x0480_0000`): the
+  64-byte PIF RAM, the SI registers (`SI_DRAM_ADDR`, `SI_PIF_AD_RD64B`/`WR64B`), the 64-byte
+  PIF↔RDRAM DMA, and the SI interrupt. The joybus frame executor runs `0x00`/`0xFF` info,
+  `0x01` controller state (from the Bus's four packed port words), `0x02`/`0x03` Controller-Pak
+  access (with the CRC8), and `0x04`/`0x05` EEPROM blocks. A controller read runs end to end —
+  frame staged in RDRAM → `WR64B` DMA to PIF → `RD64B` executes the handshakes → replies DMA'd
+  back — verified by a Bus integration test; EEPROM and Controller-Pak round-trip over joybus.
 
 ## [0.5.0] - 2026-07-24 "Resonance"
 

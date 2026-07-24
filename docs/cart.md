@@ -97,8 +97,12 @@ Controller polling and accessory I/O go through the 64-byte PIF RAM
 (`ref-docs/research-report.md` §6): the CPU fills it with a per-port command block
 (read controller, read/write Controller Pak, read/write EEPROM), triggers an SI
 DMA (`SI_PIF_AD_RD64B`/`WR64B`), the PIF runs the joybus transactions, writes
-results back, and the **SI interrupt** signals completion. The skeleton models the
-four controller ports as `[u32; 4]` latched state on the Bus.
+results back, and the **SI interrupt** signals completion. **Implemented**
+(`crates/rustyn64-cart/src/pif.rs` + the Bus SI block at `0x0480_0000`): the joybus
+frame parser runs `0x00`/`0xFF` info, `0x01` controller state (from the Bus's four
+packed `[u32; 4]` port words), `0x02`/`0x03` Controller-Pak accessory access (with
+the data CRC8), and `0x04`/`0x05` EEPROM blocks. `SI_PIF_AD_WR64B` DMAs the frame
+in; `SI_PIF_AD_RD64B` executes it and DMAs the replies out, raising `MI_INTR.si`.
 
 ### Save backends
 

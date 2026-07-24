@@ -2,7 +2,7 @@
 //!
 //! Two access paths (`docs/cart.md`, `ref-docs/research-report.md` §6):
 //! - **PI-bus (DOM2 @ `0x0800_0000`):** SRAM (flat) and FlashRAM (a command
-//!   state machine). Driven through [`SaveDevice::pi_read`]/[`pi_write`].
+//!   state machine). Driven through [`SaveDevice::pi_read`]/[`SaveDevice::pi_write`].
 //! - **Joybus (SI/PIF):** EEPROM 4k/16k and the Controller Pak (flat blocks).
 //!   Driven through [`SaveDevice::eeprom_read_block`] etc. by the joybus module.
 //!

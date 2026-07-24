@@ -23,6 +23,7 @@
 extern crate alloc;
 
 pub mod pi;
+pub mod pif;
 pub mod save;
 
 use alloc::vec::Vec;
@@ -235,7 +236,8 @@ pub struct Cart {
     header: RomHeader,
     /// The active save backend (PI-bus SRAM/FlashRAM or joybus EEPROM/Pak).
     save: save::SaveDevice,
-    // TODO(T-CART-01): PIF RAM (64 bytes), CIC seed/state — see `docs/cart.md`.
+    /// The PIF: its 64-byte RAM + the joybus executor for controllers/accessories.
+    pif: pif::Pif,
 }
 
 /// PI domain-1 base (the cartridge ROM window).
@@ -258,7 +260,44 @@ impl Cart {
         let rom = normalize_to_big_endian(raw, format);
         let header = RomHeader::parse(&rom)?;
         let save = save::SaveDevice::new(header.save_type);
-        Ok(Self { rom, header, save })
+        let mut pif = pif::Pif::new();
+        // A Controller-Pak cart advertises its pak on port 0 so the game's
+        // accessory probe (`0x00` info → status 1) finds it.
+        pif.set_pak_present(0, header.save_type == SaveType::ControllerPak);
+        Ok(Self {
+            rom,
+            header,
+            save,
+            pif,
+        })
+    }
+
+    /// The PIF's 64-byte RAM (the SI DMA copies it to/from RDRAM).
+    #[must_use]
+    pub const fn pif_ram(&self) -> &[u8; pif::PIF_RAM_LEN] {
+        self.pif.ram()
+    }
+
+    /// Load the whole PIF RAM (an SI 64-byte write from RDRAM).
+    pub fn pif_load(&mut self, bytes: &[u8; pif::PIF_RAM_LEN]) {
+        self.pif.load(bytes);
+    }
+
+    /// A CPU direct read/write byte of PIF RAM.
+    #[must_use]
+    pub fn pif_read(&self, off: usize) -> u8 {
+        self.pif.read(off)
+    }
+
+    /// Write a CPU direct byte of PIF RAM.
+    pub const fn pif_write(&mut self, off: usize, val: u8) {
+        self.pif.write(off, val);
+    }
+
+    /// Execute the pending joybus frame (on an SI read), using the four packed
+    /// controller port words and the cart's save backend.
+    pub fn pif_execute(&mut self, controllers: &[u32; 4]) {
+        self.pif.execute(controllers, &mut self.save);
     }
 
     /// The parsed cartridge header.
