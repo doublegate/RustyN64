@@ -3,14 +3,16 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.3.0 "Microcode"** — this commit is the v0.3.0 release; the
-`v0.3.0` tag is cut from it on merge to `main`.
+**Current release:** **v0.4.0 "Rasteriser"** — this commit is the v0.4.0 release; the
+`v0.4.0` tag is cut from it on merge to `main`.
 
-**Phases 1 and 2 are complete.** All four exit criteria (two per phase) are met, and each is an
+**Phases 1, 2, and 3 are complete.** All six exit criteria (two per phase) are met, and each is an
 oracle result with a committed runner rather than a self-assessment:
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
+| Conformance suite bit-matches Angrylion (**Phase 3** criterion 1) | **met** — 164 committed `.rvec` vectors (FILL / scissor / shaded / textured triangles, combiner, blender, dither, alpha-compare, coverage, copy texrects) replay byte-exact vs the Angrylion oracle; the seeded fuzzer found and fixed R-3 and R-15, and R-13 (textured triangles) is resolved | `cargo test -p rustyn64-test-harness --test rdp_conformance` |
+| A real ROM renders a stable golden frame (**Phase 3** criterion 2, T-33-006) | **met** — a committed license-clean homebrew ROM boots on the VR4300, CPU-fills a framebuffer, and the VI scans it out to a verified 32×24 golden frame, bit-identical across two boots | `cargo test -p rustyn64-test-harness --test real_rom_frame` |
 | n64-systemtest `Failed: 0` (CPU/COP0/TLB/COP1) | **met** — 0 of 917 tests fail in those categories; 93 fail suite-wide, all cart/PIF/MI/RDP (Phase 3+) | `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored` |
 | n64-systemtest `Failed: 0` (**RSP** category, Phase 2) | **met** — across 917 tests started, 0 RSP-prefixed failures (the suite-wide total, of which the RSP category was the bulk, fell from 413 to 93); the full VU ISA, load/store, reserved opcodes, `BREAK` semantics, and the DPC registers landed in #41–#44 | same runner; dump per-test to confirm none are `RSP`-prefixed |
 | Real graphics microcode emits an RDP command list (**Phase 2** criterion 2) | **met** — libdragon's combined RSPQ+`rdpq` blob boots, dispatches an `rdpq` overlay command to its resident handler, and emits an RDP command (bytes DMA'd to RDRAM + `DP_END` advanced through the DPC seam) | `cargo test -p rustyn64-test-harness --test microcode` |

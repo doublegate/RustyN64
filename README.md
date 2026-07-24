@@ -8,8 +8,8 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.3.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
-  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%202%20complete-brightgreen.svg" alt="Status: Phase 2 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.4.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
+  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%203%20complete-brightgreen.svg" alt="Status: Phase 3 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
 
@@ -22,19 +22,23 @@ ParaLLEl accuracy bar: one canonical 187.5 MHz master-clock timeline co-scheduli
 compute engines, a Bus that owns everything mutable, low-level emulation of the programmable
 coprocessors, and a hard determinism contract.
 
-> ### Status: Phase 2 complete (v0.3.0) — not yet playable
+> ### Status: Phase 3 complete (v0.4.0) — not yet playable
 >
-> **The VR4300 and the RSP both execute.** Phase 1 delivered the complete VR4300 — the canonical
-> master clock, the five-stage pipeline, the MIPS III integer set, COP0, the TLB, the exception
-> model, and a soft-float COP1 — verified at `n64-systemtest Failed: 0` on the CPU/COP0/TLB/COP1
-> categories and a 0-diff golden trace against ares. Phase 2 delivered the **LLE RSP**: the full
-> scalar and vector units, `n64-systemtest Failed: 0` on the RSP category, and libdragon's **real
-> `rdpq` microcode** booting and emitting an RDP command list through the DPC seam.
+> **The VR4300 and the RSP execute, and the RDP draws.** Phase 1 delivered the complete VR4300 —
+> the canonical master clock, the five-stage pipeline, the MIPS III integer set, COP0, the TLB, the
+> exception model, and a soft-float COP1 — verified at `n64-systemtest Failed: 0` on the
+> CPU/COP0/TLB/COP1 categories and a 0-diff golden trace against ares. Phase 2 delivered the **LLE
+> RSP**: the full scalar and vector units, `n64-systemtest Failed: 0` on the RSP category, and
+> libdragon's real `rdpq` microcode booting through the DPC seam. **Phase 3 delivered the LLE RDP
+> rasteriser and VI scan-out — the first picture:** FILL rectangles, the scissor, FILL / shaded /
+> textured triangles, the colour combiner, the blender, dither, alpha-compare and coverage all
+> bit-match Angrylion across **164 conformance vectors**, and a **real ROM boots on the VR4300 and
+> renders a committed golden frame** through the VI.
 >
-> **The rasteriser and beyond are still stubs.** The LLE RDP (it receives command lists but does
-> not yet rasterise), AI audio, and PI/SI boot do not draw or play anything; the `rustyn64` binary
-> opens a shell and presents a test pattern. Stubs are no-op `TODO(...)` bodies rather than
-> `todo!()` panics, so **a green test run does not mean a subsystem works**.
+> **AI audio and cartridge boot are still stubs.** Sound (Phase 4) and PI/SI + PIF/CIC boot and
+> saves (Phase 5) do not play or boot a commercial cartridge yet; the `rustyn64` binary opens a
+> shell. Stubs are no-op `TODO(...)` bodies rather than `todo!()` panics, so **a green test run does
+> not mean a subsystem works**.
 >
 > **[`docs/STATUS.md`](docs/STATUS.md) is the single source of truth.** Read it before assuming
 > any feature works.
@@ -90,7 +94,7 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 | **VR4300 FPU (COP1)** | **Working** — a soft-float core (control, register file, arithmetic, compares, conversions, enabled traps, `BC1`); the VR4300's no-subnormal + inverted-NaN errata reproduced, verified bit-exact against the native operators |
 | **LLE RSP (scalar + vector units)** | **Working** (Phase 2) — the full SU, the 8-lane VU (multiplies, accumulator, clip compares, reciprocals, the vector load/store family, reserved opcodes), SP DMA, and the halt/break/interrupt handshake; `n64-systemtest` RSP category `Failed: 0` |
 | **Real microcode + the RSP→RDP seam** | **Working** (Phase 2) — libdragon's real `rdpq` microcode boots and emits an RDP command list; RSP COP0 `c8`–`c15` route to the DPC register file (the CPU-visible seam) |
-| **LLE RDP + VI scan-out** | Partial — the DPC command-register file is wired (it receives command lists); the rasteriser + VI scan-out are Phase 3 |
+| **LLE RDP + VI scan-out** | **Working** (Phase 3) — FILL / scissor / shaded / textured triangles, the combiner, blender, dither, alpha-compare and coverage bit-match Angrylion across 164 conformance vectors; VI scans the framebuffer out and a real ROM renders a committed golden frame. Perspective/bilinear texturing and an RDP-driven real-ROM frame are later work |
 | **AI audio** | Stub — Phase 4 |
 | **PI/SI DMA, PIF/CIC boot, saves** | Partial — PI DMA runs (pulled forward for n64-systemtest); SI/joybus, PIF/CIC boot, and saves are Phase 5 |
 | **egui shell** | Partial — the shell, input map, and framebuffer plumbing are real; it presents a test pattern |
@@ -372,7 +376,7 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.3.0 "Microcode"** is the current release. Both of its Phase 2 cut criteria are **met** —
+**v0.4.0 "Rasteriser"** is the current release. Both of its Phase 3 cut criteria are **met** —
 `n64-systemtest Failed: 0` on the RSP category, and libdragon's real `rdpq` microcode booting and
 emitting a plausible RDP command list. Phase 1's criteria (n64-systemtest `Failed: 0` on
 CPU/COP0/TLB/COP1 and a 0-diff golden trace against ares) remain met. All are oracle results with
@@ -493,12 +497,12 @@ If you use RustyN64 in academic research, please cite:
   author  = {RustyN64 Contributors},
   title   = {RustyN64: A Cycle-Accurate Nintendo 64 Emulator in Rust},
   year    = {2026},
-  version = {0.3.0},
+  version = {0.4.0},
   url     = {https://github.com/doublegate/RustyN64},
   note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,
              a one-directional no_std chip-crate graph, and a hard determinism contract;
-             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.3.0 the VR4300 and the LLE
+             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.4.0 the VR4300 and the LLE
              RSP are complete and verified against n64-systemtest and an ares golden trace,
              and libdragon's rdpq microcode emits an RDP command list; the RDP rasteriser
              is not yet implemented}
