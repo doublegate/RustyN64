@@ -6,8 +6,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-The next rung is `v0.5.0 "Resonance"` — AI audio (Phase 4), from the buffer the RSP
-audio microcode already produces (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+The next rung is `v0.6.0 "Cartridge"` — boot and saves (Phase 5): the PI bus with domain
+timing, the SI joybus, the CIC handshake, and the save backends
+(see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+## [0.5.0] - 2026-07-24 "Resonance"
+
+Sound, from the buffer the RSP audio microcode produces (Phase 4). The Audio Interface is
+implemented; the real libdragon audio-mixer microcode runs its DSP on the LLE RSP and
+produces verified PCM; and the frontend resamples that stream to the host device. There is
+no per-game audio HLE (ADR 0002) — the same LLE RSP that runs graphics microcode mixes the
+audio, so audio "falls out free". All emulation stays byte-identical to v0.4.1 when no ROM
+programs the AI.
 
 ### Added — the Audio Interface (Phase 4, Sprint 1)
 

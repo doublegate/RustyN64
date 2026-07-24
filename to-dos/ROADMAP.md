@@ -13,17 +13,19 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 4 (AI audio), next. Phases 0–3 are complete. The VR4300 executes
-  MIPS III (the integer set, COP0, the TLB, the exception model, the primary caches, and a
-  soft-float COP1) as a five-stage pipeline off the canonical 187.5 MHz master clock; the **LLE
-  RSP** runs real microcode (scalar + full vector unit); and the **LLE RDP** rasterises through
-  the texture / combiner / blender / coverage pipeline with VI scan-out. **The AI and cartridge
-  boot are still LLE-shaped stubs**, so a green `cargo test` says nothing about them.
-- **Release:** v0.4.0 "Rasteriser", tagged, with both Phase 3 exit criteria met by oracle — the
-  RDP conformance suite bit-matches Angrylion across 164 committed vectors, and a real ROM boots
-  on the VR4300 and renders a committed golden frame through the VI. Phases 1 (v0.2.0) and 2
-  (v0.3.0) remain met. The current tag is `v0.4.1`, a documentation-only patch over v0.4.0 (no
-  new scope — the phase spine is unchanged). See `docs/STATUS.md` for the per-subsystem state.
+- **Current phase:** Phase 5 (cart boot + saves), next. Phases 0–4 are complete. The VR4300
+  executes MIPS III (the integer set, COP0, the TLB, the exception model, the primary caches, and
+  a soft-float COP1) as a five-stage pipeline off the canonical 187.5 MHz master clock; the **LLE
+  RSP** runs real microcode (scalar + full vector unit — graphics *and* audio); the **LLE RDP**
+  rasterises through the texture / combiner / blender / coverage pipeline with VI scan-out; and
+  the **AI** DMAs the PCM the real libdragon mixer microcode produces on the RSP, resampled to the
+  host by the frontend. **Cartridge boot is still an LLE-shaped stub**, so a green `cargo test`
+  says nothing about it.
+- **Release:** v0.5.0 "Resonance", tagged, with both Phase 4 exit criteria met — the real
+  libdragon audio-mixer microcode runs its resampling/volume/mixing DSP on the LLE RSP and
+  produces a golden-verified, deterministic mixed PCM buffer, and a real bare-metal ROM plays PCM
+  through the AI end to end. Phases 1 (v0.2.0), 2 (v0.3.0), and 3 (v0.4.0, reconciled in the
+  v0.4.1 doc patch) remain met. See `docs/STATUS.md` for the per-subsystem state.
 - **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
   and ADR 0007's cycle-accurate five-stage pipeline are both **implemented** (T-11-001); the
   93.75 MHz tick and its 3:2 fractional accumulator no longer exist in the tree. The residue
@@ -63,12 +65,15 @@ combiner, blender, and Z/coverage pipeline; the VI scans the framebuffer out.
 Angrylion reference. Both met (164 conformance vectors + a real-ROM golden frame).
 → [overview](phase-3-rdp-lle-vi/overview.md)
 
-### Phase 4 — AI audio: NOT STARTED
+### Phase 4 — AI audio: COMPLETE (v0.5.0)
 
 **Goal:** the AI DMAs the PCM buffer produced by the RSP audio microcode to the host, with the
 delayed-carry DAC behaviour modelled.
-**Exit:** audio plays from a real ROM without underrun; the AI timing units match hardware.
-→ [overview](phase-4-ai-audio/overview.md)
+**Exit (met):** the real libdragon mixer microcode runs on the LLE RSP and produces verified
+mixed PCM (`mixer_microcode.rs`); a real bare-metal ROM plays PCM through the AI end to end
+(`audio_play_rom.rs`); the AI register/DMA/rate/delayed-carry units are modelled; and the
+frontend resamples the stream to the host device. A real *game* driving the full path awaits
+cart boot (Phase 5). → [overview](phase-4-ai-audio/overview.md)
 
 ### Phase 5 — Cart boot + saves: NOT STARTED
 

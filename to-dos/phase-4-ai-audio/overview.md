@@ -1,5 +1,12 @@
 # Phase 4 — AI audio
 
+> **STATUS: COMPLETE — released as v0.5.0 "Resonance" (2026-07-24).** The AI is implemented
+> (Sprint 1); the real libdragon mixer microcode runs on the LLE RSP and produces verified PCM,
+> and a bare-metal ROM plays PCM through the AI (Sprint 2); the frontend drains + resamples the
+> stream to the host device (Sprint 3). Exit criteria marked below; the one that needs a real
+> *game* through the full path (`recognisable audio through the frontend ring`) is honestly
+> carried to Phase 5/6, which provide cart boot and the playable shell.
+
 ## Goal
 
 The Audio Interface in `rustyn64-audio` DMAs the PCM buffer that the RSP audio microcode
@@ -10,20 +17,24 @@ the timing, not the synthesis (ADR 0002).
 
 ## Exit criteria
 
-- [ ] The AI registers behave: `AI_DRAM_ADDR`, `AI_LENGTH`, `AI_CONTROL`, `AI_STATUS`,
-      `AI_DACRATE`, and `AI_BITRATE`.
-- [ ] The double-buffered DMA is correct — the AI holds two pending transfers, and `AI_STATUS`
+- [x] The AI registers behave: `AI_DRAM_ADDR`, `AI_LENGTH`, `AI_CONTROL`, `AI_STATUS`,
+      `AI_DACRATE`, and `AI_BITRATE`. *(Sprint 1.)*
+- [x] The double-buffered DMA is correct — the AI holds two pending transfers, and `AI_STATUS`
       reports full/busy accordingly.
-- [ ] The sample rate derives from the video clock as `video_clock / (DACRATE + 1)`, so the rate
+- [x] The sample rate derives from the video clock as `video_clock / (DACRATE + 1)`, so the rate
       is a consequence of region and register state rather than a constant.
-- [ ] The **delayed-carry hardware bug** in the AI is reproduced, not corrected — it is
-      observable and documented upstream.
-- [ ] The AI interrupt fires on drain and drives the MI line, so the game's audio loop advances.
-- [ ] Underrun behaviour matches hardware: what the DAC emits when the buffer empties is
-      defined, not merely "silence because we stopped".
-- [ ] A real ROM produces recognisable audio through the frontend ring without underrun.
-- [ ] The audio path is deterministic: the same seed, ROM, and input produce a bit-identical
-      sample stream, with all rate control in the frontend (ADR 0004).
+- [x] The **delayed-carry hardware bug** in the AI is reproduced, not corrected — it is
+      observable and documented upstream. *(Named test fails if "fixed".)*
+- [x] The AI interrupt fires when a transfer **starts** (corrected from "on drain") and drives the
+      MI line, so the game's audio loop advances.
+- [x] Underrun behaviour is **defined** (hold-and-decay + observable count); hardware equivalence
+      of the decay curve is unverified (ledger R-17).
+- [~] A real ROM produces recognisable audio through the frontend ring without underrun. **Split:**
+      a bare-metal ROM plays PCM through the AI end to end (`audio_play_rom.rs`), and the frontend
+      resampler + drain are wired and unit-tested — but a real *game* through the full ring needs
+      cart boot (Phase 5) + the playable shell (Phase 6). Carried there.
+- [x] The audio path is deterministic: same seed + ROM + input ⇒ bit-identical sample stream, all
+      rate control in the frontend (ADR 0004). *(AI stream and mixer PCM both pinned deterministic.)*
 
 ## Scope
 

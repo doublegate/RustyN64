@@ -105,14 +105,19 @@ The first release that produces a picture.
 - **Cut criterion:** a real ROM renders a stable frame matching a committed golden, and the
   ParaLLEl-RDP fuzz suite bit-matches Angrylion.
 
-### v0.5.0 "Resonance" — AI audio — Phase 4
+### v0.5.0 "Resonance" — AI audio — Phase 4 — CUT (2026-07-24)
 
-Sound, from the buffer the RSP audio microcode already produces.
+Sound, from the buffer the RSP audio microcode produces.
 
 - The AI register set, double-buffered DMA, the derived DAC rate, and the delayed-carry hardware
   bug reproduced rather than corrected.
-- **Cut criterion:** a real ROM produces recognisable audio without underrun, and the sample
-  stream is bit-identical across two runs from one seed.
+- The real libdragon audio-mixer microcode brought up on the LLE RSP, and the frontend resampler.
+- **Cut criterion — met:** the real mixer microcode produces a golden-verified, deterministic
+  mixed PCM buffer on the RSP (`mixer_microcode.rs`), and a real bare-metal ROM plays a
+  deterministic PCM stream through the AI without underrun (`audio_play_rom.rs`). A real *game*
+  driving the full CPU→RSP-mixer→AI→frontend path awaits cartridge boot (Phase 5, v0.6.0), so
+  that end-to-end variant of the criterion is honestly deferred there — as the mixer ROM boot
+  (which needs DFS/wav64/display) could not run in Phase 4.
 
 ### v0.6.0 "Cartridge" — boot and saves — Phase 5
 

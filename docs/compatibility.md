@@ -16,10 +16,16 @@ Region differences are timing/data, not separate cores
 62.5 MHz RCP) are region-independent; only the VI vertical/horizontal counters and
 the AI video-clock divisor differ:
 
-| Region | Field rate | Lines/field | Notes |
-| --- | --- | --- | --- |
-| NTSC | 60 Hz | ~262.5 | 14.31818 MHz crystal, 3.579545 MHz colour-burst |
-| PAL | 50 Hz | ~312.5 | PAL VI timing tables + AI video-clock divisor differ |
+| Region | Field rate | Lines/field | AI video clock | Notes |
+| --- | --- | --- | --- | --- |
+| NTSC | 60 Hz | ~262.5 | 48_681_812 Hz | 14.31818 MHz crystal, 3.579545 MHz colour-burst |
+| PAL | 50 Hz | ~312.5 | 49_656_530 Hz | PAL VI timing tables differ; the AI clock detunes the same DACRATE |
+
+The **AI video clock** (Hz) is the divisor for the DAC rate (`sample_rate =
+video_clock / (AI_DACRATE + 1)`); it is **implemented** as
+`rustyn64_audio::{VIDEO_CLOCK_NTSC, VIDEO_CLOCK_PAL}` (`Region::video_clock`) with
+documented provenance (project64/N64-Tests + the N64brew wiki — see `docs/audio.md`).
+The `Region` defaults to NTSC and is wired from the ROM region byte at load.
 
 Carry per-region constants (field rate, line count, VI timing, AI video-clock) in
 a small data table selected from the ROM region byte (`docs/cartridge-format.md`
