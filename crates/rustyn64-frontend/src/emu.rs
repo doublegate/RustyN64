@@ -15,6 +15,7 @@
 //! AI/RSP drain lands.
 
 use rustyn64_core::System;
+use rustyn64_core::audio::StereoSample;
 
 use crate::{FB_DEFAULT_H, FB_DEFAULT_W, FB_MAX_H, FB_MAX_W};
 
@@ -24,6 +25,9 @@ use crate::{FB_DEFAULT_H, FB_DEFAULT_W, FB_MAX_H, FB_MAX_W};
 /// cycle. The pacer is wall-clock authoritative, so this only sets how much the
 /// core advances per produced frame in the skeleton.
 const MASTER_TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
+
+/// The default host output rate (Hz) before a `cpal` device reports its own.
+const DEFAULT_OUTPUT_RATE: u32 = 48_000;
 
 /// A produced video frame: an RGBA8 buffer plus its active dimensions.
 ///
@@ -61,6 +65,13 @@ pub struct EmuCore {
     frame: Frame,
     /// Drained audio samples (interleaved stereo f32), consumed by the ring.
     audio: Vec<f32>,
+    /// The host device output rate (Hz) the emitted N64 stream is resampled to.
+    /// Set from the opened `cpal` device; defaults to 48 kHz.
+    output_rate: u32,
+    /// The linear resampler's carried fractional input position, so the N64→host
+    /// rate conversion stays continuous (click-free) across frames. Frontend-only
+    /// state — the deterministic core never sees it (ADR 0004).
+    resample_pos: f64,
     /// Produced-frame counter (drives the skeleton's test pattern).
     frames: u64,
     /// `true` while paused (the pacer keeps running, the core does not advance).
@@ -77,10 +88,28 @@ impl EmuCore {
             system: System::new(seed),
             frame: Frame::blank(),
             audio: Vec::new(),
+            output_rate: DEFAULT_OUTPUT_RATE,
+            resample_pos: 0.0,
             frames: 0,
             paused: false,
             loaded: false,
         }
+    }
+
+    /// Set the host device output sample rate (Hz) — the target the emitted N64
+    /// stream is resampled to. Called when the `cpal` device opens; a zero or
+    /// unchanged rate is ignored.
+    pub const fn set_output_rate(&mut self, rate: u32) {
+        if rate != 0 {
+            self.output_rate = rate;
+        }
+    }
+
+    /// Observed AI buffer underruns (starvations) — surfaced so the frontend /
+    /// harness can see them rather than the resampler silently concealing them.
+    #[must_use]
+    pub const fn audio_underruns(&self) -> u64 {
+        self.system.bus.audio.underruns()
     }
 
     /// Load a normalized ROM image into the cart.
@@ -196,11 +225,30 @@ impl EmuCore {
         }
     }
 
-    /// SKELETON: produce silence. Replaced by the AI/RSP audio drain when the
-    /// audio pipeline lands.
+    /// Drain the AI's emitted stereo stream and resample it from the N64 output
+    /// rate to the host device rate, staging interleaved f32 for the ring.
+    ///
+    /// The resample (a non-deterministic host-timing stage) lives here in the
+    /// frontend, never in the core (ADR 0004). When the AI is idle (no rate
+    /// programmed, or nothing emitted this frame) a frame of silence keeps the
+    /// ring fed without pretending audio played.
     fn produce_audio(&mut self) {
-        // ~800 stereo sample-pairs per 60 Hz frame at 48 kHz.
-        self.audio.resize(800 * 2, 0.0);
+        self.audio.clear();
+        let in_rate = self.system.bus.audio.sample_rate();
+        let samples = self.system.bus.drain_audio_samples();
+        if in_rate == 0 || samples.is_empty() {
+            // Idle: one frame of silence at the host rate (keeps the ring fed).
+            let pairs = (self.output_rate / 60) as usize;
+            self.audio.resize(pairs * 2, 0.0);
+            return;
+        }
+        resample_stereo(
+            &samples,
+            in_rate,
+            self.output_rate,
+            &mut self.resample_pos,
+            &mut self.audio,
+        );
     }
 }
 
@@ -214,6 +262,46 @@ const fn presentable_geometry(w: u32, h: u32) -> Option<(u32, u32)> {
     } else {
         Some((w, h))
     }
+}
+
+/// Linearly resample an interleaved stereo `i16` stream from `in_rate` to
+/// `out_rate`, appending interleaved `f32` (`[-1, 1)`) to `out`.
+///
+/// `pos` is the fractional input position carried across calls so the rate
+/// conversion is continuous — the remainder past the last consumed input sample
+/// is preserved for the next frame, which is what keeps successive frames
+/// click-free. This is the frontend's non-deterministic host-rate stage
+/// (ADR 0004); a windowed / servo-controlled resampler is a later refinement,
+/// so at a frame boundary the final output sample interpolates against the last
+/// input sample rather than the (not-yet-known) next frame's first sample.
+#[allow(
+    clippy::while_float,
+    reason = "walking a fractional input cursor is the natural resampler loop"
+)]
+fn resample_stereo(
+    input: &[StereoSample],
+    in_rate: u32,
+    out_rate: u32,
+    pos: &mut f64,
+    out: &mut Vec<f32>,
+) {
+    debug_assert!(in_rate > 0 && out_rate > 0, "rates must be non-zero");
+    // Input samples consumed per output sample.
+    let step = f64::from(in_rate) / f64::from(out_rate);
+    let len = input.len() as f64;
+    let to_f32 = |v: i16| f32::from(v) / 32_768.0;
+    let mut cursor = *pos;
+    while cursor < len {
+        let idx = cursor as usize;
+        let frac = (cursor - cursor.floor()) as f32;
+        let cur = input[idx];
+        let nxt = *input.get(idx + 1).unwrap_or(&cur);
+        out.push((to_f32(nxt.left) - to_f32(cur.left)).mul_add(frac, to_f32(cur.left)));
+        out.push((to_f32(nxt.right) - to_f32(cur.right)).mul_add(frac, to_f32(cur.right)));
+        cursor += step;
+    }
+    // Carry the fractional remainder into the next frame's input space.
+    *pos = cursor - len;
 }
 
 #[cfg(test)]
@@ -244,6 +332,83 @@ mod tests {
         let emu = EmuCore::new(0);
         assert_eq!(emu.frame().w, FB_DEFAULT_W);
         assert_eq!(emu.frame().h, FB_DEFAULT_H);
+    }
+
+    fn sample(l: i16, r: i16) -> StereoSample {
+        StereoSample { left: l, right: r }
+    }
+
+    #[test]
+    fn resample_identity_passes_samples_through() {
+        // Equal rates: each input sample maps to one output pair, i16→f32.
+        let input = [sample(16384, -16384), sample(-32768, 32767)];
+        let mut pos = 0.0;
+        let mut out = Vec::new();
+        resample_stereo(&input, 48_000, 48_000, &mut pos, &mut out);
+        assert_eq!(out.len(), 4, "two pairs in, two pairs out");
+        assert!((out[0] - 0.5).abs() < 1e-6);
+        assert!((out[1] + 0.5).abs() < 1e-6);
+        assert!((out[2] + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resample_downsamples_and_upsamples_by_rate() {
+        let input: Vec<_> = (0..100).map(|i| sample(i, i)).collect();
+        // Halving the rate yields ~half as many output pairs.
+        let mut pos = 0.0;
+        let mut down = Vec::new();
+        resample_stereo(&input, 48_000, 24_000, &mut pos, &mut down);
+        assert!(
+            (45..=55).contains(&(down.len() / 2)),
+            "downsample ~50 pairs, got {}",
+            down.len() / 2
+        );
+        // Doubling the rate yields ~twice as many.
+        let mut pos = 0.0;
+        let mut up = Vec::new();
+        resample_stereo(&input, 24_000, 48_000, &mut pos, &mut up);
+        assert!(
+            (195..=205).contains(&(up.len() / 2)),
+            "upsample ~200 pairs, got {}",
+            up.len() / 2
+        );
+    }
+
+    #[test]
+    fn resample_carries_position_across_frames() {
+        // Ten 30-sample frames must resample to essentially the same total as one
+        // 300-sample frame: the carried `pos` bounds the rounding error to O(1)
+        // overall, whereas a naive per-frame reset would round up every frame and
+        // over-produce by ~10 pairs. Non-integer ratio (32k→48k) so the fraction
+        // actually carries.
+        let mut pos = 0.0;
+        let mut split = Vec::new();
+        for f in 0..10 {
+            let frame: Vec<_> = (0..30).map(|i| sample(f * 30 + i, f * 30 + i)).collect();
+            resample_stereo(&frame, 32_000, 48_000, &mut pos, &mut split);
+        }
+        let whole: Vec<_> = (0..300).map(|i| sample(i, i)).collect();
+        let (mut pos1, mut one) = (0.0, Vec::new());
+        resample_stereo(&whole, 32_000, 48_000, &mut pos1, &mut one);
+
+        let diff = (split.len() as i64 - one.len() as i64).abs();
+        assert!(
+            diff <= 2,
+            "carried position keeps the rate stable across frames (diff={diff})"
+        );
+    }
+
+    #[test]
+    fn idle_produce_audio_is_silence_at_the_output_rate() {
+        // No ROM → the AI never programs a rate → a frame of host-rate silence.
+        let mut emu = EmuCore::new(0);
+        emu.set_output_rate(48_000);
+        emu.loaded = true;
+        emu.run_frame();
+        let a = emu.drain_audio();
+        assert_eq!(a.len(), (48_000 / 60) * 2, "one frame of stereo silence");
+        assert!(a.iter().all(|&s| s == 0.0), "idle output is silent");
+        assert_eq!(emu.audio_underruns(), 0, "no starvation while idle");
     }
 
     /// **The presented-geometry clamp accepts fits and rejects zero/oversized.**

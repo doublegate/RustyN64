@@ -118,7 +118,8 @@ so a resampler cannot silently paper over a genuine AI-rate error.
 ADPCM decode, envelopes, mixing, and resampling are **RSP microcode**, not this
 crate (`docs/rsp.md`, ADR 0002). The *host*-rate resample (N64 output rate → the
 `cpal` device rate) is a **frontend** stage, kept out of the deterministic core
-(`docs/frontend.md`, ADR 0004).
+(`docs/frontend.md`, ADR 0004) — implemented as `EmuCore::produce_audio` +
+`resample_stereo` (a carried-phase linear resampler), fed to the `cpal` ring.
 
 ## Edge cases and gotchas
 
