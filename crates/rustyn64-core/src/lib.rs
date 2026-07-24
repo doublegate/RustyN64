@@ -15,6 +15,7 @@
 
 extern crate alloc;
 
+pub mod boot;
 pub mod bus;
 pub mod scheduler;
 pub mod vi;

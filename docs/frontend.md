@@ -36,6 +36,18 @@ core stays a pure deterministic timeline.
 
 ## N64-specific bits (what differs from the NES shell)
 
+### Booting a ROM
+
+`EmuCore::load_rom` does not just insert the cartridge — it **boots** it via the
+core's retail boot (`rustyn64_core::boot::hle_boot`, ADR 0010): the HLE boot seeds
+the state IPL3 expects, copies the cart's real IPL3 into RSP DMEM, and jumps in, so
+the game actually runs. Without the boot the CPU sits at the PIF reset vector
+`0xBFC0_0000` fetching zeros. The retail boot lives in the core precisely so the
+frontend can share it with the harness; only the ELF direct-load (an n64-systemtest
+test shortcut) stays in the harness. A commercial ROM boots and executes to game
+code in RDRAM; reaching a rendered frame additionally needs the OS-boot runtime a
+game programs (VI/RI/F3DEX), tracked as accuracy-ledger **R-18**.
+
 ### Framebuffer
 
 The VI scans out **320×240 or 640×480** (NTSC), up to 32-bit color
