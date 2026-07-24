@@ -72,7 +72,12 @@ pub fn start() -> Result<(), JsValue> {
         request_frame(&win, raf.borrow().as_ref());
     }) as Box<dyn FnMut()>));
 
-    request_frame(&window, raf_kick.borrow().as_ref());
+    // Propagate a failure of the *initial* schedule (the in-loop reschedules have
+    // no caller to return to and log instead): if the very first RAF fails, the
+    // loop never starts, so surface it to `start()`'s caller.
+    if let Some(f) = raf_kick.borrow().as_ref() {
+        window.request_animation_frame(f.as_ref().unchecked_ref())?;
+    }
     Ok(())
 }
 
@@ -92,11 +97,19 @@ fn blit(ctx: &web_sys::CanvasRenderingContext2d, rgba: &[u8], w: u32, h: u32) {
         .and_then(|v| v.checked_mul(4))
         .map(|v| v as usize)
     else {
-        web_sys::console::error_1(&"blit: frame dimensions overflow w*h*4".into());
+        web_sys::console::error_1(
+            &format!("blit: frame dimensions overflow w*h*4 (w={w} h={h})").into(),
+        );
         return;
     };
     if rgba.len() < len {
-        web_sys::console::error_1(&"blit: scan-out buffer smaller than 4*w*h".into());
+        web_sys::console::error_1(
+            &format!(
+                "blit: scan-out buffer {} < 4*w*h={len} (w={w} h={h})",
+                rgba.len()
+            )
+            .into(),
+        );
         return;
     }
     match web_sys::ImageData::new_with_u8_clamped_array_and_sh(

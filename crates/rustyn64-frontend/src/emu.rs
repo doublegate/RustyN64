@@ -187,9 +187,12 @@ impl EmuCore {
             i64::from(raw.cast_signed()).cast_unsigned()
         });
         let payload = rom.get(0x1000..).unwrap_or(&[]);
-        let cap = self.system.bus.rdram.len().saturating_sub(0x1000);
-        let n = payload.len().min(cap);
-        self.system.bus.rdram[0x1000..0x1000 + n].copy_from_slice(&payload[..n]);
+        // Copy through a checked slice so an (impossibly) sub-4 KiB RDRAM can't
+        // panic the `[0x1000..]` range: real RDRAM is 4/8 MiB, so this always hits.
+        if let Some(dst) = self.system.bus.rdram.get_mut(0x1000..) {
+            let n = payload.len().min(dst.len());
+            dst[..n].copy_from_slice(&payload[..n]);
+        }
         self.system.cpu.set_pc(entry);
         self.loaded = true;
         self.frames = 0;
