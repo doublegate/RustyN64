@@ -14,7 +14,7 @@ signed stereo PCM into an RDRAM buffer), and the **Audio Interface (AI)** is a
 dumb DAC fed by DMA — it "does absolutely no conversion on the samples"
 (`ref-docs/research-report.md` §5; N64brew *Audio Interface*). So under LLE, audio
 is **emulated for free** by emulating the RSP (`docs/rsp.md`); this crate models
-only the AI side, and it is **implemented** as of Phase 4 (v0.5.0).
+only the AI side, and it is **implemented** as of Phase 4 (Sprint 1).
 
 ## Interfaces
 

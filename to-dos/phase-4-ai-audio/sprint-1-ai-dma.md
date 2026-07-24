@@ -32,7 +32,8 @@ and `AI_BITRATE` with hardware read/write semantics.
 ### T-41-002 — Double-buffered DMA and the drain interrupt
 
 **Description:** implement the two-deep transfer queue that drains RDRAM to the DAC, raising the
-AI interrupt through the MI when a buffer completes.
+AI interrupt through the MI when a buffer **starts** — both enqueue-into-idle and promotion of the
+queued buffer (not when a buffer completes; wiki §DMA).
 
 **Acceptance criteria:**
 
@@ -41,8 +42,9 @@ AI interrupt through the MI when a buffer completes.
       interrupt fires when a buffer *starts* (enqueue-into-idle, and promotion of the queued
       buffer), which is what lets the CPU refill during playback (wiki §DMA, ares). The CPU
       services it via the MI.
-- [x] Underrun behaviour is defined and matches hardware rather than being "we stopped".
-      *(Hold-and-decay + an observable `underruns()` counter; ledger R-17.)*
+- [x] Underrun behaviour is **defined as hold-and-decay** rather than being "we stopped";
+      hardware equivalence (the analogue decay curve) remains **unverified** (ledger R-17).
+      *(Deterministic integer decay + an observable `underruns()` counter.)*
 - [x] A synthetic buffer test drives the whole path without requiring working microcode.
 
 **Dependencies:** T-41-001

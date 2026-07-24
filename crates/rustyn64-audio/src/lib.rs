@@ -334,7 +334,11 @@ impl Audio {
     /// Re-derive [`Audio::sample_rate`] from the current video clock and
     /// `AI_DACRATE`.
     const fn recompute_rate(&mut self) {
-        self.sample_rate = if self.dac_rate == 0 && self.video_clock == 0 {
+        // Either operand being zero means "not meaningfully programmed → emit
+        // nothing". `video_clock` is never 0 in practice, so this is really the
+        // `dac_rate == 0` gate: without it, `set_region()` before `AI_DACRATE`
+        // is written would compute `video_clock / 1` ≈ 48 MHz and flood the sink.
+        self.sample_rate = if self.dac_rate == 0 || self.video_clock == 0 {
             0
         } else {
             self.video_clock / (self.dac_rate as u32 + 1)
@@ -491,6 +495,22 @@ mod tests {
         assert_eq!(ai.sample_rate(), VIDEO_CLOCK_NTSC / 1104);
         ai.set_region(Region::Pal);
         assert_eq!(ai.sample_rate(), VIDEO_CLOCK_PAL / 1104);
+    }
+
+    #[test]
+    fn set_region_before_dacrate_keeps_rate_zero() {
+        // Selecting a region before AI_DACRATE is programmed must NOT fabricate
+        // a ~48 MHz rate (the video clock divided by 1) — the DAC stays idle.
+        let mut ai = Audio::new();
+        ai.set_region(Region::Pal);
+        assert_eq!(
+            ai.sample_rate(),
+            0,
+            "no DACRATE → no rate, whatever the region"
+        );
+        let mut bus = TestBus::new(0x1000);
+        ai.tick(1_000_000, &mut bus);
+        assert!(ai.drain().is_empty(), "an unprogrammed DAC emits nothing");
     }
 
     #[test]
