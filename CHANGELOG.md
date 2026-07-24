@@ -9,6 +9,32 @@ All notable changes to RustyN64 are documented here. The format is based on
 The next rung is `v0.5.0 "Resonance"` — AI audio (Phase 4), from the buffer the RSP
 audio microcode already produces (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
 
+## [0.4.1] - 2026-07-23
+
+A documentation-only patch: the Phase 3 close left the planning and status docs describing
+a pre-v0.4.0 world. No code changed; the emulator behaves identically to v0.4.0.
+
+### Changed — phase-close documentation reconciliation
+
+- **`docs/STATUS.md`**: the RDP is no longer described as a stub — the "other chip crates are
+  LLE-shaped stubs" line, the DPC-registers row, and the `RDP LLE` roadmap row now record the
+  working rasteriser; the release-infrastructure lines record `v0.1.0`–`v0.4.0` as tagged and
+  released rather than "no tag has been cut".
+- **`README.md`**: the Compatibility & Accuracy table adds the two passing Phase 3 gates (RDP
+  conformance vs Angrylion, real-ROM golden frame) and reclassifies real-game visual goldens to
+  Phase 7; the Performance rationale, the "Current Release" next-rung (now `v0.5.0`), and the
+  Roadmap phase list (Phases 0–3 complete, Phase 4 next) are corrected.
+- **`to-dos/ROADMAP.md`**: the phase matrix marks Phase 2 (v0.3.0) and Phase 3 (v0.4.0) COMPLETE,
+  the Status block advances to Phase 4, and the v1.0.0 milestone records the tags cut so far.
+- **`to-dos/VERSION-PLAN.md`**: records four releases cut, with the RDP now executing.
+- **`docs/rdp.md`** and **`docs/architecture.md`**: the rasteriser / RDP `tick` are marked
+  implemented rather than stubbed.
+- **Phase 0–3 plan files**: completion banners added; Phase 2's nine met exit criteria and the
+  Sprint 1/Sprint 4 checklists are checked off (the SU/VU dual-issue timing box stays honestly
+  open as a ledgered deferral); Phase 0's golden-trace and release-tag boxes are marked resolved,
+  and the superseded ADR 0001 3:2-clock criterion is annotated; Phase 3's exit criteria and
+  Sprint 3 review checklist are reconciled with their ledgered residuals (R-9/R-10/R-11).
+
 ## [0.4.0] - 2026-07-23 "Rasteriser"
 
 The first release that produces a picture. The LLE RDP renders through the per-pixel

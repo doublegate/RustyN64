@@ -282,8 +282,13 @@ microcode already boots on the RSP and emits a command list, Phase 2).
 
 ## Sprint review checklist
 
-- [ ] All tickets checked off or explicitly deferred (with reason).
-- [ ] The ParaLLEl-RDP conformance suite bit-matches the reference (or every diff is ledgered).
-- [ ] A real ROM renders a stable frame matching a committed golden.
-- [ ] CHANGELOG.md updated; `docs/rdp.md` kept in sync; the phase-close release ceremony runs
+**Status: COMPLETE (v0.4.0 "Rasteriser", 2026-07-23).**
+
+- [x] All tickets checked off or explicitly deferred (with reason) — attribute interpolation
+      (R-9), exotic combiner inputs (R-10), and coverage/AA/alpha-compare/dither (R-11) are
+      ledgered residuals carried to Phase 7, not silent gaps.
+- [x] The ParaLLEl-RDP conformance suite bit-matches the reference — 164 committed `.rvec`
+      vectors replay byte-exact against Angrylion; the seeded fuzzer found and fixed R-3 and R-15.
+- [x] A real ROM renders a stable frame matching a committed golden (T-33-006).
+- [x] CHANGELOG.md updated; `docs/rdp.md` kept in sync; the phase-close release ceremony ran
       (VERSION-PLAN §v0.4.0 — the annotated tag + notes on `main`).

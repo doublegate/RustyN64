@@ -107,7 +107,9 @@ to the very next CPU step.
 
 ## Sprint review checklist
 
-- [ ] All tickets checked off or explicitly deferred (with reason).
-- [ ] The RSP boots an uploaded microcode image and halts under its own control.
-- [ ] CHANGELOG.md updated.
-- [ ] `docs/rsp.md` updated in the same change as the code it describes.
+**Status: COMPLETE (v0.3.0).**
+
+- [x] All tickets checked off or explicitly deferred (with reason).
+- [x] The RSP boots an uploaded microcode image and halts under its own control.
+- [x] CHANGELOG.md updated.
+- [x] `docs/rsp.md` updated in the same change as the code it describes.

@@ -8,7 +8,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.4.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.4.1-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
   <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%203%20complete-brightgreen.svg" alt="Status: Phase 3 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
@@ -142,8 +142,8 @@ retrofitted:
 - **`n64-systemtest`** (MIT, committed) — the strict CPU/COP0/TLB/RSP gate. Self-judging: it
   reports `Failed: 0` itself, so no image comparison is needed. Built from source, since upstream
   publishes no prebuilt ROM. It now reports `Failed: 0` on both the CPU/COP0/TLB/COP1 and the RSP
-  categories (Phase 1 and Phase 2 exit criteria); the remaining suite-wide failures are cart/PIF
-  (Phase 5) and the RDP rasteriser (Phase 3).
+  categories (Phase 1 and Phase 2 exit criteria); the remaining suite-wide failures are
+  cart/PIF/MI (Phase 5) and the residual RDP-category assertions.
 - **External corpora** (gitignored) — PeterLemon/krom (196 ROMs), Dillon's n64-tests (26), the
   240p Test Suite (built from source in a container), and a 66-ROM commercial regression corpus
   organised by save type, with save types resolved by MD5 against the mupen64plus catalogue
@@ -283,9 +283,9 @@ to-dos/         ROADMAP.md plus per-phase overviews and sprint ticket breakdowns
 
 ## Compatibility and Accuracy
 
-**The CPU and RSP gates report real numbers; the rest do not yet.** The distinction that matters
-here is that "oracle available" means the ROM is on disk — it says nothing about whether the
-emulator can execute it.
+**The CPU, RSP, and RDP gates report real numbers; the accuracy-breadth work does not yet.** The
+distinction that matters here is that "oracle available" means the ROM is on disk — it says
+nothing about whether the emulator can execute it.
 
 | Gate | Oracle available? | Status |
 | --- | --- | --- |
@@ -295,9 +295,10 @@ emulator can execute it.
 | n64-systemtest `Failed: 0` (RSP category) | **Yes** — ROM committed | **Passing** — Phase 2 exit criterion |
 | CPU golden-log 0-diff (ares trace) | **Yes** — committed | **Passing** — Phase 1 exit criterion |
 | Real microcode emits an RDP command list | **Yes** — libdragon `rdpq`, committed | **Passing** — Phase 2 exit criterion |
-| ParaLLEl-RDP fuzz suite (RDP bit-exactness) | Source cloned, suite not set up | Not started (Phase 3) |
+| RDP conformance vs Angrylion (bit-exactness) | **Yes** — 164 committed `.rvec` vectors | **Passing** — Phase 3 exit criterion |
+| Real ROM renders a golden frame (T-33-006) | **Yes** — license-clean homebrew ROM committed | **Passing** — Phase 3 exit criterion |
 | Accuracy battery | Probes not authored | 0% (battery stubbed) |
-| Visual golden / screenshots | **Yes** — krom + 240p + commercial staged | Not started (Phase 3) |
+| Visual golden / screenshots (real-game frames) | **Yes** — krom + 240p + commercial staged | Not started (Phase 7) |
 
 Where the hardware documentation is silent, or contradicts itself, the project records that
 rather than guessing quietly: [`docs/accuracy-ledger.md`](docs/accuracy-ledger.md) tracks measured
@@ -315,11 +316,11 @@ being evidence.
 
 ## Performance
 
-**No headline performance measurements are published yet**, and any would be premature while the
-rasteriser and scan-out are stubbed. The strategy is recorded in
-[`docs/performance.md`](docs/performance.md): correctness first, then accelerate validated layers.
-The software reference RDP lands before any wgpu-compute backend, and stays the oracle that
-backend is graded against (ADR 0002).
+**No headline performance measurements are published yet**, and any would be premature while
+whole subsystems (AI audio, cart boot) are still stubbed and no full-speed run path exists. The
+strategy is recorded in [`docs/performance.md`](docs/performance.md): correctness first, then
+accelerate validated layers. The software reference RDP — now the working rasteriser — lands
+before any wgpu-compute backend, and stays the oracle that backend is graded against (ADR 0002).
 
 ---
 
@@ -390,8 +391,9 @@ cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
 cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored
 ```
 
-The next rung is **v0.4.0 "Rasteriser"** (the LLE RDP and VI — first picture). The release ladder
-is [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
+The next rung is **v0.5.0 "Resonance"** (Phase 4 — AI audio: the interface and its timing, with
+the audio microcode already running on the LLE RSP). The release ladder is
+[`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
 [`docs/release-notes/`](docs/release-notes/).
 
 - **Authoritative current state:** [`docs/STATUS.md`](docs/STATUS.md).
@@ -399,7 +401,7 @@ is [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
 
 ## Roadmap
 
-Nine phases. **Phases 0–2 are complete**; **Phase 3 is next**:
+Nine phases. **Phases 0–3 are complete**; **Phase 4 is next**:
 
 - **Phase 0 — Foundation** *(complete)* — workspace, CI, the Bus and scheduler, and the acquired
   and licence-classified reference corpus.
@@ -409,7 +411,8 @@ Nine phases. **Phases 0–2 are complete**; **Phase 3 is next**:
 - **Phase 2 — RSP LLE** *(complete, v0.3.0)* — the scalar and vector units running real microcode;
   n64-systemtest `Failed: 0` on the RSP category, and libdragon's `rdpq` microcode emitting an RDP
   command list through the DPC seam.
-- **Phase 3 — RDP LLE + VI** *(next)* — the software reference rasteriser and scan-out; first picture.
+- **Phase 3 — RDP LLE + VI** *(complete, v0.4.0)* — the software reference rasteriser and scan-out;
+  first picture. 164 conformance vectors bit-match Angrylion and a real ROM renders a golden frame.
 - **Phase 4 — AI audio** — the interface and its timing; the microcode already runs on the RSP.
 - **Phase 5 — Cart boot + saves** — PI, SI/joybus, CIC, and all four save backends.
 - **Phase 6 — Frontend integration** — real scan-out, audio, and input; save-states and the wasm
@@ -499,7 +502,7 @@ If you use RustyN64 in academic research, please cite:
   author  = {RustyN64 Contributors},
   title   = {RustyN64: A Cycle-Accurate Nintendo 64 Emulator in Rust},
   year    = {2026},
-  version = {0.4.0},
+  version = {0.4.1},
   url     = {https://github.com/doublegate/RustyN64},
   note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,

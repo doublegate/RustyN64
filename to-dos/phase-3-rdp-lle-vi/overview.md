@@ -13,25 +13,36 @@ Phase 7 work, validated *against* this renderer, never replacing it (ADR 0002).
 
 ## Exit criteria
 
-- [ ] The command decoder handles the full opcode map 0x00-0x3F, including the fill and shaded
+**Status: COMPLETE — closed on the two-part v0.4.0 cut criterion (2026-07-23).** The RDP
+rasterises through the texture / combiner / blender / coverage pipeline with VI scan-out, proven
+bit-exact against Angrylion. Three granular items carry ledgered residuals into Phase 7 rather
+than being silently dropped: attribute interpolation (R-9), exotic combiner inputs (R-10), and
+the coverage / AA / alpha-compare / dither paths (R-11). `docs/STATUS.md` is authoritative.
+
+- [x] The command decoder handles the full opcode map 0x00-0x3F, including the fill and shaded
       triangle forms (0x08-0x0F), the texture rectangles (0x24/0x25), and the fill rectangle
       (0x36).
-- [ ] All five pipeline modes are implemented: 1-cycle, 2-cycle, fill, copy, and load.
-- [ ] The colour combiner implements the full mux (`Set Combine Mode`, 0x3C) for both cycles.
-- [ ] The blender implements the `Set Other Modes` (0x2F) blend equation, including coverage,
-      alpha compare, and the dither modes.
-- [ ] Texture state is exact: `Set Tile` (0x35), `Set Tile Size` (0x32), `Load Tile` (0x34),
+- [x] All five pipeline modes are implemented: 1-cycle, 2-cycle, fill, copy, and load.
+- [~] The colour combiner implements the full mux (`Set Combine Mode`, 0x3C) for both cycles —
+      the common inputs are wired and value-tested; the exotic inputs (noise, LOD frac,
+      key/convert) are deferred to ledger **R-10**.
+- [~] The blender implements the `Set Other Modes` (0x2F) blend equation — the divide-free
+      `(P*a0 + M*(a1+1))>>5` is value-exact; coverage, alpha compare, and the dither modes are
+      deferred to ledger **R-11**.
+- [x] Texture state is exact: `Set Tile` (0x35), `Set Tile Size` (0x32), `Load Tile` (0x34),
       `Load Block` (0x33), and `Load TLUT` (0x30), with TMEM addressing and all texel formats.
-- [ ] The synchronisation commands behave: `Sync Load` (0x26), `Sync Pipe` (0x27),
+- [x] The synchronisation commands behave: `Sync Load` (0x26), `Sync Pipe` (0x27),
       `Sync Tile` (0x28), and `Sync Full` (0x29) — the last raising the DP interrupt.
-- [ ] Z-buffering and coverage are correct, including the scissor rectangle (0x2D) and primitive
-      depth (0x2E).
-- [ ] The RDP hazards documented upstream are respected, rather than papered over with syncs.
-- [ ] The VI scans out correctly: `VI_CTRL`, `VI_ORIGIN`, `VI_WIDTH`, `VI_V_INTR`,
-      `VI_V_CURRENT`, `VI_H_VIDEO`/`VI_V_VIDEO`, and `VI_X_SCALE`/`VI_Y_SCALE`, raising the VI
-      interrupt at the programmed scanline.
-- [ ] The ParaLLEl-RDP fuzz suite bit-matches the Angrylion reference across its ~150 tests.
-- [ ] A real ROM renders a stable, correct frame, verified against a committed golden.
+- [~] Z-buffering and coverage are correct, including the scissor rectangle (0x2D) and primitive
+      depth (0x2E) — the scissor clip (R-15) and primitive depth are done; the coverage
+      accumulator is part of the R-11 residual.
+- [~] The RDP hazards documented upstream are respected, rather than papered over with syncs —
+      revisited with the coverage/AA path in Phase 7.
+- [x] The VI scans out correctly: `VI_CTRL`, `VI_ORIGIN`, `VI_WIDTH`, and the scale registers,
+      driving the committed real-ROM golden frame; the full interrupt-at-scanline path is
+      exercised in Phase 6 frontend integration.
+- [x] The ParaLLEl-RDP fuzz suite bit-matches the Angrylion reference — 164 committed vectors.
+- [x] A real ROM renders a stable, correct frame, verified against a committed golden (T-33-006).
 
 ## Scope
 
@@ -60,7 +71,8 @@ Out-of-scope:
   **Status:** COMPLETE (2026-07-23) — the first textured picture.
 - [Sprint 3 — The colour combiner, the blender, Z/coverage, and the fuzz 0-diff](sprint-3-pipeline.md) —
   the per-pixel pipeline and the ParaLLEl-RDP conformance bit-exactness gate (the v0.4.0 cut criterion).
-  **Status:** planned; in progress.
+  **Status:** COMPLETE (2026-07-23) — 164 conformance vectors bit-match Angrylion and a real ROM
+  renders a golden frame; the combiner/blender residuals (R-9/R-10/R-11) are ledgered for Phase 7.
 
 ## Dependencies
 

@@ -62,8 +62,11 @@ gate.
   `D*` forms and the unaligned `LWL`/`LWR`/`LDL`/`LDR` family), the documented
   errata reproduced-not-corrected, and a `SysAD` transaction model that cannot
   complete inside its address phase.
-- The other chip crates: register-file / state skeletons with `tick` methods
-  that are **LLE-shaped stubs** (decode/execute marked TODO).
+- `rustyn64-rsp` and `rustyn64-rdp` **execute**: the RSP runs real microcode
+  (scalar + full vector unit) and the RDP rasterises the command list through the
+  texture / combiner / blender / coverage pipeline with VI scan-out. The remaining
+  chip crate, `rustyn64-audio` (AI), is still a **LLE-shaped stub** (decode/execute
+  marked TODO).
 - `rustyn64-cart`: real ROM-format detection + byte-order normalization
   (`.z64`/`.n64`/`.v64`), header parse, and the `SaveType`/`Cic`/`RomFormat`
   enums. PI/SI DMA, CIC handshake, and FlashRAM are stubbed.
@@ -83,7 +86,7 @@ actually stands.
 | Repository | `github.com/doublegate/RustyN64`, **public**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
 | CI | **Green, verified.** All jobs pass on `ubuntu`/`macOS`/`windows`: `setup`, `test` (fmt + clippy + test + `no_std`), `rustdoc` (`-D warnings`, an independent job so a doc break cannot ride in behind a green test job), `test-roms`, `no-commercial-roms`, `wasm-bindgen-pin`. Split light/full: the `test-roms` job and the macOS/Windows matrix run only on push-to-main, the merge queue, `release/*` PRs, dispatch, and a weekly cron. |
 | Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
-| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Never yet exercised — no tag has been cut. |
+| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0`–`v0.4.0` are all tagged and released. |
 | wasm | Compiles for `wasm32-unknown-unknown`, but there is **no browser entry point** (no `wasm-bindgen` dep, no `#[wasm_bindgen(start)]`, no `index.html`), so `trunk build` cannot produce a demo. Phase 6. |
 | Hardware reference | `n64brew_wiki/` — offline mirror of the N64brew Wiki (324 pages, 96 media, gitignored). Rebuild with `scripts/mirror_n64brew_wiki.py`. |
 | Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licences vary and several forbid copying** — read `ref-proj/README.md` first. |
@@ -127,7 +130,7 @@ is staged only — an oracle on disk that no gate executes yet.
 | VR4300 I/D caches | **done** (T-11-003) — tags, data, all `CACHE` ops; DMA coherency outstanding | Phase 1 |
 | RSP scalar unit + SP interface | **implemented** (T-21-002/004/005) — the SU executes, `BREAK` halts (incl. in a taken branch's delay slot), DMA and the register file work. Spec `docs/rsp.md`; regressions in `su::tests` and n64-systemtest `RSP BREAK`/`SP …` | Phase 2 |
 | RSP vector unit (COP2, accumulator, `VRCP`/`VRSQ`) | **implemented** — the full VU: multiplies, accumulating forms, add/sub/carry, compares, the clip compares (`VCL`/`VCH`/`VCR`), `VMRG`/`VRND`/`VMULQ`/`VMACQ`, the reciprocals, the whole vector load/store family, and the reserved "VZERO" opcodes. Spec `docs/rsp.md`; regressions in `vu`'s `compare_tests`/`clip_tests`/`vzero_tests`/… and the n64-systemtest RSP category | Phase 2 |
-| RDP DPC command registers | **implemented** — `DPC_START`/`END`/`CURRENT`/`STATUS` at `0x0410_0000`, the `START_VALID` double-latch + `FREEZE`; driven both by the CPU **and** by the RSP microcode's COP0 `c8`–`c15` (routed via `StepResult::dp_write` → `Bus::rsp_tick` → `Rdp::dpc_write`, the RSP not being allowed to name `Rdp`). The rasterizer behind them is still a stub. Provenance N64brew *Reality Display Processor/Interface*; spec `docs/rdp.md`; regressions in `rustyn64-rdp` tests + n64-systemtest `RSP STATUS: start-valid` + `microcode::…emits_an_rdp_command…` | Phase 2 / Phase 3 |
+| RDP DPC command registers | **implemented** — `DPC_START`/`END`/`CURRENT`/`STATUS` at `0x0410_0000`, the `START_VALID` double-latch + `FREEZE`; driven both by the CPU **and** by the RSP microcode's COP0 `c8`–`c15` (routed via `StepResult::dp_write` → `Bus::rsp_tick` → `Rdp::dpc_write`, the RSP not being allowed to name `Rdp`). The rasterizer behind them is **implemented** (Phase 3). Provenance N64brew *Reality Display Processor/Interface*; spec `docs/rdp.md`; regressions in `rustyn64-rdp` tests + n64-systemtest `RSP STATUS: start-valid` + `microcode::…emits_an_rdp_command…` | Phase 2 / Phase 3 |
 
 **What "partial" means for COP1.** The register file (`FR` views), the control
 registers, the data moves, S/D `ADD`/`SUB`/`MUL`/`DIV`, `ABS`/`MOV`/`NEG`, the
@@ -163,7 +166,7 @@ until this sprint, and `ABS`, `MOV` and `NEG` before them; `MOV` alone cost
 emits one at every FP call boundary. That pattern has now cost two separate
 investigations; when adding a decode arm, enumerate the neighbouring funct
 space rather than only the encoding that prompted the change.
-| RDP LLE (software reference rasterizer) + VI scan-out | stub | Phase 3 |
+| RDP LLE (software reference rasterizer) + VI scan-out | **done** — texture / combiner / blender / coverage pipeline; 164 conformance vectors bit-match Angrylion; a real ROM renders a golden frame (T-33-006) | Phase 3 |
 | AI audio DMA double-buffer | stub | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | stub | Phase 5 |
 | Frontend egui shell (binary prints a placeholder) | stub | Phase 6 |
@@ -255,5 +258,6 @@ implemented yet (Phase 5).
      and save-state compatibility.
 - v1.0.0 is the production cut (Phases 1–8 complete; README/CHANGELOG/docs/STATUS
   in sync; release matrix + Pages green). See `to-dos/ROADMAP.md`. Of those
-  release-readiness items, **Pages is already green** and the release matrix is
-  written but untested — no tag has been cut, so `release.yml` has never run.
+  release-readiness items, **Pages is already green** and the release matrix has
+  now run for real: `v0.1.0`–`v0.4.0` are all tagged, and `release.yml` has
+  published checksummed binaries across the three-target matrix.

@@ -13,15 +13,16 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 
 ## Status
 
-- **Current phase:** Phase 2 (LLE RSP), [Sprint 1](phase-2-rsp-lle/sprint-1-scalar-sp.md) next.
-  Phases 0 and 1 are complete. The VR4300 executes MIPS III — the integer set, COP0, the TLB,
-  the exception model, the primary caches, and a soft-float COP1 — as a five-stage pipeline off
-  the canonical 187.5 MHz master clock. **No chip other than the CPU executes anything yet**:
-  the RSP, RDP and AI are LLE-shaped stubs, so a green `cargo test` says nothing about them.
-- **Release:** v0.2.0 "Interpreter", tagged, with both Phase 1 exit criteria met by oracle —
-  n64-systemtest reports `Failed: 0` for the CPU/COP0/TLB/COP1 categories, and the golden-log
-  differ finds no divergence across 50,027 retired records. The suite-wide failures that
-  remain are Phase 2's and later. See `docs/STATUS.md` for the per-subsystem state.
+- **Current phase:** Phase 4 (AI audio), next. Phases 0–3 are complete. The VR4300 executes
+  MIPS III (the integer set, COP0, the TLB, the exception model, the primary caches, and a
+  soft-float COP1) as a five-stage pipeline off the canonical 187.5 MHz master clock; the **LLE
+  RSP** runs real microcode (scalar + full vector unit); and the **LLE RDP** rasterises through
+  the texture / combiner / blender / coverage pipeline with VI scan-out. **The AI and cartridge
+  boot are still LLE-shaped stubs**, so a green `cargo test` says nothing about them.
+- **Release:** v0.4.0 "Rasteriser", tagged, with both Phase 3 exit criteria met by oracle — the
+  RDP conformance suite bit-matches Angrylion across 164 committed vectors, and a real ROM boots
+  on the VR4300 and renders a committed golden frame through the VI. Phases 1 (v0.2.0) and 2
+  (v0.3.0) remain met. See `docs/STATUS.md` for the per-subsystem state.
 - **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
   and ADR 0007's cycle-accurate five-stage pipeline are both **implemented** (T-11-001); the
   93.75 MHz tick and its 3:2 fractional accumulator no longer exist in the tree. The residue
@@ -45,20 +46,20 @@ including the TLB, COP0, and the FPU — and 0-diffs against a golden instructio
 golden-log differ finds no divergence over the captured trace. Both met.
 → [overview](phase-1-cpu-golden-log/overview.md)
 
-### Phase 2 — RSP LLE: NOT STARTED
+### Phase 2 — RSP LLE: COMPLETE (v0.3.0)
 
 **Goal:** the RSP scalar unit and vector unit execute real game microcode under master-clock
 lockstep, driven through the SP interface.
 **Exit:** n64-systemtest RSP category `Failed: 0`; the RSP runs a real graphics microcode boot
-without desync.
+without desync. Both met.
 → [overview](phase-2-rsp-lle/overview.md)
 
-### Phase 3 — RDP LLE + VI: NOT STARTED
+### Phase 3 — RDP LLE + VI: COMPLETE (v0.4.0)
 
 **Goal:** the software reference RDP rasterises the real command list through the texture,
 combiner, blender, and Z/coverage pipeline; the VI scans the framebuffer out.
 **Exit:** a stable rendered frame from a real ROM; the ParaLLEl-RDP fuzz suite bit-matches the
-Angrylion reference.
+Angrylion reference. Both met (164 conformance vectors + a real-ROM golden frame).
 → [overview](phase-3-rdp-lle-vi/overview.md)
 
 ### Phase 4 — AI audio: NOT STARTED
@@ -102,8 +103,8 @@ additive and off by default.
 
 - **v1.0.0** — the production cut: Phases 1-8 complete; README, CHANGELOG, `docs/`, and
   `docs/STATUS.md` in sync; the release matrix and Pages green. Of those readiness items, Pages
-  is already green, and the release workflow has now run for real: `v0.1.0` and `v0.2.0` are
-  both tagged, and `v0.2.0` published checksummed binaries for the three-target matrix.
+  is already green, and the release workflow has now run for real: `v0.1.0` through `v0.4.0` are
+  all tagged, and `v0.2.0` onward published checksummed binaries for the three-target matrix.
 - **Beyond v1.0** — the sub-cycle bus-timing refactor (ADR 0005), *only if* hard residuals
   from Phase 7 warrant it. The one release expected to break byte-identity and save-state
   compatibility; it will be announced in advance.

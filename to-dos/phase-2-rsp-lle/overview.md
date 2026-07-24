@@ -9,22 +9,28 @@ through the SP interface. This is the phase that makes the LLE-over-HLE decision
 pay off: custom microcode runs because the instruction stream runs, not because it was
 recognised.
 
+**Status: COMPLETE (v0.3.0 "Microcode", 2026-07-22).** Both exit criteria are met by oracle: the
+RSP category reports `n64-systemtest Failed: 0`, and libdragon's real `rdpq` microcode boots on
+the RSP and emits an RDP command list witnessed byte-for-byte through the DPC seam. The one box
+left unchecked below — SU/VU dual-issue pipeline timing — is an explicit, ledgered accuracy
+deferral (unobserved by any test ROM, not part of the cut), not an oversight.
+
 ## Exit criteria
 
-- [ ] The SU implements its MIPS subset: no 64-bit operations, no TLB, addressing DMEM/IMEM
+- [x] The SU implements its MIPS subset: no 64-bit operations, no TLB, addressing DMEM/IMEM
       only, with the RSP's own branch and delay-slot behaviour.
-- [ ] The VU implements the full vector ISA over 8 lanes of 16 bits, including the 48-bit
+- [x] The VU implements the full vector ISA over 8 lanes of 16 bits, including the 48-bit
       per-lane accumulator and its high/mid/low readback.
-- [ ] The reciprocal and reciprocal-square-root ROM tables produce bit-exact results — these are
+- [x] The reciprocal and reciprocal-square-root ROM tables produce bit-exact results — these are
       table lookups, not computed approximations.
-- [ ] The vector load/store family (`LQV`/`SQV`/`LRV`/`LPV`/`LUV`/`LHV`/`LFV`/`LTV` and their
+- [x] The vector load/store family (`LQV`/`SQV`/`LRV`/`LPV`/`LUV`/`LHV`/`LFV`/`LTV` and their
       stores) handles element offsets and unaligned wrapping exactly.
-- [ ] The SP interface registers behave: `SP_DMA_SPADDR`, `SP_DMA_RAMADDR`, `SP_DMA_RDLEN`,
+- [x] The SP interface registers behave: `SP_DMA_SPADDR`, `SP_DMA_RAMADDR`, `SP_DMA_RDLEN`,
       `SP_DMA_WRLEN`, `SP_STATUS`, `SP_DMA_FULL`, `SP_DMA_BUSY`, `SP_SEMAPHORE`, `SP_PC`,
       including DMA double-buffering.
-- [ ] DMEM/IMEM DMA transfers to and from RDRAM are correct, including the skip/count stride
+- [x] DMEM/IMEM DMA transfers to and from RDRAM are correct, including the skip/count stride
       form and the alignment rules.
-- [ ] `SP_STATUS` halt, broke, and interrupt semantics drive the MI line so the CPU's polling
+- [x] `SP_STATUS` halt, broke, and interrupt semantics drive the MI line so the CPU's polling
       loops terminate.
 - [ ] The SU/VU dual-issue pipeline is modelled to the depth the test ROMs observe.
       **Made falsifiable (this was previously unmeasurable as written).** N64brew *RSP CPU
@@ -48,8 +54,8 @@ recognised.
       polling loop makes RSP timing indirectly visible; (b) a cycle-counting harness exists to
       compare against. Recording the zero-observation measurement is what makes those triggers
       checkable rather than a matter of opinion.
-- [ ] `n64-systemtest` reports `Failed: 0` for the RSP category.
-- [ ] A real graphics microcode boots and emits a plausible RDP command list into RDRAM, even
+- [x] `n64-systemtest` reports `Failed: 0` for the RSP category.
+- [x] A real graphics microcode boots and emits a plausible RDP command list into RDRAM, even
       though nothing rasterises it yet.
       **Source resolved: libdragon's `src/rdpq/rsp_rdpq.S`.** libdragon is released into the
       **public domain** (`ref-proj/libdragon/LICENSE.md`, Unlicense) and is already on
@@ -110,7 +116,8 @@ Out-of-scope:
   Phase 2's **second** exit criterion (the first, RSP category `Failed: 0`, is
   met). Boots libdragon's real `rdpq` on the RSP and byte-compares the emitted
   RDP command list against a hardware-doc-derived golden. Design: ADR 0008.
-  **Status:** planned; Stage 1 blocked on the `mips64-elf` toolchain.
+  **Status:** COMPLETE — the real `rdpq` microcode boots and emits an RDP command list, witnessed
+  byte-for-byte (T-24-001…004). The `mips64-elf` toolchain blocker was resolved.
 
 ## Dependencies
 
