@@ -10,7 +10,8 @@ against at every rung.
 **RustyN64 has cut four releases so far** — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
 (Phase 1, the complete VR4300), `v0.3.0` "Microcode" (Phase 2, the LLE RSP + real graphics
 microcode emitting an RDP command list), and `v0.4.0` "Rasteriser" (Phase 3, the LLE RDP + VI —
-164 conformance vectors bit-matching Angrylion and a real ROM rendering a golden frame). Unlike
+164 conformance vectors bit-matching Angrylion and a real ROM rendering a golden frame), followed
+by `v0.4.1`, a documentation-only patch that adds no new scope. Unlike
 the point at which RustySNES's plan was written — where a large amount of working emulation had
 accumulated inside one perpetual `[Unreleased]` section — this ladder was written *forwards* from
 an empty tree. The VR4300, RSP, and RDP now execute; the AI and cart boot are still LLE-shaped

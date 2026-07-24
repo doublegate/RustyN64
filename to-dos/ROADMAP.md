@@ -22,7 +22,8 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 - **Release:** v0.4.0 "Rasteriser", tagged, with both Phase 3 exit criteria met by oracle — the
   RDP conformance suite bit-matches Angrylion across 164 committed vectors, and a real ROM boots
   on the VR4300 and renders a committed golden frame through the VI. Phases 1 (v0.2.0) and 2
-  (v0.3.0) remain met. See `docs/STATUS.md` for the per-subsystem state.
+  (v0.3.0) remain met. The current tag is `v0.4.1`, a documentation-only patch over v0.4.0 (no
+  new scope — the phase spine is unchanged). See `docs/STATUS.md` for the per-subsystem state.
 - **The ADR 0001 timebase is gone.** ADR 0006's canonical 187.5 MHz clock with integer divisors
   and ADR 0007's cycle-accurate five-stage pipeline are both **implemented** (T-11-001); the
   93.75 MHz tick and its 3:2 fractional accumulator no longer exist in the tree. The residue
@@ -103,7 +104,7 @@ additive and off by default.
 
 - **v1.0.0** — the production cut: Phases 1-8 complete; README, CHANGELOG, `docs/`, and
   `docs/STATUS.md` in sync; the release matrix and Pages green. Of those readiness items, Pages
-  is already green, and the release workflow has now run for real: `v0.1.0` through `v0.4.0` are
+  is already green, and the release workflow has now run for real: `v0.1.0` through `v0.4.1` are
   all tagged, and `v0.2.0` onward published checksummed binaries for the three-target matrix.
 - **Beyond v1.0** — the sub-cycle bus-timing refactor (ADR 0005), *only if* hard residuals
   from Phase 7 warrant it. The one release expected to break byte-identity and save-state
