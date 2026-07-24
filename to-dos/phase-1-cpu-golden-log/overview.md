@@ -9,6 +9,10 @@ reference emulator. The N64 has no Nintendulator-style textual CPU log, so the o
 twofold: a captured per-instruction trace for the differ, and **n64-systemtest**, which is
 self-judging and reports `Failed: 0` when the CPU categories pass.
 
+**Status: COMPLETE (v0.2.0 "Interpreter", 2026-07).** Both exit criteria are met by oracle:
+`n64-systemtest Failed: 0` across the CPU/COP0/TLB/COP1 categories, and the golden-log differ
+finds 0 divergence over 50,027 retired records against an ares capture.
+
 ## Exit criteria
 
 - [x] Every MIPS III instruction implemented, including the 64-bit `D*` forms, `LL`/`SC`/

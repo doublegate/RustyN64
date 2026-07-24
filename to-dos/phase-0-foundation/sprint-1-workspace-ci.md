@@ -118,8 +118,9 @@ release-class events get the full matrix.
 - [x] The tag is checked against the workspace version before anything publishes.
 - [x] Re-running an existing release re-uploads assets rather than erroring.
 - [x] Pages deploys and serves rustdoc. *(live; `/` redirects to `/api/`.)*
-- [ ] A real tag has been cut and the release path exercised end to end. **DEFERRED:** no tag
-      exists yet; the workflow is written but has never run.
+- [x] A real tag has been cut and the release path exercised end to end. **RESOLVED:** `v0.1.0`
+      through `v0.4.0` are all tagged and released; `v0.2.0` onward published checksummed binaries
+      across the three-target matrix.
 
 **Dependencies:** T-01-005
 **Reference:** `docs/STATUS.md` §project infrastructure

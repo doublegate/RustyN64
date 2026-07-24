@@ -58,7 +58,9 @@ RDP consumes it; `DPC_STATUS` carries the run/freeze/flush bits. The RDP raises
 the DP interrupt when the command buffer drains (`SYNC_FULL`).
 
 **The `DPC_*` register file is implemented** (`Rdp::dpc_read`/`dpc_write`, wired
-to `0x0410_0000` by the Bus); the rasterizer behind it is still a stub. It has
+to `0x0410_0000` by the Bus); the rasterizer behind it is **implemented** (Phase 3 —
+texture / combiner / blender / coverage pipeline with VI scan-out, bit-matching
+Angrylion across 164 conformance vectors). It has
 **two drivers**: the CPU at `0x0410_0000`, and the RSP microcode's COP0 `c8`–`c15`
 (the RSP reports each `MTC0` as `StepResult::dp_write` and `Bus::rsp_tick`
 forwards it here — the RSP crate cannot name `Rdp`; see `docs/rsp.md`). The `rdpq`

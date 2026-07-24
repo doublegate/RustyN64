@@ -119,4 +119,5 @@ each cover a different bypass.
 - [x] All tickets checked off or explicitly deferred (with reason).
 - [x] `git status` clean with the corpora present; no ROM is stageable.
 - [x] CHANGELOG.md updated.
-- [ ] The golden trace exists (T-02-005 deferred into Phase 1, where it is first usable).
+- [x] The golden trace exists (T-02-005 landed in Phase 1: `tests/golden/n64-systemtest.log`,
+      a 50,027-record ares capture, gated by `golden_log.rs`).

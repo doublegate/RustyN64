@@ -97,7 +97,9 @@ RSP instruction stream (scalar + vector ISA), feed the resulting real RDP comman
 list to a faithful rasterizer. Audio falls out for free — the RSP audio microcode
 runs on the same LLE RSP core, so there is no per-game audio HLE. An HLE fast path
 may exist later behind an off-by-default flag, never as the default. The RSP and
-RDP `tick` methods are LLE-shaped stubs today (`docs/STATUS.md`).
+RDP `tick` methods now **execute** — the RSP runs real microcode and the RDP
+rasterises its command list (Phases 2–3); the AI `tick` remains a stub
+(`docs/STATUS.md`).
 
 ### 5. Board logic lives in the cart crate
 

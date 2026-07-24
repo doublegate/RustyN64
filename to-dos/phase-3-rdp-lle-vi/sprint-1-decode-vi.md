@@ -122,8 +122,8 @@ golden (krom/240p through the full CPU→RDP→VI path) lands once cart boot exi
 
 - [x] All tickets checked off or explicitly deferred (with reason).
 - [x] A **synthetic** RDP FILL frame is stable and matches a committed golden hash. A **real
-      ROM** doing the same is deferred to Phase 5 (cart boot); the DP-FIFO-onward path is
-      identical, so the picture path is fully exercised now.
+      ROM** doing the same landed later this phase (T-33-006, Sprint 3): a license-clean homebrew
+      ROM boots on the VR4300 and renders a committed golden frame through the VI.
 - [x] CHANGELOG.md updated.
 - [x] `docs/rdp.md` updated in the same change as the code it describes.
 

@@ -8,6 +8,10 @@ reference emulators, and the test-ROM corpora. By the end of this phase the repo
 lints clean, publishes documentation, and has an oracle staged — even though no chip executes a
 single instruction.
 
+**Status: COMPLETE.** All exit criteria met; the workspace builds, lints, and publishes docs, and
+the oracle corpus is staged with licence tiers enforced. One criterion (the ADR 0001 3:2 clock)
+was later superseded by ADR 0006 in Phase 1 — noted inline below.
+
 ## Exit criteria
 
 - [x] `cargo build --workspace` and `cargo test --workspace` succeed on Linux, macOS, and
@@ -18,9 +22,11 @@ single instruction.
       publishes. *(live at <https://doublegate.github.io/RustyN64/>.)*
 - [x] The chip stack cross-compiles to `thumbv7em-none-eabihf` with `--no-default-features`.
       *(the `no_std` CI job is green.)*
-- [x] The Bus owns all mutable state; the 3:2 fractional master clock advances the RCP on a 2/3
-      accumulator; power-on phase is seeded. *(`fractional_divisor_holds_3_to_2` and
-      `reset_preserves_phase` pass.)*
+- [x] The Bus owns all mutable state; power-on phase is seeded. *(Met at Phase 0 with the
+      ADR 0001 3:2 fractional master clock; **that timebase was superseded in Phase 1 by ADR
+      0006's canonical integer-divisor 187.5 MHz clock** — the 3:2 accumulator and its
+      `fractional_divisor_holds_3_to_2` test no longer exist, only VI/AI keep a fractional
+      accumulator now. `reset_preserves_phase` still passes.)*
 - [x] ROM-format detection and byte-order normalisation for `.z64`/`.n64`/`.v64`.
       *(`rustyn64-cart`: header parse plus the `SaveType`/`Cic`/`RomFormat` enums.)*
 - [x] The hardware reference is available offline. *(`n64brew_wiki/` — 324 pages, 96 media,
@@ -30,11 +36,11 @@ single instruction.
 - [x] Test-ROM corpora staged in licence tiers, with commercial ROMs unable to enter the tree.
       *(committed: n64-systemtest. External: krom, dillon-n64-tests, 240p, commercial. Three
       independent guards, each verified against a real `git add -f` bypass.)*
-- [ ] A golden VR4300 instruction trace captured from cen64 or ares and committed to
-      `tests/golden/`. **DEFERRED → T-02-005:** capturing a trace needs a scripted
-      reference-emulator run, and the trace is only meaningful once there is a CPU to diff
-      against. The differ and its file contract are in place; the loader is stubbed at
-      `golden.rs`.
+- [x] A golden VR4300 instruction trace captured from cen64 or ares and committed to
+      `tests/golden/`. **RESOLVED (T-02-005):** `tests/golden/n64-systemtest.log` is a real
+      50,027-record ares capture, and `crates/rustyn64-test-harness/tests/golden_log.rs` is the
+      committed 0-diff gate (Phase 1). Originally deferred here because the trace is only
+      meaningful once a CPU exists to diff against.
 
 ## Scope
 
