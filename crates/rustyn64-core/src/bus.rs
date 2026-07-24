@@ -131,6 +131,8 @@ pub struct Bus {
     pi_write_latch: u32,
     /// RCP cycles remaining before the latched PI write finalises. Zero is idle.
     pi_write_countdown: u32,
+    /// `SI_DRAM_ADDR` — the RDRAM side of a PIF-RAM SI DMA.
+    si_dram_addr: u32,
     /// The RSP coprocessor.
     pub rsp: Rsp,
     /// The RDP rasterizer.
@@ -176,6 +178,7 @@ impl Default for Bus {
             emux_enabled: false,
             pi_write_latch: 0,
             pi_write_countdown: 0,
+            si_dram_addr: 0,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rdram_hidden: None,
             rsp: Rsp::new(),
@@ -438,6 +441,70 @@ impl Bus {
             AiIrq::Raise => self.rcp.mi_intr.ai = true,
             AiIrq::Lower => self.rcp.mi_intr.ai = false,
             AiIrq::None => {}
+        }
+    }
+
+    /// Base of the SI register block (`0x0480_0000`).
+    pub const SI_BASE: u32 = 0x0480_0000;
+
+    /// Is this address in the SI register block (`0x0480_0000..0x0490_0000`)?
+    const fn is_si_register(addr: u32) -> bool {
+        addr >= Self::SI_BASE && addr < 0x0490_0000
+    }
+
+    /// The 64-byte PIF RAM window (`0x1FC0_07C0..0x1FC0_0800`) — the tail of the
+    /// PIF address space, where the CPU reads/writes the joybus command block.
+    const PIF_RAM_BASE: u32 = 0x1FC0_07C0;
+
+    /// Is this a PIF-block address (`0x1FC0_0000..0x1FC0_0800` — ROM then RAM)?
+    const fn is_pif(addr: u32) -> bool {
+        addr >= 0x1FC0_0000 && addr < 0x1FC0_0800
+    }
+
+    /// Read an SI register (`SI_DRAM_ADDR` / `SI_STATUS`; the PIF-address
+    /// registers are write-triggers and read back as 0).
+    const fn si_read(&self, addr: u32) -> u32 {
+        match (addr - Self::SI_BASE) & 0x1C {
+            0x00 => self.si_dram_addr,
+            // SI_STATUS at +0x18: DMA/IO idle (instant DMA); bit 12 = interrupt.
+            0x18 => (self.rcp.mi_intr.si as u32) << 12,
+            _ => 0,
+        }
+    }
+
+    /// Write an SI register. `SI_DRAM_ADDR` latches the RDRAM side; the
+    /// `PIF_AD_RD64B`/`WR64B` registers trigger the 64-byte PIF DMA; a write to
+    /// `SI_STATUS` acknowledges (clears) the SI interrupt.
+    fn si_write(&mut self, addr: u32, val: u32) {
+        match (addr - Self::SI_BASE) & 0x1C {
+            0x00 => self.si_dram_addr = val & 0x00FF_FFFF,
+            // RD64B (+0x04): the PIF executes the joybus frame, then DMAs PIF
+            // RAM → RDRAM. This is the read that actually runs the handshakes.
+            0x04 => {
+                self.cart.pif_execute(&self.controllers);
+                let ram = *self.cart.pif_ram();
+                for (i, &b) in ram.iter().enumerate() {
+                    if let Some(off) = Self::rdram_offset(self.si_dram_addr.wrapping_add(i as u32))
+                    {
+                        self.rdram[off] = b;
+                    }
+                }
+                self.rcp.mi_intr.si = true;
+            }
+            // WR64B (+0x10): DMA RDRAM → PIF RAM, then the PIF parses (on the
+            // command-byte write inside `pif_load`/execute).
+            0x10 => {
+                let mut ram = [0u8; rustyn64_cart::pif::PIF_RAM_LEN];
+                for (i, b) in ram.iter_mut().enumerate() {
+                    *b = Self::rdram_offset(self.si_dram_addr.wrapping_add(i as u32))
+                        .map_or(0, |off| self.rdram[off]);
+                }
+                self.cart.pif_load(&ram);
+                self.rcp.mi_intr.si = true;
+            }
+            // SI_STATUS write acknowledges the interrupt.
+            0x18 => self.rcp.mi_intr.si = false,
+            _ => {}
         }
     }
 
@@ -778,6 +845,16 @@ impl CpuBus for Bus {
         if Self::is_ai_register(addr) {
             return (self.audio.read_reg((addr >> 2) & 7) >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_si_register(addr) {
+            return (self.si_read(addr) >> (8 * (3 - (addr & 3)))) as u8;
+        }
+        if Self::is_pif(addr) {
+            return if addr >= Self::PIF_RAM_BASE {
+                self.cart.pif_read((addr - Self::PIF_RAM_BASE) as usize)
+            } else {
+                0
+            };
+        }
         if addr & !3 == Self::SP_PC {
             return (self.rsp.sp.pc() >> (8 * (3 - (addr & 3)))) as u8;
         }
@@ -851,6 +928,21 @@ impl CpuBus for Bus {
         if Self::is_ai_register(addr) {
             return self.audio.read_reg((addr >> 2) & 7);
         }
+        if Self::is_si_register(addr) {
+            return self.si_read(addr);
+        }
+        if Self::is_pif(addr) {
+            if addr >= Self::PIF_RAM_BASE {
+                let off = (addr - Self::PIF_RAM_BASE) as usize;
+                return u32::from_be_bytes([
+                    self.cart.pif_read(off),
+                    self.cart.pif_read(off + 1),
+                    self.cart.pif_read(off + 2),
+                    self.cart.pif_read(off + 3),
+                ]);
+            }
+            return 0; // PIF ROM: unmapped under HLE boot.
+        }
         u32::from_be_bytes([
             self.read_u8(addr),
             self.read_u8(addr.wrapping_add(1)),
@@ -893,6 +985,13 @@ impl CpuBus for Bus {
         if Self::is_isviewer(addr) {
             if let Some(b) = self.isviewer.get_mut((addr - Self::ISVIEWER_BASE) as usize) {
                 *b = val;
+            }
+            return;
+        }
+        if Self::is_pif(addr) {
+            if addr >= Self::PIF_RAM_BASE {
+                self.cart
+                    .pif_write((addr - Self::PIF_RAM_BASE) as usize, val);
             }
             return;
         }
@@ -985,6 +1084,12 @@ impl CpuBus for Bus {
             if !self.pi_io_busy() {
                 self.pi_write_latch = val;
                 self.pi_write_countdown = Self::PI_WRITE_CYCLES;
+                // A direct-I/O write must reach a *writable* PI device: SRAM, the
+                // FlashRAM page buffer, or the FlashRAM Command register. The cart
+                // ignores writes to the read-only ROM window, so this is safe to
+                // call for any PI-bus address. (The latch above models the
+                // read-back-while-busy timing; this performs the actual store.)
+                self.cart.pi_write_word(addr, val);
             }
             return;
         }
@@ -1006,6 +1111,19 @@ impl CpuBus for Bus {
         }
         if Self::is_ai_register(addr) {
             self.ai_write(addr, val);
+            return;
+        }
+        if Self::is_si_register(addr) {
+            self.si_write(addr, val);
+            return;
+        }
+        if Self::is_pif(addr) {
+            if addr >= Self::PIF_RAM_BASE {
+                let off = (addr - Self::PIF_RAM_BASE) as usize;
+                for (i, b) in val.to_be_bytes().into_iter().enumerate() {
+                    self.cart.pif_write(off + i, b);
+                }
+            }
             return;
         }
         if addr & !3 == Self::SP_PC {
@@ -1529,6 +1647,74 @@ mod pi_tests {
         assert!(
             !bus.rcp.mi_intr.pi,
             "and the MI line must follow -- otherwise IP2 stays high forever"
+        );
+    }
+
+    /// **A direct-I/O write to the DOM2 window persists to the SRAM save and
+    /// reads back.** SRAM lives on the PI bus at `0x0800_0000`; a `SW` there must
+    /// store into the save backing (the read-only ROM window ignores writes).
+    /// Reads during the write's busy window return the latch, so the test ticks
+    /// past `PI_WRITE_CYCLES` before reading the persisted value.
+    #[test]
+    fn a_direct_io_write_persists_to_the_sram_save() {
+        let mut bus = Bus::new();
+        *bus.cart.save_device_mut() =
+            rustyn64_cart::save::SaveDevice::new(rustyn64_cart::SaveType::Sram);
+
+        CpuBus::write_u32(&mut bus, 0x0800_1000, 0xDEAD_BEEF);
+        for _ in 0..Bus::PI_WRITE_CYCLES {
+            bus.pi_tick();
+        }
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, 0x0800_1000),
+            0xDEAD_BEEF,
+            "the SRAM store must survive the direct-I/O finalisation"
+        );
+        // And it is visible in the persistable backing (for the host save file).
+        assert_eq!(
+            &bus.cart.save()[0x1000..0x1004],
+            &0xDEAD_BEEFu32.to_be_bytes()
+        );
+    }
+
+    /// **A controller read runs end to end through the SI joybus.** The CPU
+    /// stages a joybus frame in RDRAM, DMAs it to PIF RAM (`SI_PIF_AD_WR64B`),
+    /// then triggers the read (`SI_PIF_AD_RD64B`) — which makes the PIF execute
+    /// the handshakes and DMA the replies back. The port-0 controller word must
+    /// appear at the frame's reply bytes, and the SI interrupt must fire.
+    #[test]
+    fn a_controller_read_runs_through_the_si_joybus() {
+        const SI_DRAM_ADDR: u32 = Bus::SI_BASE;
+        const SI_RD64B: u32 = Bus::SI_BASE + 0x04;
+        const SI_WR64B: u32 = Bus::SI_BASE + 0x10;
+        const SI_STATUS: u32 = Bus::SI_BASE + 0x18;
+        const FRAME: u32 = 0x2000;
+
+        let mut bus = Bus::new();
+        bus.controllers[0] = 0x8000_1234; // A pressed, stick (0x12, 0x34)
+
+        // Joybus frame: channel 0 = { TX=1, RX=4, cmd=0x01, 4 reply bytes };
+        // the command byte (PIF RAM 0x3F) bit 0 = "run".
+        bus.rdram[FRAME as usize] = 0x01; // TX len
+        bus.rdram[FRAME as usize + 1] = 0x04; // RX len
+        bus.rdram[FRAME as usize + 2] = 0x01; // 0x01 Controller State
+        bus.rdram[FRAME as usize + 0x3F] = 0x01; // command byte: run
+
+        CpuBus::write_u32(&mut bus, SI_DRAM_ADDR, FRAME);
+        CpuBus::write_u32(&mut bus, SI_WR64B, 0); // DMA RDRAM → PIF RAM
+        assert!(bus.rcp.mi_intr.si, "the WR64B DMA raises the SI interrupt");
+        CpuBus::write_u32(&mut bus, SI_STATUS, 0); // ack
+        CpuBus::write_u32(&mut bus, SI_RD64B, 0); // execute + DMA PIF → RDRAM
+
+        // The reply bytes (frame offset 3..7) hold the packed port-0 word.
+        assert_eq!(
+            &bus.rdram[FRAME as usize + 3..FRAME as usize + 7],
+            &[0x80, 0x00, 0x12, 0x34],
+            "the controller state reached RDRAM through the joybus"
+        );
+        assert!(
+            bus.rcp.mi_intr.si,
+            "the RD64B execution raises the SI interrupt"
         );
     }
 

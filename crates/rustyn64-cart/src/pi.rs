@@ -41,6 +41,22 @@ pub const PI_RD_LEN: u32 = 0x0460_0008;
 pub const PI_WR_LEN: u32 = 0x0460_000C;
 /// `PI_STATUS`.
 pub const PI_STATUS: u32 = 0x0460_0010;
+/// `PI_BSD_DOM1_LAT` — domain-1 latency. DOM2's block follows at `+0x10`.
+pub const PI_BSD_DOM1_LAT: u32 = 0x0460_0014;
+/// `PI_BSD_DOM1_PWD` — domain-1 pulse width.
+pub const PI_BSD_DOM1_PWD: u32 = 0x0460_0018;
+/// `PI_BSD_DOM1_PGS` — domain-1 page size (`2^(PGS+2)` bytes).
+pub const PI_BSD_DOM1_PGS: u32 = 0x0460_001C;
+/// `PI_BSD_DOM1_RLS` — domain-1 release.
+pub const PI_BSD_DOM1_RLS: u32 = 0x0460_0020;
+/// `PI_BSD_DOM2_LAT` — domain-2 latency (the SRAM / `FlashRAM` bus).
+pub const PI_BSD_DOM2_LAT: u32 = 0x0460_0024;
+/// `PI_BSD_DOM2_PWD` — domain-2 pulse width.
+pub const PI_BSD_DOM2_PWD: u32 = 0x0460_0028;
+/// `PI_BSD_DOM2_PGS` — domain-2 page size.
+pub const PI_BSD_DOM2_PGS: u32 = 0x0460_002C;
+/// `PI_BSD_DOM2_RLS` — domain-2 release (end of the register block).
+pub const PI_BSD_DOM2_RLS: u32 = 0x0460_0030;
 
 /// `PI_STATUS` bit 0 — a DMA is in progress.
 pub const STATUS_DMA_BUSY: u32 = 1 << 0;
@@ -76,6 +92,14 @@ pub struct Pi {
     busy: bool,
     /// The PI interrupt line, which the MI aggregates into `Cause.IP2`.
     interrupt: bool,
+    /// Per-domain bus timing (index 0 = DOM1, 1 = DOM2), each a register the
+    /// game/IPL2 programs. LAT/PWD are 8-bit, PGS 4-bit, RLS 2-bit. They store
+    /// and read back here; deriving DMA duration from them (the non-instant
+    /// completion) is a follow-up that reads these fields.
+    dom_lat: [u8; 2],
+    dom_pwd: [u8; 2],
+    dom_pgs: [u8; 2],
+    dom_rls: [u8; 2],
 }
 
 impl Pi {
@@ -87,7 +111,27 @@ impl Pi {
             cart_addr: 0,
             busy: false,
             interrupt: false,
+            dom_lat: [0; 2],
+            dom_pwd: [0; 2],
+            dom_pgs: [0; 2],
+            dom_rls: [0; 2],
         }
+    }
+
+    /// Map a PI register address to its `(domain, field)` if it names a BSD
+    /// timing register. `domain` is 0 (DOM1, base `0x14`) or 1 (DOM2, base
+    /// `0x24`); `field` is 0=LAT, 1=PWD, 2=PGS, 3=RLS at `+0/4/8/C`.
+    const fn dom_field(addr: u32) -> Option<(usize, usize)> {
+        let off = (addr & !3).wrapping_sub(PI_BSD_DOM1_LAT);
+        // DOM1 spans 0x00..0x10 from LAT; DOM2 the next 0x10.
+        let (domain, within) = if off < 0x10 {
+            (0, off)
+        } else if off < 0x20 {
+            (1, off - 0x10)
+        } else {
+            return None;
+        };
+        Some((domain, (within / 4) as usize))
     }
 
     /// Is the PI asserting its interrupt?
@@ -115,10 +159,22 @@ impl Pi {
                 }
                 s
             }
-            // The length registers read back as 0x7F on hardware; the domain
-            // registers are not modelled. Returning 0 for both is a documented
-            // simplification, not a hardware fact.
-            _ => 0,
+            // The BSD domain timing registers store and read back (masked to
+            // their field widths). The length registers read back as 0x7F on
+            // hardware (N64brew *Peripheral Interface* §PI_RD_LEN/PI_WR_LEN);
+            // returning 0 for those is a documented simplification, not modelled.
+            addr => {
+                if let Some((d, field)) = Self::dom_field(addr) {
+                    match field {
+                        0 => self.dom_lat[d] as u32,
+                        1 => self.dom_pwd[d] as u32,
+                        2 => (self.dom_pgs[d] & 0xF) as u32,
+                        _ => (self.dom_rls[d] & 0x3) as u32,
+                    }
+                } else {
+                    0
+                }
+            }
         }
     }
 
@@ -153,7 +209,20 @@ impl Pi {
                 }
                 None
             }
-            _ => None,
+            addr => {
+                // The BSD domain timing registers store the written value
+                // (masked to their field widths). Deriving DMA duration from
+                // them is a follow-up; the DMA still completes immediately.
+                if let Some((d, field)) = Self::dom_field(addr) {
+                    match field {
+                        0 => self.dom_lat[d] = val as u8,
+                        1 => self.dom_pwd[d] = val as u8,
+                        2 => self.dom_pgs[d] = (val & 0xF) as u8,
+                        _ => self.dom_rls[d] = (val & 0x3) as u8,
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -294,6 +363,48 @@ mod tests {
         // ...only the explicit clear does.
         pi.write(PI_STATUS, STATUS_W_CLR_INTR);
         assert!(!pi.interrupt());
+    }
+
+    /// **The BSD domain timing registers store and read back**, masked to their
+    /// field widths (LAT/PWD 8-bit, PGS 4-bit, RLS 2-bit), for both DOM1 and
+    /// DOM2 independently. IPL2 programs DOM1 from the ROM header (LAT 64, PWD
+    /// 18, PGS 7, RLS 3 for official ROMs — N64brew *Peripheral Interface*
+    /// §Domains), so a game that reads them back must see what it wrote.
+    #[test]
+    fn the_bsd_domain_timing_registers_store_and_read_back() {
+        let mut pi = Pi::new();
+        // DOM1 to the official-ROM values.
+        pi.write(PI_BSD_DOM1_LAT, 64);
+        pi.write(PI_BSD_DOM1_PWD, 18);
+        pi.write(PI_BSD_DOM1_PGS, 7);
+        pi.write(PI_BSD_DOM1_RLS, 3);
+        assert_eq!(pi.read(PI_BSD_DOM1_LAT), 64);
+        assert_eq!(pi.read(PI_BSD_DOM1_PWD), 18);
+        assert_eq!(pi.read(PI_BSD_DOM1_PGS), 7);
+        assert_eq!(pi.read(PI_BSD_DOM1_RLS), 3);
+        // PGS is 4-bit and RLS 2-bit — the high bits are dropped.
+        pi.write(PI_BSD_DOM1_PGS, 0xFF);
+        assert_eq!(pi.read(PI_BSD_DOM1_PGS), 0xF);
+        pi.write(PI_BSD_DOM1_RLS, 0xFF);
+        assert_eq!(pi.read(PI_BSD_DOM1_RLS), 0x3);
+        // DOM2 is independent of DOM1 across every field.
+        pi.write(PI_BSD_DOM2_LAT, 0x20);
+        assert_eq!(pi.read(PI_BSD_DOM2_LAT), 0x20);
+        pi.write(PI_BSD_DOM2_PWD, 0x21);
+        assert_eq!(pi.read(PI_BSD_DOM2_PWD), 0x21);
+        pi.write(PI_BSD_DOM2_PGS, 0xFF);
+        assert_eq!(pi.read(PI_BSD_DOM2_PGS), 0xF, "DOM2 PGS is 4-bit");
+        assert_eq!(
+            pi.read(PI_BSD_DOM1_LAT),
+            64,
+            "DOM2 write did not touch DOM1"
+        );
+        assert_eq!(
+            pi.read(PI_BSD_DOM1_PWD),
+            0x12,
+            "DOM2 write did not touch DOM1 PWD"
+        );
+        assert_eq!(pi.read(PI_BSD_DOM2_RLS), 0, "unwritten DOM2 RLS reads 0");
     }
 
     /// The RDRAM address ignores bits 2:0 — the DRAM side is **doubleword**

@@ -6,9 +6,41 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-The next rung is `v0.6.0 "Cartridge"` — boot and saves (Phase 5): the PI bus with domain
+Work toward `v0.6.0 "Cartridge"` — boot and saves (Phase 5): the PI bus with domain
 timing, the SI joybus, the CIC handshake, and the save backends
 (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)).
+
+### Added — cart (Phase 5, Sprint 1)
+
+- **The PI BSD domain-timing registers** (`PI_BSD_DOM1/2` LAT/PWD/PGS/RLS,
+  `0x0460_0014`–`0x0460_0030`) store and read back with field-width masking.
+- **The four save backends** (`rustyn64-cart::save::SaveDevice`): SRAM (flat, PI DOM2),
+  **FlashRAM** as its real erase/program/status command machine (CIR at `0x0801_0000`;
+  program is bit-clearing AND, so a page must be erased first), EEPROM 4k/16k (joybus
+  8-byte blocks), and the Controller Pak (joybus 32-byte blocks). SRAM/FlashRAM are wired
+  through the Bus's direct-I/O + DMA PI paths; a direct-I/O write now persists to the save
+  rather than only latching. Each round-trips byte-for-byte.
+- **The SI joybus subsystem** (`rustyn64-cart::pif` + the Bus SI block at `0x0480_0000`): the
+  64-byte PIF RAM, the SI registers (`SI_DRAM_ADDR`, `SI_PIF_AD_RD64B`/`WR64B`), the 64-byte
+  PIF↔RDRAM DMA, and the SI interrupt. The joybus frame executor runs `0x00`/`0xFF` info,
+  `0x01` controller state (from the Bus's four packed port words), `0x02`/`0x03` Controller-Pak
+  access (with the CRC8), and `0x04`/`0x05` EEPROM blocks. A controller read runs end to end —
+  frame staged in RDRAM → `WR64B` DMA to PIF → `RD64B` executes the handshakes → replies DMA'd
+  back — verified by a Bus integration test; EEPROM and Controller-Pak round-trip over joybus.
+- **A retail ROM HLE boot** (`rustyn64-test-harness::rom::hle_boot`): copies the cartridge's own
+  IPL3 into DMEM, injects the per-CIC seed into PIF RAM, seeds the post-IPL3 COP0/GPR/PI-DOM1
+  state, and jumps to IPL3 — so a commercial ROM runs its own bootcode. The seeds are cited
+  constants (N64brew *CIC-NUS*/*PIF-NUS*, cen64), ledgered as **C-32**, not tuned. The
+  boot strategy — HLE default, with a real-PIF path staged behind an off-by-default flag —
+  is recorded in **ADR 0009**.
+
+**Measured effect on n64-systemtest.** This cart/PIF/SI/boot subsystem drops the suite-wide
+failing-assertion count from **93 → 90** (−3), measured with the committed runner
+(`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`; 917 tests
+started, 90 failing; Phase-1 categories still `Failed: 0`). The commercial-boot capstone is
+characterised honestly: a commercial ROM **boots and executes** real code (hundreds of millions
+of retired instructions) but does not yet reach video — a cross-subsystem VI/RI/F3DEX gap ledgered
+as **R-18**, deferred to a later phase, and outside the Phase 5 cart boundary (ADR 0003).
 
 ## [0.5.0] - 2026-07-24 "Resonance"
 
