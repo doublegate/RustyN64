@@ -84,8 +84,19 @@ pub fn start() -> Result<(), JsValue> {
 /// undersized slice, which the engine rejects with `IndexSizeError`) if that
 /// invariant is ever violated. DOM failures are logged, never swallowed.
 fn blit(ctx: &web_sys::CanvasRenderingContext2d, rgba: &[u8], w: u32, h: u32) {
-    let len = (w * h * 4) as usize;
+    // `w`/`h` are capped at `FB_MAX` upstream, so `w*h*4` cannot overflow — but
+    // compute it with checked math so a future uncapped geometry logs and skips
+    // instead of panicking (debug) or wrapping (release) on 32-bit wasm `usize`.
+    let Some(len) = w
+        .checked_mul(h)
+        .and_then(|v| v.checked_mul(4))
+        .map(|v| v as usize)
+    else {
+        web_sys::console::error_1(&"blit: frame dimensions overflow w*h*4".into());
+        return;
+    };
     if rgba.len() < len {
+        web_sys::console::error_1(&"blit: scan-out buffer smaller than 4*w*h".into());
         return;
     }
     match web_sys::ImageData::new_with_u8_clamped_array_and_sh(
