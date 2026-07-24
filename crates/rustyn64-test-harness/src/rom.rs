@@ -204,6 +204,102 @@ pub fn seed_ipl3_handoff(system: &mut System, rom: &[u8]) -> Result<usize, LoadE
     Ok(elf_offset)
 }
 
+/// The CIC seed word IPL2 leaves in PIF RAM `0x24` (from which the HLE boot
+/// reads the `s3`–`s7` GPRs). Values from cen64 `si/cic.c`.
+#[must_use]
+pub const fn cic_seed(cic: rustyn64_core::cart::Cic) -> u32 {
+    use rustyn64_core::cart::Cic;
+    match cic {
+        Cic::Cic6101 => 0x0004_3F3F,
+        Cic::Cic6102 => 0x0000_3F3F,
+        Cic::Cic6103 => 0x0000_783F,
+        Cic::Cic6105 => 0x0000_913F,
+        Cic::Cic6106 => 0x0000_853F,
+    }
+}
+
+/// **HLE-boot a retail ROM.**
+///
+/// Seed the state IPL3 expects, copy the cart's *real* IPL3 (ROM `0x40..0x1000`)
+/// into RSP DMEM, and jump to it at `0xA400_0040`. IPL3 then copies the game to
+/// RDRAM and jumps to the header entry — running the cart's own bootcode rather
+/// than a reimplementation of it. This skips only
+/// IPL1/IPL2 (the PIF ROM) and the CIC challenge, which the seed injection stands
+/// in for (`ref-proj/simple64/.../pif/bootrom_hle.c`, studied not copied).
+///
+/// An ELF-payload ROM (n64-systemtest) is instead handed to
+/// [`seed_ipl3_handoff`], whose segments need program-header placement.
+///
+/// # Errors
+/// [`LoadError::TooSmall`] if the image is shorter than a `0x1000` boot header.
+pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), LoadError> {
+    use rustyn64_core::cpu::cop0::reg;
+
+    if find_elf_offset(rom).is_some() {
+        seed_ipl3_handoff(system, rom)?;
+        return Ok(());
+    }
+    if rom.len() < 0x1000 {
+        return Err(LoadError::TooSmall);
+    }
+
+    // Insert the cartridge; PI reads and IPL3's DMA see the ROM through it.
+    let cart = rustyn64_core::cart::Cart::load(rom).map_err(|_| LoadError::TooSmall)?;
+    let cic = cart.header().cic;
+    system.bus.cart = cart;
+
+    // Inject the CIC seed into PIF RAM 0x24..0x28 (the boot reads it for s3–s7).
+    let seed = cic_seed(cic);
+    for (i, b) in seed.to_be_bytes().into_iter().enumerate() {
+        system.bus.cart.pif_write(0x24 + i, b);
+    }
+
+    // COP0: Status = CU1|CU0|FR, Config = the IPL3-left value (K0=3 cached).
+    system
+        .cpu
+        .pipeline
+        .cop0
+        .set_hardware(reg::STATUS, 0x3400_0000);
+    system
+        .cpu
+        .pipeline
+        .cop0
+        .set_hardware(reg::CONFIG, 0x7006_E463);
+
+    // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
+    // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.
+    system.cpu.regs.write(19, 0);
+    system.cpu.regs.write(20, 1);
+    system.cpu.regs.write(21, 0);
+    system.cpu.regs.write(22, u64::from((seed >> 8) & 0xFF));
+    system.cpu.regs.write(23, 0);
+
+    // PI DOM1 bus timing from the ROM header's first word (as IPL2 does).
+    let cfg = u32::from_be_bytes([rom[0], rom[1], rom[2], rom[3]]);
+    system
+        .bus
+        .pi
+        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_LAT, cfg & 0xFF);
+    system
+        .bus
+        .pi
+        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_PWD, (cfg >> 8) & 0xFF);
+    system
+        .bus
+        .pi
+        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_PGS, (cfg >> 16) & 0x0F);
+    system
+        .bus
+        .pi
+        .write(rustyn64_core::cart::pi::PI_BSD_DOM1_RLS, (cfg >> 20) & 0x03);
+
+    // Copy the real IPL3 into DMEM (`0x40..0x1000`) and jump to it.
+    let ipl3 = &rom[0x40..0x1000];
+    system.bus.rsp.dmem[0x40..0x40 + ipl3.len()].copy_from_slice(ipl3);
+    system.cpu.set_pc(0xFFFF_FFFF_A400_0040);
+    Ok(())
+}
+
 /// Find the ELF header's offset within a ROM image.
 ///
 /// The search starts at [`ROM_PAYLOAD_OFFSET`], **not** at zero. The first
@@ -334,6 +430,41 @@ fn rdram_slot(system: &mut System, vaddr: u32, k: usize) -> Option<&mut u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The retail HLE boot seeds the state IPL3 expects and jumps to it.**
+    /// Builds a synthetic retail ROM (valid header, no ELF, a marked IPL3 area)
+    /// and asserts the boot copies the real IPL3 into DMEM, seeds the CIC `s6`
+    /// GPR + the PIF-RAM seed, programs PI DOM1 from the header, and parks the PC
+    /// at `0xA400_0040`. (Running IPL3 to a game is the local commercial capstone.)
+    #[test]
+    fn hle_boot_seeds_retail_state() {
+        use rustyn64_core::cart::pi;
+        let mut rom = vec![0u8; 0x1000 + 0x40];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]); // z64 magic (= DOM1 cfg)
+        rom[8..12].copy_from_slice(&0x8000_1000u32.to_be_bytes()); // entry
+        for (i, b) in rom.iter_mut().enumerate().take(0x1000).skip(0x40) {
+            *b = u8::try_from(i & 0xFF).expect("masked to a byte"); // mark the IPL3 area
+        }
+
+        let mut sys = System::new(0);
+        hle_boot(&mut sys, &rom).expect("retail HLE boot");
+
+        // The real IPL3 (ROM 0x40..0x1000) was copied into DMEM.
+        assert_eq!(sys.bus.rsp.dmem[0x40], 0x40);
+        assert_eq!(sys.bus.rsp.dmem[0xFF], 0xFF);
+        // s4 = NTSC (1), s6 = the 6102 seed byte (0x3F).
+        assert_eq!(sys.cpu.regs.read(20), 1);
+        assert_eq!(sys.cpu.regs.read(22), 0x3F);
+        // The CIC seed word landed in PIF RAM 0x24..0x28 (0x0000_3F3F).
+        assert_eq!(sys.bus.cart.pif_read(0x26), 0x3F);
+        assert_eq!(sys.bus.cart.pif_read(0x27), 0x3F);
+        // PI DOM1 from the header word 0x8037_1240: LAT=0x40, PWD=0x12, PGS=7.
+        assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_LAT), 0x40);
+        assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_PWD), 0x12);
+        assert_eq!(sys.bus.pi.read(pi::PI_BSD_DOM1_PGS), 0x07);
+        // The PC is at IPL3 in DMEM.
+        assert_eq!(sys.cpu.pc, 0xFFFF_FFFF_A400_0040);
+    }
 
     /// The synthetic segment's byte at index `i`.
     ///
