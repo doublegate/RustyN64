@@ -55,6 +55,9 @@ fn the_mixer_blob_layout_matches_the_linker_symbol_map() {
     let start = sym("_start");
     let text_end = sym("_text_end");
     let command_exec = sym("command_exec");
+    let dma_settings = sym("DMASettings");
+    let output_rdram = sym("OUTPUT_RDRAM");
+    let waveform_settings = sym("WAVEFORM_SETTINGS");
     let settings_start = sym("SETTINGS_START");
     let settings_end = sym("SETTINGS_END");
 
@@ -62,6 +65,15 @@ fn the_mixer_blob_layout_matches_the_linker_symbol_map() {
     assert!(
         command_exec >= IMEM_LMA && command_exec < text_end,
         "`command_exec` ({command_exec:#x}) is real code in [{start:#x}, {text_end:#x})"
+    );
+    assert!(
+        dma_settings >= IMEM_LMA && dma_settings < text_end,
+        "`DMASettings` ({dma_settings:#x}) is real code in [{start:#x}, {text_end:#x})"
+    );
+    assert!(
+        output_rdram < IMEM_LMA && waveform_settings < IMEM_LMA,
+        "`OUTPUT_RDRAM` ({output_rdram:#x}) and `WAVEFORM_SETTINGS` ({waveform_settings:#x}) \
+         live in DMEM"
     );
     assert!(
         settings_start < IMEM_LMA && settings_end <= IMEM_LMA && settings_end > settings_start,
