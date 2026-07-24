@@ -376,16 +376,18 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.4.0 "Rasteriser"** is the current release. Both of its Phase 3 cut criteria are **met** —
-`n64-systemtest Failed: 0` on the RSP category, and libdragon's real `rdpq` microcode booting and
-emitting a plausible RDP command list. Phase 1's criteria (n64-systemtest `Failed: 0` on
-CPU/COP0/TLB/COP1 and a 0-diff golden trace against ares) remain met. All are oracle results with
-committed runners, not self-assessments: reproduce them with
+**v0.4.0 "Rasteriser"** is the current release. Both of its Phase 3 cut criteria are **met** — the
+conformance suite bit-matches Angrylion across 164 committed `.rvec` vectors, and a real ROM boots
+on the VR4300 and renders a committed golden frame through the VI. Phase 2's criteria (RSP-category
+`n64-systemtest Failed: 0` and real `rdpq` microcode emitting an RDP command list) and Phase 1's (CPU
+`Failed: 0` and a 0-diff golden trace against ares) remain met. All are oracle results with committed
+runners, not self-assessments: reproduce them with
 
 ```bash
+cargo test -p rustyn64-test-harness --test rdp_conformance
+cargo test -p rustyn64-test-harness --test real_rom_frame
 cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
 cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored
-cargo test -p rustyn64-test-harness --test microcode
 ```
 
 The next rung is **v0.4.0 "Rasteriser"** (the LLE RDP and VI — first picture). The release ladder
@@ -504,8 +506,9 @@ If you use RustyN64 in academic research, please cite:
              a one-directional no_std chip-crate graph, and a hard determinism contract;
              pure-Rust winit/wgpu/cpal/egui frontend. As of v0.4.0 the VR4300 and the LLE
              RSP are complete and verified against n64-systemtest and an ares golden trace,
-             and libdragon's rdpq microcode emits an RDP command list; the RDP rasteriser
-             is not yet implemented}
+             and the LLE RDP rasteriser and VI scan-out bit-match Angrylion across 164
+             conformance vectors, with a real ROM rendering a committed golden frame; AI
+             audio and cartridge boot are not yet implemented}
 }
 ```
 
