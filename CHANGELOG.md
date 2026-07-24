@@ -35,6 +35,13 @@ audio microcode already produces (see [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-
   (`audio_play_rom.rs`) boots it on the real VR4300 and pins the emitted stream
   byte-for-byte, deterministically, with the AI interrupt firing. The CPU → RDRAM → AI
   path end to end, with no RSP microcode — the de-risking rung before the mixer gate.
+- **The frontend plays the AI's audio** (Phase 4, Sprint 3) — `EmuCore::produce_audio`
+  drains the AI's emitted stereo stream and resamples it from the N64 output rate to the
+  host device rate (a carried-phase linear resampler, `resample_stereo`), all frontend-side
+  (ADR 0004). The `winit`/`app` startup opens the `cpal` device via `AudioOutput::open`,
+  flows its rate into `EmuCore::set_output_rate`, and hands the ring to the emu thread,
+  which pushes the resampled audio each frame. Underruns are surfaced
+  (`EmuCore::audio_underruns`). Idle (no rate programmed) stages host-rate silence.
 - **The real libdragon audio-mixer microcode runs on the LLE RSP and produces PCM**
   (Phase 4, Sprint 2) — `rsp_mixer.S` is vendored (`third_party/libdragon-rsp/`,
   Unlicense) and assembled to a committed blob. Driven by a hand-built one-channel

@@ -88,10 +88,10 @@ lock-free ring and dynamic rate control — all of it outside the core, per ADR 
 - [x] The core emits samples on the emulated timeline and never consults wall-clock time.
       *(`Audio::tick` derives emission from `master_ticks`; a source-level guard already forbids
       wall-clock/entropy in the core.)*
-- [~] The frontend resamples and paces, absorbing host jitter. **Deferred to Sprint 3** — the core
-      sink (`Bus::drain_audio_samples`) and the `cpal`+`AudioRing` host side already exist; wiring
-      `produce_audio` to the real drain with an N64→device resampler is Sprint 3, alongside the
-      end-to-end real-ROM audio gate.
+- [x] The frontend resamples and paces, absorbing host jitter. **Done (Sprint 3)** —
+      `EmuCore::produce_audio` drains `Bus::drain_audio_samples` and resamples N64→device rate
+      (`resample_stereo`, carried-phase linear); `app` opens the `cpal` device and hands the ring
+      to the emu thread. A real *game* driving this end to end needs cart boot (Phase 5).
 - [x] Underrun is observable in the harness rather than silently concealed by the resampler.
       *(`Audio::underruns()`; ledger R-17.)*
 - [x] A determinism test proves the emitted sample stream is bit-identical across two runs from

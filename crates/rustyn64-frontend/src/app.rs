@@ -16,6 +16,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::Key;
 use winit::window::{Window, WindowId};
 
+#[cfg(feature = "emu-thread")]
+use crate::audio::AudioOutput;
 use crate::config::Config;
 use crate::emu::EmuCore;
 use crate::gfx::{Gfx, PresentError};
@@ -68,6 +70,10 @@ struct App {
     keys_down: HashSet<Key>,
     #[cfg(feature = "emu-thread")]
     emu_thread: Option<EmuThread>,
+    /// The open `cpal` output stream; held so playback keeps running (dropping it
+    /// stops audio). `None` when no device was available.
+    #[cfg(feature = "emu-thread")]
+    audio_out: Option<AudioOutput>,
     #[cfg(not(feature = "emu-thread"))]
     last_frame: web_time::Instant,
 }
@@ -91,6 +97,8 @@ impl App {
             keys_down: HashSet::new(),
             #[cfg(feature = "emu-thread")]
             emu_thread: None,
+            #[cfg(feature = "emu-thread")]
+            audio_out: None,
             #[cfg(not(feature = "emu-thread"))]
             last_frame: web_time::Instant::now(),
         }
@@ -299,13 +307,30 @@ impl ApplicationHandler for App {
             eprintln!("rustyn64: {e}");
         }
 
-        // Spawn the dedicated emulation thread (native, default-on).
+        // Open the host audio device and spawn the dedicated emulation thread
+        // (native, default-on). The emu thread drains the core's resampled audio
+        // each frame and pushes it into the device ring; the resample to the
+        // device rate happens in `EmuCore` (frontend-side, ADR 0004).
         #[cfg(feature = "emu-thread")]
         {
+            let ring = match AudioOutput::open() {
+                Ok(out) => {
+                    if let Ok(mut core) = self.emu.lock() {
+                        core.set_output_rate(out.sample_rate);
+                    }
+                    let ring = Arc::clone(&out.ring);
+                    self.audio_out = Some(out); // hold the stream so it keeps playing
+                    Some(ring)
+                }
+                Err(e) => {
+                    eprintln!("rustyn64: audio disabled ({e})");
+                    None
+                }
+            };
             self.emu_thread = Some(EmuThread::spawn(
                 Arc::clone(&self.emu),
                 Arc::clone(&self.input),
-                None, // audio wiring lands when AudioOutput::open is plumbed in
+                ring,
                 self.config.region,
             ));
         }
