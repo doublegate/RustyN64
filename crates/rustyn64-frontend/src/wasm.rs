@@ -66,14 +66,7 @@ pub fn start() -> Result<(), JsValue> {
                 if canvas.height() != h {
                     canvas.set_height(h);
                 }
-                let len = (w * h * 4) as usize;
-                if let Ok(img) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-                    wasm_bindgen::Clamped(&rgba[..len.min(rgba.len())]),
-                    w,
-                    h,
-                ) {
-                    let _ = ctx.put_image_data(&img, 0.0, 0.0);
-                }
+                blit(&ctx, rgba, w, h);
             }
         }
         request_frame(&win, raf.borrow().as_ref());
@@ -83,9 +76,37 @@ pub fn start() -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Upload `rgba` (the VI scan-out) to the 2D canvas as a `w`×`h` image.
+///
+/// `ImageData` requires **exactly** `4 * w * h` bytes. The scan-out buffer is the
+/// max-size backing store (`EmuCore` guarantees `4 * w * h <= rgba.len()`), so we
+/// blit the exact `4 * w * h` prefix — and skip the frame (rather than pass an
+/// undersized slice, which the engine rejects with `IndexSizeError`) if that
+/// invariant is ever violated. DOM failures are logged, never swallowed.
+fn blit(ctx: &web_sys::CanvasRenderingContext2d, rgba: &[u8], w: u32, h: u32) {
+    let len = (w * h * 4) as usize;
+    if rgba.len() < len {
+        return;
+    }
+    match web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+        wasm_bindgen::Clamped(&rgba[..len]),
+        w,
+        h,
+    ) {
+        Ok(img) => {
+            if let Err(e) = ctx.put_image_data(&img, 0.0, 0.0) {
+                web_sys::console::error_1(&e);
+            }
+        }
+        Err(e) => web_sys::console::error_1(&e),
+    }
+}
+
 /// Schedule `f` for the next animation frame (a no-op if the closure is gone).
 fn request_frame(window: &web_sys::Window, f: Option<&Closure<dyn FnMut()>>) {
-    if let Some(f) = f {
-        let _ = window.request_animation_frame(f.as_ref().unchecked_ref());
+    if let Some(f) = f
+        && let Err(e) = window.request_animation_frame(f.as_ref().unchecked_ref())
+    {
+        web_sys::console::error_1(&e);
     }
 }
