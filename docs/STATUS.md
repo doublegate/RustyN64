@@ -3,11 +3,24 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.6.0 "Cartridge"** — this commit is the v0.6.0 release; the
-`v0.6.0` tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
+**Current release:** **v0.7.0 "Shell"** — this commit is the v0.7.0 release; the `v0.7.0`
+tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
 v0.4.0 "Rasteriser".)
 
-**Phases 1, 2, 3, 4, and 5 are complete.** Phase 5 delivers the cartridge + I/O boundary — the
+**Phases 1, 2, 3, 4, 5, and 6 are complete.** Phase 6 is frontend integration — the egui
+shell now presents the **real machine** (VI scan-out, AI audio drain, SI controller input),
+plus save-states / rewind / run-ahead (all frontend-side and off by default, ADR 0004) and a
+wasm browser entry point. It is **the first playable release**, with playability honestly
+scoped:
+
+| Criterion | Result | Reproduce |
+| --- | --- | --- |
+| Native picture + sound + control on a real ROM (**Phase 6** committable gate) | **met** — committed homebrew ROMs show a real rendered frame through the LLE VI scan-out (`real_rom_frame`, a verified golden), play deterministic PCM through the AI (`audio_play_rom`), and read the pad through the SI joybus; the frontend presents `Bus::scanout` / the AI drain / SI input, not a test pattern | `cargo test -p rustyn64-test-harness --test real_rom_frame --test audio_play_rom` |
+| Save-state restore continues bit-identically (**Phase 6** capstone) | **met** — the whole `System` is serde-serialisable; a two-run trace compare (`tests/savestate.rs`) proves snapshot→continue→restore→continue is bit-identical on a homebrew ROM (committable) and on a booted **commercial** ROM (full RSP/RDP/AI/cart machine, local-only). Rewind and run-ahead are byte-identical to a plain `run_frame` when off | `cargo test -p rustyn64-test-harness --test savestate` |
+| A commercial ROM is playable natively **with a picture** (VERSION-PLAN's literal cut criterion) | **deferred (ledger R-18)** — a commercial title boots and executes real code through the shell but scans out no frame; the cross-subsystem VI-vblank / RI-register / F3DEX gap is outside Phase 6's frontend scope and is validated when the Phase 3/7 rasteriser + microcode work closes it. v0.7.0 ships on the demonstrated-playable path above, not a faked commercial pass | `cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored` (local) |
+
+**The earlier phases' exit criteria all remain met** (unchanged oracle results). Phase 5, for
+reference, delivers the cartridge + I/O boundary — the
 PI bus (BSD domain timing), the SI joybus, all four save backends, the CIC handshake, and **two
 boot paths**: the copyright-clean **HLE boot** (default, CI-able) and a **faithful real-PIF
 boot** that runs the console's real IPL1/IPL2 from the PIF ROM and verifies the IPL2 checksum
@@ -52,17 +65,22 @@ queue (T-24-003 foundation), and an `rdpq` overlay command
 RDP command** — the 8 command bytes are DMA'd to an RDRAM output buffer and
 `DP_END` is advanced through the DPC seam (T-24-003). Witnessed non-vacuously by
 `tests/microcode.rs::the_microcode_emits_an_rdp_command_through_the_dpc_seam`.
-The LLE RDP rasterizer (Phase 3) and cart/PIF (Phase 5) are now both complete;
-the next phase is the frontend shell (Phase 6, v0.7.0). See `to-dos/ROADMAP.md`.
+The LLE RDP rasterizer (Phase 3) and cart/PIF (Phase 5) are both complete, and
+the frontend shell (Phase 6, v0.7.0) is now complete too; the next phase is the
+accuracy battery (Phase 7, v0.8.0). See `to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
-workspace compiles and its **700** tests pass. The CPU genuinely executes
-instructions now — that is new — but every other chip is still an LLE-shaped
-stub. Stubs are `TODO(T-XXX-NN)` comments inside no-op bodies that compile and
-return, not `todo!()` panics, so nothing fails loudly. And of the test-ROM
-corpora below, exactly one ROM is actually executed by a gate (`basic.z64`);
-the rest are staged only. Availability of an oracle is not the same as a wired
-gate.
+workspace compiles and its **712** tests pass. The CPU, the RSP, the LLE RDP,
+the AI, and the cartridge boot now genuinely execute — that is real, and proven
+by the oracle criteria above, not a self-assessment. The honest remaining gap is
+that a **commercial** ROM boots and executes but does not yet reach a rendered
+frame (ledger **R-18**, a Phase 3/7 VI/RI/F3DEX dependency); the playable path is
+demonstrated on homebrew. Where a subsystem is still a stub it is a
+`TODO(T-XXX-NN)` comment inside a no-op body that compiles and returns, not a
+`todo!()` panic, so nothing fails loudly — a green `cargo test` still is not
+proof a subsystem works. And of the test-ROM corpora below, only a few ROMs are
+executed by a wired gate; the rest are staged only. Availability of an oracle is
+not the same as a wired gate.
 
 ## What works today
 

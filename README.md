@@ -8,8 +8,8 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.6.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
-  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%205%20complete-brightgreen.svg" alt="Status: Phase 5 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
+  <a href="https://github.com/doublegate/RustyN64/actions"><img src="https://github.com/doublegate/RustyN64/workflows/CI/badge.svg" alt="Build Status"></a> <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a> <a href="https://github.com/doublegate/RustyN64/releases"><img src="https://img.shields.io/badge/version-v0.7.0-blue.svg" alt="Version"></a> <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.96.0-orange.svg" alt="Rust: 1.96.0"></a><br>
+  <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/status-phase%206%20complete-brightgreen.svg" alt="Status: Phase 6 complete"></a> <a href="#compatibility-and-accuracy"><img src="https://img.shields.io/badge/n64--systemtest-CPU%20%2B%20RSP%200%20fail-brightgreen.svg" alt="n64-systemtest: CPU + RSP 0 fail"></a> <a href="https://doublegate.github.io/RustyN64/"><img src="https://img.shields.io/badge/pages-rustdoc-success.svg" alt="GitHub Pages"></a><br>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform"></a>
 </p>
 
@@ -22,23 +22,27 @@ ParaLLEl accuracy bar: one canonical 187.5 MHz master-clock timeline co-scheduli
 compute engines, a Bus that owns everything mutable, low-level emulation of the programmable
 coprocessors, and a hard determinism contract.
 
-> ### Status: Phase 5 complete (v0.6.0) — not yet playable
+> ### Status: Phase 6 complete (v0.7.0) — the first playable release (homebrew)
 >
-> **The VR4300 and the RSP execute, and the RDP draws.** Phase 1 delivered the complete VR4300 —
-> the canonical master clock, the five-stage pipeline, the MIPS III integer set, COP0, the TLB, the
-> exception model, and a soft-float COP1 — verified at `n64-systemtest Failed: 0` on the
-> CPU/COP0/TLB/COP1 categories and a 0-diff golden trace against ares. Phase 2 delivered the **LLE
-> RSP**: the full scalar and vector units, `n64-systemtest Failed: 0` on the RSP category, and
-> libdragon's real `rdpq` microcode booting through the DPC seam. **Phase 3 delivered the LLE RDP
-> rasteriser and VI scan-out — the first picture:** FILL rectangles, the scissor, FILL / shaded /
-> textured triangles, the colour combiner, the blender, dither, alpha-compare and coverage all
-> bit-match Angrylion across **164 conformance vectors**, and a **real ROM boots on the VR4300 and
-> renders a committed golden frame** through the VI.
+> **Every core subsystem executes, and the shell presents the real machine.** Phase 1 delivered the
+> complete VR4300 (`n64-systemtest Failed: 0` on CPU/COP0/TLB/COP1, 0-diff golden trace vs ares);
+> Phase 2 the **LLE RSP** (`Failed: 0` on the RSP category, libdragon's `rdpq` microcode booting
+> through the DPC seam); Phase 3 the **LLE RDP rasteriser + VI scan-out** (bit-matching Angrylion
+> across **164 conformance vectors**, a real ROM rendering a committed golden frame); Phase 4 the
+> **AI audio** (the libdragon mixer microcode producing golden PCM on the LLE RSP, a real ROM
+> playing it through the AI); Phase 5 the **cartridge boot + saves** (PI/SI/PIF/CIC + all four save
+> backends, HLE and faithful real-PIF boot). **Phase 6 wires the egui shell to that machine:** the
+> VI scan-out drives the window, the AI drain feeds the audio ring, SI input reaches the game, and
+> the frontend adds save-states / rewind / run-ahead (frontend-side, off by default) and a wasm
+> browser demo.
 >
-> **AI audio and cartridge boot are still stubs.** Sound (Phase 4) and PI/SI + PIF/CIC boot and
-> saves (Phase 5) do not play or boot a commercial cartridge yet; the `rustyn64` binary opens a
-> shell. Stubs are no-op `TODO(...)` bodies rather than `todo!()` panics, so **a green test run does
-> not mean a subsystem works**.
+> **"Playable" is honestly scoped.** Picture, sound, and control are demonstrated natively on the
+> committed **homebrew** ROMs through the real LLE VI/AI/SI paths, and save-state restore is
+> bit-identical (proven on a booted commercial ROM). A **commercial** title boots and executes real
+> code but does **not** yet reach a rendered frame — the cross-subsystem VI-vblank / RI-register /
+> F3DEX gap tracked as accuracy-ledger **R-18**, deferred to the Phase 3/7 rasteriser + microcode
+> work. Where a subsystem is still a stub it is a no-op `TODO(...)` body rather than a `todo!()`
+> panic, so **a green test run does not mean a subsystem works**.
 >
 > **[`docs/STATUS.md`](docs/STATUS.md) is the single source of truth.** Read it before assuming
 > any feature works.
@@ -97,11 +101,11 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 | **LLE RDP + VI scan-out** | **Working** (Phase 3) — FILL / scissor / shaded / textured triangles, the combiner, blender, dither, alpha-compare and coverage bit-match Angrylion across 164 conformance vectors; VI scans the framebuffer out and a real ROM renders a committed golden frame. Perspective/bilinear texturing and an RDP-driven real-ROM frame are later work |
 | **AI audio** | Stub — Phase 4 |
 | **PI/SI DMA, PIF/CIC boot, saves** | Partial — PI DMA runs (pulled forward for n64-systemtest); SI/joybus, PIF/CIC boot, and saves are Phase 5 |
-| **egui shell** | Partial — the shell, input map, and framebuffer plumbing are real; it presents a test pattern |
+| **egui shell** | **Working** — presents the real machine (VI scan-out, AI audio drain, SI input) with save-states / rewind / run-ahead (frontend-side, off by default) |
 | **Test-ROM oracle** | **Reporting** — `n64-systemtest` runs and asserts `Failed: 0` on CPU/COP0/TLB/COP1 **and** RSP; Dillon's `basic.z64` passes 5/5; a CPU golden-log 0-diff against ares; krom, 240p and a 66-ROM commercial corpus staged locally |
 | **Hardware reference** | **Working** — offline N64brew Wiki mirror (324 pages, 96 media) rebuilt by a script |
 | **`no_std` chip stack** | **Working** — cross-compiles to `thumbv7em-none-eabihf` |
-| **wasm** | Compiles for `wasm32-unknown-unknown`; no browser entry point yet — Phase 6 |
+| **wasm** | **Working** — a `#[wasm_bindgen(start)]` browser entry point runs a homebrew ROM and blits the VI scan-out to a 2D canvas (`trunk build`); the full in-browser shell is roadmap |
 | **Netplay / RetroAchievements** | Placeholder crates — Phase 8 |
 
 ---
@@ -176,7 +180,9 @@ cd RustyN64
 # Build the workspace (release)
 cargo build --release --workspace
 
-# Run — the shell opens and presents a test pattern; no game will play yet
+# Run — the shell boots the ROM and presents the real machine (picture, sound,
+# input). Homebrew renders a real frame; a commercial title boots but does not
+# yet show a frame (ledger R-18).
 cargo run --release -p rustyn64-frontend -- path/to/rom.z64
 ```
 
@@ -332,7 +338,7 @@ before any wgpu-compute backend, and stays the oracle that backend is graded aga
 | **macOS ARM64** | Built and tested in CI |
 | **Windows x64** | Built and tested in CI |
 | **`thumbv7em-none-eabihf`** | Chip stack cross-compiles (`no_std` gate) |
-| **WebAssembly** | Compiles; no browser entry point yet (Phase 6) |
+| **WebAssembly** | Browser entry point + 2D-canvas demo (`trunk build`); full in-browser shell is roadmap |
 
 ### System requirements
 
@@ -377,15 +383,19 @@ corrections land as new dated supplemental files.
 
 ## Current Release
 
-**v0.6.0 "Cartridge"** is the current release. A **commercial cartridge boots**: Phase 5 delivers
-the PI bus, the SI joybus, the CIC handshake, and all four save backends, with two boot paths — the
-copyright-clean HLE boot and a faithful **real-PIF** boot that runs the console's real IPL1/IPL2 and
-CIC-verifies the IPL2 checksum (off by default, local-only). Every save-type representative
-(6102/6103/6105 CICs) boots through the real IPL1→IPL2→IPL3 chain to game code in RDRAM; the
-committable gate drops n64-systemtest 93 → 90. The rendered title frame awaits the VI/RI/F3DEX
-runtime (ledger R-18). The earlier phases remain met: Phase 4 (audio — the real libdragon mixer
-microcode produces golden PCM; a ROM plays it through the AI), Phase 3 (RDP conformance bit-matches
-Angrylion across 164 vectors; a real ROM renders a golden frame), Phase 2 (RSP-category
+**v0.7.0 "Shell"** is the current release — **the first playable release**. Phase 6 wires the egui
+shell to the real machine: the VI scan-out drives the window, the AI drain feeds the audio ring, and
+SI controller input reaches the game, so a homebrew ROM shows a real rendered frame, plays real PCM,
+and responds to the pad. The frontend also gains save-states, rewind, and run-ahead (all
+frontend-side and off by default, ADR 0004, so output stays byte-identical) and a **wasm browser
+entry point** (a 2D-canvas demo built with `trunk`). "Playable" is honestly scoped: picture, sound,
+and control are demonstrated on the committed **homebrew** ROMs, and save-state restore is
+bit-identical (proven on a booted commercial ROM); a **commercial** title boots and executes but does
+not yet reach a rendered frame — the VI/RI/F3DEX gap tracked as ledger **R-18**, deferred to the
+Phase 3/7 rasteriser + microcode work. The earlier phases remain met: Phase 5 (cart boot + all four
+save backends; HLE and real-PIF boot; n64-systemtest 93 → 90), Phase 4 (audio — the real libdragon
+mixer microcode produces golden PCM; a ROM plays it through the AI), Phase 3 (RDP conformance
+bit-matches Angrylion across 164 vectors; a real ROM renders a golden frame), Phase 2 (RSP-category
 `n64-systemtest Failed: 0`; real `rdpq` microcode emitting an RDP command list), and Phase 1 (CPU
 `Failed: 0`; a 0-diff golden trace against ares). All are oracle results with committed runners, not
 self-assessments: reproduce them with
@@ -393,14 +403,16 @@ self-assessments: reproduce them with
 ```bash
 cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored
 cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored  # local; gitignored corpus
+cargo test -p rustyn64-test-harness --test savestate
 cargo test -p rustyn64-test-harness --test mixer_microcode
 cargo test -p rustyn64-test-harness --test rdp_conformance
 cargo test -p rustyn64-test-harness --test real_rom_frame
 cargo test -p rustyn64-test-harness --release --test golden_log -- --ignored
 ```
 
-The next rung is **v0.7.0 "Shell"** (Phase 6 — frontend integration: real scan-out, audio drain,
-and controller input through the SI, making it *playable*). The release ladder is
+The next rung is **v0.8.0 "Breadth"** (Phase 7 — the accuracy battery: the commercial corpus
+triaged and reporting a real pass rate, the custom-microcode families rendering, and the commercial
+title frame that R-18 defers). The release ladder is
 [`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md); long-form notes live in
 [`docs/release-notes/`](docs/release-notes/).
 
@@ -409,7 +421,7 @@ and controller input through the SI, making it *playable*). The release ladder i
 
 ## Roadmap
 
-Nine phases. **Phases 0–3 are complete**; **Phase 4 is next**:
+Nine phases. **Phases 0–6 are complete**; **Phase 7 is next**:
 
 - **Phase 0 — Foundation** *(complete)* — workspace, CI, the Bus and scheduler, and the acquired
   and licence-classified reference corpus.
@@ -426,8 +438,10 @@ Nine phases. **Phases 0–3 are complete**; **Phase 4 is next**:
 - **Phase 5 — Cart boot + saves** *(complete, v0.6.0)* — PI, SI/joybus, CIC, and all four save
   backends; two boot paths (HLE default + a faithful real-PIF boot running the real IPL1/IPL2 and
   CIC-verifying the IPL2 checksum). A commercial ROM boots and executes to game code in RDRAM.
-- **Phase 6 — Frontend integration** — real scan-out, audio, and input; save-states and the wasm
-  entry point.
+- **Phase 6 — Frontend integration** *(complete, v0.7.0)* — the egui shell presents the real
+  machine (VI scan-out, AI audio drain, SI input); save-states / rewind / run-ahead (frontend-side,
+  off by default); a wasm browser entry point. The first playable release (homebrew); the
+  commercial title frame is deferred to Phase 7 (ledger R-18).
 - **Phase 7 — Accuracy breadth** — the battery across the commercial corpus; the accuracy ledger.
 - **Phase 8 — Reach** — netplay, achievements, TAS, scripting, shaders — all off by default.
 
@@ -513,18 +527,20 @@ If you use RustyN64 in academic research, please cite:
   author  = {RustyN64 Contributors},
   title   = {RustyN64: A Cycle-Accurate Nintendo 64 Emulator in Rust},
   year    = {2026},
-  version = {0.6.0},
+  version = {0.7.0},
   url     = {https://github.com/doublegate/RustyN64},
   note    = {Cycle-accurate N64 emulator on a canonical 187.5 MHz master-clock scheduler with
              low-level emulation of the RSP and RDP; a Bus-owns-everything architecture,
              a one-directional no_std chip-crate graph, and a hard determinism contract;
-             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.6.0 the VR4300 and the LLE
+             pure-Rust winit/wgpu/cpal/egui frontend. As of v0.7.0 the VR4300 and the LLE
              RSP are complete and verified against n64-systemtest and an ares golden trace,
              the LLE RDP rasteriser and VI scan-out bit-match Angrylion across 164
              conformance vectors with a real ROM rendering a committed golden frame, the RSP
-             audio microcode mixes verified PCM through the AI, and a commercial cartridge boots
+             audio microcode mixes verified PCM through the AI, a commercial cartridge boots
              through the real IPL1/IPL2/IPL3 chain (HLE and faithful real-PIF paths) to game
-             code in RDRAM}
+             code in RDRAM, and the egui/wasm frontend presents the real machine with
+             save-states, rewind, and run-ahead — the first playable release on homebrew, with
+             the commercial title frame deferred to Phase 7 (ledger R-18)}
 }
 ```
 
