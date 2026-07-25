@@ -1,5 +1,6 @@
 #!/bin/sh
-# Assemble the M(RDRAM) cached-load timing ROM with bass (ARM9 fork).
+# Assemble both timing ROMs with bass (ARM9 fork): the M(RDRAM) cached-load ROM
+# (D-cache fill) and the I-cache-fill ROM.
 #
 # bass is not vendored. Fetch + build it once (it needs one modern-g++ fix), then
 # point BASS at the binary. The n64 architecture tables must sit next to the
@@ -20,4 +21,6 @@ cd "$(dirname "$0")"          # run from this directory regardless of caller
 : "${BASS:=bass}"
 "$BASS" mrdram_timing.asm
 echo "built mrdram_timing.z64 ($(wc -c < mrdram_timing.z64) bytes)"
+"$BASS" icache_timing.asm
+echo "built icache_timing.z64 ($(wc -c < icache_timing.z64) bytes)"
 echo "For hardware: fix the header CRC (e.g. chksum64) and load via your flashcart."
