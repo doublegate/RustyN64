@@ -1660,19 +1660,45 @@ impl Pipeline {
         }
     }
 
+    /// D-cache line fill cost in PClocks (`8..=9 + M(RDRAM)`, UM Table 11-1).
+    ///
+    /// **FITTED, not measured** (ledger C-1). No hardware cached-miss timing
+    /// oracle exists: PeterLemon's timing ROMs cover only ALU ops, and the RDRAM
+    /// fill latency is RDRAM-bank-state dependent (C-4), so no single value is
+    /// truly cycle-accurate. Adopted from **ares** (`cpu.step(40 * 2)` per fill),
+    /// the accuracy-reference emulator, cross-validated against **cen64**'s 44
+    /// (explicitly "Currently using fixed values"). Implies `M(RDRAM) ~= 32`. The
+    /// hardware cold-access figure is higher (~640 ns ~= 60 PClocks); 40 reflects
+    /// a warmer average, as both emulators use.
+    #[allow(clippy::doc_markdown)]
+    const M_DCACHE_FILL: u32 = 40;
+
     /// Make the I-cache line covering `addr` resident.
     fn icache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {
         let base = addr & !(crate::cache::ICACHE_LINE - 1);
         let mut data = [0u8; 32];
         Self::pull_line(bus, base, &mut data);
         self.icache.install(base, data);
+        // NOTE: the I-cache fill cost (fitted ~46: the D-cache 40 + the UM's
+        // larger I-fill base, `14..=15` vs `8..=9`; cen64 uses 48) is deliberately
+        // NOT charged yet. Every instruction fetch that misses would stall here,
+        // and the CPU unit-test harness steps a fixed number of cycles assuming a
+        // ~1-cycle fetch, so charging it breaks ~74 of those tests wholesale.
+        // Wiring it needs those tests taught about the fetch stall first -- a
+        // separate change (ledger C-1).
     }
 
     /// Make the D-cache line covering `addr` resident, writing back whatever it
     /// evicts.
+    ///
+    /// A dirty-line writeback (the `push_line` below) is charged the **same**
+    /// fixed `M_DCACHE_FILL` as a clean miss -- the fitted 40 does not separate
+    /// clean- from dirty-eviction cost (a real hardware measurement would; the
+    /// writeback is an extra RDRAM transaction). Honest given the value is a
+    /// fitted anchor, not a measurement (ledger C-1).
     fn dcache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {
         let Some(evicted) = self.dcache.miss_plan(addr) else {
-            return;
+            return; // hit -- no fill, no cost
         };
         if let Some(w) = evicted {
             Self::push_line(bus, w.addr, &w.data);
@@ -1681,6 +1707,7 @@ impl Pipeline {
         let mut data = [0u8; 16];
         Self::pull_line(bus, base, &mut data);
         self.dcache.install(base, data);
+        self.stall_for(Self::M_DCACHE_FILL, Interlock::Dcm);
     }
 
     /// Write a whole cache line out to the bus, a word at a time.
@@ -4487,7 +4514,10 @@ mod tests {
         let mut regs = Regs::new();
         let mut prog = Ram::new(alloc::vec![word]);
         let mut pc = KSEG0_PROG;
-        for _ in 0..16 {
+        // The `LL` above filled the D-cache, whose stall (`M_DCACHE_FILL`, ledger
+        // C-1) must drain before the ERET runs -- so more cycles than the bare
+        // pipeline latency.
+        for _ in 0..60 {
             p.advance(&mut prog, &mut regs, &mut pc);
         }
 
@@ -5027,7 +5057,9 @@ mod tests {
         p.cop0.set_hardware(crate::cop0::reg::STATUS, 0);
         let mut pc = KSEG0_PROG;
 
-        for _ in 0..40 {
+        // Enough cycles to cover the D-cache fill stall the cached load now pays
+        // (`M_DCACHE_FILL`, ledger C-1) on top of the pipeline latency.
+        for _ in 0..100 {
             p.advance(&mut bus, &mut regs, &mut pc);
         }
         assert_eq!(

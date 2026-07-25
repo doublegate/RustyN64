@@ -537,9 +537,17 @@ accurate N64 emulators disagree, and neither number came from a spec.
 The **uncached RCP-register `M` is now measured: 22 PClocks** (`read_width`,
 `Pipeline::M_RCP_REGISTER`), derived from the CPUTIMINGNTSC mult/div differential
 and confirmed to 0.4% on the ROM's absolute count — accuracy ledger **C-1** and
-the reproducible `peterlemon_timing.rs` derivation test. `M(RDRAM)` and the
-D-/I-cache-fill `M` remain **unmeasured** (charged 0): no cached-miss timing
-oracle exists in the committed set yet.
+the reproducible `peterlemon_timing.rs` derivation test.
+
+The **D-cache fill is charged 40 PClocks** (`Pipeline::M_DCACHE_FILL`), but this
+is **FITTED, not measured**: no hardware cached-miss timing oracle exists, so the
+value is adopted from ares (cross-checked by cen64's 44) and recorded as such in
+ledger **C-1**. The first-party `cache_miss_microbench.rs` verifies the charge
+lands (39.99 PClocks) and is the instrument that would replace it with a real
+number. The **I-cache fill** (fitted ~46) is not yet charged (it stalls every
+fetch miss, which the fixed-cycle CPU unit tests are not yet written for), and
+`M(RDRAM)` as a true measurement plus the RDRAM bank-state model (C-4) remain
+**open**.
 
 ### The interlock taxonomy
 
