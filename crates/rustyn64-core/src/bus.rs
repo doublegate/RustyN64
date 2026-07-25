@@ -812,7 +812,7 @@ impl Bus {
 
         // Active-span adjust: NTSC/PAL horizontal overscan, then left/top clamps that
         // fold the cropped offset back into the scale accumulator start.
-        let ispal = v_sync > 550;
+        let ispal = v_sync > vi::VI_PAL_V_TOTAL_THRESHOLD;
         let mut h_start = h_start_raw - if ispal { 128 } else { 108 };
         let mut h_start_clamped = false;
         if h_start < 0 {

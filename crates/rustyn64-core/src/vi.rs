@@ -80,6 +80,16 @@ pub const VI_FIELD_HZ: u64 = 60;
 /// exact `H_TOTAL` sub-field timing remain deferred under R-6.
 pub const VI_FIELD_HZ_PAL: u64 = 50;
 
+/// The `VI_V_TOTAL` (half-lines per field) value above which a field is treated as
+/// **PAL** rather than NTSC.
+///
+/// NTSC fields are ~525 half-lines, PAL ~625, so `> 550` splits them with wide
+/// margin. Shared by `Vi::field_hz` (the field-rate select) and
+/// `bus::scanout_scaled` (the geometry `ispal` select) so cadence and geometry agree
+/// on the region. Named after N64brew *Video Interface* §Clocks (region field
+/// lengths); the register at this offset is `VI_V_SYNC` in the wiki's naming.
+pub const VI_PAL_V_TOTAL_THRESHOLD: u32 = 550;
+
 /// The Video Interface register file (the `0x0440_0000` block).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vi {
@@ -141,7 +151,7 @@ impl Vi {
     /// scan-out geometry's `ispal` test (`bus::scanout_scaled`) so cadence and
     /// geometry agree on the region.
     const fn field_hz(&self) -> u64 {
-        if (self.regs[VI_V_TOTAL as usize] & 0x3FF) > 550 {
+        if (self.regs[VI_V_TOTAL as usize] & 0x3FF) > VI_PAL_V_TOTAL_THRESHOLD {
             VI_FIELD_HZ_PAL
         } else {
             VI_FIELD_HZ
@@ -397,5 +407,17 @@ mod tests {
         ntsc.tick(0);
         ntsc.tick(ntsc525);
         assert_eq!(ntsc.read(VI_V_CURRENT), 1, "NTSC field still 60 Hz");
+    }
+
+    /// **The PAL/NTSC split is exactly `VI_V_TOTAL > 550`.** Pins the boundary so an
+    /// off-by-one (`>=` vs `>`, or a shifted threshold) is caught: a field with
+    /// `VI_V_TOTAL == 550` is still NTSC (60 Hz), and `== 551` is already PAL (50 Hz).
+    #[test]
+    fn the_pal_threshold_is_exactly_550() {
+        let mut vi = Vi::new();
+        vi.regs[VI_V_TOTAL as usize] = VI_PAL_V_TOTAL_THRESHOLD; // 550: still NTSC
+        assert_eq!(vi.field_hz(), VI_FIELD_HZ, "V_TOTAL == 550 is NTSC");
+        vi.regs[VI_V_TOTAL as usize] = VI_PAL_V_TOTAL_THRESHOLD + 1; // 551: PAL
+        assert_eq!(vi.field_hz(), VI_FIELD_HZ_PAL, "V_TOTAL == 551 is PAL");
     }
 }
