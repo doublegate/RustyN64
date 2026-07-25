@@ -1275,6 +1275,16 @@ static int emit_vi_vectors(const char *out_dir) {
                     525u,            80u,         48u,        4u, 1u};
     if (emit_vi_vector(&vaa, out_dir)) return 1;
 
+    // Slice 4e (ledger R-5): the divot median filter. divot_enable (VI_CTRL bit 4),
+    // aa_mode = 0, type = 3 (0x00000013), 32-bit with the same every-4th-column partial
+    // pattern. A pixel whose 3 horizontal neighbours are not all fully covered (the
+    // partial columns and their immediate neighbours) takes the per-channel median of
+    // the post-AA values; the rest pass through. 1:1 scale so no lerp.
+    ViVector vdivot = {"vi_divot_32", 0x00000013u, 0x1000u, 80u,
+                       0x00000400u,   0x00000400u, 0x006C0094u, 0x00220042u,
+                       525u,          80u,         48u,        4u, 1u};
+    if (emit_vi_vector(&vdivot, out_dir)) return 1;
+
     return 0;
 }
 

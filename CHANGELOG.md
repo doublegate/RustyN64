@@ -8,6 +8,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI divot median filter, slice 4e (gap-analysis Stage D, ledger R-5)
+
+- **The divot median filter** in `Bus::scanout_scaled`: with `divot_enable` (VI_CTRL
+  bit 4), a pixel whose 3 horizontal neighbours are not all fully covered takes the
+  per-channel median of the post-de-dither/AA-edge values of itself and its left/right
+  neighbours (Angrylion `divot_filter`); it passes through where all three are fully
+  covered. The coverage-exposing `vi_fetch32_cov` feeds it. Validated by `vi_divot_32`
+  (`VI_STATUS = 0x00000013`) RGB byte-for-byte vs Angrylion, mutation-checked.
+  n64-systemtest impact: not measured (`scanout_scaled` has no runtime driver). The
+  16-bit coverage path and R-6's field-rate half remain later slices.
+
 ### Added — VI AA edge filter, slice 4d (gap-analysis Stage D, ledger R-5)
 
 - **The AA edge filter** in `Bus::scanout_scaled`: a partial-coverage 32-bit pixel
