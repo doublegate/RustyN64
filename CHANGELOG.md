@@ -8,6 +8,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — 4-bit (I4) textures oracle-validated (gap-analysis Stage D, ledger R-7)
+
+- **The hardware-canonical 4-bit texture path is validated against Angrylion.**
+  Studying the oracle's source corrected a misconception: **there is no 4-bit
+  texel *load*** — a 4-bit texture-image load is invalid on hardware (Angrylion
+  crashes the RDP pipeline). Games load 4-bit textures by setting an 8-bit texture
+  image + 8-bit LOAD tile (raw packed bytes) and rendering with a separate 4-bit
+  tile that extracts nibbles at fetch. New conformance vector `tex_tri_i4_16`
+  drives that idiom — eight I4 texels packed two-per-byte, an 8-bit `Load Tile`,
+  a 4-bit render tile — and RustyN64's existing 8-bit load + 4-bit `fetch_texel`
+  reproduce Angrylion **byte-for-byte** (six distinct non-zero texels, so an
+  all-zero no-op load would render black and fail). No new "4-bit load" code — the
+  bail on a 4-bit texture image already matches hardware. R-7's remaining gaps
+  (the 32-bit `Load Block` split; a direct 4-bit LOAD tile with an 8-bit texture
+  image) are now precisely characterized and stay open.
+
 ### Added — memory-access latency `M` charged (gap-analysis Stage D, ledger C-1)
 
 - **Uncached RCP-register `M` = 22 PClocks — MEASURED.** Derived from the

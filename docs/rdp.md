@@ -279,11 +279,14 @@ cross-verified against the N64brew wiki (*…/Commands*) and the ParaLLEl-RDP re
   unsupported path, rather than iterating a wrapped bogus width.
 
 Scope (**open residual R-7**): `Load Tile` covers 8/16/32-bit texels and `Load Block`
-covers 8/16-bit. **4-bit** texels (nibble addressing, pairs with the CI4/I4 decoders in
-T-32-003) and the **32-bit `Load Block` split** are deferred; an unsupported size writes
-nothing. The supported paths are byte-exact against hand-computed expectations (five unit
-tests). The oracle count stays **93** — a load is observable only once the sampler
-(T-32-004) reads TMEM.
+covers 8/16-bit. There is **no 4-bit texel *load*** — a 4-bit texture-image load is
+invalid on hardware (it crashes the RDP pipeline). Games load 4-bit textures by lying
+about the format: an 8-bit texture image + 8-bit LOAD tile loads the packed bytes raw,
+then a **separate 4-bit render tile** extracts nibbles at fetch. That canonical path is
+**oracle-validated** (`tex_tri_i4_16` matches Angrylion byte-for-byte). Still deferred:
+the **32-bit `Load Block` split** and a *direct* 4-bit LOAD tile with an 8-bit texture
+image (the `ti_size`-vs-`tile.size` load granularity); an unsupported size writes nothing.
+The supported paths are byte-exact against hand-computed expectations (five unit tests).
 
 ### The sampler and copy-mode Texture Rectangle (T-32-004)
 
