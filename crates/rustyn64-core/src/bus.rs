@@ -756,9 +756,7 @@ impl Bus {
     /// `H_TOTAL`; the PAL 50 Hz field rate itself is handled by `Vi::field_hz`, which
     /// drives the same `ispal` region split this geometry uses). Not yet wired into
     /// the frontend — [`Bus::scanout`] remains the live path until the pipeline is
-    /// complete (mirrors
-    /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
-    /// the R-12 depth path landing ahead of its runtime caller).
+    /// complete (mirrors the R-12 depth path landing ahead of its runtime caller).
     ///
     /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
     /// computed width/height is non-positive, or `out` is too small.
