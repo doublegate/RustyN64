@@ -1080,6 +1080,7 @@ typedef struct {
     uint32_t v_sync;  // VI_V_SYNC (V_TOTAL; > 550 selects PAL)
     uint32_t src_w, src_h; // source framebuffer dimensions
     uint32_t bpp;     // source bytes/pixel: 0 or 2 = RGBA5551, 4 = RGBA8888
+    uint32_t aa;      // 0 = every pixel fully covered; 1 = every 4th column partial (cvg 0)
 } ViVector;
 
 // A deterministic distinct source pixel (RGBA5551): encodes x and y into separate
@@ -1090,8 +1091,18 @@ static uint16_t vi_src_pixel(uint32_t x, uint32_t y) {
 
 // The 32-bit (RGBA8888) counterpart: distinct per (x, y). Alpha = 0xFF so its
 // coverage field (bits 7:5) reads 7 (fully covered) under aa_mode 0/1.
-static uint32_t vi_src_pixel32(uint32_t x, uint32_t y) {
+static uint32_t vi_src_pixel32(uint32_t x, uint32_t y, uint32_t aa) {
     uint32_t r = (x * 4u) & 0xFFu, g = (y * 4u) & 0xFFu, b = ((x + y) * 4u) & 0xFFu;
+    // aa: every 4th column is partial (cvg 0, alpha 0x00), so a partial pixel's 6 taps
+    // (all at x±1/x±2 columns) are fully covered and the AA edge filter has neighbours.
+    // A partial pixel is given a fixed DARK colour (0x08) — deliberately NOT its
+    // neighbours' midpoint, unlike the smooth gradient — so `video_filter32` pulls it
+    // measurably brighter at INTERIOR pixels too, not just at the top boundary. With
+    // the gradient value the neighbour penultimate min/max are symmetric about the
+    // centre and the filter would output the raw colour, hiding a raw-fetch mutation.
+    if (aa && (x % 4u == 0u)) {
+        return (0x08u << 24) | (0x08u << 16) | (0x08u << 8) | 0x00u;
+    }
     return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
 }
 
@@ -1113,7 +1124,7 @@ static int emit_vi_vector(const ViVector *v, const char *out_dir) {
     for (uint32_t y = 0; y < v->src_h; y++) {
         for (uint32_t x = 0; x < v->src_w; x++) {
             if (src_bpp == 4u) {
-                rdram_put_fb32(v->origin, x, y, v->src_w, vi_src_pixel32(x, y));
+                rdram_put_fb32(v->origin, x, y, v->src_w, vi_src_pixel32(x, y, v->aa));
             } else {
                 rdram_put_fb16(v->origin, x, y, v->src_w, vi_src_pixel(x, y));
             }
@@ -1156,7 +1167,7 @@ static int emit_vi_vector(const ViVector *v, const char *out_dir) {
     for (uint32_t y = 0; y < v->src_h; y++) {
         for (uint32_t x = 0; x < v->src_w; x++) {
             if (src_bpp == 4u) {
-                uint32_t px = vi_src_pixel32(x, y);
+                uint32_t px = vi_src_pixel32(x, y, v->aa);
                 uint8_t be[4] = {px >> 24, px >> 16, px >> 8, px};
                 wr(be, 4, f);
             } else {
@@ -1252,6 +1263,17 @@ static int emit_vi_vectors(const char *out_dir) {
                         0x00000400u,      0x00000400u, 0x006C0094u, 0x00220042u,
                         525u,             80u,         48u,        4u};
     if (emit_vi_vector(&vdedith, out_dir)) return 1;
+
+    // Slice 4d (ledger R-5): the AA edge filter. aa_mode = 0 (reads coverage), no
+    // dither/divot/gamma (0x00000003), 32-bit source with every 4th column partial
+    // (cvg 0, the trailing `1` = coverage-varying pattern). A partial pixel takes
+    // video_filter32: it gathers the fully-covered pixels among its 6 diagonal/far
+    // taps, takes the penultimate min/max per channel, and pulls the centre toward
+    // their midpoint by (7 - cvg)/8. 1:1 scale so no lerp post-blends it.
+    ViVector vaa = {"vi_aa_edge_32", 0x00000003u, 0x1000u, 80u,
+                    0x00000400u,     0x00000400u, 0x006C0094u, 0x00220042u,
+                    525u,            80u,         48u,        4u, 1u};
+    if (emit_vi_vector(&vaa, out_dir)) return 1;
 
     return 0;
 }

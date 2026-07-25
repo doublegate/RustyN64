@@ -81,6 +81,45 @@ const fn vi_integer_sqrt(a: u32) -> u32 {
     res
 }
 
+/// The VI AA-edge filter's penultimate min/max over a channel's gathered values
+/// (Angrylion `video_max_optimized`). Returns `(penumin, penumax)` — a specific
+/// single-pass "runner-up" min/max, *not* a plain second-smallest/largest: it tracks
+/// the current min/max position and its predecessor, then refines the runner-up with a
+/// second partial scan. Ported verbatim so the tie-handling matches. Ledger R-5.
+fn vi_video_max(pixels: &[u32]) -> (u32, u32) {
+    debug_assert!(
+        !pixels.is_empty(),
+        "vi_video_max needs at least the centre pixel"
+    );
+    let n = pixels.len();
+    let (mut posmax, mut posmin) = (0usize, 0usize);
+    let (mut curpenmax, mut curpenmin) = (pixels[0], pixels[0]);
+    for i in 1..n {
+        if pixels[i] > pixels[posmax] {
+            curpenmax = pixels[posmax];
+            posmax = i;
+        } else if pixels[i] < pixels[posmin] {
+            curpenmin = pixels[posmin];
+            posmin = i;
+        }
+    }
+    if curpenmax != pixels[posmax] {
+        for &p in &pixels[posmax + 1..] {
+            if p > curpenmax {
+                curpenmax = p;
+            }
+        }
+    }
+    if curpenmin != pixels[posmin] {
+        for &p in &pixels[posmin + 1..] {
+            if p < curpenmin {
+                curpenmin = p;
+            }
+        }
+    }
+    (curpenmin, curpenmax)
+}
+
 /// The VI gamma curve for one channel: `sqrt(v << 6) << 1` (Angrylion `gamma_table`,
 /// `vi_gamma_init`). Applied when `gamma_enable` is set and `gamma_dither` is not
 /// (the dithered variants are noise-based and deferred). Ledger R-5.
@@ -696,23 +735,24 @@ impl Bus {
     ///
     /// This is the accurate replacement for [`Bus::scanout`]'s 1:1 copy, built up a
     /// slice at a time and validated RGB byte-for-byte against Angrylion's VI pipeline
-    /// (`vi_process_full`) through the `.vivec` conformance vectors. Implemented so
-    /// far: the geometry — the 2.10 fixed-point accumulator (`line_x = x_offs >> 10`,
-    /// source index `stride*srcY + srcX`), the NTSC 108-px horizontal overscan
-    /// (`h_start -= 108`), the 8/7-px `minhpass`/`maxhpass` crop, the
-    /// `PRESCALE_WIDTH`/`HEIGHT` clamp, and the truncating RGBA5551→8 conversion the
-    /// VI uses (`(px >> 8) & 0xF8`, not `expand5`'s replicating widening) — plus, for
-    /// the **16-bit** path, the 5-bit **bilinear lerp** when `aa_mode != REPLICATE`
-    /// and a fraction is non-zero (nearest otherwise). Alpha is `0xFF` (opaque) for
-    /// display; the VI carries coverage in its output alpha, which the conformance
-    /// harness compares as RGB-only.
+    /// (`vi_process_full`) through the `.vivec` conformance vectors. Implemented so far:
+    /// the geometry — the 2.10 fixed-point accumulator (`line_x = x_offs >> 10`, source
+    /// index `stride*srcY + srcX`), the NTSC/PAL horizontal overscan (`h_start -= 108`
+    /// / `128`), the 8/7-px `minhpass`/`maxhpass` crop, the `PRESCALE_WIDTH`/`HEIGHT`
+    /// clamp, and the truncating RGBA5551→8 conversion the VI uses (`(px >> 8) & 0xF8`,
+    /// not `expand5`'s replicating widening); the 5-bit **bilinear lerp** for **both**
+    /// 16- and 32-bit sources (`aa_mode != REPLICATE` and a non-zero fraction, nearest
+    /// otherwise); the **gamma** curve; and, for 32-bit under `aa_mode` 0/1, the
+    /// coverage-gated **de-dither** (`cvg == 7`) and **AA-edge** (`cvg < 7`) filters.
+    /// Alpha is `0xFF` (opaque) for display; the VI carries coverage in its output
+    /// alpha, which the conformance harness compares as RGB-only.
     ///
-    /// Still to come (later slices, still substituted here): **32-bit** bilinear
-    /// (16-bit only for now — no oracle vector yet), the AA edge / divot / de-dither
-    /// / gamma filters (`aa_mode` 0/1, coverage-gated), and PAL 50 Hz +
-    /// interlace/serrate (R-6). Not yet wired into the frontend — [`Bus::scanout`]
-    /// remains the live path until the pipeline is complete (mirrors the R-12 depth
-    /// path landing ahead of its runtime caller).
+    /// Still to come (later slices, still substituted here): the **divot** median, the
+    /// **16-bit** coverage path (needs the hidden-bits plane), the gamma-dither
+    /// variants, and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
+    /// serrate, and the exact `H_TOTAL`). Not yet wired into the frontend —
+    /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
+    /// the R-12 depth path landing ahead of its runtime caller).
     ///
     /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
     /// computed width/height is non-positive, or `out` is too small.
@@ -735,8 +775,8 @@ impl Bus {
             _ => return (0, 0),
         };
         // aa_mode (VI_CTRL bits 9:8): 3 = REPLICATE (nearest); anything else enables
-        // the bilinear resample when a fraction is non-zero. The AA-edge / de-dither
-        // paths (aa_mode 0/1, coverage-gated) are a later slice.
+        // the bilinear resample when a fraction is non-zero. aa_mode 0/1 additionally
+        // reads real coverage and runs the de-dither / AA-edge filters (32-bit path).
         let aa_mode = (ctrl >> 8) & 0x3;
         // Gamma (VI_CTRL bit 3) applies the sqrt curve to the final RGB; the dithered
         // variants (bit 2 set) are noise-based and deferred, so plain gamma is applied
@@ -886,8 +926,8 @@ impl Bus {
     /// A 32-bit source fetch for the coverage path (`aa_mode` 0/1). Reads the pixel's
     /// coverage from alpha bits 7:5; a fully-covered pixel (`cvg == 7`) gets the
     /// **de-dither** restore filter when `dither_filter` is set, otherwise the raw
-    /// colour. A partial pixel (`cvg < 7`) takes the AA-edge filter — **deferred**, so
-    /// it returns the raw colour for now (later slice). Ledger R-5.
+    /// colour. A partial pixel (`cvg < 7`) takes the **AA-edge** filter
+    /// ([`Bus::vi_video_filter`]). Ledger R-5.
     ///
     /// De-dither (Angrylion `restore_filter32`): over the 8 taps of the 3×3
     /// neighbourhood minus the centre, each channel is nudged ±1 toward the neighbour
@@ -916,8 +956,12 @@ impl Bus {
         let px = self.vi_read32(origin, src_stride, x, y);
         let center = [(px >> 24) as u8, (px >> 16) as u8, (px >> 8) as u8];
         let cvg = (px >> 5) & 7;
-        if cvg != 7 || !dither_filter {
-            return center; // cvg < 7 → AA edge (deferred); cvg == 7 without dither → raw
+        if cvg < 7 {
+            // Partial coverage → the AA edge filter (video_filter32).
+            return self.vi_video_filter(origin, src_stride, x, y, center, cvg);
+        }
+        if !dither_filter {
+            return center; // fully covered without dither → raw colour
         }
         let center5 = [center[0] >> 3, center[1] >> 3, center[2] >> 3]; // top 5 bits
         let mut acc = [
@@ -941,6 +985,55 @@ impl Bus {
             }
         }
         [acc[0] as u8, acc[1] as u8, acc[2] as u8]
+    }
+
+    /// The 32-bit AA-edge filter for a partial-coverage pixel (Angrylion
+    /// `video_filter32`). Gathers the fully-covered pixels (`cvg == 7`) among the 6
+    /// taps — the up/down diagonals and the two-away left/right — plus the centre,
+    /// takes the per-channel penultimate min/max (`vi_video_max`), and pulls the
+    /// centre toward their midpoint weighted by `(7 - cvg)`:
+    /// `centre + (((penmin + penmax - 2*centre) * (7 - cvg)) + 4 >> 3)`, masked to 8
+    /// bits (the intermediate is unsigned two's-complement, so wrapping). Ledger R-5.
+    #[allow(clippy::cast_possible_truncation)]
+    fn vi_video_filter(
+        &self,
+        origin: u32,
+        src_stride: i32,
+        x: i32,
+        y: i32,
+        center: [u8; 3],
+        cvg: u32,
+    ) -> [u8; 3] {
+        // Up/down diagonals + two-away left/right (video.c `dirs`).
+        const TAPS: [(i32, i32); 6] = [(-1, -1), (1, -1), (-2, 0), (2, 0), (-1, 1), (1, 1)];
+        let mut back = [[0u32; 7]; 3]; // per channel, centre at index 0
+        for c in 0..3 {
+            back[c][0] = u32::from(center[c]);
+        }
+        let mut n = 1usize;
+        for (dx, dy) in TAPS {
+            let nb = self.vi_read32(origin, src_stride, x + dx, y + dy);
+            if (nb >> 5) & 7 == 7 {
+                back[0][n] = (nb >> 24) & 0xFF;
+                back[1][n] = (nb >> 16) & 0xFF;
+                back[2][n] = (nb >> 8) & 0xFF;
+                n += 1;
+            }
+        }
+        let coeff = 7 - cvg;
+        let mut out = [0u8; 3];
+        for c in 0..3 {
+            let (penmin, penmax) = vi_video_max(&back[c][..n]);
+            let ctr = u32::from(center[c]);
+            let col = penmin
+                .wrapping_add(penmax)
+                .wrapping_sub(ctr << 1)
+                .wrapping_mul(coeff)
+                .wrapping_add(4)
+                >> 3;
+            out[c] = (col.wrapping_add(ctr) & 0xFF) as u8;
+        }
+        out
     }
 
     /// Apply a write to the SP register block, performing whatever it starts.
