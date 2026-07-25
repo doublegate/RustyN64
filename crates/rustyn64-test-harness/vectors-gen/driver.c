@@ -1079,6 +1079,7 @@ typedef struct {
     uint32_t v_video; // VI_V_START/VI_V_VIDEO
     uint32_t v_sync;  // VI_V_SYNC (V_TOTAL; > 550 selects PAL)
     uint32_t src_w, src_h; // source framebuffer dimensions
+    uint32_t bpp;     // source bytes/pixel: 0 or 2 = RGBA5551, 4 = RGBA8888
 } ViVector;
 
 // A deterministic distinct source pixel (RGBA5551): encodes x and y into separate
@@ -1087,11 +1088,35 @@ static uint16_t vi_src_pixel(uint32_t x, uint32_t y) {
     return (uint16_t)(((x & 0x1f) << 11) | ((y & 0x1f) << 6) | (((x + y) & 0x1f) << 1) | 1u);
 }
 
+// The 32-bit (RGBA8888) counterpart: distinct per (x, y). Alpha = 0xFF so its
+// coverage field (bits 7:5) reads 7 (fully covered) under aa_mode 0/1.
+static uint32_t vi_src_pixel32(uint32_t x, uint32_t y) {
+    uint32_t r = (x * 4u) & 0xFFu, g = (y * 4u) & 0xFFu, b = ((x + y) * 4u) & 0xFFu;
+    return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
+}
+
+// Place a logical 32-bit source pixel so Angrylion's VI fetch reads it verbatim —
+// 32-bit access has no WORD_ADDR_XOR (`RREADIDX32` = `rdram32[idx]`), so a host u32
+// at word index is read back as-is (the inverse of `read_fb32`).
+static void rdram_put_fb32(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w, uint32_t px) {
+    uint32_t idx32 = (fb_addr >> 2) + y * w + x;
+    if (idx32 >= RDRAM_SIZE / 4) {
+        fprintf(stderr, "rdram_put_fb32: pixel out of RDRAM bounds\n");
+        exit(1);
+    }
+    ((uint32_t *)g_rdram)[idx32] = px;
+}
+
 static int emit_vi_vector(const ViVector *v, const char *out_dir) {
     engine_init();
+    uint32_t src_bpp = (v->bpp == 4u) ? 4u : 2u;
     for (uint32_t y = 0; y < v->src_h; y++) {
         for (uint32_t x = 0; x < v->src_w; x++) {
-            rdram_put_fb16(v->origin, x, y, v->src_w, vi_src_pixel(x, y));
+            if (src_bpp == 4u) {
+                rdram_put_fb32(v->origin, x, y, v->src_w, vi_src_pixel32(x, y));
+            } else {
+                rdram_put_fb16(v->origin, x, y, v->src_w, vi_src_pixel(x, y));
+            }
         }
     }
     g_vi_regs[VI_STATUS] = v->ctrl;
@@ -1123,16 +1148,22 @@ static int emit_vi_vector(const ViVector *v, const char *out_dir) {
     }
     uint32_t hdr[15] = {0x56495643u, 1u,          v->ctrl,     v->origin,   v->width,
                         v->x_scale,  v->y_scale,   v->h_video,  v->v_video,  v->v_sync,
-                        v->src_w,    v->src_h,     2u,          g_vi_out_w,  g_vi_out_h};
+                        v->src_w,    v->src_h,     src_bpp,     g_vi_out_w,  g_vi_out_h};
     for (int i = 0; i < 15; i++) {
         uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
         wr(be, 4, f);
     }
     for (uint32_t y = 0; y < v->src_h; y++) {
         for (uint32_t x = 0; x < v->src_w; x++) {
-            uint16_t px = vi_src_pixel(x, y);
-            uint8_t be[2] = {px >> 8, px};
-            wr(be, 2, f);
+            if (src_bpp == 4u) {
+                uint32_t px = vi_src_pixel32(x, y);
+                uint8_t be[4] = {px >> 24, px >> 16, px >> 8, px};
+                wr(be, 4, f);
+            } else {
+                uint16_t px = vi_src_pixel(x, y);
+                uint8_t be[2] = {px >> 8, px};
+                wr(be, 2, f);
+            }
         }
     }
     wr(g_vi_out, (size_t)g_vi_out_w * g_vi_out_h * 4, f);
@@ -1201,6 +1232,15 @@ static int emit_vi_vectors(const char *out_dir) {
                      0x00000400u,          0x00000400u, 0x007300A3u, 0x002C004Cu,
                      625u,                 80u,         48u};
     if (emit_vi_vector(&vpal, out_dir)) return 1;
+
+    // Slice 4b (ledger R-5): 32-bit RGBA8888 source with the bilinear resample.
+    // aa_mode = RESAMP_ONLY, type = 3 (0x0203), 2x upscale. Exercises the 32-bit fetch
+    // (`(px>>24)&0xff` ...) through the same `vi_lerp3` path as the 16-bit bilinear.
+    // The trailing `4u` selects a 32-bit source framebuffer.
+    ViVector vbil32 = {"vi_scale_bilinear_32", 0x00000203u, 0x1000u, 80u,
+                       0x00000200u,            0x00000200u, 0x006C0094u, 0x00220042u,
+                       525u,                   80u,         48u,        4u};
+    if (emit_vi_vector(&vbil32, out_dir)) return 1;
 
     return 0;
 }

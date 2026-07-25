@@ -8,6 +8,14 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI 32-bit source bilinear, slice 4b (gap-analysis Stage D, ledger R-5)
+
+- **32-bit RGBA8888 source resampling** in `Bus::scanout_scaled`: the per-pixel fetch
+  now dispatches on the framebuffer format (`vi_fetch16`/`vi_fetch32`), so the bilinear
+  lerp and gamma run for both depths through one unified loop (previously 32-bit was
+  nearest-only). Validated by `vi_scale_bilinear_32` (`VI_STATUS = 0x0203`, 2× upscale)
+  RGB byte-for-byte vs Angrylion; the `.vivec` harness gained 32-bit source support.
+
 ### Added — VI scan-out gamma curve, slice 3 (gap-analysis Stage D, ledger R-5)
 
 - **The VI gamma curve** in `Bus::scanout_scaled` (`gamma_enable`, VI_CTRL bit 3, with
