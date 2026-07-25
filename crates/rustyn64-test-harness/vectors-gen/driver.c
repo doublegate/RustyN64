@@ -684,7 +684,7 @@ static const uint32_t V20_TEX_TRI_I4_16[] = {
     0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
     0x3C000000u, 0x00000041u, // Set Combine Mode: rgb_d=1 / a_d=1 (texel0 passthrough)
     0x3D080003u, 0x00003000u, // Set Texture Image: 8-bit (size=1), width 4, addr 0x3000
-    0x35080200u, 0x07000000u, // Set Tile 7 (LOAD): 8-bit, line=1, tmem 0
+    0x35080200u, 0x07000000u, // Set Tile 7 (LOAD): 8-bit, line=1 (one 64-bit word), tmem 0
     0x32000000u, 0x0700C000u, // Set Tile Size 7: SL0 TL0 SH3 TH0 (4 8-bit bytes)
     0x34000000u, 0x0700C000u, // Load Tile 7: SL0 TL0 SH3 TH0
     0x35800200u, 0x00000030u, // Set Tile 0 (RENDER): format I(4), size 0(4bit), line 1, mask_s=3
