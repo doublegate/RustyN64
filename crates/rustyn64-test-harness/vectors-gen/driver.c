@@ -664,6 +664,42 @@ static const uint32_t V19_PRIM_COMBINER_32[] = {
     SHADE_BLOCK_FLAT(0x11, 0x22, 0x33, 0xFF), // distinct shade (must NOT appear)
 };
 
+// V20: a 4-bit (I4) TEXTURED triangle — the hardware-canonical 4-bit texture path.
+// There is NO 4-bit texel LOAD on the N64: a 4-bit texture-image load is invalid
+// (Angrylion crashes the pipeline; ledger R-7). Games load 4-bit textures by
+// LYING about the format — set an **8-bit** texture image and 8-bit LOAD tile,
+// load half as many texels raw, then render with a SEPARATE **4-bit** tile that
+// reads the same TMEM and does the nibble extraction at fetch. This vector proves
+// that path end to end: eight I4 texels with DESCENDING non-zero intensities
+// (0xF,0xD,0xB,0x9,0x7,0x5,0x3,0x1) are packed two-per-byte into four 8-bit bytes
+// (0xFD 0xB9 0x75 0x31) at 0x3000, loaded by an 8-bit Load Tile into TMEM word 0,
+// then sampled left-to-right by a 4-bit (format I, size 0) render tile whose dx.S
+// advances one texel per pixel, so each column is a DISTINCT non-zero intensity.
+// Non-zero-and-distinct on purpose: texel 0 = 0 renders black, identical to an
+// unloaded (all-zero) TMEM, so a black golden could not tell a correct load from a
+// no-op. Angrylion defines the golden; RustyN64's existing 8-bit load + 4-bit fetch
+// must match it byte-for-byte.
+static const uint16_t TEX_I4_RAMP[2] = {0xFDB9u, 0x7531u}; // 4 bytes = 8 I4 nibbles
+static const uint32_t V20_TEX_TRI_I4_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: rgb_d=1 / a_d=1 (texel0 passthrough)
+    0x3D080003u, 0x00003000u, // Set Texture Image: 8-bit (size=1), width 4, addr 0x3000
+    0x35080200u, 0x07000000u, // Set Tile 7 (LOAD): 8-bit, line=1 (one 64-bit word), tmem 0
+    0x32000000u, 0x0700C000u, // Set Tile Size 7: SL0 TL0 SH3 TH0 (4 8-bit bytes)
+    0x34000000u, 0x0700C000u, // Load Tile 7: SL0 TL0 SH3 TH0
+    0x35800200u, 0x00000030u, // Set Tile 0 (RENDER): format I(4), size 0(4bit), line 1, mask_s=3
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: SL0 TL0 SH7 TH0 (8 4-bit texels)
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // S base 0, T base 0, W base 1.0; dx.S int = 0x20 (the R-13 s.5 scale advances
+    // the texel index one per pixel), so columns sample texels 0,1,2,...; rest 0.
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -916,6 +952,11 @@ int main(int argc, char **argv) {
     Vector v19 = {"prim_combiner_32", 0x2000, 0x1000, 8, 8, 4,
                   sizeof(V19_PRIM_COMBINER_32) / 4, V19_PRIM_COMBINER_32};
     if (emit_vector(&v19, out_dir)) return 1;
+
+    Vector v20 = {"tex_tri_i4_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V20_TEX_TRI_I4_16) / 4, V20_TEX_TRI_I4_16,
+                  0x3000, 2, TEX_I4_RAMP};
+    if (emit_vector(&v20, out_dir)) return 1;
 
     return 0;
 }

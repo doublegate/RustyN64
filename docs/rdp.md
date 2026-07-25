@@ -279,11 +279,14 @@ cross-verified against the N64brew wiki (*…/Commands*) and the ParaLLEl-RDP re
   unsupported path, rather than iterating a wrapped bogus width.
 
 Scope (**open residual R-7**): `Load Tile` covers 8/16/32-bit texels and `Load Block`
-covers 8/16-bit. **4-bit** texels (nibble addressing, pairs with the CI4/I4 decoders in
-T-32-003) and the **32-bit `Load Block` split** are deferred; an unsupported size writes
-nothing. The supported paths are byte-exact against hand-computed expectations (five unit
-tests). The oracle count stays **93** — a load is observable only once the sampler
-(T-32-004) reads TMEM.
+covers 8/16-bit. There is **no 4-bit texel *load*** — a 4-bit texture-image load is
+invalid on hardware (it crashes the RDP pipeline). Games load 4-bit textures by lying
+about the format: an 8-bit texture image + 8-bit LOAD tile loads the packed bytes raw,
+then a **separate 4-bit render tile** extracts nibbles at fetch. That canonical path is
+**oracle-validated** (`tex_tri_i4_16` matches Angrylion byte-for-byte). Still deferred:
+the **32-bit `Load Block` split** and a *direct* 4-bit LOAD tile with an 8-bit texture
+image (the `ti_size`-vs-`tile.size` load granularity); an unsupported size writes nothing.
+The supported paths are byte-exact against hand-computed expectations (five unit tests).
 
 ### The sampler and copy-mode Texture Rectangle (T-32-004)
 
@@ -341,8 +344,11 @@ matched to the ParaLLEl-RDP read layout (`texture.h`, MIT).
 **The read convention matches the loads.** TMEM is a natural big-endian byte array, so the
 sampler applies only the odd-row 32-bit-word swap `^= (t & 1) << 2` — the endian twiddles
 ParaLLEl-RDP applies to its host-word storage are intentionally absent on both the load and
-fetch sides. **YUV16** decode is deferred (no oracle test needs it this sprint); **4-bit
-loading** (nibble `Load Tile`/`Load Block`) remains R-7, though 4-bit *fetch* is done. The
+fetch sides. **YUV16** decode is deferred (no oracle test needs it this sprint). There is
+**no 4-bit texel *load*** (a 4-bit texture-image load is invalid on hardware; 4-bit textures
+load as 8-bit and render with a separate 4-bit tile — validated against Angrylion by
+`tex_tri_i4_16`, R-7); only the 32-bit `Load Block` split and a direct 4-bit LOAD tile with an
+8-bit texture image are still deferred. 4-bit *fetch* is done. The
 oracle count stays **93** — `fetch_texel` now has runtime callers (the texture rectangle,
 T-32-004, and the textured triangle, T-33-004 2b-texture), but no systemtest drives the render path.
 
@@ -599,8 +605,8 @@ the rest is still marked TODO:
   **loaded** by `Load Tile` / `Load Block` (T-32-002) with the odd-row swap and the
   32-bit split, its palettes by `Load TLUT` (T-32-003) into the upper half, and
   **decoded** to RGBA8888 by `fetch_texel` (T-32-003): RGBA16/32, IA16/8/4, I8/4,
-  CI8/4 (via TLUT). Formats per `ref-docs/research-report.md` §4. YUV16 and 4-bit
-  loading pending (R-7).
+  CI8/4 (via TLUT). Formats per `ref-docs/research-report.md` §4. YUV16 decode
+  pending; 4-bit textures load as 8-bit and render with a 4-bit tile (validated, R-7).
 - **8 tile descriptors** — format, size, line stride, TMEM address, palette,
   clamp/mirror + mask/shift per S/T axis, and the tile-size coords (**present**,
   T-32-001). Set by `Set Tile` (0x35) and `Set Tile Size` (0x32).

@@ -318,6 +318,22 @@ fn tex_tri_fixed_16_matches_angrylion() {
     );
 }
 
+/// A **4-bit (I4) textured triangle** — the hardware-canonical 4-bit texture path.
+/// There is no 4-bit texel *load* on the N64 (a 4-bit texture-image load is invalid;
+/// Angrylion crashes the pipeline, ledger R-7): games load 4-bit textures by setting
+/// an 8-bit texture image + 8-bit LOAD tile, loading half as many texels raw, then
+/// rendering with a SEPARATE 4-bit tile that extracts nibbles at fetch. This vector
+/// drives that path — eight I4 texels packed two-per-byte, an 8-bit `Load Tile`, then
+/// a 4-bit render tile — and proves RustyN64's existing 8-bit load + 4-bit `fetch_texel`
+/// reproduce Angrylion byte-for-byte (no new "4-bit load" code, matching hardware).
+#[test]
+fn tex_tri_i4_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_i4_16",
+        include_bytes!("vectors/tex_tri_i4_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`
