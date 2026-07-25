@@ -12,10 +12,11 @@
 //!   scheduler turns into `MI_INTR.vi`.
 //!
 //! Not here (elsewhere or deferred): the framebuffer→RGBA scan-*out* conversion
-//! is `Bus::scanout`; the scan-out scaling/filters are ledger R-5; the field
-//! cadence is anchored to nominal 60 Hz NTSC (ledger R-6, PAL later); and the
-//! per-register write masks are not yet applied (ledger R-4). Reference:
-//! `n64brew_wiki/markdown/Video Interface.md`.
+//! is `Bus::scanout` (the live 1:1 path) and `Bus::scanout_scaled` (the accurate
+//! `VI_X_SCALE`/`VI_Y_SCALE`-resampling path being built up slice by slice against
+//! the Angrylion `.vivec` oracle — ledger R-5); the field cadence is anchored to
+//! nominal 60 Hz NTSC (ledger R-6, PAL later); and the per-register write masks are
+//! not yet applied (ledger R-4). Reference: `n64brew_wiki/markdown/Video Interface.md`.
 
 use serde::{Deserialize, Serialize};
 /// `VI_CTRL` (`0x0440_0000`): pixel type, AA/serrate/dither config. `TYPE == 0`

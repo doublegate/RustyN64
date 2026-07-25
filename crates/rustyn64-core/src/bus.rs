@@ -624,6 +624,133 @@ impl Bus {
         (width, height)
     }
 
+    /// Hardware-accurate VI scan-out with `VI_X_SCALE`/`VI_Y_SCALE` resampling and
+    /// the real active-span/overscan geometry (ledger **R-5**, gap-analysis Stage D).
+    ///
+    /// This is the accurate replacement for [`Bus::scanout`]'s 1:1 copy, built up a
+    /// slice at a time and validated byte-for-byte against Angrylion's VI pipeline
+    /// (`vi_process_full`) through the `.vivec` conformance vectors. **Slice 1**:
+    /// nearest-neighbour X/Y scale (the `aa_mode == VI_AA_REPLICATE` path — no
+    /// bilinear lerp) plus the geometry — the 2.10 fixed-point accumulator
+    /// (`line_x = x_offs >> 10`, source index `stride*srcY + srcX`), the NTSC 108-px
+    /// horizontal overscan (`h_start -= 108`), the 8/7-px `minhpass`/`maxhpass`
+    /// crop, the `PRESCALE_WIDTH`/`HEIGHT` clamp, and the truncating RGBA5551→8
+    /// conversion the VI uses (`(px >> 8) & 0xF8`, not `expand5`'s replicating
+    /// widening). Alpha is `0xFF` (opaque) for display; the VI carries coverage in
+    /// its output alpha, which the conformance harness compares as RGB-only.
+    ///
+    /// Still to come (later slices, still 1:1-substituted here): the 5-bit bilinear
+    /// lerp (`aa_mode != REPLICATE`), the AA edge / divot / de-dither / gamma
+    /// filters, and PAL 50 Hz + interlace/serrate (R-6). Not yet wired into the
+    /// frontend — [`Bus::scanout`] remains the live path until the pipeline is
+    /// complete (mirrors the R-12 depth path landing ahead of its runtime caller).
+    ///
+    /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
+    /// computed width/height is non-positive, or `out` is too small.
+    #[must_use]
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::useless_let_if_seq,
+        clippy::too_many_lines
+    )]
+    pub fn scanout_scaled(&self, out: &mut [u8]) -> (u32, u32) {
+        // The DAC prescale buffer bounds (Angrylion `PRESCALE_WIDTH`/`HEIGHT`).
+        const PRESCALE_W: i32 = 640;
+        const PRESCALE_H: i32 = 625;
+        let ctrl = self.vi.read(vi::VI_CTRL);
+        let bpp = match ctrl & 0x3 {
+            2 => 2u32, // 16-bit RGBA5551
+            3 => 4,    // 32-bit RGBA8888
+            _ => return (0, 0),
+        };
+        let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
+        let src_stride = (self.vi.read(vi::VI_WIDTH) & 0xFFF) as i32; // source pixels/row
+        let h_video = self.vi.read(vi::VI_H_VIDEO);
+        let v_video = self.vi.read(vi::VI_V_VIDEO);
+        let x_scale = self.vi.read(vi::VI_X_SCALE);
+        let y_scale = self.vi.read(vi::VI_Y_SCALE);
+        let v_sync = self.vi.read(vi::VI_V_TOTAL) & 0x3FF;
+
+        // Register decode (Angrylion `n64video_update_screen`; 2.10 fixed point).
+        let h_start_raw = ((h_video >> 16) & 0x3FF) as i32;
+        let h_end = (h_video & 0x3FF) as i32;
+        let v_start_raw = ((v_video >> 16) & 0x3FF) as i32;
+        let v_end = (v_video & 0x3FF) as i32;
+        let mut hres = h_end - h_start_raw;
+        let mut vres = (v_end - v_start_raw) >> 1;
+        let x_add = (x_scale & 0xFFF) as i32;
+        let mut x_start = ((x_scale >> 16) & 0xFFF) as i32;
+        let y_add = (y_scale & 0xFFF) as i32;
+        let mut y_start = ((y_scale >> 16) & 0xFFF) as i32;
+
+        // Active-span adjust: NTSC/PAL horizontal overscan, then left/top clamps that
+        // fold the cropped offset back into the scale accumulator start.
+        let ispal = v_sync > 550;
+        let mut h_start = h_start_raw - if ispal { 128 } else { 108 };
+        let mut h_start_clamped = false;
+        if h_start < 0 {
+            x_start += x_add * (-h_start);
+            hres += h_start;
+            h_start = 0;
+            h_start_clamped = true;
+        }
+        let vstartoffset = if ispal { 44 } else { 34 };
+        let mut v_start = (v_start_raw - vstartoffset) / 2;
+        if v_start < 0 {
+            y_start += y_add * (-v_start);
+            v_start = 0;
+        }
+        let mut hres_clamped = false;
+        if hres + h_start > PRESCALE_W {
+            hres = PRESCALE_W - h_start;
+            hres_clamped = true;
+        }
+        if vres + v_start > PRESCALE_H {
+            vres = PRESCALE_H - v_start;
+        }
+        // Horizontal overscan crop; vertical is handled by the `v_start` origin.
+        let minhpass = if h_start_clamped { 0 } else { 8 };
+        let maxhpass = if hres_clamped { hres } else { hres - 7 };
+        let serrate = (ctrl >> 6) & 1; // interlace (R-6, expect 0 here)
+        let width = (maxhpass - minhpass).max(0);
+        let height = (vres << serrate).max(0);
+        if width == 0 || height == 0 {
+            return (0, 0);
+        }
+        let (w, h) = (width as u32, height as u32);
+        if out.len() < (w as usize) * (h as usize) * 4 {
+            return (0, 0);
+        }
+
+        for oy in 0..height {
+            let curry = y_start + oy * y_add;
+            let src_row = src_stride.wrapping_mul(curry >> 10); // pixels
+            for ox in 0..width {
+                let x_offs = x_start + (minhpass + ox) * x_add;
+                let src_idx = src_row.wrapping_add(x_offs >> 10); // nearest sample (REPLICATE)
+                let dst = ((oy * width + ox) * 4) as usize;
+                if bpp == 2 {
+                    let byte = origin.wrapping_add((src_idx as u32).wrapping_mul(2));
+                    let px = (u16::from(self.rdram_read(byte)) << 8)
+                        | u16::from(self.rdram_read(byte.wrapping_add(1)));
+                    // Truncating 5551 → 8 (VI convention): the 5-bit field sits at the
+                    // top of the byte with the low bits zero, not replicated.
+                    out[dst] = ((px >> 8) & 0xF8) as u8;
+                    out[dst + 1] = ((px & 0x07C0) >> 3) as u8;
+                    out[dst + 2] = ((px & 0x003E) << 2) as u8;
+                } else {
+                    let byte = origin.wrapping_add((src_idx as u32).wrapping_mul(4));
+                    out[dst..dst + 3]
+                        .copy_from_slice(&self.rdram_read_u32(byte).to_be_bytes()[..3]);
+                }
+                out[dst + 3] = 0xFF; // opaque display alpha (VI coverage is not shown)
+            }
+        }
+        (w, h)
+    }
+
     /// Apply a write to the SP register block, performing whatever it starts.
     ///
     /// Two effects can come from one write and they are collected separately:
@@ -1574,6 +1701,68 @@ mod tests {
         let mut out = alloc::vec![0xFFu8; 8]; // too small (< 16)
         assert_eq!(bus.scanout(&mut out), (0, 0), "undersized: refused");
         assert!(out.iter().all(|&b| b == 0xFF), "and left untouched");
+    }
+
+    /// **`scanout_scaled` geometry + truncating convert (R-5).** A hand-computed
+    /// 1:1 case: `VI_H_VIDEO = 108..148` (NTSC overscan `-108` → `h_start = 0`,
+    /// `minhpass = 8`, so output column 0 samples **source column 8**), one active
+    /// line. Source column 8 holds `0x1234`; the truncating RGBA5551→8 conversion
+    /// (`(px>>8)&0xF8`, `(px&0x7C0)>>3`, `(px&0x3E)<<2`) gives `[10,40,D0]` with an
+    /// opaque display alpha. A `expand5`-style replicating conversion or a wrong
+    /// overscan offset would change the bytes, so this pins both.
+    #[test]
+    fn scanout_scaled_geometry_and_truncating_convert() {
+        let mut bus = Bus::new();
+        let fb = 0x2000usize;
+        // Source column 8 (byte fb + 8*2), row 0, of a 48-wide framebuffer.
+        bus.rdram[fb + 16..fb + 18].copy_from_slice(&0x1234u16.to_be_bytes());
+        bus.vi.regs[vi::VI_CTRL as usize] = 0x0302; // 16-bit, aa_mode=REPLICATE
+        bus.vi.regs[vi::VI_ORIGIN as usize] = fb as u32;
+        bus.vi.regs[vi::VI_WIDTH as usize] = 48;
+        bus.vi.regs[vi::VI_V_TOTAL as usize] = 525; // NTSC (< 550)
+        bus.vi.regs[vi::VI_H_VIDEO as usize] = (108 << 16) | 0x94; // hres 40 -> width 25
+        bus.vi.regs[vi::VI_V_VIDEO as usize] = (34 << 16) | 0x24; // vres 1 -> height 1
+        bus.vi.regs[vi::VI_X_SCALE as usize] = 0x0000_0400; // 1:1
+        bus.vi.regs[vi::VI_Y_SCALE as usize] = 0x0000_0400;
+        let mut out = alloc::vec![0u8; 25 * 4];
+        assert_eq!(
+            bus.scanout_scaled(&mut out),
+            (25, 1),
+            "overscan-cropped geometry"
+        );
+        assert_eq!(
+            &out[0..4],
+            &[0x10, 0x40, 0xD0, 0xFF],
+            "column 0 samples source column 8, truncating 5551->8, opaque alpha"
+        );
+    }
+
+    /// **`scanout_scaled` blanks and refuses an undersized buffer.** `TYPE` 0/1
+    /// returns `(0, 0)` writing nothing; an `out` too small for `width*height*4`
+    /// is refused rather than truncated.
+    #[test]
+    fn scanout_scaled_blanks_and_refuses_undersized() {
+        let mut bus = Bus::new();
+        // Blank (TYPE == 0), a valid geometry otherwise.
+        bus.vi.regs[vi::VI_ORIGIN as usize] = 0x2000;
+        bus.vi.regs[vi::VI_WIDTH as usize] = 48;
+        bus.vi.regs[vi::VI_V_TOTAL as usize] = 525;
+        bus.vi.regs[vi::VI_H_VIDEO as usize] = (108 << 16) | 0x94;
+        bus.vi.regs[vi::VI_V_VIDEO as usize] = (34 << 16) | 0x24;
+        bus.vi.regs[vi::VI_X_SCALE as usize] = 0x0000_0400;
+        bus.vi.regs[vi::VI_Y_SCALE as usize] = 0x0000_0400;
+        let mut out = alloc::vec![0xA5u8; 25 * 4];
+        assert_eq!(bus.scanout_scaled(&mut out), (0, 0), "TYPE 0: blank");
+        assert!(out.iter().all(|&b| b == 0xA5), "sentinel untouched");
+        // Now enable it but give a too-small buffer.
+        bus.vi.regs[vi::VI_CTRL as usize] = 0x0302;
+        let mut small = alloc::vec![0xA5u8; 8]; // < 25*1*4
+        assert_eq!(
+            bus.scanout_scaled(&mut small),
+            (0, 0),
+            "undersized: refused"
+        );
+        assert!(small.iter().all(|&b| b == 0xA5), "and left untouched");
     }
 }
 

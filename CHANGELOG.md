@@ -8,6 +8,24 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI scan-out scale resampling, slice 1 (gap-analysis Stage D, ledger R-5)
+
+- **A hardware-accurate VI scan-out with `VI_X_SCALE`/`VI_Y_SCALE` resampling**,
+  `Bus::scanout_scaled`, replacing the 1:1 copy's geometry. Slice 1 covers the
+  nearest-neighbour path (`aa_mode = REPLICATE`): the 2.10 fixed-point accumulator
+  (`line_x = x_offs >> 10`, source index `stride*srcY + srcX`), the NTSC 108-px
+  horizontal overscan (`h_start -= 108`) with the `minhpass`/`maxhpass` crop and the
+  `PRESCALE 640×625` clamp, and the truncating RGBA5551→8 conversion the VI uses
+  (`(px>>8)&0xF8`, not high-bit replication).
+- **A new VI conformance oracle**: the Angrylion driver captures `vi_process_full`'s
+  output via `vdac_write` and emits `.vivec` goldens. `vi_scale_1x_16` (1:1; the
+  overscan makes output column 0 sample source column 8) and `vi_scale_down2x_16`
+  (2× downscale) validate `scanout_scaled` byte-for-byte (RGB) against Angrylion,
+  plus mutation-checked unit tests.
+- `scanout_scaled` is validated but **not yet wired into the frontend** — the live
+  path stays the 1:1 `Bus::scanout` until the bilinear lerp, the AA/divot/de-dither
+  filters, and R-6 (PAL/interlace) land in later slices.
+
 ### Added — register-sourced exotic combiner inputs (gap-analysis Stage D, ledger R-10)
 
 - **`PRIM_LOD_FRAC` and the `Set Convert` `K4`/`K5` constants now route through the
