@@ -334,6 +334,34 @@ fn tex_tri_i4_16_matches_angrylion() {
     );
 }
 
+/// **Tile-coordinate CLAMP for a point-sampled textured triangle (R-13).** A 4-texel
+/// 16-bit tile (`SH = 3`, `clamp_s = 1`) is sampled across a triangle whose S advances
+/// one texel/pixel, so two columns run past the tile — they must clamp to the last
+/// texel (white), giving `R,G,B,W,W,W`. Exercises the `sample_coord` transform
+/// (shift → tile-origin subtraction → clamp → mask): the over-`SH` clamp to
+/// `(SH>>2)-(SL>>2)`. RustyN64's pre-R-13 sampler ignored the tile size and would
+/// read unrelated texels here.
+#[test]
+fn tex_tri_clamp_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_clamp_16",
+        include_bytes!("vectors/tex_tri_clamp_16.rvec"),
+    );
+}
+
+/// **Tile-coordinate WRAP for a point-sampled textured triangle (R-13).** As
+/// `tex_tri_clamp_16` but the tile uses `mask_s = 2` (no clamp), so the coordinate
+/// wraps mod 4 — the two over-tile columns read texels 0,1 again, giving
+/// `R,G,B,W,R,G`. Together with the clamp vector this pins both branches of the
+/// `sample_coord` transform against Angrylion.
+#[test]
+fn tex_tri_wrap_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_wrap_16",
+        include_bytes!("vectors/tex_tri_wrap_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`

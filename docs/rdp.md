@@ -533,8 +533,11 @@ combiner.
 interpolates `S`/`T`/`W` and runs the hardware perspective divide — a faithful port of ParaLLEl-RDP's
 `perspective_divide` (the 64-entry reciprocal LUT, the normalisation shift, the out-of-bounds
 saturation, the `w <= 0` carry, the 17-bit clamp), validated by a hand-computed `perspective_divide`
-test. Scope (**open residual R-13**): the exact tile shift/clamp/mask for triangle coordinates and the
-LOD/`texel1` path remain for the conformance pass. The oracle stays **93**.
+test. The **tile coordinate transform** (shift → tile-origin subtraction → clamp → mask/mirror) is now
+applied to the raw `s10.5` coordinate before the fetch (`sample_coord`, the ParaLLEl-RDP sampler order:
+clamp active when `clamp_s || mask_s == 0`, over-`SH` clamps to `(SH>>2)−(SL>>2)`, clamp *before* mask),
+validated against Angrylion by `tex_tri_clamp_16` and `tex_tri_wrap_16`. Scope (**open residual R-13**):
+**bilinear** (`sample_type = 1`) and the **LOD/`texel1`** 2-cycle path remain for the conformance pass.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 

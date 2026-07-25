@@ -700,6 +700,50 @@ static const uint32_t V20_TEX_TRI_I4_16[] = {
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
 };
 
+// V21/V22b: the tile coordinate CLAMP and WRAP for a point-sampled textured
+// triangle (ledger R-13). A 4-texel 16-bit tile (red, green, blue, white; SH = 3)
+// is sampled across a triangle whose S advances one texel per pixel (dx.S = 0x20),
+// so the six drawn columns want texels 0,1,2,3,4,5 — two of them PAST the tile.
+// What the RDP does past `SH` depends on the tile mode:
+//   - CLAMP (`clamp_s = 1`): the over-tile columns clamp to the last texel (3 =
+//     white) -> red, green, blue, white, white, white.
+//   - WRAP (`mask_s = 2`, so the coordinate wraps mod 4): -> red, green, blue,
+//     white, red, green.
+// Distinct texels make each non-vacuous: a sampler that ignored the tile transform
+// (RustyN64's pre-R-13 behaviour) would read texels 4,5 from unrelated TMEM (or
+// clamp-to-black), matching neither golden. Angrylion defines both.
+static const uint16_t TEX_CLAMP4[4] = {0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu}; // R,G,B,W
+static const uint32_t V21_TEX_TRI_CLAMP_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: texel0 passthrough
+    0x3D100003u, 0x00003000u, // Set Texture Image: 16-bit, width 4, addr 0x3000
+    0x35100200u, 0x00000200u, // Set Tile 0: 16-bit, line 1, tmem 0, clamp_s=1 (bit 9)
+    0x32000000u, 0x0000C000u, // Set Tile Size 0: SL0 TL0 SH3 TH0 (4 texels)
+    0x34000000u, 0x0000C000u, // Load Tile 0: 4 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0), // dx.S = 0x20 = one texel/pixel (s.5)
+};
+static const uint32_t V21_TEX_TRI_WRAP_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: texel0 passthrough
+    0x3D100003u, 0x00003000u, // Set Texture Image: 16-bit, width 4, addr 0x3000
+    0x35100200u, 0x00000020u, // Set Tile 0: 16-bit, line 1, tmem 0, mask_s=2 (bits 7:4)
+    0x32000000u, 0x0000C000u, // Set Tile Size 0: SL0 TL0 SH3 TH0 (4 texels)
+    0x34000000u, 0x0000C000u, // Load Tile 0: 4 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0), // dx.S = 0x20 = one texel/pixel (s.5)
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -957,6 +1001,16 @@ int main(int argc, char **argv) {
                   sizeof(V20_TEX_TRI_I4_16) / 4, V20_TEX_TRI_I4_16,
                   0x3000, 2, TEX_I4_RAMP};
     if (emit_vector(&v20, out_dir)) return 1;
+
+    Vector v21 = {"tex_tri_clamp_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V21_TEX_TRI_CLAMP_16) / 4, V21_TEX_TRI_CLAMP_16,
+                  0x3000, 4, TEX_CLAMP4};
+    if (emit_vector(&v21, out_dir)) return 1;
+
+    Vector v21b = {"tex_tri_wrap_16", 0x2000, 0x1000, 8, 8, 2,
+                   sizeof(V21_TEX_TRI_WRAP_16) / 4, V21_TEX_TRI_WRAP_16,
+                   0x3000, 4, TEX_CLAMP4};
+    if (emit_vector(&v21b, out_dir)) return 1;
 
     return 0;
 }
