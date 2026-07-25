@@ -144,3 +144,29 @@ fn vi_scale_down2x_16_matches_angrylion() {
         include_bytes!("vectors/vi_scale_down2x_16.vivec"),
     );
 }
+
+/// **The 5-bit bilinear lerp (slice 2).** `aa_mode = RESAMP_ONLY` (`VI_STATUS =
+/// 0x0202`) enables the bilinear resample with the AA/divot/de-dither filters still
+/// off. A 2× upscale (`x_add = y_add = 0x200`) makes `xfrac`/`yfrac` alternate 0 and
+/// 0x10, so both the exact-passthrough and the 50 %-blend lerp paths — and both the
+/// horizontal and vertical directions — are exercised. Pins `vi_lerp3`'s
+/// `a + ((b-a)*frac + 16) >> 5` against Angrylion.
+#[test]
+fn vi_scale_bilinear_16_matches_angrylion() {
+    assert_matches(
+        "vi_scale_bilinear_16",
+        include_bytes!("vectors/vi_scale_bilinear_16.vivec"),
+    );
+}
+
+/// **The bilinear lerp's `+16 >> 5` rounding.** A non-power-of-two scale (`x_add =
+/// y_add = 0x240`) yields `xfrac`/`yfrac` that are not multiples of 4, so the lerp
+/// rounding bias changes the result — the `vi_scale_bilinear_16` vector's products
+/// are all multiples of 32, hiding it. Dropping the `+16` fails this vector.
+#[test]
+fn vi_scale_bilinear_odd_16_matches_angrylion() {
+    assert_matches(
+        "vi_scale_bilinear_odd_16",
+        include_bytes!("vectors/vi_scale_bilinear_odd_16.vivec"),
+    );
+}

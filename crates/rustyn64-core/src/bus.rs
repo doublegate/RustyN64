@@ -35,6 +35,31 @@ const fn expand5(v5: u8) -> u8 {
     (v << 3) | (v >> 2)
 }
 
+/// Convert a logical RGBA5551 pixel to the VI's RGB8, using the **truncating**
+/// widening the VI hardware applies (the 5-bit field sits at the top of the byte
+/// with the low bits zero — *not* `expand5`'s high-bit replication). Alpha (bit 0,
+/// coverage) is not carried; the scan-out sets an opaque display alpha. Ledger R-5.
+const fn vi_rgb5551(px: u16) -> [u8; 3] {
+    [
+        ((px >> 8) & 0xF8) as u8,
+        ((px & 0x07C0) >> 3) as u8,
+        ((px & 0x003E) << 2) as u8,
+    ]
+}
+
+/// The VI's 5-bit bilinear lerp, per channel: `a + (((b - a) * frac + 16) >> 5)`
+/// (`frac` a 5-bit weight 0..=31, rounding bias `+16` before the `>> 5`). A faithful
+/// port of Angrylion `vi_vl_lerp` (`vi/lerp.c`). Ledger R-5.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn vi_lerp3(a: [u8; 3], b: [u8; 3], frac: i32) -> [u8; 3] {
+    let mut o = [0u8; 3];
+    for i in 0..3 {
+        let (ai, bi) = (i32::from(a[i]), i32::from(b[i]));
+        o[i] = (ai + (((bi - ai) * frac + 16) >> 5)) as u8;
+    }
+    o
+}
+
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
@@ -628,22 +653,24 @@ impl Bus {
     /// the real active-span/overscan geometry (ledger **R-5**, gap-analysis Stage D).
     ///
     /// This is the accurate replacement for [`Bus::scanout`]'s 1:1 copy, built up a
-    /// slice at a time and validated byte-for-byte against Angrylion's VI pipeline
-    /// (`vi_process_full`) through the `.vivec` conformance vectors. **Slice 1**:
-    /// nearest-neighbour X/Y scale (the `aa_mode == VI_AA_REPLICATE` path — no
-    /// bilinear lerp) plus the geometry — the 2.10 fixed-point accumulator
-    /// (`line_x = x_offs >> 10`, source index `stride*srcY + srcX`), the NTSC 108-px
-    /// horizontal overscan (`h_start -= 108`), the 8/7-px `minhpass`/`maxhpass`
-    /// crop, the `PRESCALE_WIDTH`/`HEIGHT` clamp, and the truncating RGBA5551→8
-    /// conversion the VI uses (`(px >> 8) & 0xF8`, not `expand5`'s replicating
-    /// widening). Alpha is `0xFF` (opaque) for display; the VI carries coverage in
-    /// its output alpha, which the conformance harness compares as RGB-only.
+    /// slice at a time and validated RGB byte-for-byte against Angrylion's VI pipeline
+    /// (`vi_process_full`) through the `.vivec` conformance vectors. Implemented so
+    /// far: the geometry — the 2.10 fixed-point accumulator (`line_x = x_offs >> 10`,
+    /// source index `stride*srcY + srcX`), the NTSC 108-px horizontal overscan
+    /// (`h_start -= 108`), the 8/7-px `minhpass`/`maxhpass` crop, the
+    /// `PRESCALE_WIDTH`/`HEIGHT` clamp, and the truncating RGBA5551→8 conversion the
+    /// VI uses (`(px >> 8) & 0xF8`, not `expand5`'s replicating widening) — plus, for
+    /// the **16-bit** path, the 5-bit **bilinear lerp** when `aa_mode != REPLICATE`
+    /// and a fraction is non-zero (nearest otherwise). Alpha is `0xFF` (opaque) for
+    /// display; the VI carries coverage in its output alpha, which the conformance
+    /// harness compares as RGB-only.
     ///
-    /// Still to come (later slices, still 1:1-substituted here): the 5-bit bilinear
-    /// lerp (`aa_mode != REPLICATE`), the AA edge / divot / de-dither / gamma
-    /// filters, and PAL 50 Hz + interlace/serrate (R-6). Not yet wired into the
-    /// frontend — [`Bus::scanout`] remains the live path until the pipeline is
-    /// complete (mirrors the R-12 depth path landing ahead of its runtime caller).
+    /// Still to come (later slices, still substituted here): **32-bit** bilinear
+    /// (16-bit only for now — no oracle vector yet), the AA edge / divot / de-dither
+    /// / gamma filters (`aa_mode` 0/1, coverage-gated), and PAL 50 Hz +
+    /// interlace/serrate (R-6). Not yet wired into the frontend — [`Bus::scanout`]
+    /// remains the live path until the pipeline is complete (mirrors the R-12 depth
+    /// path landing ahead of its runtime caller).
     ///
     /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
     /// computed width/height is non-positive, or `out` is too small.
@@ -665,6 +692,10 @@ impl Bus {
             3 => 4,    // 32-bit RGBA8888
             _ => return (0, 0),
         };
+        // aa_mode (VI_CTRL bits 9:8): 3 = REPLICATE (nearest); anything else enables
+        // the bilinear resample when a fraction is non-zero. The AA-edge / de-dither
+        // paths (aa_mode 0/1, coverage-gated) are a later slice.
+        let aa_mode = (ctrl >> 8) & 0x3;
         let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
         let src_stride = (self.vi.read(vi::VI_WIDTH) & 0xFFF) as i32; // source pixels/row
         let h_video = self.vi.read(vi::VI_H_VIDEO);
@@ -732,20 +763,33 @@ impl Bus {
         for oy in 0..height {
             let curry = y_start + oy * y_add;
             let src_row = src_stride.wrapping_mul(curry >> 10); // pixels
+            let sy = curry >> 10;
+            let yfrac = (curry >> 5) & 0x1F;
             for ox in 0..width {
                 let x_offs = x_start + (minhpass + ox) * x_add;
-                let src_idx = src_row.wrapping_add(x_offs >> 10); // nearest sample (REPLICATE)
+                let sx = x_offs >> 10;
+                let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
                 if bpp == 2 {
-                    let byte = origin.wrapping_add((src_idx as u32).wrapping_mul(2));
-                    let px = (u16::from(self.rdram_read(byte)) << 8)
-                        | u16::from(self.rdram_read(byte.wrapping_add(1)));
-                    // Truncating 5551 → 8 (VI convention): the 5-bit field sits at the
-                    // top of the byte with the low bits zero, not replicated.
-                    out[dst] = ((px >> 8) & 0xF8) as u8;
-                    out[dst + 1] = ((px & 0x07C0) >> 3) as u8;
-                    out[dst + 2] = ((px & 0x003E) << 2) as u8;
+                    // Bilinear when aa_mode isn't REPLICATE and a fraction is non-zero
+                    // (Angrylion `lerping`); otherwise the exact nearest sample.
+                    let rgb = if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
+                        let p00 = self.vi_fetch16(origin, src_stride, sx, sy);
+                        let p10 = self.vi_fetch16(origin, src_stride, sx + 1, sy);
+                        let p01 = self.vi_fetch16(origin, src_stride, sx, sy + 1);
+                        let p11 = self.vi_fetch16(origin, src_stride, sx + 1, sy + 1);
+                        // Vertical lerp of each column, then horizontal between them.
+                        let col = vi_lerp3(p00, p01, yfrac);
+                        let ncol = vi_lerp3(p10, p11, yfrac);
+                        vi_lerp3(col, ncol, xfrac)
+                    } else {
+                        self.vi_fetch16(origin, src_stride, sx, sy)
+                    };
+                    out[dst..dst + 3].copy_from_slice(&rgb);
                 } else {
+                    // 32-bit: nearest only; 32-bit VI resampling has no oracle vector
+                    // yet, so bilinear for it is deferred rather than shipped untested.
+                    let src_idx = src_row.wrapping_add(sx);
                     let byte = origin.wrapping_add((src_idx as u32).wrapping_mul(4));
                     out[dst..dst + 3]
                         .copy_from_slice(&self.rdram_read_u32(byte).to_be_bytes()[..3]);
@@ -754,6 +798,19 @@ impl Bus {
             }
         }
         (w, h)
+    }
+
+    /// Fetch a 16-bit RGBA5551 source pixel at `(x, y)` (stride `src_stride`, base
+    /// `origin`) and convert to the VI's truncating RGB8 (`vi_rgb5551`). Reads
+    /// big-endian through `rdram_read`, which returns 0 for an out-of-range address,
+    /// so an out-of-bounds sample cannot panic. Ledger R-5 (VI scale resample).
+    #[allow(clippy::cast_sign_loss)]
+    fn vi_fetch16(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> [u8; 3] {
+        let idx = src_stride.wrapping_mul(y).wrapping_add(x);
+        let byte = origin.wrapping_add((idx as u32).wrapping_mul(2));
+        let px = (u16::from(self.rdram_read(byte)) << 8)
+            | u16::from(self.rdram_read(byte.wrapping_add(1)));
+        vi_rgb5551(px)
     }
 
     /// Apply a write to the SP register block, performing whatever it starts.
@@ -1768,6 +1825,28 @@ mod tests {
             "undersized: refused"
         );
         assert!(small.iter().all(|&b| b == 0xA5), "and left untouched");
+    }
+
+    /// **`vi_lerp3` — the 5-bit bilinear lerp with `+16 >> 5` rounding (R-5).**
+    /// `frac = 16` is a 50 % blend; `frac = 0` is an exact passthrough of `a`; and
+    /// `frac = 2` with a diff of 8 exercises the rounding: `(8*2 + 16) >> 5 = 1`
+    /// (vs `0` without the `+16`), so the result is `0x29`, not `0x28`.
+    #[test]
+    fn vi_lerp3_blends_and_rounds() {
+        assert_eq!(
+            vi_lerp3([0x20, 0, 0x20], [0x28, 0, 0x28], 16),
+            [0x24, 0, 0x24]
+        );
+        assert_eq!(
+            vi_lerp3([0x10, 0x20, 0x30], [0xFF, 0xFF, 0xFF], 0),
+            [0x10, 0x20, 0x30],
+            "frac 0 is an exact passthrough of a"
+        );
+        assert_eq!(
+            vi_lerp3([0x28, 0, 0], [0x30, 0, 0], 2),
+            [0x29, 0, 0],
+            "the +16 rounding rounds 0x28 up to 0x29"
+        );
     }
 }
 

@@ -8,6 +8,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI scan-out bilinear resample, slice 2 (gap-analysis Stage D, ledger R-5)
+
+- **The 5-bit bilinear lerp** in `Bus::scanout_scaled` (`aa_mode != REPLICATE` with a
+  non-zero fraction): four texels vertical-lerped per column by `yfrac` then
+  horizontal-lerped by `xfrac`, each channel `a + (((b-a)*frac + 16) >> 5)`
+  (`vi_lerp3`, a port of Angrylion `vi_vl_lerp`). Validated RGB byte-for-byte vs
+  Angrylion by `vi_scale_bilinear_16` (2× upscale, the clean 50 % blend) and
+  `vi_scale_bilinear_odd_16` (scale `0x240`, which exercises the `+16` rounding the
+  first vector's multiple-of-32 products hide), plus a mutation-checked `vi_lerp3`
+  unit test. The 32-bit VI path stays nearest (no oracle vector yet). The AA/divot/
+  de-dither filters and R-6 (PAL/interlace) remain later slices.
+
 ### Added — VI scan-out scale resampling, slice 1 (gap-analysis Stage D, ledger R-5)
 
 - **A hardware-accurate VI scan-out with `VI_X_SCALE`/`VI_Y_SCALE` resampling**,

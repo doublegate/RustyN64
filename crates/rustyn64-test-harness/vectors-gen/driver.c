@@ -1163,6 +1163,25 @@ static int emit_vi_vectors(const char *out_dir) {
                       525u,                 80u,         48u};
     if (emit_vi_vector(&vdown, out_dir)) return 1;
 
+    // Slice 2 (ledger R-5): the 5-bit bilinear lerp. aa_mode = RESAMP_ONLY (VI_STATUS
+    // bit 9 set, 0x0202) keeps the AA edge / divot / de-dither filters off but enables
+    // the bilinear resample. 2x upscale (x_add = y_add = 0x200) makes xfrac/yfrac
+    // alternate 0 and 0x10, so both the exact-passthrough and the 50%-blend lerp paths
+    // (and both triangles of horizontal x vertical) are exercised.
+    ViVector vbilin = {"vi_scale_bilinear_16", 0x00000202u, 0x1000u, 80u,
+                       0x00000200u,            0x00000200u, 0x006C0094u, 0x00220042u,
+                       525u,                   80u,         48u};
+    if (emit_vi_vector(&vbilin, out_dir)) return 1;
+
+    // A non-power-of-two scale (x_add = y_add = 0x240) makes xfrac/yfrac take values
+    // that are not multiples of 4, so the lerp's `+16 >> 5` rounding bias actually
+    // changes the result (unlike the 0x200 vector, where every product is a multiple
+    // of 32 and the rounding is invisible) — this pins the rounding.
+    ViVector vbilodd = {"vi_scale_bilinear_odd_16", 0x00000202u, 0x1000u, 80u,
+                        0x00000240u,               0x00000240u, 0x006C0094u, 0x00220042u,
+                        525u,                      80u,         48u};
+    if (emit_vi_vector(&vbilodd, out_dir)) return 1;
+
     return 0;
 }
 
