@@ -42,7 +42,7 @@ use crate::cop0::Cop0;
 use crate::cop1::Cop1Control;
 use crate::decode::{Decoded, decode};
 use crate::exception;
-use crate::exec::{Cop0Access, Cop1Access, MemOp, TlbOp, WriteBack, execute};
+use crate::exec::{Cop0Access, Cop1Access, MemOp, Redirect, TlbOp, WriteBack, execute};
 use crate::fpr::Fpr;
 use crate::mem;
 use crate::regs::Regs;
@@ -1892,21 +1892,7 @@ impl Pipeline {
                         }
                         _ => {}
                     }
-                    if let Some(dest) = e.link {
-                        out.write_back = WriteBack::Gpr {
-                            dest,
-                            value: *next_pc,
-                        };
-                    }
-                    if let Some(r) = e.redirect {
-                        *next_pc = r.target;
-                        if r.nullify_delay_slot {
-                            // A branch-LIKELY that was not taken squashes its
-                            // already-fetched delay slot. An ordinary branch
-                            // never does.
-                            self.ic_rf = Latch::default();
-                        }
-                    }
+                    self.resolve_branch_control(&mut out, e.link, e.redirect, next_pc);
                     // Multiply and divide stall the ENTIRE pipeline for the
                     // documented count (UM Table 3-12), so the request is raised
                     // here and honoured from the next cycle onward.
@@ -1941,6 +1927,51 @@ impl Pipeline {
         }
         self.ex_dc = out;
         self.rf_ex.occupied = false;
+    }
+
+    /// Resolve a branch's link write and its taken-redirect, honouring the
+    /// delay-slot-fault rule (ledger R-19).
+    ///
+    /// The delay slot IC fetched last cycle is in `ic_rf` right now; if it
+    /// aborted, the exception has already pointed `next_pc` at the vector by the
+    /// time this branch reaches EX. The branch must NOT take -- the exception PC
+    /// wins -- yet it STILL retires and writes its link
+    /// (`ExecuteTLBMappedMissInDelay` asserts `RA == fault_address + 4`). Letting
+    /// the redirect fire would clobber the vector every cycle, so the handler
+    /// never runs: a two-state hang between the faulting delay slot and the
+    /// exception vector.
+    fn resolve_branch_control(
+        &mut self,
+        out: &mut Latch,
+        link: Option<u8>,
+        redirect: Option<Redirect>,
+        next_pc: &mut u64,
+    ) {
+        let delay_slot_faulted = out.decoded.op.has_delay_slot()
+            && self.ic_rf.occupied
+            && self.ic_rf.in_delay_slot
+            && self.ic_rf.abort.is_some();
+        if let Some(dest) = link {
+            // The link is the address after the delay slot: normally the live
+            // `next_pc`, but the architectural `pc + 8` when a fault has already
+            // overwritten `next_pc` with the exception vector.
+            let value = if delay_slot_faulted {
+                out.pc.wrapping_add(8)
+            } else {
+                *next_pc
+            };
+            out.write_back = WriteBack::Gpr { dest, value };
+        }
+        if let Some(r) = redirect
+            && !delay_slot_faulted
+        {
+            *next_pc = r.target;
+            // A branch-LIKELY that was not taken squashes its already-fetched
+            // delay slot. An ordinary branch never does.
+            if r.nullify_delay_slot {
+                self.ic_rf = Latch::default();
+            }
+        }
     }
 
     /// `RF` — register fetch, and where the load interlock is detected.
@@ -2976,6 +3007,95 @@ mod tests {
         assert_eq!(p.retired, 0, "nothing may retire before WB has run on it");
         p.advance(&mut bus, &mut regs, &mut pc);
         assert_eq!(p.retired, 1, "retires at WB on the 5th cycle, not sooner");
+    }
+
+    /// **R-19: a branch whose delay slot faulted must NOT take, but STILL links.**
+    ///
+    /// The n64-systemtest `ExecuteTLBMappedMissInDelay` case hung the whole suite:
+    /// a JALR whose target is its own address, with a delay slot in an unmapped
+    /// page. When the delay-slot fetch faults, the exception has already pointed
+    /// `next_pc` at the vector; if the branch then applies its redirect it clobbers
+    /// the vector, re-fetches itself, and loops forever. The fix suppresses the
+    /// redirect when the delay slot (in `ic_rf`) carries an abort, while still
+    /// writing the link from `pc + 8`.
+    ///
+    /// Mutation guard: the control case (no delay-slot fault) asserts the redirect
+    /// *is* applied and the link is the live `next_pc`, so removing the fault check
+    /// turns exactly one of the two assertions red.
+    #[test]
+    fn a_branch_with_a_faulting_delay_slot_links_but_does_not_take() {
+        // JALR $6, $3  (funct 9) -- the exact instruction from the hung test.
+        let jalr = decode(0x0060_3009);
+        assert!(jalr.op.has_delay_slot(), "JALR must have a delay slot");
+        let redirect = Redirect {
+            target: 0x1234_4FFC, // the JALR jumps to its own address
+            nullify_delay_slot: false,
+        };
+        let branch_pc = 0x1234_4FFC;
+        let vector = 0xFFFF_FFFF_8000_0180; // where the exception already sent us
+
+        // Faulting case: the delay slot in `ic_rf` carries an abort.
+        {
+            let mut p = Pipeline::new();
+            p.ic_rf = Latch {
+                occupied: true,
+                in_delay_slot: true,
+                abort: Some(Exception::AddressError { store: false }),
+                ..Latch::default()
+            };
+            let mut out = Latch {
+                occupied: true,
+                pc: branch_pc,
+                decoded: jalr,
+                ..Latch::default()
+            };
+            let mut next_pc = vector;
+            p.resolve_branch_control(&mut out, Some(6), Some(redirect), &mut next_pc);
+            assert_eq!(
+                next_pc, vector,
+                "the exception vector must survive -- no take"
+            );
+            assert_eq!(
+                out.write_back,
+                WriteBack::Gpr {
+                    dest: 6,
+                    value: branch_pc + 8,
+                },
+                "the link is written from pc + 8, not the clobbered next_pc",
+            );
+        }
+
+        // Control case: the delay slot did NOT fault -> the branch takes normally
+        // and links from the live next_pc.
+        {
+            let mut p = Pipeline::new();
+            p.ic_rf = Latch {
+                occupied: true,
+                in_delay_slot: true,
+                abort: None,
+                ..Latch::default()
+            };
+            let mut out = Latch {
+                occupied: true,
+                pc: branch_pc,
+                decoded: jalr,
+                ..Latch::default()
+            };
+            let mut next_pc = branch_pc + 8;
+            p.resolve_branch_control(&mut out, Some(6), Some(redirect), &mut next_pc);
+            assert_eq!(
+                next_pc, redirect.target,
+                "an unfaulted branch takes its target"
+            );
+            assert_eq!(
+                out.write_back,
+                WriteBack::Gpr {
+                    dest: 6,
+                    value: branch_pc + 8,
+                },
+                "the link is the live next_pc (which was pc + 8 here)",
+            );
+        }
     }
 
     /// **`Cause.BD` and `EPC` still come out right when a stall separates the
