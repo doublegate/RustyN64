@@ -376,6 +376,20 @@ fn tex_tri_bilinear_16_matches_angrylion() {
     );
 }
 
+/// **The bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, R-13).** A 2-texel tile
+/// (`mask_s = 1`, red/green) sampled bilinearly across the wrap: at `S = 1.5` the
+/// base is the top texel, so the neighbour must WRAP to texel 0 (red) — the seam
+/// column blends green+red, not green+black (the pre-fix `base+1` read of an
+/// unloaded texel). Non-vacuous because the wrapped texel differs from the unloaded
+/// one; pins `mask_coupled`'s `sdiff = -1` seam handling against Angrylion.
+#[test]
+fn tex_tri_bilinear_wrap_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_bilinear_wrap_16",
+        include_bytes!("vectors/tex_tri_bilinear_wrap_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`

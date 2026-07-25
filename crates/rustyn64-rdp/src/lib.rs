@@ -337,9 +337,9 @@ fn sample_coord(
     lo: u16,
     hi: u16,
 ) -> u32 {
-    // Point sampling discards the sub-texel fraction; the base texel is exactly the
-    // bilinear base (`sample_axis`), so the two never disagree.
-    sample_axis(coord, shift, mask, mirror, clamp_en, lo, hi).0 as u32
+    // Point sampling discards the sub-texel fraction and the neighbour diff; the base
+    // texel is exactly the bilinear base (`sample_axis`), so the two never disagree.
+    sample_axis(coord, shift, mask, mirror, clamp_en, lo, hi, false).0 as u32
 }
 
 /// Shift step of the tile transform (`tcshift_cycle`): codes 0–10 shift right,
@@ -359,26 +359,46 @@ fn tile_shift(coord: i32, shift: u8) -> i32 {
     }
 }
 
-/// Mask/mirror step of the tile transform (`tcmask`): `mask == 0` ⇒ identity;
-/// otherwise wrap to `mask` bits, reflecting on the alternate span when `mirror`.
-fn tile_mask(mut s: i32, mask: u8, mirror: bool) -> i32 {
+/// Mask/mirror + neighbour-diff step (`tcmask_coupled`): returns the masked base
+/// texel and the increment (`sdiff`/`tdiff`) to reach the bilinear neighbour. The
+/// neighbour is `base + diff` and is **NOT** re-masked — `diff` is chosen so a plain
+/// add lands on the correct wrapped/mirrored texel: `+1` normally, `0` at a wrap
+/// **seam** (the "duplicate the last texel" quirk), `-base` at a mirror-off period
+/// end (wrap to 0), `-1` on a mirrored half. `mask == 0` ⇒ identity base, `diff = 1`.
+/// `is_t` uses the T max-wrap `-(base & 0xff)` (the fetch masks the T base `& 0xff`).
+fn mask_coupled(mut s: i32, mask: u8, mirror: bool, is_t: bool) -> (i32, i32) {
     let mask = mask.min(10); // hardware caps the mask width at 10
-    if mask != 0 {
-        let m = 1i32 << mask;
-        if mirror && (s >> mask) & 1 != 0 {
-            s ^= m - 1; // reflect on the alternate mask-sized span
-        }
-        s &= m - 1;
+    if mask == 0 {
+        return (s, 1);
     }
-    s
+    let maskbits = (1i32 << mask) - 1;
+    if mirror {
+        let wrap = (s >> mask) & 1; // wrapthreshold = mask (mask <= 10)
+        s = (s ^ -wrap) & maskbits; // -wrap = all-ones in the mirrored half → invert
+        let diff = if (s - wrap) & maskbits == maskbits {
+            0 // seam: the neighbour duplicates the last texel
+        } else {
+            1 - (wrap << 1) // +1 in the forward half, -1 in the mirrored half
+        };
+        (s, diff)
+    } else {
+        s &= maskbits;
+        let diff = if s == maskbits {
+            if is_t { -(s & 0xFF) } else { -s } // period end: wrap the neighbour to 0
+        } else {
+            1
+        };
+        (s, diff)
+    }
 }
 
-/// The per-axis tile sampler: map a raw `s10.5` coordinate to `(base_texel, frac)`
-/// via shift → tile-origin subtraction → **clamp** → mask/mirror (the ParaLLEl-RDP
-/// sampler order; ledger R-13). `frac` is the 5-bit sub-texel weight the bilinear
-/// filter uses; per `tcclamp_cycle` it is **zeroed when the coordinate clamps**
-/// (high, or negative), so the filter degenerates to the edge texel there. The
-/// point sampler ([`sample_coord`]) simply drops `frac`.
+/// The per-axis tile sampler: map a raw `s10.5` coordinate to `(base_texel, frac,
+/// diff)` via shift → tile-origin subtraction → **clamp** → mask/mirror (the
+/// ParaLLEl-RDP sampler order; ledger R-13). `frac` is the 5-bit sub-texel weight
+/// the bilinear filter uses; per `tcclamp_cycle` it is **zeroed when the coordinate
+/// clamps** (high, or negative), so the filter degenerates to the edge texel there.
+/// `diff` (from [`mask_coupled`]) is the increment to the bilinear neighbour texel.
+/// The point sampler ([`sample_coord`]) drops both `frac` and `diff`.
 ///
 /// `lo`/`hi` are the tile's `SL`/`SH` (or `TL`/`TH`) `Set Tile Size` fields
 /// (`u10.2`). The over-max test compares against the **raw absolute** `hi`; the
@@ -386,6 +406,10 @@ fn tile_mask(mut s: i32, mask: u8, mirror: bool) -> i32 {
 #[allow(
     clippy::cast_sign_loss,
     reason = "the fraction is masked to 5 bits (0..=0x1f), always non-negative"
+)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the per-axis tile fields (shift/mask/mirror/clamp/lo/hi) plus coord and is_t"
 )]
 fn sample_axis(
     coord: i32,
@@ -395,7 +419,8 @@ fn sample_axis(
     clamp_en: bool,
     lo: u16,
     hi: u16,
-) -> (i32, u32) {
+    is_t: bool,
+) -> (i32, u32, i32) {
     let shifted = tile_shift(coord, shift);
     // Over-max flag against the RAW absolute `hi`, BEFORE the tile-origin subtraction
     // (`tcshift_cycle` computes it here) — also removes every large positive, so the
@@ -420,7 +445,8 @@ fn sample_axis(
     } else {
         rel >> 5
     };
-    (tile_mask(base, mask, mirror), frac)
+    let (masked, diff) = mask_coupled(base, mask, mirror, is_t);
+    (masked, frac, diff)
 }
 
 /// The N64's **3-point (triangular) bilinear** filter: blend the four texels
@@ -2217,7 +2243,7 @@ impl Rdp {
             );
             return self.fetch_texel(tile, s, t);
         }
-        let (sb, sfrac) = sample_axis(
+        let (sb, sfrac, sdiff) = sample_axis(
             s105,
             tile.shift_s,
             tile.mask_s,
@@ -2225,8 +2251,9 @@ impl Rdp {
             tile.clamp_s,
             tile.sl,
             tile.sh,
+            false,
         );
-        let (tb, tfrac) = sample_axis(
+        let (tb, tfrac, tdiff) = sample_axis(
             t105,
             tile.shift_t,
             tile.mask_t,
@@ -2234,9 +2261,12 @@ impl Rdp {
             tile.clamp_t,
             tile.tl,
             tile.th,
+            true,
         );
+        // The neighbour is the masked base plus the mask-coupled diff (+1 / 0 / -1 /
+        // wrap), NOT re-masked — `mask_coupled` chose `diff` for exactly this.
         let (s0, t0) = (sb as u32, tb as u32);
-        let (s1, t1) = ((sb + 1) as u32, (tb + 1) as u32);
+        let (s1, t1) = ((sb + sdiff) as u32, (tb + tdiff) as u32);
         bilinear_3point(
             self.fetch_texel(tile, s0, t0),
             self.fetch_texel(tile, s1, t0),
@@ -4541,18 +4571,53 @@ mod tests {
 
     /// **`sample_axis` captures the sub-texel fraction and zeroes it on clamp
     /// (R-13 bilinear).** The base agrees with `sample_coord` (point); the extra
-    /// output is the 5-bit `frac` the 3-point filter weights by.
+    /// outputs are the 5-bit `frac` the 3-point filter weights by and the `diff` to
+    /// the neighbour texel (here always `+1`, in-range with no seam).
     #[test]
     fn sample_axis_returns_fraction_zeroed_on_clamp() {
         let sh = 7u16 << 2; // 8-texel tile
-        // 1.5 texels, no clamp (mask=3): base 1, frac 0x10 (half a texel).
-        assert_eq!(sample_axis(0x30, 0, 3, false, false, 0, sh), (1, 0x10));
+        // 1.5 texels, no clamp (mask=3): base 1, frac 0x10 (half a texel), diff +1.
+        assert_eq!(
+            sample_axis(0x30, 0, 3, false, false, 0, sh, false),
+            (1, 0x10, 1)
+        );
         // Whole texel: frac 0.
-        assert_eq!(sample_axis(2 << 5, 0, 3, false, false, 0, sh), (2, 0));
-        // Past SH with clamp forced (mask==0): base clamps to 7, frac zeroed.
-        assert_eq!(sample_axis(0xF0, 0, 0, false, false, 0, sh), (7, 0));
+        assert_eq!(
+            sample_axis(2 << 5, 0, 3, false, false, 0, sh, false),
+            (2, 0, 1)
+        );
+        // Past SH with clamp forced (mask==0): base clamps to 7, frac zeroed, diff +1.
+        assert_eq!(
+            sample_axis(0xF0, 0, 0, false, false, 0, sh, false),
+            (7, 0, 1)
+        );
         // Below the origin with clamp: base 0, frac zeroed.
-        assert_eq!(sample_axis(-0x10, 0, 0, false, false, 0, sh), (0, 0));
+        assert_eq!(
+            sample_axis(-0x10, 0, 0, false, false, 0, sh, false),
+            (0, 0, 1)
+        );
+    }
+
+    /// **`mask_coupled` derives the neighbour `sdiff`/`tdiff` (R-13 seam).** `+1`
+    /// normally; `0` at a wrap seam (duplicate); `-base` at a mirror-off period end
+    /// (wrap the neighbour to 0); `-1` in a mirrored half. A mutation to any case
+    /// (drop the seam, wrong mirror sign) fails a row.
+    #[test]
+    fn mask_coupled_derives_the_neighbour_diff() {
+        // mask == 0: identity base, +1.
+        assert_eq!(mask_coupled(5, 0, false, false), (5, 1));
+        // Mirror off, mid-period (mask=2 → 4 texels): base 1, +1.
+        assert_eq!(mask_coupled(1, 2, false, false), (1, 1));
+        // Mirror off, period END (base == maskbits = 3): neighbour wraps to 0 (-3).
+        assert_eq!(mask_coupled(3, 2, false, false), (3, -3));
+        // Mirror off, T period end uses -(base & 0xff) — same as -base here.
+        assert_eq!(mask_coupled(3, 2, false, true), (3, -3));
+        // Mirror ON, forward half (base 1 → wrap bit clear, masked 1): +1.
+        assert_eq!(mask_coupled(1, 2, true, false), (1, 1));
+        // Mirror ON, mirrored half (base 6 → wrap bit set, inverted+masked 1): -1.
+        assert_eq!(mask_coupled(6, 2, true, false), (1, -1));
+        // Mirror ON seam (base 3 = top of forward half): duplicate, diff 0.
+        assert_eq!(mask_coupled(3, 2, true, false), (3, 0));
     }
 
     /// **`bilinear_3point` blends the four texels by the two triangle cases

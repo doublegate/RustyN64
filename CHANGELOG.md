@@ -8,6 +8,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — bilinear mask-wrap seam (gap-analysis Stage D, ledger R-13)
+
+- **The bilinear neighbour texel now handles the mask-wrap seam** (`sdiff`/`tdiff`).
+  It was a hardcoded `base + 1`; `mask_coupled` ports Angrylion `tcmask_coupled`:
+  `+1` normally, `0` at a wrap seam (the "duplicate the last texel" quirk), `-base`
+  at a mirror-off period end (the neighbour wraps to 0), `-1` in a mirrored half —
+  the neighbour is `base + diff`, not re-masked. `sample_axis` now returns the diff;
+  the point sampler is unaffected (it drops it). Validated byte-for-byte against
+  Angrylion by `tex_tri_bilinear_wrap_16` (a 2-texel `mask_s = 1` tile whose seam
+  column blends the *wrapped* texel, not an unloaded one) plus a mutation-checked
+  `mask_coupled` unit test.
+
 ### Added — 3-point bilinear texture filter (gap-analysis Stage D, ledger R-13)
 
 - **The N64's characteristic 3-point (triangular) bilinear filter is modelled**

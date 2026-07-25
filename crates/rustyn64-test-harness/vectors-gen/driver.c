@@ -770,6 +770,30 @@ static const uint32_t V23_TEX_TRI_BILINEAR_16[] = {
     TEX_BLOCK(0, 0, 1, 0x10, 0, 0, 0, 0x10, 0),
 };
 
+// V24: the bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, ledger R-13). A 2-texel tile
+// (`mask_s = 1`, so S wraps mod 2: red, green) is bilinear-sampled with S advancing
+// 0.5 texel/pixel. At S = 1.5 the base texel is 1 (the top of the wrap period), so
+// the bilinear NEIGHBOUR must wrap back to texel 0 (red) — Angrylion's `tcmask_coupled`
+// picks `sdiff = -1` there. The pre-fix sampler used a hardcoded `+1`, reading texel 2
+// (UNLOADED = black) instead, so the seam column blends green+red here vs green+black
+// there — non-vacuous BECAUSE the wrapped texel (red) differs from the unloaded one.
+static const uint16_t TEX_SEAM2[2] = {0xF801u, 0x07C1u}; // red, green
+static const uint32_t V24_TEX_TRI_BILINEAR_WRAP_16[] = {
+    0x2F0028F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, SAMPLE_TYPE=1, persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: texel0 passthrough
+    0x3D100001u, 0x00003000u, // Set Texture Image: 16-bit, width 2, addr 0x3000
+    0x35100200u, 0x00000010u, // Set Tile 0: 16-bit, line 1, tmem 0, mask_s=1 (wrap mod 2)
+    0x32000000u, 0x00004000u, // Set Tile Size 0: SL0 TL0 SH1 TH0 (2 texels)
+    0x34000000u, 0x00004000u, // Load Tile 0: 2 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    TEX_BLOCK(0, 0, 1, 0x10, 0, 0, 0, 0, 0), // dx.S = 0x10 (0.5 texel/pixel), T flat
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1042,6 +1066,11 @@ int main(int argc, char **argv) {
                   sizeof(V23_TEX_TRI_BILINEAR_16) / 4, V23_TEX_TRI_BILINEAR_16,
                   0x3000, 64, tex8x8};
     if (emit_vector(&v23, out_dir)) return 1;
+
+    Vector v24 = {"tex_tri_bilinear_wrap_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V24_TEX_TRI_BILINEAR_WRAP_16) / 4, V24_TEX_TRI_BILINEAR_WRAP_16,
+                  0x3000, 2, TEX_SEAM2};
+    if (emit_vector(&v24, out_dir)) return 1;
 
     return 0;
 }
