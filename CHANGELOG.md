@@ -8,6 +8,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI de-dither restore filter, slice 4c (gap-analysis Stage D, ledger R-5)
+
+- **Per-pixel coverage read + the de-dither filter** in `Bus::scanout_scaled`: under
+  `aa_mode` 0/1 a 32-bit pixel's coverage comes from its alpha bits 7:5, and a
+  fully-covered pixel (`cvg == 7`) with `dither_filter_enable` (VI_CTRL bit 16) takes
+  Angrylion's `restore_filter32` — an 8-tap (3×3 minus centre) ±1 nudge toward each
+  neighbour's top-5-bit channel value. Validated by `vi_dedither_32`
+  (`VI_STATUS = 0x00010003`, all `cvg == 7`, 1:1 scale) RGB byte-for-byte vs Angrylion,
+  mutation-checked. The AA-edge (`cvg < 7`) and divot filters, and the 16-bit coverage
+  path, remain later slices.
+
 ### Added — VI 32-bit source bilinear, slice 4b (gap-analysis Stage D, ledger R-5)
 
 - **32-bit RGBA8888 source resampling** in `Bus::scanout_scaled`: the per-pixel fetch

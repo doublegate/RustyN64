@@ -10,9 +10,10 @@
 //!
 //! Covered so far: nearest-neighbour scaling + the active-span/overscan geometry +
 //! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
-//! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), and 32-bit source
-//! resampling (slice 4b). The AA-edge / divot / de-dither filters and the field-rate
-//! half of R-6 (PAL 50 Hz cadence / interlace) land in later slices.
+//! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), 32-bit source
+//! resampling (slice 4b), and the de-dither restore filter (slice 4c). The AA-edge /
+//! divot filters, the 16-bit coverage path, and the field-rate half of R-6 (PAL 50 Hz
+//! cadence / interlace) land in later slices.
 
 use rustyn64_core::Bus;
 use rustyn64_core::cpu::Bus as CpuBus;
@@ -199,5 +200,19 @@ fn vi_scale_bilinear_32_matches_angrylion() {
     assert_matches(
         "vi_scale_bilinear_32",
         include_bytes!("vectors/vi_scale_bilinear_32.vivec"),
+    );
+}
+
+/// **The de-dither restore filter (slice 4c).** `aa_mode = 0` (reads real coverage),
+/// `dither_filter_enable` (`VI_STATUS = 0x00010003`), 32-bit source, every pixel
+/// fully covered (alpha `0xFF` → `cvg = 7`), 1:1 scale. So `restore_filter32` runs
+/// everywhere: over the 3×3-minus-centre 8 taps, each channel is nudged ±1 toward the
+/// neighbour's top-5-bit value. Non-vacuous — the output differs from the raw sample
+/// (e.g. output col 0 = `0x1b`, not the raw `0x20`, because the row-0 top taps read 0).
+#[test]
+fn vi_dedither_32_matches_angrylion() {
+    assert_matches(
+        "vi_dedither_32",
+        include_bytes!("vectors/vi_dedither_32.vivec"),
     );
 }
