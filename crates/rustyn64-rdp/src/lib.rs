@@ -1178,7 +1178,12 @@ pub struct CombineMode {
 /// The combiner muxes these by the [`CombineCycle`] selects. Exotic inputs
 /// (noise, LOD frac, the key/convert constants) are not modelled yet (**open
 /// residual R-10**) and read as zero.
+///
+/// `#[non_exhaustive]`: like [`Rdp`], this input set grows every sprint as more
+/// exotic inputs are wired, so adding a field must stay a compatible change —
+/// construct it with `..Default::default()`.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CombinerInputs {
     /// The previous cycle's output (cycle 0's result feeds cycle 1's `Combined`).
     pub combined: [u8; 4],
@@ -1356,10 +1361,10 @@ pub struct Rdp {
     /// The primitive colour, RGBA8888 (`Set Prim Color`, 0x3A).
     pub prim_color: u32,
     /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — a combiner mul
-    /// input (R-10). `min_level` (bits 12:8) is stored for the deferred LOD path.
+    /// input (R-10). The `min_level` field (bits 12:8) is not stored yet: it has no
+    /// consumer until the deferred LOD/mip path, and it lands with that consumer
+    /// rather than as unread state.
     pub prim_lod_frac: u8,
-    /// `Set Prim Color` `min_level` (bits 12:8), for the deferred LOD computation.
-    pub min_level: u8,
     /// `Set Convert` (0x2C) `K4`/`K5` — combiner sub-B / mul inputs, raw 9-bit
     /// (`K0..K3`, the YUV-convert coefficients, are deferred). R-10.
     pub k4: i16,
@@ -1567,17 +1572,17 @@ impl Rdp {
             }
             OP_SET_FILL_COLOR => self.fill_color = lo,
             OP_SET_PRIM_COLOR => {
-                // word 0 (hi): min_level[12:8], prim_lod_frac[7:0]; word 1 (lo): RGBA.
+                // word 0 (hi): min_level[12:8] (deferred — no consumer until LOD),
+                // prim_lod_frac[7:0]; word 1 (lo): RGBA.
                 self.prim_color = lo;
                 self.prim_lod_frac = (hi & 0xFF) as u8;
-                self.min_level = ((hi >> 8) & 0x1F) as u8;
             }
             OP_SET_CONVERT => {
                 // K4 = lo[17:9], K5 = lo[8:0], stored as the raw 0..511 value the
                 // hardware holds (matching Angrylion `rdp_set_convert`); the combiner
                 // sign-extends them downstream (`special_expand`/`sext9`), so signing
-                // here would double-apply. K0..K3 in the hi word are the YUV-convert
-                // coefficients, deferred — R-10.
+                // here would double-apply. K0..K3 (the YUV-convert coefficients, in the
+                // hi word and lo[31:18]) are deliberately ignored — deferred, R-10.
                 self.k4 = ((lo >> 9) & 0x1FF) as i16;
                 self.k5 = (lo & 0x1FF) as i16;
             }
