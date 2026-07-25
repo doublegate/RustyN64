@@ -44,6 +44,11 @@ fn the_timing_rom_measures_the_charged_icache_fill() {
         sys.step_to_next_edge();
         steps += 1;
     }
+    assert!(
+        steps < 20_000_000,
+        "ROM never wrote its sentinel within the step cap — it hung or the entry \
+         point is wrong; results below would be garbage"
+    );
 
     let delta = word(&sys, 0x10000);
     let n = word(&sys, 0x10004);
