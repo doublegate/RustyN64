@@ -1,0 +1,10 @@
+The M(RDRAM) cached-load timing ROM and its source (mrdram_timing.asm,
+mrdram_timing.z64, build.sh, README.md) are original work authored for RustyN64
+and are licensed, at your option, under either of:
+
+  * Apache License, Version 2.0
+  * MIT license
+
+matching the RustyN64 project's dual license (see the workspace-root LICENSE
+files). No Nintendo code is included: the IPL3 boot region is left blank, and the
+image is assembled with `bass` (ISC / public-domain lineage).
