@@ -218,8 +218,9 @@ recorded here as the other regime, and the dirty-writeback (`> 60`) as a third; 
 requires the device-dependent **RasInterval** cycle values, which are *undocumented* (N64brew: IPL3
 just *"setup optimal RAS timing"* from the per-device geometry) — so inventing them would be the
 fitted-constant trap, and they stay open under **C-4**. The `M_ICACHE_FILL = M_DCACHE_FILL + 6`
-relationship is pinned to the UM tables by a unit test
-(`the_cache_fill_constants_match_the_um_line_transfer_delta`). The first-party **cached-miss
+relationship is enforced **at compile time** — `M_ICACHE_FILL` is *defined* as
+`Self::M_DCACHE_FILL + 6` (the UM's 8-word I-line vs 2-word D critical doubleword), so a future
+measured `M(RDRAM)` moves both together and they cannot desynchronise. The first-party **cached-miss
 microbench** (`cache_miss_microbench.rs`) confirms the charge lands (D 39.99, I 46.05 PClocks) and
 guards the constant, and the two hardware ROMs (#139/#140) put the true **per-regime** numbers one
 console-run away. **The I-cache fill (fitted 46) is now charged

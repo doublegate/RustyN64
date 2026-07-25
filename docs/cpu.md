@@ -552,7 +552,8 @@ independently corroborated by ares 40 / cen64 44), and the **row-miss (cold)** f
 device-dependent `RasInterval` cycle values, which are undocumented, so the full
 bank-state model stays open under **C-4**. The **I-cache fill** is
 `M_DCACHE_FILL + 6` (`Pipeline::M_ICACHE_FILL` = 46 — the UM's 8-word I-line vs
-2-word D critical doubleword, Table 11-2 − 11-1; pinned by a unit test), charged
+2-word D critical doubleword, Table 11-2 − 11-1; *defined* as that expression, so
+the two stay in lockstep by construction), charged
 behind a `#[cfg(not(test))]` seam — active in real execution and every integration
 test, but skipped in this crate's own pipeline units where an every-fetch stall
 would confound the fixed-cycle interlock/FPU-timing assertions. The first-party

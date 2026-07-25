@@ -27,8 +27,8 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   `14..=15 + M`, `M` an external-agent parameter), the N64brew RDRAM/clock docs,
   and copetti's latency figure — replacing "adopted from ares" with a derivation.
 - **I-cache fill = 46 PClocks = `M_DCACHE_FILL + 6`**, the UM's 8-word I-line vs
-  2-word D critical-doubleword (Table 11-2 − 11-1), now pinned to the UM by a unit
-  test so the two constants cannot desynchronise. Both charges verified by
+  2-word D critical-doubleword (Table 11-2 − 11-1). `M_ICACHE_FILL` is *defined* as
+  that expression, so the two constants cannot desynchronise. Both charges verified by
   first-party cached-miss microbenches (D 39.99, I 46.05 PClocks). The I-cache
   stall is charged behind a `#[cfg(not(test))]` seam — active in real execution
   and integration tests, skipped in the CPU crate's own pipeline units (an
