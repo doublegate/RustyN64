@@ -752,8 +752,11 @@ impl Bus {
     /// Still to come (later slices, still substituted here): the gamma-dither
     /// variants, the coverage filters under `aa_mode == 2` (`RESAMP_ONLY` forces
     /// `cvg = 7`, so de-dither can still apply — currently gated to `aa_mode ≤ 1`),
-    /// and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
-    /// serrate, and the exact `H_TOTAL`). Not yet wired into the frontend —
+    /// and the remaining R-6 field timing (interlace / serrate and the exact
+    /// `H_TOTAL`; the PAL 50 Hz field rate itself is handled by `Vi::field_hz`, which
+    /// drives the same `ispal` region split this geometry uses). Not yet wired into
+    /// the frontend — [`Bus::scanout`] remains the live path until the pipeline is
+    /// complete (mirrors
     /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
     /// the R-12 depth path landing ahead of its runtime caller).
     ///

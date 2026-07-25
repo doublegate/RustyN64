@@ -80,14 +80,16 @@ pub const VI_FIELD_HZ: u64 = 60;
 /// exact `H_TOTAL` sub-field timing remain deferred under R-6.
 pub const VI_FIELD_HZ_PAL: u64 = 50;
 
-/// The `VI_V_TOTAL` (half-lines per field) value above which a field is treated as
+/// The **encoded** `VI_V_TOTAL` register value above which a field is treated as
 /// **PAL** rather than NTSC.
 ///
-/// NTSC fields are ~525 half-lines, PAL ~625, so `> 550` splits them with wide
-/// margin. Shared by `Vi::field_hz` (the field-rate select) and
-/// `bus::scanout_scaled` (the geometry `ispal` select) so cadence and geometry agree
-/// on the region. Named after N64brew *Video Interface* §Clocks (region field
-/// lengths); the register at this offset is `VI_V_SYNC` in the wiki's naming.
+/// The comparison is against the raw register value, which encodes `half-lines − 1`
+/// (`total_halflines() == VI_V_TOTAL + 1`): NTSC programs ~524 (525 half-lines), PAL
+/// ~624 (625 half-lines), so the encoded `> 550` splits them with wide margin.
+/// Shared by `Vi::field_hz` (the field-rate select) and `bus::scanout_scaled` (the
+/// geometry `ispal` select) so cadence and geometry agree on the region. Named after
+/// N64brew *Video Interface* §Clocks (region field lengths); the register at this
+/// offset is `VI_V_SYNC` in the wiki's naming.
 pub const VI_PAL_V_TOTAL_THRESHOLD: u32 = 550;
 
 /// The Video Interface register file (the `0x0440_0000` block).
