@@ -44,7 +44,7 @@ bug, and a number that appeared without one is the failure this file exists to p
 
 | # | Constant | Value | How measured | Status |
 | --- | --- | --- | --- | --- |
-| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22**; RDRAM / cache-fill: — | **measured** (RCP) — CPUTIMINGNTSC mult/div differential, confirmed 0.4% on the absolute count | **RCP-register `M` measured + charged; RDRAM / cache-fill `M` still open** |
+| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22** (measured); **D-cache fill: 40** (fitted, ares); I-cache fill: 46 (fitted, not yet charged) | RCP: CPUTIMINGNTSC mult/div differential (0.4%). D-cache: **FITTED** from ares — no hardware cached-miss oracle exists | **RCP-register `M` measured + charged; D-cache fill fitted + charged; I-cache fill fitted (deferred); RDRAM bank-state (C-4) open** |
 | C-2 | Exception epilogue cost (PCycles) | **2** | ~~measurement~~ **documented** — UM §4.7 p. 114 | **resolved; not a measured constant** |
 | C-3 | CP0I (CP0 bypass interlock) cost | **1** | **documented** — UM §4.6.9 p. 113 | **resolved; not a measured constant** |
 | C-7 | ITM (instruction micro-TLB miss) penalty | **3** | **documented** — UM §4.6.2 p. 107 | **resolved; not a measured constant** |
@@ -179,11 +179,32 @@ was then checked as a consequence.
 RCP registers share the RCP bus and are charged the same, flagged pending their own vectors). It
 conflates the RCP-access latency with `sync`'s wait, which cannot be separated by this loop —
 recorded as a combined "uncached RCP access + sync" cost, honest about the conflation.
-**`M(RDRAM)` and the D-/I-cache-fill `8..=9 + M` / `14..=15 + M` costs remain unmeasured** (charged
-0): CPUTIMINGNTSC has no cached-miss test block, so a separate oracle (a first-party cached-fill
-microbench, or a hardware capture) is needed for them. No regression from the charge: golden-log
-0-diff (it keys on retired instructions, not stalls), the residue invariant, determinism, and the
-950-test functional suite are all unchanged.
+
+**D-cache fill `M(RDRAM)` — FITTED at 40 PClocks, NOT measured (update 2026-07-25).** An exhaustive
+search for a hardware cached-miss timing oracle came up empty: PeterLemon's timing ROMs cover only
+ALU ops (no loads — verified by reading every `// Test Instruction` line), n64-systemtest's
+`Level::Timing` set is two COP0 `Random` tests, and the N64brew wiki / copetti / Beyond3D give only
+the RDRAM *cold-access* figure (~640 ns ≈ 60 PClocks) and the hedged "10-20+ clock wait" range —
+not a cache-fill cycle count. The reference emulators are **explicitly fitted**: ares charges
+`cpu.step(40 * 2)` = **40** PClocks per fill (uncited), cen64 **44** (D) / **48** (I) / **38**
+(uncached word) under a literal `// Currently using fixed values....`. Both cen64 numbers imply a
+consistent `M(RDRAM) ≈ 34–36`; ares's implies ≈ 32. Because the true fill latency is **RDRAM
+bank-state dependent** (C-4), *no single value is cycle-accurate* — 40 is a warm-bank average, the
+640 ns is cold worst-case. Per an explicit decision (no hardware available, no measured value
+found), the D-cache fill is charged at **ares's 40** — the accuracy-reference emulator, cross-checked
+by cen64's 44 — recorded as a **fitted anchor with provenance, not a measurement**, in
+`Pipeline::M_DCACHE_FILL`. The first-party **cached-miss microbench**
+(`cache_miss_microbench.rs`) is the instrument: it drives a strided sweep larger than the 8 KiB
+D-cache and confirms the charged per-miss cost is 40 PClocks (`39.99`), and it is wired as a live
+regression guard against `M_DCACHE_FILL`. It also stands ready to *replace* the fitted 40 with a
+real number the moment a hardware cached-miss count appears. **The I-cache fill (fitted ~46) is NOT
+yet charged**: every fetch miss would stall, and the CPU unit-test harness steps fixed cycle counts
+assuming a ~1-cycle fetch (charging it broke ~74 tests), so it needs those tests taught the fetch
+stall first. **`M(RDRAM)` as a true measurement, and the RDRAM bank-state model (C-4), remain
+open.** No regression from the D-cache charge: golden-log 0-diff (it keys on retired instructions,
+not stalls), the residue invariant, determinism, and the 950-test functional suite (Phase-1
+`Failed: 0`, still 90 suite-wide, `Random` timing tests pass, runs to `xioctl(EXIT)`) are all
+unchanged; two unit tests that stepped fixed cycles for a cached load had their budgets widened.
 
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
