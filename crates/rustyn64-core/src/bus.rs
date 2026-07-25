@@ -740,8 +740,8 @@ impl Bus {
         let aa_mode = (ctrl >> 8) & 0x3;
         // Gamma (VI_CTRL bit 3) applies the sqrt curve to the final RGB; the dithered
         // variants (bit 2 set) are noise-based and deferred, so plain gamma is applied
-        // only when gamma_enable is set and gamma_dither is not.
-        let gamma = (ctrl >> 3) & 1 != 0 && (ctrl >> 2) & 1 == 0;
+        // only when gamma_enable is set and gamma_dither is not (bit 3 set, bit 2 clear).
+        let gamma = (ctrl & 0x0C) == 0x08;
         let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
         let src_stride = (self.vi.read(vi::VI_WIDTH) & 0xFFF) as i32; // source pixels/row
         let h_video = self.vi.read(vi::VI_H_VIDEO);
@@ -842,11 +842,7 @@ impl Bus {
                 // Gamma is the final RGB stage (after scale, before write) — a table
                 // lookup per channel (the LUT is `vi_gamma` precomputed).
                 if gamma {
-                    rgb = [
-                        GAMMA_TABLE[usize::from(rgb[0])],
-                        GAMMA_TABLE[usize::from(rgb[1])],
-                        GAMMA_TABLE[usize::from(rgb[2])],
-                    ];
+                    rgb = rgb.map(|c| GAMMA_TABLE[usize::from(c)]);
                 }
                 out[dst..dst + 3].copy_from_slice(&rgb);
                 out[dst + 3] = 0xFF; // opaque display alpha (VI coverage is not shown)
