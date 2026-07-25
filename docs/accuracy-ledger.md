@@ -128,9 +128,29 @@ VI-scanline window (line 0 → 512). **The VI tick rate is verified correct** (`
 iterations than hardware because our loop iteration is ~5.42× too cheap. The loop's dominant
 hardware cost is the **uncached VI-register `lw` + `sync`** — memory/MMIO access latency, i.e.
 **`M`** — which we currently charge ~1 cycle for. So the 5.42× is a concrete, falsifiable
-consequence of the unmeasured `M`, and driving it toward 1.0 is the way to *measure* `M` (charge the
-uncached-read latency, re-run, converge). `M` stays "not yet measured" as a *value*, but it now has
-a **numeric target** off a repeatable oracle, not just an all-red frame.
+consequence of the unmeasured `M`. `M` stays "not yet measured" as a *value*, but it now has a
+**numeric target** off a repeatable oracle, not just an all-red frame.
+
+**Guard-rail — do NOT fit `M` to this ratio (correcting the sentence this entry first carried).**
+An earlier draft said "driving it toward 1.0 is the way to *measure* `M`". That is wrong, and it is
+exactly the fitted-constant trap this whole file exists to prevent. The 5.42× is a **joint** measurement
+of the entire `add / lw / sync / bne / addiu` loop: the uncached `lw` latency (`M`), the `sync` cost,
+and every instruction's base cost, all at once. Tuning a single `M` until the ratio hits 1.0 would
+silently bury `sync` + the per-instruction error inside "`M`", producing a fudge factor that every
+later timing result then rests on. **To isolate `M` cleanly you need a differential-of-differentials**:
+a probe that measures the `Count` delta of a loop with `N` uncached reads for two values of `N`, so
+the *slope* `(delta(N₂) − delta(N₁)) / (N₂ − N₁)` is the per-read cost with the loop overhead
+cancelled — a first-party microbenchmark (the accuracy-battery / `T-71-001` shape), or the
+n64-systemtest `timing` set's targeted per-access tests (blocked on the post-917 hang, above). This
+oracle **signals** the gap and bounds it; it does not, by itself, *isolate* `M`.
+
+**And the slope is still not `M` on its own.** It is the whole added read's cost:
+`slope = base_pipeline_cost(lw) + M(region)`. So `M(region) = slope − base_pipeline_cost(lw)`, and
+because `M` is not a single number (it varies with target region — RDRAM vs RCP register vs SP
+memory — and RDRAM bank state, C-4), **any measurement must record the access region and cache
+state** it was taken under, alongside the oracle's expected-vs-measured deltas. Recording the raw
+slope as `M` would recreate the fitted-constant error at one remove — it would fold the `lw`'s own
+pipeline cost into "`M`".
 
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
