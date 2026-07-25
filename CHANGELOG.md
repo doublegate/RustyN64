@@ -8,6 +8,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — register-sourced exotic combiner inputs (gap-analysis Stage D, ledger R-10)
+
+- **`PRIM_LOD_FRAC` and the `Set Convert` `K4`/`K5` constants now route through the
+  colour combiner** instead of reading zero. `Set Prim Color` extracts
+  `prim_lod_frac` (and `min_level`) from its word-0 low byte; the new `Set Convert`
+  (`0x2C`) dispatch extracts `K4`/`K5` (raw 9-bit, `lo[17:9]`/`lo[8:0]`). The
+  combiner input mux wires `prim_lod_frac` to RGB mul-select 14 and alpha mul-select
+  6, `K4` to RGB sub-B select 7, and `K5` to RGB mul-select 15. Validated
+  byte-for-byte against Angrylion by two new non-vacuous conformance vectors —
+  `tex_tri_primlodfrac_16` (`One * prim_lod_frac`, gray vs black if unwired) and
+  `tex_tri_convert_k45_16` (`(One − K4) * K5`, gray vs black if unwired) — plus two
+  mutation-checked unit tests (`combine_cycle_routes_prim_lod_frac`,
+  `combine_cycle_routes_convert_k4_k5`). Still open (read as zero until their
+  machinery exists): noise, the derivative-computed `lod_frac`, the chroma-key
+  centre/scale, and the YUV convert `K0`–`K3` coefficients.
+
 ### Added — 2-cycle second texel (`tile+1`) (gap-analysis Stage D, ledger R-13)
 
 - **2-cycle mode samples a second texel from `tile+1`.** `combined_color` now

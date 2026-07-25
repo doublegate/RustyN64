@@ -823,6 +823,42 @@ static const uint32_t V25_TEX_TRI_2CYCLE_16[] = {
     TEX_BLOCK(0, 0, 1, 0, 0, 0, 0, 0, 0), // constant coord: both tiles sample texel 0
 };
 
+// V26: the PRIM_LOD_FRAC combiner input (ledger R-10). Set Prim Color carries
+// prim_lod_frac = 0x80 in its word-0 low byte; the combiner computes ONE * prim_lod_frac
+// (rgb_a=One, rgb_c=PrimLODFrac select 14), so the pixel is a mid-gray ~0x80. Without
+// the input wired it reads 0 and the pixel is black — non-vacuous. A flat shade block
+// routes the triangle through the combiner (the combine ignores the shade).
+static const uint32_t V26_TEX_TRI_PRIMLODFRAC_16[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off
+    0x3A000080u, 0x00000000u, // Set Prim Color: prim_lod_frac = 0x80 (word-0 low byte)
+    0x3C0000CEu, 0x081C01C6u, // Set Combine: rgb = (One - Zero) * PrimLODFrac + Zero; alpha = One
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    SHADE_BLOCK_FLAT(0x40, 0x40, 0x40, 0xFF), // flat shade (ignored by the combine)
+};
+
+// V27: the CONVERT K4 (RGB sub-B, select 7) and K5 (RGB mul, select 15) combiner
+// inputs from Set Convert (0x2C) — ledger R-10. K4 = 0x040, K5 = 0x0C0; the combiner
+// computes (One - K4) * K5 = (0xFF - 0x40) * 0xC0 >> 8. Without the inputs wired both
+// read 0 and the result is (0xFF - 0) * 0 = black — non-vacuous. Flat shade routes the
+// triangle through the combiner.
+static const uint32_t V27_TEX_TRI_CONVERT_K45_16[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off
+    0x2C000000u, 0x000080C0u, // Set Convert: K4 = 0x040 (lo[17:9]), K5 = 0x0C0 (lo[8:0])
+    0x3C0000CFu, 0x071C01C6u, // Set Combine: rgb = (One - K4) * K5 + Zero; alpha = One
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    SHADE_BLOCK_FLAT(0x40, 0x40, 0x40, 0xFF), // flat shade (ignored by the combine)
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1105,6 +1141,16 @@ int main(int argc, char **argv) {
                   sizeof(V25_TEX_TRI_2CYCLE_16) / 4, V25_TEX_TRI_2CYCLE_16,
                   0x3000, 2, TEX_2CYC};
     if (emit_vector(&v25, out_dir)) return 1;
+
+    Vector v26 = {"tex_tri_primlodfrac_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V26_TEX_TRI_PRIMLODFRAC_16) / 4, V26_TEX_TRI_PRIMLODFRAC_16,
+                  0, 0, NULL};
+    if (emit_vector(&v26, out_dir)) return 1;
+
+    Vector v27 = {"tex_tri_convert_k45_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V27_TEX_TRI_CONVERT_K45_16) / 4, V27_TEX_TRI_CONVERT_K45_16,
+                  0, 0, NULL};
+    if (emit_vector(&v27, out_dir)) return 1;
 
     return 0;
 }

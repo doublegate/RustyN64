@@ -403,6 +403,32 @@ fn tex_tri_2cycle_16_matches_angrylion() {
     );
 }
 
+/// **The `PRIM_LOD_FRAC` combiner input (R-10).** `Set Prim Color` carries
+/// `prim_lod_frac = 0x80`; the combine computes `(One - Zero) * PrimLODFrac` (rgb mul
+/// select 14), so the triangle is a mid-gray `0x80` (Angrylion emits `0x8421`). Without
+/// the input wired it reads 0 and the triangle is black — non-vacuous. Pins that
+/// `Set Prim Color` extracts `prim_lod_frac` and the combiner routes mul-select 14 to it.
+#[test]
+fn tex_tri_primlodfrac_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_primlodfrac_16",
+        include_bytes!("vectors/tex_tri_primlodfrac_16.rvec"),
+    );
+}
+
+/// **The `Set Convert` K4 (rgb sub-B select 7) and K5 (rgb mul select 15) inputs (R-10).**
+/// `Set Convert` carries `K4 = 0x040`, `K5 = 0x0C0`; the combine computes `(One - K4) * K5`
+/// (Angrylion emits `0x5295`). Without either input wired both read 0 and the result is
+/// `(One - 0) * 0 = 0` (black) — non-vacuous. Pins the `Set Convert` (0x2C) K4/K5 extract
+/// and the two combiner selects.
+#[test]
+fn tex_tri_convert_k45_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_convert_k45_16",
+        include_bytes!("vectors/tex_tri_convert_k45_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`
