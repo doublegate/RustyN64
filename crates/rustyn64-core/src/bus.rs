@@ -87,6 +87,10 @@ const fn vi_integer_sqrt(a: u32) -> u32 {
 /// the current min/max position and its predecessor, then refines the runner-up with a
 /// second partial scan. Ported verbatim so the tie-handling matches. Ledger R-5.
 fn vi_video_max(pixels: &[u32]) -> (u32, u32) {
+    debug_assert!(
+        !pixels.is_empty(),
+        "vi_video_max needs at least the centre pixel"
+    );
     let n = pixels.len();
     let (mut posmax, mut posmin) = (0usize, 0usize);
     let (mut curpenmax, mut curpenmin) = (pixels[0], pixels[0]);
