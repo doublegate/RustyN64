@@ -11,9 +11,9 @@
 //! Covered so far: nearest-neighbour scaling + the active-span/overscan geometry +
 //! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
 //! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), 32-bit source
-//! resampling (slice 4b), and the de-dither restore filter (slice 4c). The AA-edge /
-//! divot filters, the 16-bit coverage path, and the field-rate half of R-6 (PAL 50 Hz
-//! cadence / interlace) land in later slices.
+//! resampling (slice 4b), the de-dither restore filter (slice 4c), and the AA edge
+//! filter (slice 4d). The divot median, the 16-bit coverage path, and the field-rate
+//! half of R-6 (PAL 50 Hz cadence / interlace) land in later slices.
 
 use rustyn64_core::Bus;
 use rustyn64_core::cpu::Bus as CpuBus;
@@ -214,5 +214,20 @@ fn vi_dedither_32_matches_angrylion() {
     assert_matches(
         "vi_dedither_32",
         include_bytes!("vectors/vi_dedither_32.vivec"),
+    );
+}
+
+/// **The AA edge filter (slice 4d).** `aa_mode = 0`, no dither/divot/gamma
+/// (`VI_STATUS = 0x00000003`), 32-bit source where every 4th column is partial
+/// (`cvg = 0`). A partial pixel takes `video_filter32`: it gathers the fully-covered
+/// pixels among its 6 diagonal/two-away taps, takes the penultimate min/max per
+/// channel (`vi_video_max`), and pulls the centre toward their midpoint by
+/// `(7 - cvg)/8`. Non-vacuous — the partial columns differ from the raw sample, the
+/// fully-covered columns are raw. 1:1 scale so no lerp.
+#[test]
+fn vi_aa_edge_32_matches_angrylion() {
+    assert_matches(
+        "vi_aa_edge_32",
+        include_bytes!("vectors/vi_aa_edge_32.vivec"),
     );
 }
