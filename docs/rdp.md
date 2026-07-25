@@ -395,11 +395,16 @@ cross-verified against the N64brew wiki and ParaLLEl-RDP (MIT, `combiner.h`).
 - **Cycles.** 1-cycle mode uses only cycle 1's selects; 2-cycle mode evaluates cycle 0 (no
   inter-cycle clamp) and feeds its output as cycle 1's `Combined` input.
 
-Scope (**open residual R-10**): the common inputs (combined, texel0/1, primitive, shade,
-environment, one, zero, and the C-slot alpha taps) are wired; the **exotic** inputs — noise, LOD
-fraction, the key/convert constants — read as zero until the LOD/key/convert state lands. The
-arithmetic, the 16-field decode, the mux, and the 2-cycle chaining are unit-tested against
-hand-computed values. `combine` now has its runtime caller — `combined_color` routes the
+Scope (**partially-resolved residual R-10**): the common inputs (combined, texel0/1, primitive,
+shade, environment, one, zero, and the C-slot alpha taps) are wired, and so are the
+**register-sourced exotic** inputs — `PRIM_LOD_FRAC` (RGB mul-select 14, alpha mul-select 6, from
+`Set Prim Color`) and the `Set Convert` constants `K4` (RGB sub-B select 7) and `K5` (RGB
+mul-select 15), each validated byte-for-byte against Angrylion (`tex_tri_primlodfrac_16`,
+`tex_tri_convert_k45_16`, and `tex_tri_convert_kneg_16` — the last a negative `K4 = −64`
+proving K4/K5 are stored raw `0..511` and sign-extended in the combiner, not at decode). The remaining exotic inputs — **noise**, the derivative-computed **LOD
+fraction**, the **chroma-key** centre/scale, and the **YUV convert `K0`–`K3`** — still read as zero
+until the LOD/key/noise state lands. The arithmetic, the 16-field decode, the mux, and the 2-cycle
+chaining are unit-tested against hand-computed values. `combine` now has its runtime caller — `combined_color` routes the
 interpolated shade and sampled texel through it per pixel (T-33-004 2b) — but no systemtest drives
 the render path, so the oracle stays **93**.
 

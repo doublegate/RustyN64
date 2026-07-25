@@ -403,6 +403,47 @@ fn tex_tri_2cycle_16_matches_angrylion() {
     );
 }
 
+/// **The `PRIM_LOD_FRAC` combiner input (R-10).** `Set Prim Color` carries
+/// `prim_lod_frac = 0x80`; the combine computes `(One - Zero) * PrimLODFrac` (rgb mul
+/// select 14), so the triangle is a mid-gray `0x80` (Angrylion emits `0x8421`). Without
+/// the input wired it reads 0 and the triangle is black — non-vacuous. Pins that
+/// `Set Prim Color` extracts `prim_lod_frac` and the combiner routes mul-select 14 to it.
+#[test]
+fn tex_tri_primlodfrac_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_primlodfrac_16",
+        include_bytes!("vectors/tex_tri_primlodfrac_16.rvec"),
+    );
+}
+
+/// **The `Set Convert` K4 (rgb sub-B select 7) and K5 (rgb mul select 15) inputs (R-10).**
+/// `Set Convert` carries `K4 = 0x040`, `K5 = 0x0C0`; the combine computes `(One - K4) * K5`
+/// (Angrylion emits `0x94a5`). Without either input wired both read 0 and the result is
+/// `(One - 0) * 0 = 0` (black) — non-vacuous. Pins the `Set Convert` (0x2C) K4/K5 extract
+/// and the two combiner selects.
+#[test]
+fn tex_tri_convert_k45_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_convert_k45_16",
+        include_bytes!("vectors/tex_tri_convert_k45_16.rvec"),
+    );
+}
+
+/// **A NEGATIVE `Set Convert` K4 (bit 8 set) — the sign-extension proof (R-10).**
+/// `K4 = 0x1C0` is raw 9-bit `448` but `-64` after the RDP's `special_9bit` expand
+/// (Angrylion `combiner.c:481`); with `K5 = 0x040` the combine `(One - K4) * K5`
+/// is `(256 - (-64)) * 64 >> 8 = 80` (gray `0x5295`). Read raw-positive it would be
+/// `(256 - 448) * 64 < 0` → clamped black, so this pins that `combine_channel`'s
+/// `special_expand` sign-extends K4 exactly like Angrylion's exttable — the path the
+/// bit-8-clear `tex_tri_convert_k45_16` vector cannot reach.
+#[test]
+fn tex_tri_convert_kneg_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_convert_kneg_16",
+        include_bytes!("vectors/tex_tri_convert_kneg_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`

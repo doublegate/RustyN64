@@ -626,7 +626,8 @@ fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         3 => i16::from(inp.prim[ch]),
         4 => i16::from(inp.shade[ch]),
         5 => i16::from(inp.env[ch]),
-        _ => 0, // 6 KeyCenter, 7 ConvertK4 — R-10; 8+ Zero
+        7 => inp.k4, // Convert K4 (raw 0..511; combine_channel's special_expand sign-extends)
+        _ => 0,      // 6 KeyCenter — R-10; 8+ Zero
     }
 }
 
@@ -646,7 +647,9 @@ fn rgb_input_c(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         10 => i16::from(inp.prim[3]),
         11 => i16::from(inp.shade[3]),
         12 => i16::from(inp.env[3]),
-        _ => 0, // 6 KeyScale, 13 LODFrac, 14 PrimLODFrac, 15 ConvertK5 — R-10; 16+ Zero
+        14 => inp.prim_lod_frac, // Prim LOD fraction
+        15 => inp.k5,            // Convert K5 (raw 0..511; combine_channel's sext9 sign-extends)
+        _ => 0,                  // 6 KeyScale, 13 LODFrac — R-10; 16+ Zero
     }
 }
 
@@ -688,7 +691,8 @@ fn alpha_input_c(sel: u8, inp: &CombinerInputs) -> i16 {
         3 => i16::from(inp.prim[3]),
         4 => i16::from(inp.shade[3]),
         5 => i16::from(inp.env[3]),
-        _ => 0, // 0 LODFrac, 6 PrimLODFrac — R-10; 7 Zero
+        6 => inp.prim_lod_frac, // Prim LOD fraction
+        _ => 0,                 // 0 LODFrac — R-10; 7 Zero
     }
 }
 
@@ -806,6 +810,7 @@ const OP_FILL_RECTANGLE: u8 = 0x36;
 const OP_SET_FILL_COLOR: u8 = 0x37;
 const OP_SET_FOG_COLOR: u8 = 0x38;
 const OP_SET_BLEND_COLOR: u8 = 0x39;
+const OP_SET_CONVERT: u8 = 0x2C;
 const OP_SET_PRIM_COLOR: u8 = 0x3A;
 const OP_SET_ENV_COLOR: u8 = 0x3B;
 const OP_SET_COMBINE_MODE: u8 = 0x3C;
@@ -1173,8 +1178,14 @@ pub struct CombineMode {
 /// The combiner muxes these by the [`CombineCycle`] selects. Exotic inputs
 /// (noise, LOD frac, the key/convert constants) are not modelled yet (**open
 /// residual R-10**) and read as zero.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct CombinerInputs {
+///
+/// This is **transient** per-pixel state — built in `combined_color`, consumed by
+/// `combine`, and discarded — never stored in `System`. It is therefore `pub(crate)`
+/// (not part of this crate's public API), does not derive `Serialize`/`Deserialize`
+/// (never in a save-state), and needs no `#[non_exhaustive]` (a new field is always a
+/// compatible change within the crate). Construct it with `..Default::default()`.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct CombinerInputs {
     /// The previous cycle's output (cycle 0's result feeds cycle 1's `Combined`).
     pub combined: [u8; 4],
     /// Texel from tile 0.
@@ -1187,6 +1198,19 @@ pub struct CombinerInputs {
     pub shade: [u8; 4],
     /// The environment colour (`Set Env Color`, 0x3B).
     pub env: [u8; 4],
+    /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — combiner mul
+    /// input (RGB select 14, alpha select 6). `0..=255` (R-10).
+    pub prim_lod_frac: i16,
+    /// `Set Convert` (0x2C) `K4` — combiner RGB sub-B input (select 7). Held as the
+    /// **raw 0..511** value the hardware stores; `combine_channel` sign-extends it via
+    /// `special_expand` (bit-identical to Angrylion's `special_9bit_exttable`), so a
+    /// bit-8-set value reads as negative. Storing raw matches Angrylion `rdp_set_convert`
+    /// — sign-extending at decode would double-apply. R-10.
+    pub k4: i16,
+    /// `Set Convert` (0x2C) `K5` — combiner RGB mul input (select 15). Held as the
+    /// **raw 0..511** value; `combine_channel` sign-extends it via `sext9`
+    /// (Angrylion `SIGNF(c, 9)`). Stored raw, like `k4`. R-10.
+    pub k5: i16,
 }
 
 /// TMEM size in bytes — 4 KiB of on-chip texture memory.
@@ -1337,6 +1361,16 @@ pub struct Rdp {
     pub other_modes: OtherModes,
     /// The primitive colour, RGBA8888 (`Set Prim Color`, 0x3A).
     pub prim_color: u32,
+    /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — a combiner mul
+    /// input (R-10). The `min_level` field (bits 12:8) is not stored yet: it has no
+    /// consumer until the deferred LOD/mip path, and it lands with that consumer
+    /// rather than as unread state.
+    pub prim_lod_frac: u8,
+    /// `Set Convert` (0x2C) `K4`/`K5` — combiner sub-B / mul inputs, raw 9-bit
+    /// (`K0..K3`, the YUV-convert coefficients, are deferred). R-10.
+    pub k4: i16,
+    /// `Set Convert` `K5` (see `k4`).
+    pub k5: i16,
     /// The environment colour, RGBA8888 (`Set Env Color`, 0x3B).
     pub env_color: u32,
     /// The blend colour, RGBA8888 (`Set Blend Color`, 0x39).
@@ -1538,7 +1572,21 @@ impl Rdp {
                 self.color_image = lo & 0x00FF_FFFF;
             }
             OP_SET_FILL_COLOR => self.fill_color = lo,
-            OP_SET_PRIM_COLOR => self.prim_color = lo,
+            OP_SET_PRIM_COLOR => {
+                // word 0 (hi): min_level[12:8] (deferred — no consumer until LOD),
+                // prim_lod_frac[7:0]; word 1 (lo): RGBA.
+                self.prim_color = lo;
+                self.prim_lod_frac = (hi & 0xFF) as u8;
+            }
+            OP_SET_CONVERT => {
+                // K4 = lo[17:9], K5 = lo[8:0], stored as the raw 0..511 value the
+                // hardware holds (matching Angrylion `rdp_set_convert`); the combiner
+                // sign-extends them downstream (`special_expand`/`sext9`), so signing
+                // here would double-apply. K0..K3 (the YUV-convert coefficients, in the
+                // hi word and lo[31:18]) are deliberately ignored — deferred, R-10.
+                self.k4 = ((lo >> 9) & 0x1FF) as i16;
+                self.k5 = (lo & 0x1FF) as i16;
+            }
             OP_SET_ENV_COLOR => self.env_color = lo,
             OP_SET_BLEND_COLOR => self.blend_color = lo,
             OP_SET_FOG_COLOR => self.fog_color = lo,
@@ -2312,6 +2360,11 @@ impl Rdp {
         let mut inp = CombinerInputs {
             prim: unpack_rgba(self.prim_color),
             env: unpack_rgba(self.env_color),
+            // R-10 exotic combiner inputs sourced from registers (noise, lod_frac,
+            // chroma key, and the YUV K0..K3 convert are deferred).
+            prim_lod_frac: i16::from(self.prim_lod_frac),
+            k4: self.k4,
+            k5: self.k5,
             ..CombinerInputs::default()
         };
         if let Some(shade) = shade {
@@ -2556,7 +2609,7 @@ impl Rdp {
     /// input tables (N64brew *…/Commands* §0x3C). Exotic inputs (noise, LOD frac,
     /// key/convert constants) are **open residual R-10** and read as zero.
     #[must_use]
-    pub fn combine_cycle(cfg: CombineCycle, inp: &CombinerInputs) -> [u8; 4] {
+    pub(crate) fn combine_cycle(cfg: CombineCycle, inp: &CombinerInputs) -> [u8; 4] {
         // RGB: A/B share the muladd/mulsub table, C the wide mul table, D the add.
         let mut out = [0u8; 4];
         for (ch, o) in out.iter_mut().enumerate().take(3) {
@@ -2585,7 +2638,7 @@ impl Rdp {
     /// hardware unconditionally; a `two_cycle` call that left `texel1` at its default
     /// would feed cycle 1 a zeroed `texel0`, which is a caller contract violation,
     /// not a mode this function guards against.
-    pub fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
+    pub(crate) fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
         if two_cycle {
             inp.combined = Self::combine_cycle(self.combine.cyc0, &inp);
             // The hardware pipelines the two texels: cycle 1's TEXEL0 reads the
@@ -4952,7 +5005,7 @@ mod tests {
     fn combine_cycle_passes_texel0_through() {
         let cfg = CombineCycle {
             rgb_a: 6, // One
-            rgb_b: 7, // -> Zero
+            rgb_b: 8, // Zero (select 8+; unambiguous, unlike select 7 = K4)
             rgb_c: 1, // Texel0
             rgb_d: 7, // Zero
             a_a: 6,   // One
@@ -4965,6 +5018,57 @@ mod tests {
             ..CombinerInputs::default()
         };
         assert_eq!(Rdp::combine_cycle(cfg, &inp), [10, 20, 30, 40]);
+    }
+
+    /// **`PRIM_LOD_FRAC` reaches the combiner as RGB mul-select 14 and alpha
+    /// mul-select 6 (R-10).** `A = One`, `B = Zero`, `C = PrimLODFrac` for both RGB
+    /// and alpha, so the output equals `One * prim_lod_frac >> 8 ≈ prim_lod_frac`
+    /// (`256 * 100 + 0x80 >> 8 = 100`). Mutation guard: if either select fell back
+    /// to the R-10 "→ 0" arm the output would be `[0, 0, 0, 0]`, so the seeded
+    /// `100` value cannot pass vacuously.
+    #[test]
+    fn combine_cycle_routes_prim_lod_frac() {
+        let cfg = CombineCycle {
+            rgb_a: 6,  // One
+            rgb_b: 8,  // Zero
+            rgb_c: 14, // Prim LOD fraction
+            rgb_d: 7,  // Zero
+            a_a: 6,    // One
+            a_b: 7,    // Zero
+            a_c: 6,    // Prim LOD fraction (alpha mul-select 6)
+            a_d: 7,    // Zero
+        };
+        let inp = CombinerInputs {
+            prim_lod_frac: 100,
+            ..CombinerInputs::default()
+        };
+        assert_eq!(Rdp::combine_cycle(cfg, &inp), [100, 100, 100, 100]);
+    }
+
+    /// **`Set Convert` `K4`/`K5` reach the combiner as RGB sub-B select 7 and RGB
+    /// mul-select 15 (R-10).** `A = One`, `B = K4`, `C = K5`, `D = Zero`, so RGB is
+    /// `(One − K4) * K5 >> 8 = (256 − 64) * 64 + 0x80 >> 8 = 48`. Alpha is a fixed
+    /// `One` (K4/K5 are RGB-only) so it does not confound the RGB check. Mutation
+    /// guard: an unwired `K4` gives `64`, an unwired `K5` gives `0`, either one
+    /// unwired changes the result away from `48`.
+    #[test]
+    fn combine_cycle_routes_convert_k4_k5() {
+        let cfg = CombineCycle {
+            rgb_a: 6,  // One
+            rgb_b: 7,  // Convert K4 (sub-B)
+            rgb_c: 15, // Convert K5 (mul)
+            rgb_d: 7,  // Zero
+            a_a: 7,    // Zero
+            a_b: 7,    // Zero
+            a_c: 7,    // Zero
+            a_d: 6,    // One
+        };
+        let inp = CombinerInputs {
+            k4: 64,
+            k5: 64,
+            ..CombinerInputs::default()
+        };
+        assert_eq!(Rdp::combine_cycle(cfg, &inp), [48, 48, 48, 255]);
     }
 
     /// **Two-cycle mode chains cycle 0 into cycle 1's `Combined` input.** Cycle 0
