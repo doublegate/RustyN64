@@ -8,6 +8,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — tile coordinate clamp/wrap for textured triangles (gap-analysis Stage D, ledger R-13)
+
+- **Point-sampled textured triangles now apply the tile shift / clamp / mask /
+  mirror.** The sampler fed `interpolate_st`'s raw coordinate straight to
+  `fetch_texel` — no shift, no tile-origin subtraction, no clamp/wrap — so a
+  coordinate running outside the tile read unrelated TMEM. New `sample_coord`
+  ports the ParaLLEl-RDP sampler order (`tcshift_cycle` → `TRELATIVE(SL<<3)` →
+  `tcclamp_cycle_light` → `tcmask`): shift → subtract `SL/TL` → **clamp**
+  (active when `clamp_s || mask_s == 0`, over-`SH` → `(SH>>2)−(SL>>2)`, *before*
+  the mask) → mask/mirror. `interpolate_st` now returns the pre-`>>5` `s10.5`
+  coordinate so the shift and tile-size clamp operate on the true value.
+- Validated byte-for-byte against Angrylion by two new conformance vectors —
+  `tex_tri_clamp_16` (`clamp_s`, `S` past `SH` → the last texel repeats) and
+  `tex_tri_wrap_16` (`mask_s = 2` → the texture wraps) — plus a mutation-checked
+  `sample_coord` unit test. A self-asserted unit test that had baked in the
+  transform-less behaviour (no tile size) was corrected to set a valid `SH`/`TH`.
+
 ### Added — 4-bit (I4) textures oracle-validated (gap-analysis Stage D, ledger R-7)
 
 - **The hardware-canonical 4-bit texture path is validated against Angrylion.**

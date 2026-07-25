@@ -277,12 +277,21 @@ fn interpolate_shade(
 /// triangle's texture coefficients — the **non-perspective** path
 /// (`no_perspective_divide(stw >> 16)`, `interpolation.h`/`perspective.h`): walk
 /// the `s16.16` `S`/`T` by `de` down the scanline and `dx` across, then take the
-/// integer part (`>> 16`) as the texel coordinate. The `W` perspective divide is
-/// the deferred perspective slice; the returned coords wrap into `fetch_texel`.
+/// integer part (`>> 16`) as the coordinate. The `W` perspective divide is the
+/// deferred perspective slice.
+///
+/// Returns the raw **`s10.5`** coordinate (the 5 low bits are the sub-texel
+/// fraction), *before* the tile transform: the caller runs [`sample_coord`]
+/// (shift / tile-origin subtraction / clamp / mask) to turn it into the
+/// tile-relative integer texel. Keeping the fraction here is what lets the shift
+/// and the tile-size clamp operate on the true coordinate (ledger R-13).
 #[allow(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "base_x is in range for the cast; the texel coord wraps into fetch_texel"
+    reason = "base_x derives from the s15.16 major-edge x, in range for the cast"
+)]
+#[allow(
+    clippy::tuple_array_conversions,
+    reason = "the perspective divide returns (s, t); packing both into the coord array is intentional"
 )]
 fn interpolate_st(
     tex: &TexSetup,
@@ -291,7 +300,7 @@ fn interpolate_st(
     y: i32,
     y_base: i32,
     x: i32,
-) -> [u32; 2] {
+) -> [i32; 2] {
     let base_x = (major_x >> 16) as i32;
     let mut stw = [0i32; 3];
     for (c, o) in stw.iter_mut().enumerate() {
@@ -300,19 +309,72 @@ fn interpolate_st(
         *o = v >> 16; // the integer coordinate fed to the (non-)perspective divide
     }
     // `no_perspective_divide` is just `(s, t)`; the perspective path divides by W.
-    let (s, t) = if persp {
-        perspective_divide(stw[0], stw[1], stw[2])
+    if persp {
+        let (s, t) = perspective_divide(stw[0], stw[1], stw[2]);
+        [s, t]
     } else {
-        (stw[0], stw[1])
+        [stw[0], stw[1]]
+    }
+}
+
+/// Map a raw `s10.5` texture coordinate to a tile-relative **integer texel** for
+/// the point-sampled 1-cycle path: shift, tile-origin subtraction, **clamp**, then
+/// mask/mirror — the sampler order (ParaLLEl-RDP `tcshift_cycle` → `TRELATIVE` →
+/// `tcclamp_cycle_light` → `tcmask`; ledger R-13). Differs from the COPY-mode
+/// [`wrap_coord`] only by the clamp, which sits *between* the subtraction and the
+/// mask — masking first would corrupt the clamp's over-max / negative detection.
+///
+/// `lo`/`hi` are the tile's `SL`/`SH` (or `TL`/`TH`) `Set Tile Size` fields
+/// (`u10.2`). The over-max test compares against the **raw absolute** `hi`; the
+/// substituted clamp value is the **relative** tile width `(hi>>2) − (lo>>2)`.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "the texel index is non-negative after the clamp-to-0 and the mask"
+)]
+fn sample_coord(
+    coord: i32,
+    shift: u8,
+    mask: u8,
+    mirror: bool,
+    clamp: bool,
+    lo: u16,
+    hi: u16,
+) -> u32 {
+    let shift = shift.min(15); // the hardware shift field is 4 bits
+    // 1. Shift on the sign-extended i16 (codes 0–10 right, 11–15 left by 16−code).
+    let shifted = if shift < 11 {
+        i32::from(coord as i16) >> shift
+    } else {
+        i32::from((coord as i16).wrapping_shl(u32::from(16 - shift)))
     };
-    // The RDP texel coordinate is s.5 — the low 5 bits are the sub-texel fraction,
-    // so the integer texel index is the coordinate >> 5 (Angrylion
-    // texture_pipeline_cycle: sfrac = sss & 0x1f, fetch_texel_quadro takes sss >> 5;
-    // ledger R-13). RustyN64 point-samples, so it drops the fraction. A negative or
-    // oversized coordinate stays wrapping-safe: fetch_texel masks every offset into
-    // the 4 KiB TMEM space (see fetch_texel_oversized_coords_wrap_deterministically),
-    // and exact clamp/mirror for out-of-tile coordinates is the open R-13 residual.
-    [(s >> 5) as u32, (t >> 5) as u32]
+    // 2. Over-max flag — `(shifted >> 3) >= SH`, against the RAW absolute SH,
+    //    BEFORE the tile-origin subtraction (`tcshift_cycle` computes `maxs` here).
+    let over_max = (shifted >> 3) >= i32::from(hi);
+    // 3. Tile-origin subtraction (`TRELATIVE`): `SL` (`u10.2`) `<< 3` = the `s.5` scale.
+    let rel = shifted - (i32::from(lo) << 3);
+    // 4. Clamp — active when the tile clamp bit is set OR `mask == 0`.
+    let mut s = if clamp || mask == 0 {
+        if over_max {
+            // `clampdiffs`: the tile WIDTH in texels, `(SH>>2) − (SL>>2)`.
+            ((i32::from(hi) >> 2) - (i32::from(lo) >> 2)) & 0x3FF
+        } else if rel & 0x1_0000 == 0 {
+            rel >> 5 // non-negative: the integer texel
+        } else {
+            0 // went below the tile origin: clamp low
+        }
+    } else {
+        rel >> 5
+    };
+    // 5. Mask / mirror (`mask == 0` ⇒ identity, no wrap).
+    let mask = mask.min(10); // hardware caps the mask width at 10
+    if mask != 0 {
+        let m = 1i32 << mask;
+        if mirror && (s >> mask) & 1 != 0 {
+            s ^= m - 1; // reflect on the alternate mask-sized span
+        }
+        s &= m - 1;
+    }
+    s as u32
 }
 
 /// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
@@ -2061,9 +2123,30 @@ impl Rdp {
                 interpolate_shade(&shade.base, &shade.dx, &shade.de, major_x, line, y_base, x);
         }
         if let Some(tex) = tex {
-            let [s, t] =
+            let [s105, t105] =
                 interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
-            inp.texel0 = self.fetch_texel(&self.tiles[0], s, t);
+            // Apply the tile shift / origin-subtraction / clamp / mask (R-13) to the
+            // raw s10.5 coordinate before the fetch — the sampler order.
+            let tile = &self.tiles[0];
+            let s = sample_coord(
+                s105,
+                tile.shift_s,
+                tile.mask_s,
+                tile.mirror_s,
+                tile.clamp_s,
+                tile.sl,
+                tile.sh,
+            );
+            let t = sample_coord(
+                t105,
+                tile.shift_t,
+                tile.mask_t,
+                tile.mirror_t,
+                tile.clamp_t,
+                tile.tl,
+                tile.th,
+            );
+            inp.texel0 = self.fetch_texel(tile, s, t);
         }
         let shade_alpha = inp.shade[3];
         (
@@ -4248,6 +4331,57 @@ mod tests {
         );
     }
 
+    /// **`sample_coord` applies shift, tile-origin subtraction, clamp, then mask
+    /// (R-13).** The sampler order differs from `wrap_coord` only by the clamp,
+    /// which sits between the subtraction and the mask. Every case is hand-derived
+    /// from the ParaLLEl-RDP algorithm; a mutation to any step (drop the clamp,
+    /// mask before clamp, clamp against raw `SH` vs `SH-SL`) fails a row here.
+    #[test]
+    fn sample_coord_shifts_subtracts_clamps_then_masks() {
+        // s.5 coordinate: texel n = n << 5. Tile SH = 3 texels (0xC in u10.2).
+        let sh = 3u16 << 2;
+        // In-bounds, clamp forced by mask==0: texels pass straight through.
+        assert_eq!(sample_coord(1 << 5, 0, 0, false, false, 0, sh), 1);
+        assert_eq!(
+            sample_coord(3 << 5, 0, 0, false, false, 0, sh),
+            3,
+            "SH itself"
+        );
+        // Past SH with clamp on: clamps to (SH>>2)-(SL>>2) = 3 texels.
+        assert_eq!(
+            sample_coord(5 << 5, 0, 0, false, true, 0, sh),
+            3,
+            "over-SH clamps"
+        );
+        // Negative coordinate with clamp on: clamps low to 0.
+        assert_eq!(
+            sample_coord(-(1 << 5), 0, 0, false, true, 0, sh),
+            0,
+            "below origin clamps to 0"
+        );
+        // Wrap (mask=2, no clamp): texel 5 wraps mod 4 -> 1.
+        assert_eq!(
+            sample_coord(5 << 5, 0, 2, false, false, 0, sh),
+            1,
+            "wraps mod 4"
+        );
+        // Mirror (mask=2): texel 5 (0b101) reflects on the alternate span -> 2.
+        assert_eq!(sample_coord(5 << 5, 0, 2, true, false, 0, sh), 2, "mirrors");
+        // Tile-origin subtraction: SL = 1 texel (0x4 in u10.2) shifts the index down
+        // (texel 2 in-bounds, so this tests the subtraction, not the clamp).
+        assert_eq!(
+            sample_coord(2 << 5, 0, 0, false, false, 1 << 2, sh),
+            1,
+            "SL=1 subtracted"
+        );
+        // Shift code 1 = >>1 on the s.5 coord: texel 4 -> 2.
+        assert_eq!(
+            sample_coord(4 << 5, 1, 0, false, false, 0, sh),
+            2,
+            "shift >>1"
+        );
+    }
+
     /// **A copy-mode Texture Rectangle round-trips a texture.** `Load Tile` loads a
     /// 4×2 16-bit texture into TMEM; a 1:1 `Texture Rectangle` (copy mode) blits it
     /// into a 16-bit colour image. Because the load and the copy fetch share the
@@ -5390,6 +5524,11 @@ mod tests {
         rdp.scissor_lry = 8 << 2;
         rdp.tiles[0].format = 0;
         rdp.tiles[0].size = 2;
+        // An 8×8 tile so S = texel 1 is in-bounds: the R-13 tile transform forces
+        // the clamp when `mask == 0`, and a coordinate past `SH` clamps to the last
+        // texel — with the default `SH = 0` this would clamp S = 1 back to texel 0.
+        rdp.tiles[0].sh = 7 << 2;
+        rdp.tiles[0].th = 7 << 2;
         // texel (0,0) = red 0xF801, texel (1,0) = green 0x07C1.
         rdp.tmem_write(0, 0xF8);
         rdp.tmem_write(1, 0x01);
