@@ -4623,7 +4623,11 @@ mod tests {
         // T-only `& 0xff`: mask 10, base 0x3ff (== maskbits) → -(0x3ff & 0xff) = -0xff,
         // NOT -0x3ff. This is the row where the T branch differs from the S branch.
         assert_eq!(mask_coupled(0x3ff, 10, false, true), (0x3ff, -0xff));
-        assert_eq!(mask_coupled(0x3ff, 10, false, false), (0x3ff, -0x3ff), "S uses -base");
+        assert_eq!(
+            mask_coupled(0x3ff, 10, false, false),
+            (0x3ff, -0x3ff),
+            "S uses -base"
+        );
         // Mirror ON, forward half (base 1 → wrap bit clear, masked 1): +1.
         assert_eq!(mask_coupled(1, 2, true, false), (1, 1));
         // Mirror ON, mirrored half (base 6 → wrap bit set, inverted+masked 1): -1.
