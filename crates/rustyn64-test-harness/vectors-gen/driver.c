@@ -36,8 +36,37 @@ void msg_error(const char *err, ...) {
 void msg_warning(const char *err, ...) { (void)err; }
 void msg_debug(const char *err, ...) { (void)err; }
 
+// The VI scan-out output surface, captured from `n64video_update_screen` for the
+// `.vivec` oracle. Angrylion's VI writes the resampled/filtered frame into its
+// `prescale` buffer and hands us a `frame_buffer` whose `pixels` points at the
+// (already overscan-cropped) top-left of the visible region, `pitch` = 640. We
+// copy the width x height window out, tightly packed as RGBA8 (rgba.a carries
+// coverage 0..7, not opacity — see the VI recipe).
+#define VI_OUT_MAX (640u * 625u)
+static uint8_t g_vi_out[VI_OUT_MAX * 4];
+static uint32_t g_vi_out_w, g_vi_out_h;
+static bool g_vi_captured;
+
 void vdac_init(struct n64video_config *config) { (void)config; }
-void vdac_write(struct frame_buffer *fb) { (void)fb; }
+void vdac_write(struct frame_buffer *fb) {
+    g_vi_out_w = fb->width;
+    g_vi_out_h = fb->height;
+    g_vi_captured = true;
+    if ((uint64_t)fb->width * fb->height > VI_OUT_MAX) {
+        fprintf(stderr, "vdac_write: %ux%u exceeds prescale bound\n", fb->width, fb->height);
+        exit(1);
+    }
+    for (uint32_t y = 0; y < fb->height; y++) {
+        for (uint32_t x = 0; x < fb->width; x++) {
+            struct rgba p = fb->pixels[y * fb->pitch + x];
+            uint8_t *o = &g_vi_out[(y * fb->width + x) * 4];
+            o[0] = p.r;
+            o[1] = p.g;
+            o[2] = p.b;
+            o[3] = p.a;
+        }
+    }
+}
 void vdac_sync(bool invalid) { (void)invalid; }
 void vdac_close(void) {}
 
@@ -74,6 +103,9 @@ static void engine_init(void) {
     g_config.gfx.mi_intr_cb = mi_intr_cb;
     g_config.vi.mode = VI_MODE_NORMAL;
     g_config.vi.interp = VI_INTERP_LINEAR;
+    // Crop to the visible area so `vdac_write` receives the clean resampled window
+    // (no 640-wide prescale borders) — the `.vivec` oracle for RustyN64's scan-out.
+    g_config.vi.hide_overscan = true;
     g_config.dp.compat = DP_COMPAT_HIGH;
     g_config.parallel = false; // single-threaded => bit-deterministic
     g_config.num_workers = 0;
@@ -119,6 +151,19 @@ static uint32_t read_fb32(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w) 
         exit(1);
     }
     return ((const uint32_t *)g_rdram)[idx32]; // no XOR at 32-bit
+}
+
+// Place a logical 16-bit source framebuffer pixel so Angrylion's VI fetch reads it
+// back verbatim — the inverse of `read_fb16` (`RREADIDX16` = `rdram16[idx ^ 1]`, the
+// WORD_ADDR_XOR). The `.vivec` carries logical pixels; RustyN64's scan-out places the
+// same logical pixels big-endian in its own RDRAM, so both renderers see one source.
+static void rdram_put_fb16(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w, uint16_t px) {
+    uint32_t idx16 = ((fb_addr >> 1) + y * w + x) ^ 1;
+    if (idx16 >= RDRAM_SIZE / 2) {
+        fprintf(stderr, "rdram_put_fb16: pixel out of RDRAM bounds\n");
+        exit(1);
+    }
+    ((uint16_t *)g_rdram)[idx16] = px;
 }
 
 // ---- Vector definition ----
@@ -1016,6 +1061,111 @@ static int emit_fuzz(const char *out_dir, uint64_t seed, int count, const char *
     return 0;
 }
 
+// ---- VI scan-out vectors (`.vivec`) ----
+//
+// A VI vector drives Angrylion's real scan-out pipeline (`n64video_update_screen`
+// → `vi_process_full`): it places a 16-bit source framebuffer in RDRAM, sets the VI
+// registers, captures the resampled/cropped output via `vdac_write`, and writes a
+// `.vivec` = 15 big-endian u32 header + the logical source pixels (BE 16-bit) + the
+// golden RGBA8 output. RustyN64 replays it through `Bus::scanout_scaled` (R-5/R-6).
+typedef struct {
+    const char *name;
+    uint32_t ctrl;    // VI_STATUS/VI_CTRL (type[1:0], aa_mode[9:8], ...)
+    uint32_t origin;  // VI_ORIGIN (source framebuffer RDRAM byte address)
+    uint32_t width;   // VI_WIDTH (source stride, pixels)
+    uint32_t x_scale; // VI_X_SCALE (2.10: add[11:0], start[27:16])
+    uint32_t y_scale; // VI_Y_SCALE
+    uint32_t h_video; // VI_H_START/VI_H_VIDEO (h_start[25:16], h_end[9:0])
+    uint32_t v_video; // VI_V_START/VI_V_VIDEO
+    uint32_t v_sync;  // VI_V_SYNC (V_TOTAL; > 550 selects PAL)
+    uint32_t src_w, src_h; // source framebuffer dimensions
+} ViVector;
+
+// A deterministic distinct source pixel (RGBA5551): encodes x and y into separate
+// channels so any mis-addressed sample lands on a visibly wrong colour.
+static uint16_t vi_src_pixel(uint32_t x, uint32_t y) {
+    return (uint16_t)(((x & 0x1f) << 11) | ((y & 0x1f) << 6) | (((x + y) & 0x1f) << 1) | 1u);
+}
+
+static int emit_vi_vector(const ViVector *v, const char *out_dir) {
+    engine_init();
+    for (uint32_t y = 0; y < v->src_h; y++) {
+        for (uint32_t x = 0; x < v->src_w; x++) {
+            rdram_put_fb16(v->origin, x, y, v->src_w, vi_src_pixel(x, y));
+        }
+    }
+    g_vi_regs[VI_STATUS] = v->ctrl;
+    g_vi_regs[VI_ORIGIN] = v->origin;
+    g_vi_regs[VI_WIDTH] = v->width;
+    g_vi_regs[VI_X_SCALE] = v->x_scale;
+    g_vi_regs[VI_Y_SCALE] = v->y_scale;
+    g_vi_regs[VI_H_START] = v->h_video;
+    g_vi_regs[VI_V_START] = v->v_video;
+    g_vi_regs[VI_V_SYNC] = v->v_sync;
+
+    g_vi_captured = false;
+    n64video_update_screen();
+    if (!g_vi_captured) {
+        fprintf(stderr, "%s: VI produced no output (blanked?)\n", v->name);
+        return 1;
+    }
+
+    char path[512];
+    int need = snprintf(path, sizeof(path), "%s/%s.vivec", out_dir, v->name);
+    if (need < 0 || (size_t)need >= sizeof(path)) {
+        fprintf(stderr, "path too long for VI vector %s\n", v->name);
+        return 1;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        perror("fopen");
+        return 1;
+    }
+    uint32_t hdr[15] = {0x56495643u, 1u,          v->ctrl,     v->origin,   v->width,
+                        v->x_scale,  v->y_scale,   v->h_video,  v->v_video,  v->v_sync,
+                        v->src_w,    v->src_h,     2u,          g_vi_out_w,  g_vi_out_h};
+    for (int i = 0; i < 15; i++) {
+        uint8_t be[4] = {hdr[i] >> 24, hdr[i] >> 16, hdr[i] >> 8, hdr[i]};
+        wr(be, 4, f);
+    }
+    for (uint32_t y = 0; y < v->src_h; y++) {
+        for (uint32_t x = 0; x < v->src_w; x++) {
+            uint16_t px = vi_src_pixel(x, y);
+            uint8_t be[2] = {px >> 8, px};
+            wr(be, 2, f);
+        }
+    }
+    wr(g_vi_out, (size_t)g_vi_out_w * g_vi_out_h * 4, f);
+    if (fclose(f) != 0) {
+        perror("fclose");
+        return 1;
+    }
+    fprintf(stderr, "wrote %s (%ux%u src -> %ux%u out)\n", path, v->src_w, v->src_h, g_vi_out_w,
+            g_vi_out_h);
+    return 0;
+}
+
+// Emit the fixed VI scan-out vectors. Slice 1 (ledger R-5): nearest-neighbour X/Y
+// scale (aa_mode = REPLICATE, so no bilinear lerp and no AA/divot/de-dither/gamma),
+// exercising the 2.10 accumulator + the active-span/overscan geometry.
+static int emit_vi_vectors(const char *out_dir) {
+    // 1:1 scale: validates the geometry + integer addressing (the 108-px NTSC
+    // h-overscan makes the first visible column sample source column 8).
+    ViVector v1x = {"vi_scale_1x_16",   0x00000302u, 0x1000u, 80u,
+                    0x00000400u,        0x00000400u, 0x006C0094u, 0x00220042u,
+                    525u,               80u,         48u};
+    if (emit_vi_vector(&v1x, out_dir)) return 1;
+
+    // 2x downscale (x_add = y_add = 0x800): every output pixel steps two source
+    // pixels, so the accumulator's integer >>10 addressing is exercised.
+    ViVector vdown = {"vi_scale_down2x_16", 0x00000302u, 0x1000u, 80u,
+                      0x00000800u,          0x00000800u, 0x006C0094u, 0x00220042u,
+                      525u,                 80u,         48u};
+    if (emit_vi_vector(&vdown, out_dir)) return 1;
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
     // Fuzz mode: `./driver --fuzz <out_dir> <seed> <count>` emits a reproducible
     // candidate corpus (curated on the Rust side) instead of the fixed vectors.
@@ -1176,6 +1326,8 @@ int main(int argc, char **argv) {
                   sizeof(V28_TEX_TRI_CONVERT_KNEG_16) / 4, V28_TEX_TRI_CONVERT_KNEG_16,
                   0, 0, NULL};
     if (emit_vector(&v28, out_dir)) return 1;
+
+    if (emit_vi_vectors(out_dir)) return 1;
 
     return 0;
 }
