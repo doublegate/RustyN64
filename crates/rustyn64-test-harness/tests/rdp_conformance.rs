@@ -429,6 +429,21 @@ fn tex_tri_convert_k45_16_matches_angrylion() {
     );
 }
 
+/// **A NEGATIVE `Set Convert` K4 (bit 8 set) — the sign-extension proof (R-10).**
+/// `K4 = 0x1C0` is raw 9-bit `448` but `-64` after the RDP's `special_9bit` expand
+/// (Angrylion `combiner.c:481`); with `K5 = 0x040` the combine `(One - K4) * K5`
+/// is `(256 - (-64)) * 64 >> 8 = 80` (gray `0x5295`). Read raw-positive it would be
+/// `(256 - 448) * 64 < 0` → clamped black, so this pins that `combine_channel`'s
+/// `special_expand` sign-extends K4 exactly like Angrylion's exttable — the path the
+/// bit-8-clear `tex_tri_convert_k45_16` vector cannot reach.
+#[test]
+fn tex_tri_convert_kneg_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_convert_kneg_16",
+        include_bytes!("vectors/tex_tri_convert_kneg_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`

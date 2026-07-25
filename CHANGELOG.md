@@ -16,11 +16,14 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   (`0x2C`) dispatch extracts `K4`/`K5` (raw 9-bit, `lo[17:9]`/`lo[8:0]`). The
   combiner input mux wires `prim_lod_frac` to RGB mul-select 14 and alpha mul-select
   6, `K4` to RGB sub-B select 7, and `K5` to RGB mul-select 15. Validated
-  byte-for-byte against Angrylion by two new non-vacuous conformance vectors —
-  `tex_tri_primlodfrac_16` (`One * prim_lod_frac`, gray vs black if unwired) and
-  `tex_tri_convert_k45_16` (`(One − K4) * K5`, gray vs black if unwired) — plus two
-  mutation-checked unit tests (`combine_cycle_routes_prim_lod_frac`,
-  `combine_cycle_routes_convert_k4_k5`). Still open (read as zero until their
+  byte-for-byte against Angrylion by three new non-vacuous conformance vectors —
+  `tex_tri_primlodfrac_16` (`One * prim_lod_frac`, gray vs black if unwired),
+  `tex_tri_convert_k45_16` (`(One − K4) * K5`, gray vs black if unwired), and
+  `tex_tri_convert_kneg_16` (a **negative** `K4 = −64`, proving the raw 0..511 value
+  is `special_9bit`-sign-extended in the combiner exactly as Angrylion does — a raw
+  read would clamp black) — plus two mutation-checked unit tests
+  (`combine_cycle_routes_prim_lod_frac`, `combine_cycle_routes_convert_k4_k5`). Still
+  open (read as zero until their
   machinery exists): noise, the derivative-computed `lod_frac`, the chroma-key
   centre/scale, and the YUV convert `K0`–`K3` coefficients.
 

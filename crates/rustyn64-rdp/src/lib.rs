@@ -626,7 +626,7 @@ fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         3 => i16::from(inp.prim[ch]),
         4 => i16::from(inp.shade[ch]),
         5 => i16::from(inp.env[ch]),
-        7 => inp.k4, // Convert K4 (raw 9-bit; combine_channel sign-expands)
+        7 => inp.k4, // Convert K4 (raw 0..511; combine_channel's special_expand sign-extends)
         _ => 0,      // 6 KeyCenter — R-10; 8+ Zero
     }
 }
@@ -648,7 +648,7 @@ fn rgb_input_c(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         11 => i16::from(inp.shade[3]),
         12 => i16::from(inp.env[3]),
         14 => inp.prim_lod_frac, // Prim LOD fraction
-        15 => inp.k5,            // Convert K5 (raw 9-bit; sext9 sign-extends)
+        15 => inp.k5,            // Convert K5 (raw 0..511; combine_channel's sext9 sign-extends)
         _ => 0,                  // 6 KeyScale, 13 LODFrac — R-10; 16+ Zero
     }
 }
@@ -1195,11 +1195,15 @@ pub struct CombinerInputs {
     /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — combiner mul
     /// input (RGB select 14, alpha select 6). `0..=255` (R-10).
     pub prim_lod_frac: i16,
-    /// `Set Convert` (0x2C) `K4` — combiner RGB sub-B input (select 7), raw 9-bit
-    /// (`combine_channel` sign-expands it). R-10.
+    /// `Set Convert` (0x2C) `K4` — combiner RGB sub-B input (select 7). Held as the
+    /// **raw 0..511** value the hardware stores; `combine_channel` sign-extends it via
+    /// `special_expand` (bit-identical to Angrylion's `special_9bit_exttable`), so a
+    /// bit-8-set value reads as negative. Storing raw matches Angrylion `rdp_set_convert`
+    /// — sign-extending at decode would double-apply. R-10.
     pub k4: i16,
-    /// `Set Convert` (0x2C) `K5` — combiner RGB mul input (select 15), raw 9-bit
-    /// (`sext9` sign-extends it). R-10.
+    /// `Set Convert` (0x2C) `K5` — combiner RGB mul input (select 15). Held as the
+    /// **raw 0..511** value; `combine_channel` sign-extends it via `sext9`
+    /// (Angrylion `SIGNF(c, 9)`). Stored raw, like `k4`. R-10.
     pub k5: i16,
 }
 
@@ -1569,8 +1573,11 @@ impl Rdp {
                 self.min_level = ((hi >> 8) & 0x1F) as u8;
             }
             OP_SET_CONVERT => {
-                // K4 = lo[17:9], K5 = lo[8:0], both raw 9-bit (K0..K3 in the hi word
-                // are the YUV-convert coefficients, deferred — R-10).
+                // K4 = lo[17:9], K5 = lo[8:0], stored as the raw 0..511 value the
+                // hardware holds (matching Angrylion `rdp_set_convert`); the combiner
+                // sign-extends them downstream (`special_expand`/`sext9`), so signing
+                // here would double-apply. K0..K3 in the hi word are the YUV-convert
+                // coefficients, deferred — R-10.
                 self.k4 = ((lo >> 9) & 0x1FF) as i16;
                 self.k5 = (lo & 0x1FF) as i16;
             }
