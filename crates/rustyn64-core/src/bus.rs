@@ -742,14 +742,17 @@ impl Bus {
     /// clamp, and the truncating RGBA5551→8 conversion the VI uses (`(px >> 8) & 0xF8`,
     /// not `expand5`'s replicating widening); the 5-bit **bilinear lerp** for **both**
     /// 16- and 32-bit sources (`aa_mode != REPLICATE` and a non-zero fraction, nearest
-    /// otherwise); the **gamma** curve; and, for 32-bit under `aa_mode` 0/1, the
-    /// coverage-gated **de-dither** (`cvg == 7`) and **AA-edge** (`cvg < 7`) filters and
-    /// the **divot** median (`divot_enable`). Alpha is `0xFF` (opaque) for display; the
-    /// VI carries coverage in its output alpha, which the harness compares as RGB-only.
+    /// otherwise); the **gamma** curve; and, under `aa_mode` 0/1 for **both** source
+    /// formats, the coverage-gated **de-dither** (`cvg == 7`) and **AA-edge**
+    /// (`cvg < 7`) filters and the **divot** median (`divot_enable`) — 16-bit reads
+    /// coverage from the hidden-bits plane, 32-bit from the alpha byte
+    /// (`vi_read_cov`). Alpha is `0xFF` (opaque) for display; the VI carries
+    /// coverage in its output alpha, which the harness compares as RGB-only.
     ///
-    /// Still to come (later slices, still substituted here): the **16-bit** coverage
-    /// path (needs the hidden-bits plane), the gamma-dither
-    /// variants, and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
+    /// Still to come (later slices, still substituted here): the gamma-dither
+    /// variants, the coverage filters under `aa_mode == 2` (`RESAMP_ONLY` forces
+    /// `cvg = 7`, so de-dither can still apply — currently gated to `aa_mode ≤ 1`),
+    /// and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
     /// serrate, and the exact `H_TOTAL`). Not yet wired into the frontend —
     /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
     /// the R-12 depth path landing ahead of its runtime caller).
@@ -932,6 +935,14 @@ impl Bus {
         self.rdram_read_u32(byte)
     }
 
+    /// Read the raw 16-bit RGBA5551 source halfword at `(x, y)` (big-endian,
+    /// bounds-safe), the 16-bit counterpart to [`Bus::vi_read32`]. Ledger R-5.
+    fn vi_read16(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> u16 {
+        let idx = src_stride.wrapping_mul(y).wrapping_add(x);
+        let byte = origin.wrapping_add_signed(idx.wrapping_mul(2));
+        (u16::from(self.rdram_read(byte)) << 8) | u16::from(self.rdram_read(byte.wrapping_add(1)))
+    }
+
     /// Read one source pixel as **raw** RGB8 (no filters) plus its 3-bit coverage,
     /// dispatching on the framebuffer format (`bpp` = 2 or 4). This is the sole
     /// format-specific primitive of the coverage path — every downstream filter
@@ -953,11 +964,14 @@ impl Bus {
         y: i32,
         bpp: u32,
     ) -> ([u8; 3], u32) {
+        // Callers derive `bpp` from `VI_CTRL.TYPE` mapped to 2 (RGBA5551) or 4
+        // (RGBA8888); any other value would silently take the 32-bit branch.
+        debug_assert!(bpp == 2 || bpp == 4, "vi_read_cov: bpp must be 2 or 4");
         if bpp == 2 {
+            // The hidden-bits halfword shares the colour pixel's byte address.
             let idx = src_stride.wrapping_mul(y).wrapping_add(x);
             let byte = origin.wrapping_add_signed(idx.wrapping_mul(2));
-            let px = (u16::from(self.rdram_read(byte)) << 8)
-                | u16::from(self.rdram_read(byte.wrapping_add(1)));
+            let px = self.vi_read16(origin, src_stride, x, y);
             let cvg = ((u32::from(px) & 1) << 2) | u32::from(self.rdram_read_hidden(byte));
             (vi_rgb5551(px), cvg)
         } else {
@@ -1048,10 +1062,12 @@ impl Bus {
             .0
     }
 
-    /// The 32-bit **divot** filter (Angrylion `divot_filter`): the per-channel median
-    /// of a pixel and its two horizontal neighbours (all post-de-dither/AA-edge). It is
-    /// **skipped** (the centre passes through) when all three are fully covered
-    /// (`(c.a & l.a & r.a) == 7`), so it only touches partial-coverage edges. Ledger R-5.
+    /// The **divot** filter (Angrylion `divot_filter`), format-generic over `bpp`: the
+    /// per-channel median of a pixel and its two horizontal neighbours (all
+    /// post-de-dither/AA-edge, via [`Bus::vi_fetch_cov`]). It is **skipped** (the centre
+    /// passes through) when all three are fully covered
+    /// (`cen_cvg & left_cvg & right_cvg == 7`), so it only touches partial-coverage
+    /// edges. Ledger R-5.
     fn vi_divot(
         &self,
         origin: u32,
