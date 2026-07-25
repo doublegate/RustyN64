@@ -849,10 +849,11 @@ impl Bus {
     /// `origin`) and convert to the VI's truncating RGB8 (`vi_rgb5551`). Reads
     /// big-endian through `rdram_read`, which returns 0 for an out-of-range address,
     /// so an out-of-bounds sample cannot panic. Ledger R-5 (VI scale resample).
-    #[allow(clippy::cast_sign_loss)]
     fn vi_fetch16(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> [u8; 3] {
         let idx = src_stride.wrapping_mul(y).wrapping_add(x);
-        let byte = origin.wrapping_add((idx as u32).wrapping_mul(2));
+        // `wrapping_add_signed` adds the (possibly negative) signed byte offset to the
+        // unsigned base without a sign-losing cast; `rdram_read` bounds-checks.
+        let byte = origin.wrapping_add_signed(idx.wrapping_mul(2));
         let px = (u16::from(self.rdram_read(byte)) << 8)
             | u16::from(self.rdram_read(byte.wrapping_add(1)));
         vi_rgb5551(px)
@@ -861,10 +862,9 @@ impl Bus {
     /// Fetch a 32-bit RGBA8888 source pixel at `(x, y)` as RGB8 (the big-endian
     /// R/G/B bytes; the alpha byte carries coverage, not shown). Reads big-endian
     /// through `rdram_read_u32`, bounds-safe like `vi_fetch16`. Ledger R-5.
-    #[allow(clippy::cast_sign_loss)]
     fn vi_fetch32(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> [u8; 3] {
         let idx = src_stride.wrapping_mul(y).wrapping_add(x);
-        let byte = origin.wrapping_add((idx as u32).wrapping_mul(4));
+        let byte = origin.wrapping_add_signed(idx.wrapping_mul(4));
         let w = self.rdram_read_u32(byte).to_be_bytes();
         [w[0], w[1], w[2]]
     }
