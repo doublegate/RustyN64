@@ -89,6 +89,19 @@ const fn vi_gamma(v: u8) -> u8 {
     (vi_integer_sqrt((v as u32) << 6) << 1) as u8
 }
 
+/// The 256-entry VI gamma lookup table, built at compile time from [`vi_gamma`]
+/// (Angrylion's `gamma_table`) — a table lookup per channel on the scan-out path
+/// instead of recomputing the integer square root per pixel.
+const GAMMA_TABLE: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        t[i] = vi_gamma(i as u8);
+        i += 1;
+    }
+    t
+};
+
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
@@ -826,9 +839,14 @@ impl Bus {
                     let w = self.rdram_read_u32(byte).to_be_bytes();
                     [w[0], w[1], w[2]]
                 };
-                // Gamma is the final RGB stage (after scale, before write).
+                // Gamma is the final RGB stage (after scale, before write) — a table
+                // lookup per channel (the LUT is `vi_gamma` precomputed).
                 if gamma {
-                    rgb = [vi_gamma(rgb[0]), vi_gamma(rgb[1]), vi_gamma(rgb[2])];
+                    rgb = [
+                        GAMMA_TABLE[usize::from(rgb[0])],
+                        GAMMA_TABLE[usize::from(rgb[1])],
+                        GAMMA_TABLE[usize::from(rgb[2])],
+                    ];
                 }
                 out[dst..dst + 3].copy_from_slice(&rgb);
                 out[dst + 3] = 0xFF; // opaque display alpha (VI coverage is not shown)
@@ -1889,13 +1907,21 @@ mod tests {
     /// **`vi_gamma` — the VI sqrt gamma curve (R-5).** `gamma(v) = sqrt(v << 6) << 1`:
     /// `gamma(0) = 0`, `gamma(0x40) = sqrt(0x1000) << 1 = 64 << 1 = 0x80`,
     /// `gamma(0x48) = sqrt(0x1200) << 1 = 67 << 1 = 0x86`, `gamma(0xFF) = sqrt(0x3FC0)
-    /// << 1 = 127 << 1 = 0xFE`. Dropping the `<< 1` fails.
+    /// << 1 = 127 << 1 = 0xFE`. The whole curve is then checked exhaustively against an
+    /// **independent** floor-sqrt (`u32::isqrt`, a different implementation than
+    /// `vi_integer_sqrt`), which also pins the precomputed `GAMMA_TABLE` to `vi_gamma`.
+    /// Dropping the `<< 1` fails the anchor cases.
     #[test]
     fn vi_gamma_curve() {
         assert_eq!(vi_gamma(0), 0);
         assert_eq!(vi_gamma(0x40), 0x80);
         assert_eq!(vi_gamma(0x48), 0x86);
         assert_eq!(vi_gamma(0xFF), 0xFE);
+        for v in 0..=255u8 {
+            let reference = ((u32::from(v) << 6).isqrt() << 1) as u8;
+            assert_eq!(vi_gamma(v), reference, "vi_gamma({v}) vs isqrt reference");
+            assert_eq!(GAMMA_TABLE[usize::from(v)], vi_gamma(v), "LUT entry {v}");
+        }
     }
 }
 
