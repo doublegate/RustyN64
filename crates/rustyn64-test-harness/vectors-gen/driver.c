@@ -1242,6 +1242,17 @@ static int emit_vi_vectors(const char *out_dir) {
                        525u,                   80u,         48u,        4u};
     if (emit_vi_vector(&vbil32, out_dir)) return 1;
 
+    // Slice 4c (ledger R-5): the de-dither restore filter. aa_mode = 0 (reads real
+    // coverage), dither_filter_enable (bit 16), type = 3 (0x00010003). Every 32-bit
+    // source pixel has alpha 0xFF (coverage bits 7:5 = 7, fully covered), so the
+    // cur_cvg==7 + dither_filter path (restore_filter32, an 8-tap ±1 nudge toward
+    // neighbours) runs everywhere; the AA-edge path is never hit. 1:1 scale (xfrac =
+    // yfrac = 0) so no bilinear lerp post-blends the filter output.
+    ViVector vdedith = {"vi_dedither_32", 0x00010003u, 0x1000u, 80u,
+                        0x00000400u,      0x00000400u, 0x006C0094u, 0x00220042u,
+                        525u,             80u,         48u,        4u};
+    if (emit_vi_vector(&vdedith, out_dir)) return 1;
+
     return 0;
 }
 

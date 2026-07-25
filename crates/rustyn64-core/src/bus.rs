@@ -742,6 +742,9 @@ impl Bus {
         // variants (bit 2 set) are noise-based and deferred, so plain gamma is applied
         // only when gamma_enable is set and gamma_dither is not (bit 3 set, bit 2 clear).
         let gamma = (ctrl & 0x0C) == 0x08;
+        // The de-dither / AA-edge coverage path (aa_mode 0/1); `dither_filter`
+        // (VI_CTRL bit 16) enables the de-dither restore on fully-covered pixels.
+        let dither_filter = (ctrl >> 16) & 1 != 0;
         let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
         let src_stride = (self.vi.read(vi::VI_WIDTH) & 0xFFF) as i32; // source pixels/row
         let h_video = self.vi.read(vi::VI_H_VIDEO);
@@ -815,10 +818,13 @@ impl Bus {
                 let sx = x_offs >> 10;
                 let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
-                // Fetch one source pixel as RGB8, dispatching on the framebuffer format.
+                // Fetch one source pixel as RGB8, dispatching on the framebuffer format
+                // and, for 32-bit under aa_mode 0/1, the coverage filter (de-dither).
                 let fetch = |x: i32, y: i32| {
                     if bpp == 2 {
                         self.vi_fetch16(origin, src_stride, x, y)
+                    } else if aa_mode <= 1 {
+                        self.vi_fetch32_coverage(origin, src_stride, x, y, dither_filter)
                     } else {
                         self.vi_fetch32(origin, src_stride, x, y)
                     }
@@ -867,6 +873,74 @@ impl Bus {
         let byte = origin.wrapping_add_signed(idx.wrapping_mul(4));
         let w = self.rdram_read_u32(byte).to_be_bytes();
         [w[0], w[1], w[2]]
+    }
+
+    /// Read the raw 32-bit RGBA8888 source word at `(x, y)` (for coverage + the
+    /// filter neighbour taps). Big-endian, bounds-safe. Ledger R-5.
+    fn vi_read32(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> u32 {
+        let idx = src_stride.wrapping_mul(y).wrapping_add(x);
+        let byte = origin.wrapping_add_signed(idx.wrapping_mul(4));
+        self.rdram_read_u32(byte)
+    }
+
+    /// A 32-bit source fetch for the coverage path (`aa_mode` 0/1). Reads the pixel's
+    /// coverage from alpha bits 7:5; a fully-covered pixel (`cvg == 7`) gets the
+    /// **de-dither** restore filter when `dither_filter` is set, otherwise the raw
+    /// colour. A partial pixel (`cvg < 7`) takes the AA-edge filter — **deferred**, so
+    /// it returns the raw colour for now (later slice). Ledger R-5.
+    ///
+    /// De-dither (Angrylion `restore_filter32`): over the 8 taps of the 3×3
+    /// neighbourhood minus the centre, each channel is nudged ±1 toward the neighbour
+    /// (comparing the top-5-bit values), the noise-removing correction; the result is
+    /// truncated to `u8` (Angrylion stores it into a `u8` field unmasked).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn vi_fetch32_coverage(
+        &self,
+        origin: u32,
+        src_stride: i32,
+        x: i32,
+        y: i32,
+        dither_filter: bool,
+    ) -> [u8; 3] {
+        // The 3×3 neighbourhood minus the centre (restore.c tap layout).
+        const TAPS: [(i32, i32); 8] = [
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+            (-1, 0),
+            (1, 0),
+        ];
+        let px = self.vi_read32(origin, src_stride, x, y);
+        let center = [(px >> 24) as u8, (px >> 16) as u8, (px >> 8) as u8];
+        let cvg = (px >> 5) & 7;
+        if cvg != 7 || !dither_filter {
+            return center; // cvg < 7 → AA edge (deferred); cvg == 7 without dither → raw
+        }
+        let center5 = [center[0] >> 3, center[1] >> 3, center[2] >> 3]; // top 5 bits
+        let mut acc = [
+            i32::from(center[0]),
+            i32::from(center[1]),
+            i32::from(center[2]),
+        ];
+        for (dx, dy) in TAPS {
+            let nb = self.vi_read32(origin, src_stride, x + dx, y + dy);
+            let nb5 = [
+                ((nb >> 27) & 0x1F) as u8,
+                ((nb >> 19) & 0x1F) as u8,
+                ((nb >> 11) & 0x1F) as u8,
+            ];
+            for c in 0..3 {
+                acc[c] += match center5[c].cmp(&nb5[c]) {
+                    core::cmp::Ordering::Less => 1,
+                    core::cmp::Ordering::Greater => -1,
+                    core::cmp::Ordering::Equal => 0,
+                };
+            }
+        }
+        [acc[0] as u8, acc[1] as u8, acc[2] as u8]
     }
 
     /// Apply a write to the SP register block, performing whatever it starts.
