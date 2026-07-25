@@ -32,8 +32,8 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   same base transform. Validated byte-for-byte against Angrylion by
   `tex_tri_bilinear_16` (an 8×8 gradient sampled at 0.5 texel/pixel in both axes,
   hitting both triangle branches), plus mutation-checked `bilinear_3point` and
-  `sample_axis` unit tests. Still deferred: the mask-wrap-seam `sdiff`/`tdiff`,
-  `mid_texel`, and the LOD/`texel1` 2-cycle path.
+  `sample_axis` unit tests. (The mask-wrap-seam `sdiff`/`tdiff` is handled in the
+  entry above; still deferred: `mid_texel` and the LOD/`texel1` 2-cycle path.)
 
 ### Added — tile coordinate clamp/wrap for textured triangles (gap-analysis Stage D, ledger R-13)
 

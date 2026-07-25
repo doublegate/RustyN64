@@ -4618,8 +4618,12 @@ mod tests {
         assert_eq!(mask_coupled(1, 2, false, false), (1, 1));
         // Mirror off, period END (base == maskbits = 3): neighbour wraps to 0 (-3).
         assert_eq!(mask_coupled(3, 2, false, false), (3, -3));
-        // Mirror off, T period end uses -(base & 0xff) — same as -base here.
+        // Mirror off, T period end uses -(base & 0xff) — same as -base for base 3.
         assert_eq!(mask_coupled(3, 2, false, true), (3, -3));
+        // T-only `& 0xff`: mask 10, base 0x3ff (== maskbits) → -(0x3ff & 0xff) = -0xff,
+        // NOT -0x3ff. This is the row where the T branch differs from the S branch.
+        assert_eq!(mask_coupled(0x3ff, 10, false, true), (0x3ff, -0xff));
+        assert_eq!(mask_coupled(0x3ff, 10, false, false), (0x3ff, -0x3ff), "S uses -base");
         // Mirror ON, forward half (base 1 → wrap bit clear, masked 1): +1.
         assert_eq!(mask_coupled(1, 2, true, false), (1, 1));
         // Mirror ON, mirrored half (base 6 → wrap bit set, inverted+masked 1): -1.
