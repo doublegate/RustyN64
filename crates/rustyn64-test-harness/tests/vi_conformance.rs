@@ -183,3 +183,17 @@ fn vi_gamma_1x_16_matches_angrylion() {
         include_bytes!("vectors/vi_gamma_1x_16.vivec"),
     );
 }
+
+/// **The PAL active-span geometry (R-6, partial).** `v_sync = 625` (> 550) selects
+/// the PAL branch: the horizontal overscan is 128 px, not NTSC's 108. With
+/// `h_start = 115`, PAL's `-128` clamps to `-13` (so output column 0 samples source
+/// column 13), while a mis-applied NTSC `-108` would sample column 8 — the golden's
+/// first pixel is `src(13,0)`, so this distinguishes the PAL geometry. The field-rate
+/// / interlace half of R-6 is still deferred.
+#[test]
+fn vi_pal_geometry_16_matches_angrylion() {
+    assert_matches(
+        "vi_pal_geometry_16",
+        include_bytes!("vectors/vi_pal_geometry_16.vivec"),
+    );
+}

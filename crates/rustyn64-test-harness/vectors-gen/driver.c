@@ -1190,6 +1190,18 @@ static int emit_vi_vectors(const char *out_dir) {
                        525u,             80u,         48u};
     if (emit_vi_vector(&vgamma, out_dir)) return 1;
 
+    // Slice 4a / R-6 (partial): the PAL active-span geometry. v_sync = 625 (> 550)
+    // selects the PAL branch — the horizontal overscan is 128 px (not NTSC's 108). With
+    // h_start = 115, PAL's -128 drives it to -13 (left-clamp: minhpass = 0, x_start
+    // folds +13 columns → first sample is source column 13), while a mis-applied NTSC
+    // -108 would leave h_start = +7 (no clamp, minhpass = 8 → source column 8). The
+    // output therefore distinguishes the PAL geometry. Nearest, 1:1; only the
+    // field-rate/interlace half of R-6 stays deferred.
+    ViVector vpal = {"vi_pal_geometry_16", 0x00000302u, 0x1000u, 80u,
+                     0x00000400u,          0x00000400u, 0x007300A3u, 0x002C004Cu,
+                     625u,                 80u,         48u};
+    if (emit_vi_vector(&vpal, out_dir)) return 1;
+
     return 0;
 }
 

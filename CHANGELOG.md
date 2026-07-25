@@ -8,6 +8,15 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI PAL scan-out geometry, slice 4a (gap-analysis Stage D, ledger R-5/R-6)
+
+- **Validated the PAL active-span geometry** in `Bus::scanout_scaled` (the `v_sync >
+  550` branch: 128-px horizontal overscan and `vstartoffset` 44, present since slice 1
+  but previously unverified). `vi_pal_geometry_16` (`v_sync = 625`, `h_start = 115` so
+  the PAL `-128` samples source column 13 where a mis-applied NTSC `-108` would sample
+  column 8) matches Angrylion RGB byte-for-byte; a mutation forcing the PAL overscan to
+  108 fails it. The field-rate half of R-6 (50 Hz cadence + interlace) stays deferred.
+
 ### Added — VI scan-out gamma curve, slice 3 (gap-analysis Stage D, ledger R-5)
 
 - **The VI gamma curve** in `Bus::scanout_scaled` (`gamma_enable`, VI_CTRL bit 3, with
