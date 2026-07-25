@@ -1704,6 +1704,29 @@ impl Pipeline {
         }
     }
 
+    /// Uncached RCP-register access latency `M`, in PClocks — **measured, not
+    /// tuned** (ledger C-1, T-11-003).
+    ///
+    /// Derived from the PeterLemon `CPUTIMINGNTSC` mult/div differential: the
+    /// model `expected_i = W / (B + c_i)`, where `c_i` is each timed
+    /// instruction's documented stall (UM Table 3-12: `mult` 5, `dmult` 8,
+    /// `div` 37, `ddiv` 69), regresses to a window `W ~= 1.52e6` PClocks and a
+    /// hardware base-loop `B ~= 25.5` PClocks (fit < 1.5% on the high-leverage
+    /// mult/div points). Our base loop measured exactly 4.00 PClocks (four
+    /// one-cycle instructions, no memory latency), so the missing `B - 4 ~= 21.5`
+    /// PClocks is the uncached `lw VI_V_CURRENT` latency. Charging 22 drives the
+    /// ROM's absolute iteration count from 304_180 to 56_330 vs the
+    /// hardware-baked 56_092 (0.4%) -- the *independent* confirmation, since 22
+    /// came from the differential, not from fitting the absolute count. Measured
+    /// on VI; the sibling RCP registers share the bus and are charged the same
+    /// pending their own vectors. RDRAM / cache-fill `M` stay unmeasured (0).
+    #[allow(clippy::doc_markdown)]
+    const M_RCP_REGISTER: u32 = 22;
+    /// Low bound of the RCP MMIO block (SP..SI) charged [`Self::M_RCP_REGISTER`].
+    const M_RCP_REGISTER_LO: u32 = 0x0400_0000;
+    /// High bound of the RCP MMIO block.
+    const M_RCP_REGISTER_HI: u32 = 0x04FF_FFFF;
+
     /// Read `width` big-endian bytes, right-justified, through the D-cache when
     /// the access is cached.
     ///
@@ -1723,7 +1746,7 @@ impl Pipeline {
             self.dcache_fill(bus, addr);
             return self.dcache.read(addr, width as usize);
         }
-        match width {
+        let v = match width {
             1 => u64::from(bus.read_u8(addr)),
             2 => (u64::from(bus.read_u8(addr)) << 8) | u64::from(bus.read_u8(addr.wrapping_add(1))),
             4 => u64::from(bus.read_u32(addr)),
@@ -1733,7 +1756,16 @@ impl Pipeline {
                     | u64::from(bus.read_u32(addr.wrapping_add(4)))
             }
             _ => 0,
+        };
+        // Charge the uncached RCP-register access latency `M` (T-11-003, ledger
+        // C-1). Reuses the `Dcm` interlock (whose doc already carries the `+ M`
+        // term) rather than adding a serialized enum variant that would perturb
+        // the save-state format (ADR 0005). Only this region is *measured*; other
+        // uncached reads (RDRAM) stay at 0 pending their own measurement.
+        if (Self::M_RCP_REGISTER_LO..=Self::M_RCP_REGISTER_HI).contains(&addr) {
+            self.stall_for(Self::M_RCP_REGISTER, Interlock::Dcm);
         }
+        v
     }
 
     /// Write the low `width` big-endian bytes of `value`, through the D-cache
