@@ -743,12 +743,12 @@ impl Bus {
     /// not `expand5`'s replicating widening); the 5-bit **bilinear lerp** for **both**
     /// 16- and 32-bit sources (`aa_mode != REPLICATE` and a non-zero fraction, nearest
     /// otherwise); the **gamma** curve; and, for 32-bit under `aa_mode` 0/1, the
-    /// coverage-gated **de-dither** (`cvg == 7`) and **AA-edge** (`cvg < 7`) filters.
-    /// Alpha is `0xFF` (opaque) for display; the VI carries coverage in its output
-    /// alpha, which the conformance harness compares as RGB-only.
+    /// coverage-gated **de-dither** (`cvg == 7`) and **AA-edge** (`cvg < 7`) filters and
+    /// the **divot** median (`divot_enable`). Alpha is `0xFF` (opaque) for display; the
+    /// VI carries coverage in its output alpha, which the harness compares as RGB-only.
     ///
-    /// Still to come (later slices, still substituted here): the **divot** median, the
-    /// **16-bit** coverage path (needs the hidden-bits plane), the gamma-dither
+    /// Still to come (later slices, still substituted here): the **16-bit** coverage
+    /// path (needs the hidden-bits plane), the gamma-dither
     /// variants, and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
     /// serrate, and the exact `H_TOTAL`). Not yet wired into the frontend —
     /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
@@ -783,8 +783,10 @@ impl Bus {
         // only when gamma_enable is set and gamma_dither is not (bit 3 set, bit 2 clear).
         let gamma = (ctrl & 0x0C) == 0x08;
         // The de-dither / AA-edge coverage path (aa_mode 0/1); `dither_filter`
-        // (VI_CTRL bit 16) enables the de-dither restore on fully-covered pixels.
+        // (VI_CTRL bit 16) enables the de-dither restore on fully-covered pixels, and
+        // `divot` (VI_CTRL bit 4) the 3-tap median on partial-coverage edges.
         let dither_filter = (ctrl >> 16) & 1 != 0;
+        let divot = (ctrl >> 4) & 1 != 0;
         let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
         let src_stride = (self.vi.read(vi::VI_WIDTH) & 0xFFF) as i32; // source pixels/row
         let h_video = self.vi.read(vi::VI_H_VIDEO);
@@ -864,7 +866,11 @@ impl Bus {
                     if bpp == 2 {
                         self.vi_fetch16(origin, src_stride, x, y)
                     } else if aa_mode <= 1 {
-                        self.vi_fetch32_coverage(origin, src_stride, x, y, dither_filter)
+                        if divot {
+                            self.vi_divot(origin, src_stride, x, y, dither_filter)
+                        } else {
+                            self.vi_fetch32_coverage(origin, src_stride, x, y, dither_filter)
+                        }
                     } else {
                         self.vi_fetch32(origin, src_stride, x, y)
                     }
@@ -934,14 +940,14 @@ impl Bus {
     /// (comparing the top-5-bit values), the noise-removing correction; the result is
     /// truncated to `u8` (Angrylion stores it into a `u8` field unmasked).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn vi_fetch32_coverage(
+    fn vi_fetch32_cov(
         &self,
         origin: u32,
         src_stride: i32,
         x: i32,
         y: i32,
         dither_filter: bool,
-    ) -> [u8; 3] {
+    ) -> ([u8; 3], u32) {
         // The 3×3 neighbourhood minus the centre (restore.c tap layout).
         const TAPS: [(i32, i32); 8] = [
             (-1, -1),
@@ -958,10 +964,13 @@ impl Bus {
         let cvg = (px >> 5) & 7;
         if cvg < 7 {
             // Partial coverage → the AA edge filter (video_filter32).
-            return self.vi_video_filter(origin, src_stride, x, y, center, cvg);
+            return (
+                self.vi_video_filter(origin, src_stride, x, y, center, cvg),
+                cvg,
+            );
         }
         if !dither_filter {
-            return center; // fully covered without dither → raw colour
+            return (center, cvg); // fully covered without dither → raw colour
         }
         let center5 = [center[0] >> 3, center[1] >> 3, center[2] >> 3]; // top 5 bits
         let mut acc = [
@@ -984,7 +993,56 @@ impl Bus {
                 };
             }
         }
-        [acc[0] as u8, acc[1] as u8, acc[2] as u8]
+        ([acc[0] as u8, acc[1] as u8, acc[2] as u8], cvg)
+    }
+
+    /// The filtered 32-bit coverage-path colour ([`Bus::vi_fetch32_cov`] without the
+    /// coverage — for the non-divot path, which only needs the RGB).
+    fn vi_fetch32_coverage(
+        &self,
+        origin: u32,
+        src_stride: i32,
+        x: i32,
+        y: i32,
+        dither_filter: bool,
+    ) -> [u8; 3] {
+        self.vi_fetch32_cov(origin, src_stride, x, y, dither_filter)
+            .0
+    }
+
+    /// The 32-bit **divot** filter (Angrylion `divot_filter`): the per-channel median
+    /// of a pixel and its two horizontal neighbours (all post-de-dither/AA-edge). It is
+    /// **skipped** (the centre passes through) when all three are fully covered
+    /// (`(c.a & l.a & r.a) == 7`), so it only touches partial-coverage edges. Ledger R-5.
+    fn vi_divot(
+        &self,
+        origin: u32,
+        src_stride: i32,
+        x: i32,
+        y: i32,
+        dither_filter: bool,
+    ) -> [u8; 3] {
+        let (cen, cen_cvg) = self.vi_fetch32_cov(origin, src_stride, x, y, dither_filter);
+        let (left, left_cvg) = self.vi_fetch32_cov(origin, src_stride, x - 1, y, dither_filter);
+        let (right, right_cvg) = self.vi_fetch32_cov(origin, src_stride, x + 1, y, dither_filter);
+        if (cen_cvg & left_cvg & right_cvg) == 7 {
+            return cen; // all fully covered → no divot
+        }
+        // Branch-expanded median-of-3 per channel (divot.c), matching its tie-handling.
+        let median = |lv: u8, cv: u8, rv: u8| {
+            if (lv >= cv && rv >= lv) || (lv >= rv && cv >= lv) {
+                lv
+            } else if (rv >= cv && lv >= rv) || (rv >= lv && cv >= rv) {
+                rv
+            } else {
+                cv
+            }
+        };
+        [
+            median(left[0], cen[0], right[0]),
+            median(left[1], cen[1], right[1]),
+            median(left[2], cen[2], right[2]),
+        ]
     }
 
     /// The 32-bit AA-edge filter for a partial-coverage pixel (Angrylion

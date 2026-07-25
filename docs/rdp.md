@@ -708,33 +708,51 @@ TLB/COP1 categories. No VI-category assertion flips yet: those need the exact
 write-masks (R-4) and the sub-field/interlace timing (R-6), both deferred. Run:
 `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`.
 
-**The scan-out conversion is implemented** (`Bus::scanout`): it reads
-`VI_ORIGIN`/`VI_WIDTH`/`VI_CTRL` and the active region from `VI_V_VIDEO`
-(`(V_END − V_START)` half-lines → lines), and converts the framebuffer to RGBA8 —
+**Two scan-out methods exist.** `Bus::scanout` is the original 1:1 converter: it
+reads `VI_ORIGIN`/`VI_WIDTH`/`VI_CTRL` and the active region from `VI_V_VIDEO`
+(`(V_END − V_START)` half-lines → lines) and converts the framebuffer to RGBA8 —
 **16-bit RGBA5551** (each 5-bit channel widened to 8 by replicating the high bits,
 the 1-bit alpha to 0/255) and **32-bit RGBA8888** (a direct copy). `TYPE` 0/1 is
-blank. What is **not** applied yet is the geometry and the analog post-filters —
-an open residual (`docs/accuracy-ledger.md` **R-5**):
+blank. It applies no geometry and no post-filters.
 
-- **`VI_X_SCALE`/`VI_Y_SCALE` resampling** — the scan is currently 1:1.
-- **Anti-aliasing** — blends silhouette edges using the per-pixel coverage bit.
-- **Divot filter** — removes 1-pixel AA artifacts on silhouette edges via the
-  median of three neighbours.
-- **De-dither** — examines 8 neighbours to undo the RDP's ordered ("magic
-  square") dither; applied only on full-coverage pixels.
+**`Bus::scanout_scaled` is the accurate replacement** (ledger **R-5**, slices
+4a-4e), built and pinned slice-by-slice **bit-exact against Angrylion**
+(`n64video_update_screen`; ParaLLEl-RDP reimplemented the same path,
+`ref-docs/research-report.md` §4). It reproduces the DAC pipeline in `VI_CTRL`
+order:
 
-The full scan-out (with scaling and the filters) must be **bit-exact with
-Angrylion** — ParaLLEl-RDP reimplemented it to that standard
-(`ref-docs/research-report.md` §4); R-5 tracks the gap. `Bus::scanout` has no
-per-frame driver yet — the scheduler tick that calls it lands with `V_CURRENT`.
+- **Geometry** — the `VI_H_VIDEO`/`VI_V_VIDEO` active span with NTSC/PAL
+  horizontal overscan (`h_start − 108/128`) and the left/top clamps folded back
+  into the 2.10 scale accumulator, and the ±8 horizontal-pass crop.
+- **`VI_X_SCALE`/`VI_Y_SCALE` resampling** — the 2.10 fixed-point accumulator with
+  a **5-bit bilinear lerp** (`vi_lerp3`) between the four surrounding texels when
+  `aa_mode ≠ REPLICATE` and a fraction is non-zero; the exact nearest sample under
+  REPLICATE (`aa_mode == 3`) or zero fraction.
+- **Coverage post-filters (32-bit, `aa_mode` 0/1):** the **AA-edge** filter
+  (`vi_video_filter`, 6-tap penultimate-min/max) on partial-coverage pixels
+  (`cvg < 7`); the **de-dither** restore (8-tap ±1 nudge, `VI_CTRL` bit 16) on
+  fully-covered pixels; and the **divot** median-of-three (`VI_CTRL` bit 4) across
+  the pixel and its two horizontal neighbours — with the hardware's
+  **all-fully-covered early-return** (`(cen & left & right) cvg == 7` ⇒ the centre
+  passes through unchanged, no median).
+- **Gamma** (`VI_CTRL` bit 3, dither bit 2 clear) — the `sqrt` curve as a
+  precomputed 256-entry LUT, applied last.
 
-**Oracle effect:** not measured for this change, and it cannot change the count:
-`Bus::scanout` is a pure conversion method with **no runtime driver** — nothing in
-the run loop calls it during an n64-systemtest run — so it is unreachable by the
-suite. The suite-wide failing count therefore stands at 93 (from T-31-004 pt 1's
-measurement). The scan-out is graded instead by the harness golden frame
-(T-31-005) and, for the deferred scaling/filters, the ParaLLEl-RDP fuzz suite
-(R-5).
+**Still deferred in `scanout_scaled` (R-5/R-6):** the 16-bit coverage path (the AA
+/ divot / de-dither filters run only on the 32-bit source; 16-bit uses the hidden
+coverage-bits plane, which needs its own harness); gamma-**dither** (bit 2, noise
+based); and the R-6 field-rate / interlace serrate (only the progressive field is
+modelled). `Bus::scanout_scaled` also has **no per-frame driver yet** — like
+`Bus::scanout` it is a pure method the run loop does not call (the R-12
+land-ahead-of-caller precedent); the frontend wiring is a later slice.
+
+**Oracle effect:** not measured, and it cannot change the n64-systemtest count:
+both scan-out methods are pure conversions with **no runtime driver** — nothing in
+the run loop calls either during a suite run — so they are unreachable by it. The
+suite-wide failing count therefore stands where T-31-004 pt 1 left it. The scan-out
+is graded instead by the committed **`.vivec` Angrylion vectors**
+(`crates/rustyn64-test-harness/tests/vi_conformance.rs`) and the harness golden
+frame (T-31-005); the deferred paths track against the ParaLLEl-RDP fuzz suite.
 
 ## Edge cases and gotchas
 

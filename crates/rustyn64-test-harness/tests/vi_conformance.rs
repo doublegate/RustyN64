@@ -12,8 +12,8 @@
 //! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
 //! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), 32-bit source
 //! resampling (slice 4b), the de-dither restore filter (slice 4c), and the AA edge
-//! filter (slice 4d). The divot median, the 16-bit coverage path, and the field-rate
-//! half of R-6 (PAL 50 Hz cadence / interlace) land in later slices.
+//! filter (slice 4d), and the divot median (slice 4e). The 16-bit coverage path and
+//! the field-rate half of R-6 (PAL 50 Hz cadence / interlace) land in later slices.
 
 use rustyn64_core::Bus;
 use rustyn64_core::cpu::Bus as CpuBus;
@@ -231,4 +231,15 @@ fn vi_aa_edge_32_matches_angrylion() {
         "vi_aa_edge_32",
         include_bytes!("vectors/vi_aa_edge_32.vivec"),
     );
+}
+
+/// **The divot median filter (slice 4e).** `divot_enable` (bit 4), `aa_mode = 0`
+/// (`VI_STATUS = 0x00000013`), the same 32-bit every-4th-column-partial source. A
+/// pixel whose 3 horizontal neighbours are not all fully covered (the partial columns
+/// and their immediate neighbours) takes the per-channel median of the post-AA values;
+/// the rest pass through. Non-vacuous — the output differs from the non-divot AA-edge
+/// result at those pixels (the median ≠ the AA blend). 1:1 scale so no lerp.
+#[test]
+fn vi_divot_32_matches_angrylion() {
+    assert_matches("vi_divot_32", include_bytes!("vectors/vi_divot_32.vivec"));
 }
