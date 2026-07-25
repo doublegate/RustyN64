@@ -8,6 +8,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI 16-bit coverage path, slice 4f (gap-analysis Stage D, ledger R-5)
+
+- **The 16-bit RGBA5551 coverage path** in `Bus::scanout_scaled`. The coverage
+  machinery is now format-generic: a new primitive `Bus::vi_read_cov(x, y, bpp)`
+  returns raw RGB8 + 3-bit coverage — 32-bit from alpha bits 7:5, **16-bit** from the
+  9th-bit **hidden plane** (`((px & 1) << 2) | rdram_hidden`) — and the de-dither,
+  AA-edge, and divot filters (now `bpp`-parameterised) run identically on the
+  5-bit→8-bit-unpacked channels. The 32-bit path is byte-identical (all prior vectors
+  stay green). The hidden read reuses the existing `Bus::rdram_hidden` plane.
+- **`.vivec` format version 2** carries a trailing hidden-bits plane (one byte per
+  source pixel); the Angrylion driver populates `rdram_hidden` and emits it, the loader
+  packs it into `Bus.rdram_hidden`. Validated by `vi_dedither_16`, `vi_aa_edge_16`, and
+  `vi_divot_16` (a non-monotonic fully-covered probe makes the divot early-return
+  observable) RGB byte-for-byte vs Angrylion, each mutation-checked. n64-systemtest
+  impact: not measured (`scanout_scaled` has no runtime driver). R-6's field-rate half
+  and the gamma-dither variants remain later slices.
+
 ### Added — VI divot median filter, slice 4e (gap-analysis Stage D, ledger R-5)
 
 - **The divot median filter** in `Bus::scanout_scaled`: with `divot_enable` (VI_CTRL

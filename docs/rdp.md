@@ -716,7 +716,7 @@ the 1-bit alpha to 0/255) and **32-bit RGBA8888** (a direct copy). `TYPE` 0/1 is
 blank. It applies no geometry and no post-filters.
 
 **`Bus::scanout_scaled` is the accurate replacement** (ledger **R-5**, slices
-4a-4e), built and pinned slice-by-slice **bit-exact against Angrylion**
+4a-4f), built and pinned slice-by-slice **bit-exact against Angrylion**
 (`n64video_update_screen`; ParaLLEl-RDP reimplemented the same path,
 `ref-docs/research-report.md` §4). It reproduces the DAC pipeline in `VI_CTRL`
 order:
@@ -728,23 +728,27 @@ order:
   a **5-bit bilinear lerp** (`vi_lerp3`) between the four surrounding texels when
   `aa_mode ≠ REPLICATE` and a fraction is non-zero; the exact nearest sample under
   REPLICATE (`aa_mode == 3`) or zero fraction.
-- **Coverage post-filters (32-bit, `aa_mode` 0/1):** the **AA-edge** filter
-  (`vi_video_filter`, 6-tap penultimate-min/max) on partial-coverage pixels
+- **Coverage post-filters (`aa_mode` 0/1, both source formats):** the **AA-edge**
+  filter (`vi_video_filter`, 6-tap penultimate-min/max) on partial-coverage pixels
   (`cvg < 7`); the **de-dither** restore (8-tap ±1 nudge, `VI_CTRL` bit 16) on
   fully-covered pixels; and the **divot** median-of-three (`VI_CTRL` bit 4) across
   the pixel and its two horizontal neighbours — with the hardware's
   **all-fully-covered early-return** (`(cen & left & right) cvg == 7` ⇒ the centre
-  passes through unchanged, no median).
+  passes through unchanged, no median). The one format-specific primitive is
+  `Bus::vi_read_cov`: **32-bit** coverage is alpha bits 7:5 (`(px >> 5) & 7`);
+  **16-bit** combines the pixel's bit 0 with the two **hidden bits** of the 9-bit
+  RDRAM plane (`((px & 1) << 2) | rdram_hidden`), then the same filters run on the
+  5-bit→8-bit-unpacked channels. Every downstream filter is format-agnostic.
 - **Gamma** (`VI_CTRL` bit 3, dither bit 2 clear) — the `sqrt` curve as a
   precomputed 256-entry LUT, applied last.
 
-**Still deferred in `scanout_scaled` (R-5/R-6):** the 16-bit coverage path (the AA
-/ divot / de-dither filters run only on the 32-bit source; 16-bit uses the hidden
-coverage-bits plane, which needs its own harness); gamma-**dither** (bit 2, noise
-based); and the R-6 field-rate / interlace serrate (only the progressive field is
-modelled). `Bus::scanout_scaled` also has **no per-frame driver yet** — like
-`Bus::scanout` it is a pure method the run loop does not call (the R-12
-land-ahead-of-caller precedent); the frontend wiring is a later slice.
+**Still deferred in `scanout_scaled` (R-5/R-6):** gamma-**dither** (bit 2, noise
+based); the coverage filters under `aa_mode == 2` (RESAMP_ONLY forces `cvg = 7` on
+hardware, so de-dither can still apply — currently gated to `aa_mode ≤ 1`); and the
+R-6 field-rate / interlace serrate (only the progressive field is modelled).
+`Bus::scanout_scaled` also has **no per-frame driver yet** — like `Bus::scanout` it
+is a pure method the run loop does not call (the R-12 land-ahead-of-caller
+precedent); the frontend wiring is a later slice.
 
 **Oracle effect:** not measured, and it cannot change the n64-systemtest count:
 both scan-out methods are pure conversions with **no runtime driver** — nothing in

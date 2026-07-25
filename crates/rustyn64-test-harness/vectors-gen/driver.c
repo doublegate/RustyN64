@@ -76,6 +76,14 @@ static void mi_intr_cb(void) {}
 
 #define RDRAM_SIZE 0x800000u // 8 MiB (RDRAM_MAX_SIZE)
 
+// Angrylion's 9th-bit "hidden" RDRAM plane (one byte per 16-bit halfword, low two
+// bits meaningful), a non-static global in n64video/rdp/rdram.c. The VI reads it for
+// 16-bit RGBA5551 coverage (`rdram_read_pair16`, hidden indexed by halfword with NO
+// WORD_ADDR_XOR). `rdram_init` (called from `n64video_init`) memsets it to 3; for the
+// coverage vectors we memset it to 0 and set the source region explicitly so the plane
+// is fully determined and matches RustyN64's default-0 borders byte-for-byte.
+extern uint8_t rdram_hidden[];
+
 static uint8_t g_rdram[RDRAM_SIZE];
 static uint32_t g_vi_regs[VI_NUM_REG];
 static uint32_t g_dp_regs[DP_NUM_REG];
@@ -1137,6 +1145,50 @@ static uint32_t vi_src_pixel32(uint32_t x, uint32_t y, uint32_t aa) {
     return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
 }
 
+// The 16-bit (RGBA5551) coverage-path source pixel: distinct 5-bit channels per
+// (x, y), with the pixel's bit 0 as the coverage MSB and the two hidden bits (written
+// via `*hid`) as the low bits, so `cvg = ((px & 1) << 2) | hidden`. `aa` mirrors the
+// 32-bit generator: 1 = every 4th column partial (cvg 0), 2 = 1 plus the non-monotonic
+// fully-covered divot probe triplet. A fully-covered pixel is bit0=1, hidden=3 (cvg 7).
+static uint16_t vi_src_pixel16_cov(uint32_t x, uint32_t y, uint32_t aa, uint8_t *hid) {
+    uint16_t base = (uint16_t)(((x & 0x1f) << 11) | ((y & 0x1f) << 6) | (((x + y) & 0x1f) << 1));
+    // Partial column (cvg 0): bit0 = 0, hidden = 0.
+    if (aa && (x % 4u == 0u)) {
+        *hid = 0;
+        return base;
+    }
+    // Divot probe (aa == 2): a non-monotonic fully-covered triplet at the probe row so
+    // the divot all-fully-covered early-return is observable (its per-channel median
+    // differs from the centre). All three keep bit0=1, hidden=3 (cvg 7).
+    if (aa == 2u && y == VI_DIVOT_PROBE_Y) {
+        *hid = 3;
+        if (x == VI_DIVOT_PROBE_X - 1u) {
+            return (2u << 11) | (4u << 6) | (6u << 1) | 1u; // left  (low 5-bit channels)
+        }
+        if (x == VI_DIVOT_PROBE_X) {
+            return (30u << 11) | (28u << 6) | (26u << 1) | 1u; // centre (high)
+        }
+        if (x == VI_DIVOT_PROBE_X + 1u) {
+            return (16u << 11) | (18u << 6) | (20u << 1) | 1u; // right (mid)
+        }
+    }
+    // Fully covered (cvg 7): bit0 = 1, hidden = 3.
+    *hid = 3;
+    return base | 1u;
+}
+
+// Set the hidden byte for the source halfword at (x, y): `rdram_hidden` is indexed by
+// halfword with NO WORD_ADDR_XOR (unlike the colour plane), matching the VI's read.
+static void rdram_put_hidden16(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w,
+                               uint8_t hid) {
+    uint32_t idx16 = (fb_addr >> 1) + y * w + x;
+    if (idx16 >= RDRAM_SIZE / 2) {
+        fprintf(stderr, "rdram_put_hidden16: pixel out of RDRAM bounds\n");
+        exit(1);
+    }
+    rdram_hidden[idx16] = hid & 0x3;
+}
+
 // Place a logical 32-bit source pixel so Angrylion's VI fetch reads it verbatim —
 // 32-bit access has no WORD_ADDR_XOR (`RREADIDX32` = `rdram32[idx]`), so a host u32
 // at word index is read back as-is (the inverse of `read_fb32`).
@@ -1152,10 +1204,24 @@ static void rdram_put_fb32(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w,
 static int emit_vi_vector(const ViVector *v, const char *out_dir) {
     engine_init();
     uint32_t src_bpp = (v->bpp == 4u) ? 4u : 2u;
+    // A 16-bit vector under aa_mode 0/1 exercises the coverage path (de-dither /
+    // AA-edge / divot), which reads the hidden-bits plane. Those vectors carry an
+    // explicit hidden plane (format version 2); everything else is version 1.
+    int cov16 = (src_bpp == 2u) && (((v->ctrl >> 8) & 3u) <= 1u);
+    if (cov16) {
+        // Override rdram_init's default-3 with 0 so the plane is fully determined by
+        // the source region below and matches RustyN64's default-0 borders exactly.
+        memset(rdram_hidden, 0, RDRAM_SIZE / 2);
+    }
     for (uint32_t y = 0; y < v->src_h; y++) {
         for (uint32_t x = 0; x < v->src_w; x++) {
             if (src_bpp == 4u) {
                 rdram_put_fb32(v->origin, x, y, v->src_w, vi_src_pixel32(x, y, v->aa));
+            } else if (cov16) {
+                uint8_t hid;
+                uint16_t px = vi_src_pixel16_cov(x, y, v->aa, &hid);
+                rdram_put_fb16(v->origin, x, y, v->src_w, px);
+                rdram_put_hidden16(v->origin, x, y, v->src_w, hid);
             } else {
                 rdram_put_fb16(v->origin, x, y, v->src_w, vi_src_pixel(x, y));
             }
@@ -1188,7 +1254,10 @@ static int emit_vi_vector(const ViVector *v, const char *out_dir) {
         perror("fopen");
         return 1;
     }
-    uint32_t hdr[15] = {0x56495643u, 1u,          v->ctrl,     v->origin,   v->width,
+    // Format version 2 signals a trailing hidden-bits plane (coverage vectors only);
+    // version 1 is unchanged and carries none.
+    uint32_t version = cov16 ? 2u : 1u;
+    uint32_t hdr[15] = {0x56495643u, version,     v->ctrl,     v->origin,   v->width,
                         v->x_scale,  v->y_scale,   v->h_video,  v->v_video,  v->v_sync,
                         v->src_w,    v->src_h,     src_bpp,     g_vi_out_w,  g_vi_out_h};
     for (int i = 0; i < 15; i++) {
@@ -1201,10 +1270,26 @@ static int emit_vi_vector(const ViVector *v, const char *out_dir) {
                 uint32_t px = vi_src_pixel32(x, y, v->aa);
                 uint8_t be[4] = {px >> 24, px >> 16, px >> 8, px};
                 wr(be, 4, f);
+            } else if (cov16) {
+                uint8_t hid;
+                uint16_t px = vi_src_pixel16_cov(x, y, v->aa, &hid);
+                uint8_t be[2] = {px >> 8, px};
+                wr(be, 2, f);
             } else {
                 uint16_t px = vi_src_pixel(x, y);
                 uint8_t be[2] = {px >> 8, px};
                 wr(be, 2, f);
+            }
+        }
+    }
+    // Version 2: the hidden-bits plane, one byte per source pixel (low 2 bits), in the
+    // same (x, y) order as the source above.
+    if (cov16) {
+        for (uint32_t y = 0; y < v->src_h; y++) {
+            for (uint32_t x = 0; x < v->src_w; x++) {
+                uint8_t hid;
+                (void)vi_src_pixel16_cov(x, y, v->aa, &hid);
+                wr(&hid, 1, f);
             }
         }
     }
@@ -1318,6 +1403,34 @@ static int emit_vi_vectors(const char *out_dir) {
                        0x00000400u,   0x00000400u, 0x006C0094u, 0x00220042u,
                        525u,          80u,         48u,        4u, 2u};
     if (emit_vi_vector(&vdivot, out_dir)) return 1;
+
+    // Slice 4f (ledger R-5): the 16-bit RGBA5551 coverage path. Coverage is read from
+    // the hidden-bits plane (`((px & 1) << 2) | hidden`) instead of a 32-bit alpha
+    // byte, then the same de-dither / AA-edge / divot filters run on the 5-bit→8-bit
+    // channels. These vectors carry an explicit hidden plane (format version 2). Same
+    // geometry as the 32-bit coverage vectors; type = 2 (RGBA5551).
+
+    // De-dither: aa = 0 → every pixel fully covered (bit0=1, hidden=3, cvg 7), so the
+    // restore filter runs everywhere. dither_filter (bit 16), aa_mode 0 → 0x00010002.
+    ViVector vdd16 = {"vi_dedither_16", 0x00010002u, 0x1000u, 80u,
+                      0x00000400u,      0x00000400u, 0x006C0094u, 0x00220042u,
+                      525u,             80u,         48u,        2u, 0u};
+    if (emit_vi_vector(&vdd16, out_dir)) return 1;
+
+    // AA-edge: aa = 1 → every 4th column partial (cvg 0), so a partial pixel takes the
+    // video filter over its fully-covered taps. aa_mode 0, no dither → 0x00000002.
+    ViVector vaa16 = {"vi_aa_edge_16", 0x00000002u, 0x1000u, 80u,
+                      0x00000400u,     0x00000400u, 0x006C0094u, 0x00220042u,
+                      525u,            80u,         48u,        2u, 1u};
+    if (emit_vi_vector(&vaa16, out_dir)) return 1;
+
+    // Divot: aa = 2 → the partial pattern plus the non-monotonic fully-covered probe
+    // triplet, so the all-fully-covered early-return is observable. divot_enable (bit
+    // 4), aa_mode 0 → 0x00000012.
+    ViVector vdivot16 = {"vi_divot_16", 0x00000012u, 0x1000u, 80u,
+                         0x00000400u,   0x00000400u, 0x006C0094u, 0x00220042u,
+                         525u,          80u,         48u,        2u, 2u};
+    if (emit_vi_vector(&vdivot16, out_dir)) return 1;
 
     return 0;
 }
