@@ -1662,22 +1662,29 @@ impl Pipeline {
 
     /// D-cache line fill cost in PClocks (`8..=9 + M(RDRAM)`, UM Table 11-1).
     ///
-    /// **FITTED, not measured** (ledger C-1). No hardware cached-miss timing
-    /// oracle exists: PeterLemon's timing ROMs cover only ALU ops, and the RDRAM
-    /// fill latency is RDRAM-bank-state dependent (C-4), so no single value is
-    /// truly cycle-accurate. Adopted from **ares** (`cpu.step(40 * 2)` per fill),
-    /// the accuracy-reference emulator, cross-validated against **cen64**'s 44
-    /// (explicitly "Currently using fixed values"). Implies `M(RDRAM) ~= 32`. The
-    /// hardware cold-access figure is higher (~640 ns ~= 60 PClocks); 40 reflects
-    /// a warmer average, as both emulators use.
+    /// `M(RDRAM)` is **not a scalar** (ledger C-1) — it is bank-state dependent
+    /// (C-4): a 2 KiB RDRAM row spans 128 D-cache lines, so sequential access hits
+    /// the open row (**fast**) and random access misses it (**slow**). This code
+    /// charges this one value for **every** miss — there is **no row-state
+    /// dispatch yet** — so 40 is a **provisional row-hit-typical estimate**, not a
+    /// measured number: the UM gives the fill *formula* but not this warm value,
+    /// and ares (40) / cen64 (44) are corroboration only. The documented
+    /// **cold/row-miss** fill is ~60 PClocks (copetti's ~640 ns external estimate
+    /// x 93.75 MHz PClock, `M ~= 52`); charging it, and the dirty-writeback case,
+    /// needs the undocumented `RasInterval` cycles and is deferred to C-4.
     #[allow(clippy::doc_markdown)]
     const M_DCACHE_FILL: u32 = 40;
     /// I-cache line fill cost in PClocks (`14..=15 + M(RDRAM)`, UM Table 11-2).
-    /// **FITTED** like [`Self::M_DCACHE_FILL`] (ledger C-1): the same `M(RDRAM)`
-    /// plus the UM's larger I-fill base, so D-fill + 6 = 46 (cen64 uses 48).
+    ///
+    /// Defined as [`Self::M_DCACHE_FILL`] plus 6, not a bare literal, so the two
+    /// stay in lockstep by construction: the fills share the same row-hit
+    /// `M(RDRAM)` and differ only by the UM's line-transfer size — the I-line
+    /// moves 8 words vs the D-line's critical doubleword of 2, and `14 - 8 = 6`
+    /// (Table 11-2 minus 11-1). Currently `40 + 6 = 46` (cen64 uses 48); a future
+    /// measured `M(RDRAM)` (ledger C-1/C-4) changes both together.
     #[cfg_attr(test, allow(dead_code))]
     #[allow(clippy::doc_markdown)]
-    const M_ICACHE_FILL: u32 = 46;
+    const M_ICACHE_FILL: u32 = Self::M_DCACHE_FILL + 6;
 
     /// Make the I-cache line covering `addr` resident.
     fn icache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {

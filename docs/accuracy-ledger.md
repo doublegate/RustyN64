@@ -180,24 +180,60 @@ RCP registers share the RCP bus and are charged the same, flagged pending their 
 conflates the RCP-access latency with `sync`'s wait, which cannot be separated by this loop —
 recorded as a combined "uncached RCP access + sync" cost, honest about the conflation.
 
-**D-cache fill `M(RDRAM)` — FITTED at 40 PClocks, NOT measured (update 2026-07-25).** An exhaustive
-search for a hardware cached-miss timing oracle came up empty: PeterLemon's timing ROMs cover only
-ALU ops (no loads — verified by reading every `// Test Instruction` line), n64-systemtest's
-`Level::Timing` set is two COP0 `Random` tests, and the N64brew wiki / copetti / Beyond3D give only
-the RDRAM *cold-access* figure (~640 ns ≈ 60 PClocks) and the hedged "10-20+ clock wait" range —
-not a cache-fill cycle count. The reference emulators are **explicitly fitted**: ares charges
-`cpu.step(40 * 2)` = **40** PClocks per fill (uncited), cen64 **44** (D) / **48** (I) / **38**
-(uncached word) under a literal `// Currently using fixed values....`. Both cen64 numbers imply a
-consistent `M(RDRAM) ≈ 34–36`; ares's implies ≈ 32. Because the true fill latency is **RDRAM
-bank-state dependent** (C-4), *no single value is cycle-accurate* — 40 is a warm-bank average, the
-640 ns is cold worst-case. Per an explicit decision (no hardware available, no measured value
-found), the D-cache fill is charged at **ares's 40** — the accuracy-reference emulator, cross-checked
-by cen64's 44 — recorded as a **fitted anchor with provenance, not a measurement**, in
-`Pipeline::M_DCACHE_FILL`. The first-party **cached-miss microbench**
-(`cache_miss_microbench.rs`) is the instrument: it drives a strided sweep larger than the 8 KiB
-D-cache and confirms the charged per-miss cost is 40 PClocks (`39.99`), and it is wired as a live
-regression guard against `M_DCACHE_FILL`. It also stands ready to *replace* the fitted 40 with a
-real number the moment a hardware cached-miss count appears. **The I-cache fill (fitted 46) is now charged
+**D-cache fill `M(RDRAM)` — two-regime MODEL grounded in documentation; the cold anchor derived
+from an external estimate (~60 PClocks); the charged row-hit **40** still PROVISIONAL (update
+2026-07-25).** `M(RDRAM)` is **not a scalar**. What is now grounded in documented hardware is the
+*shape* — the two regimes, the fill formula, the clock — and the *cold* anchor; the specific warm
+number 40 remains a provisional row-hit-typical estimate (corroborated by two emulators, not
+measured), and it is charged **unconditionally for every D-cache miss** — there is no row-state
+dispatch yet (that is C-4). Three independent sources establish the shape:
+
+1. **The CPU-side formula (VR4300 UM Tables 11-1/11-2, verified by summing the rows).** A D-cache
+   fill is `1 + 1 + (1..2) + 2 + M + 2 + 1 = 8..9 + M` PClocks; an I-cache fill is `…+ 8 + 1 =
+   14..15 + M` (the extra **+6** is the I-line's 8-word transfer vs the D-line's critical-doubleword
+   2-word restart — UM §11.3.2/11.3.3). `M` is defined *only* as *"Time needed to access memory,
+   measured in PClock cycles"* and **given no value** — the UM is explicit that the processor
+   releases the SysAD bus to slave state and waits an **external-agent-determined** number of SClock
+   cycles (UM §12.6.2/12.6.8), which is exactly why `M` is a memory-system parameter, not a CPU
+   constant. The `±1` is the documented PClock:SClock = **1.5** synchronisation jitter (UM Table
+   10-1; PClock = 1.5 × MasterClock = 93.75 MHz on the N64).
+
+2. **The cold-access latency — an EXTERNAL ESTIMATE, not a primary capture.** Copetti's N64
+   architecture write-up (<https://www.copetti.org/writings/consoles/nintendo-64/>) gives *"the
+   delay between initiating a memory transaction to finding the value in cache … around 640 ns"* —
+   a full cold fill (cross-confirmed loosely by Beyond3D/community, but no logic-analyser capture
+   backs a cycle count; treat 640 ns as a secondary-source estimate). Derivation: at the documented
+   93.75 MHz PClock, `640 ns × 93.75 MHz = 60.0 PClocks` for the full cold D-cache fill ⇒
+   `M(cold) ≈ 60 − 8 = 52`. This is the best-grounded number for the **row-miss (random-access)
+   regime**, but its provenance is one architecture article, not silicon.
+
+3. **The bank-state structure (N64brew RDRAM Interface + `Clock Timing`).** Each 1 MiB bank holds
+   one open 2 KiB row; an access to the open row Acks (**hit, fast**), a different row NAcks and
+   must close+reload (**miss, slow**), and a *dirty* row is *"even longer"* — with hardware bank
+   tracking in `RI_BANK_STATUS` (BankValidBits/BankDirtyBits). A 2 KiB row spans **128** D-cache
+   lines, so **sequential/streaming access is row-hit-dominated** (1 miss then 127 hits per row)
+   while pointer-chasing is all row-miss. This is why the warm fill is far below the 60-PClock cold
+   figure — and why a single constant cannot be cycle-accurate. Full model: **C-4**.
+
+**Charged value — provisional, and why it is charged anyway.** Every D-cache miss is charged a
+single **40 PClocks** (`Pipeline::M_DCACHE_FILL`) ⇒ `M ≈ 32`, regardless of bank state — the
+emulator does not yet know whether a given miss hits or misses the open RDRAM row (no row-state
+dispatch; that is C-4). 40 is therefore a **provisional row-hit-typical estimate**, not a measured
+value: the UM justifies the *formula* and the *+6* transfer delta but **not** this warm-row number,
+and the reason it is 40 rather than something invented is that both reference emulators independently
+land there (ares 40 → `M≈32`, cen64 44 → `M≈36`) — corroboration for the row-hit regime, not a
+measurement. It stays open until a per-regime measurement (hardware, or the two ROMs below) replaces
+it. The **cold/row-miss ~60-PClock** anchor (item 2) and the dirty-writeback (`> 60`) are recorded
+as the other two regimes but **not charged**; charging them needs the device-dependent
+**RasInterval** cycle values, which are *undocumented* (N64brew: IPL3 just *"setup optimal RAS
+timing"* from the per-device geometry) — so inventing them would be the fitted-constant trap, and
+they stay open under **C-4**. The `M_ICACHE_FILL = M_DCACHE_FILL + 6`
+relationship is enforced **at compile time** — `M_ICACHE_FILL` is *defined* as
+`Self::M_DCACHE_FILL + 6` (the UM's 8-word I-line vs 2-word D critical doubleword), so a future
+measured `M(RDRAM)` moves both together and they cannot desynchronise. The first-party **cached-miss
+microbench** (`cache_miss_microbench.rs`) confirms the charge lands (D 39.99, I 46.05 PClocks) and
+guards the constant, and the two hardware ROMs (#139/#140) put the true **per-regime** numbers one
+console-run away. **The I-cache fill (fitted 46) is now charged
 too — behind a deliberate test seam (update 2026-07-25).** An I-cache miss fires on *every* cold
 fetch, and the CPU crate's fine-grained pipeline unit tests step fixed cycle counts for a free-fetch
 model AND assert on the interlock / FPU stalls a fill would confound (charging it globally broke ~74
@@ -278,11 +314,26 @@ plan.
 
 ### C-4 — RDRAM bank state
 
-`RDRAM Interface.md` documents row-open/Ack, row-miss/NAck-close-and-reload, and "takes even
-longer if the current row is dirty" — qualitatively, with no cycle counts. The programmable
-timing registers (`RasInterval`: `RowPrecharge`/`RowSense`/`RowImpRestore`/`RowExpRestore`;
-`Delay`: `AckWinDelay`/`ReadDelay`/`AckDelay`/`WriteDelay`) are documented bitwise but the values
-IPL3 programs are not translated into cycles. Interacts with C-1.
+**The structural model is now fully documented; only the per-device cycle values are missing.**
+Each 1 MiB bank holds one open **2 KiB row**. An access to the open row Acks (**hit**); an access
+to a different row NAcks, closing the current row and loading the new one (**miss**); a *dirty*
+row must be written back to the array first (**even longer**). The controller tracks this in
+`RI_BANK_STATUS` (`BankValidBits[7:0]` / `BankDirtyBits[7:0]`, one per bank) so it always knows
+which requests will miss and how long to wait before resending (N64brew *RDRAM Interface* §Bank
+Status Tracking). A 2 KiB row spans **128** D-cache lines (16 B each), so sequential access is
+row-hit-dominated and random access is all row-miss — the mechanism behind C-1's two fill regimes.
+
+**Cycle anchors (see C-1):** full D-cache fill ≈ **40 PClocks** row-hit / **60 PClocks** row-miss
+(the latter measured from copetti's ~640 ns cold access × 93.75 MHz PClock); dirty-writeback `> 60`.
+
+**What is still open:** the programmable timing registers — `RasInterval`
+(`RowPrecharge`/`RowSense`/`RowImpRestore`/`RowExpRestore`, 5-bit fields) and `Delay`
+(`AckWinDelay`/`ReadDelay`/`AckDelay`/`WriteDelay`) — are documented bitwise, and the `Delay` boot
+values are known (IPL3 writes `0x18082838` = AckWin 5 / Read 7 / Ack 3 / Write 1), but the
+`RasInterval` values are **device-geometry-dependent and not published** (IPL3 only *"setup optimal
+RAS timing"* from the per-device descriptor). Translating those into a per-regime cycle model — the
+step from C-1's two scalar anchors to a real bank-state charge — needs either the RAS values or a
+hardware capture. Until then a single row-hit-typical scalar is charged (C-1). Interacts with C-1.
 
 ### C-5 — `DIV` with mismatched divisor sign bits
 
