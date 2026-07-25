@@ -541,8 +541,9 @@ bilinear** filter (`sample_type = 1`) is now modelled too (`bilinear_3point`: fo
 by `upper = (sfrac+tfrac) & 0x20`, the lower/upper triangle each a `+0x10 >> 5` round; the fraction
 is zeroed when the coordinate clamps), validated by `tex_tri_bilinear_16`. The **mask-wrap seam** is handled too (`mask_coupled`: the
 bilinear neighbour is `base + sdiff`/`tdiff` — `+1` / `0` at a seam / `-1` mirrored / wrap-to-0 —
-not a bare `+1`; validated by `tex_tri_bilinear_wrap_16`). Scope (**open residual R-13**):
-`mid_texel` and the **LOD/`texel1`** 2-cycle path remain.
+not a bare `+1`; validated by `tex_tri_bilinear_wrap_16`). **2-cycle mode** samples a second texel from `tile+1`
+and swaps `texel0`/`texel1` before cycle 1 (validated by `tex_tri_2cycle_16`). Scope (**open residual
+R-13**): `mid_texel` and the **LOD/mip tile selection** (`lod_frac`) remain.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 
