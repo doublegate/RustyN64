@@ -136,3 +136,6 @@ __pycache__/
 
 # Trunk wasm build output (frontend browser demo)
 crates/rustyn64-frontend/web/dist/
+
+# CodeGraph local index (per-developer, not committed)
+.codegraph/

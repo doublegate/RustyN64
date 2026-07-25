@@ -539,8 +539,10 @@ clamp active when `clamp_s || mask_s == 0`, over-`SH` clamps to `(SH>>2)−(SL>>
 validated against Angrylion by `tex_tri_clamp_16` and `tex_tri_wrap_16`. The N64's **3-point
 bilinear** filter (`sample_type = 1`) is now modelled too (`bilinear_3point`: four texels blended
 by `upper = (sfrac+tfrac) & 0x20`, the lower/upper triangle each a `+0x10 >> 5` round; the fraction
-is zeroed when the coordinate clamps), validated by `tex_tri_bilinear_16`. Scope (**open residual
-R-13**): the mask-wrap-seam `sdiff`/`tdiff`, `mid_texel`, and the **LOD/`texel1`** 2-cycle path remain.
+is zeroed when the coordinate clamps), validated by `tex_tri_bilinear_16`. The **mask-wrap seam** is handled too (`mask_coupled`: the
+bilinear neighbour is `base + sdiff`/`tdiff` — `+1` / `0` at a seam / `-1` mirrored / wrap-to-0 —
+not a bare `+1`; validated by `tex_tri_bilinear_wrap_16`). Scope (**open residual R-13**):
+`mid_texel` and the **LOD/`texel1`** 2-cycle path remain.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 
