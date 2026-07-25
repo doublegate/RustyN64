@@ -96,6 +96,81 @@ fn run(path: &str) -> (usize, usize, u64, bool) {
     (red, green, sys.cpu.retired, vi_programmed)
 }
 
+/// Run the CPU ROM and read back the **measured** `COUNTWORD` (how many loop
+/// iterations of the *last* timed instruction our emulator fit in the ROM's
+/// VI-scanline window) together with that instruction's **expected** value.
+///
+/// Two subtleties make this correct where a naive RDRAM read is not:
+/// 1. The expected-value table is a contiguous run of big-endian words all in
+///    `[0xDB00, 0xDBFF]` (every covered instruction's hardware count is
+///    `~0xDB1D`); it is loaded from ROM and never written, so RDRAM holds it.
+///    `COUNTWORD` is the word immediately after the table's last entry.
+/// 2. `COUNTWORD` lives at a **KSEG0 (cached)** address and is written by the ROM
+///    through the **write-back** D-cache. Raw RDRAM there is *stale* (the dirty
+///    line has not been evicted), so we must read it through the D-cache —
+///    `Dcache::hits` + `read` — exactly as the CPU does. This is the lesson
+///    `docs/engineering-lessons.md` records: verify cached addresses through the
+///    cache, not through RDRAM.
+///
+/// Returns `(measured, expected)`.
+fn measured_vs_expected(path: &str) -> Option<(u32, u32)> {
+    let image = std::fs::read(path).ok()?;
+    let entry = rom::entry_point(&image).ok()?;
+    let mut sys = System::new(0);
+    rom::load_direct(&mut sys, &image, entry).ok()?;
+    let deadline = sys.master_ticks() + BUDGET_TICKS;
+    while sys.master_ticks() < deadline {
+        sys.step_to_next_edge();
+    }
+
+    let word = |i: usize| {
+        let r = &sys.bus.rdram;
+        u32::from_be_bytes([r[i], r[i + 1], r[i + 2], r[i + 3]])
+    };
+    let is_expected = |w: u32| (0xDB00..=0xDBFF).contains(&w);
+
+    // Largest gap-tolerant cluster of expected words (consecutive within 32 bytes).
+    let (mut best_first, mut best_last, mut best_n) = (0usize, 0usize, 0usize);
+    let (mut cur_first, mut cur_last, mut cur_n): (Option<usize>, usize, usize) = (None, 0, 0);
+    let mut i = 0x1000; // the code + data load at physical RDRAM 0x1000.
+    while i + 4 <= sys.bus.rdram.len() {
+        if is_expected(word(i)) {
+            if cur_first.is_none() {
+                cur_first = Some(i);
+                cur_n = 0;
+            } else if i - cur_last > 32 {
+                if cur_n > best_n {
+                    (best_first, best_last, best_n) = (cur_first.unwrap(), cur_last, cur_n);
+                }
+                cur_first = Some(i);
+                cur_n = 0;
+            }
+            cur_last = i;
+            cur_n += 1;
+        }
+        i += 4;
+    }
+    if cur_n > best_n {
+        (best_first, best_last, best_n) = (cur_first.unwrap_or(0), cur_last, cur_n);
+    }
+    if best_n < 15 || best_last + 8 > sys.bus.rdram.len() {
+        return None;
+    }
+
+    let countword_phys = u32::try_from(best_last + 4).ok()?; // physical RDRAM offset
+    let expected = word(best_first);
+    // Read COUNTWORD the way the CPU sees it: from the write-back D-cache if the
+    // line is resident (it is — the ROM just stored it), else RDRAM. `read` of 4
+    // bytes returns the value in the low 32 bits, so it fits a u32.
+    let dc = &sys.cpu.pipeline.dcache;
+    let measured = if dc.hits(countword_phys) {
+        u32::try_from(dc.read(countword_phys, 4) & 0xFFFF_FFFF).unwrap_or(0)
+    } else {
+        word(best_last + 4)
+    };
+    Some((measured, expected))
+}
+
 /// The CPU instruction-timing oracle. Asserts the ROM **drew a verdict grid**
 /// (a substantial green/red glyph area — a real execution witness, not a vacuous
 /// "it started"; the ROM spins after drawing, so the full-budget run captures the
@@ -145,5 +220,34 @@ fn cp1_timing_rom_executes_without_hanging() {
         "CP1TIMINGNTSC: {green} green (pass) vs {red} red (fail) glyph pixels, \
          {retired} retired. Executes without hanging (the point vs n64-systemtest); \
          a full FPU-timing verdict is Stage-D follow-up."
+    );
+}
+
+/// The **differential** the aggregate green/red verdict cannot give (ledger §C-1):
+/// our emulator's measured `COUNTWORD` for the last timed instruction vs the
+/// hardware-expected value, read *through the D-cache* (COUNTWORD is a KSEG0
+/// write-back store — raw RDRAM there is stale).
+///
+/// The ROM counts how many loop iterations of the test instruction fit in a fixed
+/// VI-scanline window (wait for `VI_V_CURRENT == 0`, then count until `== 512`), so
+/// this is a *joint* function of the CPU rate and the VI scanline advance, not a
+/// clean per-instruction cycle count. It is the first real timing *number* off
+/// this oracle; interpreting it into `M` is the ongoing Stage-D work.
+#[test]
+#[ignore = "timing differential diagnostic; run explicitly"]
+fn cpu_timing_differential() {
+    let (measured, expected) =
+        measured_vs_expected(CPU_ROM).expect("located the expected-value table + COUNTWORD");
+    assert!(
+        expected != 0,
+        "expected value must be non-zero (the table was located)"
+    );
+    let ratio = f64::from(measured) / f64::from(expected);
+    println!(
+        "CPU timing differential: measured COUNTWORD = {measured} (0x{measured:08X}), \
+         expected ≈ {expected} (0x{expected:08X}), ratio measured/expected = {ratio:.4}. \
+         The ROM counts test-instruction iterations per fixed VI window, so ratio > 1 ⇒ our \
+         CPU runs too fast relative to the VI scanline advance, < 1 ⇒ too slow. A joint CPU+VI \
+         number (ledger §C-1); the VI tick rate is verified correct, so the gap is CPU-side."
     );
 }

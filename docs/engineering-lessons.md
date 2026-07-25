@@ -270,6 +270,28 @@ the thing being claimed, and assert that. Property-based tests are the natural h
 
 ---
 
+### 2.8 Reading emulated state at a cached address must go through the cache
+
+**The pattern.** Scoring from state (2.3) reads emulated memory directly — but the VR4300 D-cache
+is **write-back**, so a value the guest just stored to a **KSEG0 (cached)** address lives in a dirty
+cache line, *not* in RDRAM. Reading `bus.rdram[addr]` for such an address returns the **stale**
+pre-store value. This masquerades as an emulator bug in whatever produced the value.
+
+**What it cost.** The PeterLemon `CPUTIMINGNTSC` timing differential read `COUNTWORD` (a KSEG0
+`0x8000_91E8` store) straight from RDRAM and got **0**, which looked like "our timing loop counts
+nothing." The frame contradicted it (34 instruction rows had been drawn, so the ROM ran to
+completion), and disassembly confirmed the address was right. The value was in the write-back
+D-cache the whole time; reading through it (`Dcache::hits` + `Dcache::read`) gave the real
+**304 180** — a 5.42× differential, not a zero. An hour was nearly spent theorising a VI-timing
+mechanism that did not exist.
+
+**Practice adopted.** When a harness reads emulated memory to score a result, classify the address
+first: **uncached (KSEG1 / `0xA0…`)** — RDRAM is authoritative (this is why framebuffer scoring
+works, 2.3); **cached (KSEG0 / `0x80…`)** — read through the D-cache (or flush it first). A `0`
+from a cached address is the tell.
+
+---
+
 ## Part 3 — Debugging discipline, relevant continuously
 
 ### 3.1 End-of-step equivalence harnesses miss mid-step divergence

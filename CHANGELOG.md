@@ -8,6 +8,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — the first CPU-timing differential measurement (gap-analysis Stage D)
+
+- **`cpu_timing_differential`** reads the PeterLemon oracle's `COUNTWORD` — through
+  the write-back **D-cache** (`Dcache::hits`/`read`), because it is a KSEG0 store
+  stale in raw RDRAM — vs the ROM's baked-in expected value. First real number off
+  the timing oracle: **measured 304 180 vs expected 56 092, ratio ≈ 5.42×**. The VI
+  tick rate is verified correct, so the ~5.4× excess is CPU-side — consistent with
+  the unmeasured memory/MMIO latency **`M`** (the loop's uncached `lw`/`sync`),
+  charged ~1 cycle today. `M` now has a numeric target, not just an all-red frame.
+  Ledger §C-1 + a new engineering-lessons §2.8 (read cached addresses through the
+  cache, not RDRAM) record it.
+
 ### Added — a working CPU/FPU instruction-timing oracle (gap-analysis Stage C)
 
 - **Committed the PeterLemon `CPUTIMINGNTSC` / `CP1TIMINGNTSC` timing ROMs**

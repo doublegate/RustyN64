@@ -115,6 +115,23 @@ place to read those differential deltas from. (`CP1TIMINGNTSC`, the C-29 FPU ora
 cleanly ~10⁹ instructions but its slower battery needs a larger budget to draw its full grid — a
 Stage-D follow-up.)
 
+**First differential measurement (update 2026-07-24).** The `cpu_timing_differential` diagnostic
+now reads `COUNTWORD` — through the **write-back D-cache** (`Dcache::hits`/`read`), because it is a
+KSEG0 store whose value is stale in raw RDRAM (a real reading-method fix; see
+`docs/engineering-lessons.md`). Result for the last covered instruction:
+
+> **measured = 304 180 (0x0004_A434)** vs **expected = 56 092 (0x0000_DB1C)**, **ratio ≈ 5.42**.
+
+The ROM counts how many `add / lw VI_V_CURRENT / sync / bne / addiu` loop iterations fit in a fixed
+VI-scanline window (line 0 → 512). **The VI tick rate is verified correct** (`MASTER_HZ / (60 · 525)
+≈ 5952` master ticks/half-line), so the ~5.42× excess is **CPU-side**: we fit 5.42× *more*
+iterations than hardware because our loop iteration is ~5.42× too cheap. The loop's dominant
+hardware cost is the **uncached VI-register `lw` + `sync`** — memory/MMIO access latency, i.e.
+**`M`** — which we currently charge ~1 cycle for. So the 5.42× is a concrete, falsifiable
+consequence of the unmeasured `M`, and driving it toward 1.0 is the way to *measure* `M` (charge the
+uncached-read latency, re-run, converge). `M` stays "not yet measured" as a *value*, but it now has
+a **numeric target** off a repeatable oracle, not just an all-red frame.
+
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
 **2 PCycles, and the manual says so.** UM §4.7 (p. 114), the opening sentence of the section:
