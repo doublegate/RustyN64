@@ -44,7 +44,7 @@ bug, and a number that appeared without one is the failure this file exists to p
 
 | # | Constant | Value | How measured | Status |
 | --- | --- | --- | --- | --- |
-| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22** (measured); **D-cache fill: 40** (fitted, ares); I-cache fill: 46 (fitted, not yet charged) | RCP: CPUTIMINGNTSC mult/div differential (0.4%). D-cache: **FITTED** from ares — no hardware cached-miss oracle exists | **RCP-register `M` measured + charged; D-cache fill fitted + charged; I-cache fill fitted (deferred); RDRAM bank-state (C-4) open** |
+| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22** (measured); **D-cache fill: 40** (fitted, ares); **I-cache fill: 46** (fitted, = D-fill + UM Table 11-2 base offset; cen64 uses 48) | RCP: CPUTIMINGNTSC mult/div differential (0.4%). Cache fills: **FITTED** — no hardware cached-miss oracle exists; verified only for self-consistency by the first-party microbenches | **RCP-register `M` measured; D- + I-cache fills fitted + charged (I-cache via a unit-test seam); RDRAM bank-state (C-4) + a true cache-fill measurement open** |
 | C-2 | Exception epilogue cost (PCycles) | **2** | ~~measurement~~ **documented** — UM §4.7 p. 114 | **resolved; not a measured constant** |
 | C-3 | CP0I (CP0 bypass interlock) cost | **1** | **documented** — UM §4.6.9 p. 113 | **resolved; not a measured constant** |
 | C-7 | ITM (instruction micro-TLB miss) penalty | **3** | **documented** — UM §4.6.2 p. 107 | **resolved; not a measured constant** |
@@ -197,10 +197,20 @@ by cen64's 44 — recorded as a **fitted anchor with provenance, not a measureme
 (`cache_miss_microbench.rs`) is the instrument: it drives a strided sweep larger than the 8 KiB
 D-cache and confirms the charged per-miss cost is 40 PClocks (`39.99`), and it is wired as a live
 regression guard against `M_DCACHE_FILL`. It also stands ready to *replace* the fitted 40 with a
-real number the moment a hardware cached-miss count appears. **The I-cache fill (fitted ~46) is NOT
-yet charged**: every fetch miss would stall, and the CPU unit-test harness steps fixed cycle counts
-assuming a ~1-cycle fetch (charging it broke ~74 tests), so it needs those tests taught the fetch
-stall first. **`M(RDRAM)` as a true measurement, and the RDRAM bank-state model (C-4), remain
+real number the moment a hardware cached-miss count appears. **The I-cache fill (fitted 46) is now charged
+too — behind a deliberate test seam (update 2026-07-25).** An I-cache miss fires on *every* cold
+fetch, and the CPU crate's fine-grained pipeline unit tests step fixed cycle counts for a free-fetch
+model AND assert on the interlock / FPU stalls a fill would confound (charging it globally broke ~74
+of them, several *fundamentally* — a run-cycle-counting shim would have masked the very stalls those
+tests exist to check). So the I-cache stall is `#[cfg(not(test))]` in `icache_fill`: **active in real
+execution and in every integration test** — the i-cache microbench, the systemtest, golden-log,
+residue — where the pipeline runs as a dependency with `cfg(test)` false, but skipped in this crate's
+own units. It is verified there: the `cache_miss_microbench.rs` I-cache test runs a straight-line
+block twice the 16 KiB I-cache (every line misses) and, subtracting the verified 1-PClock base,
+measures **46.05 PClocks/fill**; the systemtest still completes (Phase-1 `Failed: 0`, 90 suite-wide,
+`xioctl(EXIT)`, ~33 s vs ~31 s) and golden-log 0-diff / residue / determinism hold. The D-cache
+fill, by contrast, fires only on a rare cached load and is charged unconditionally (two units
+absorbed it). **`M(RDRAM)` as a true measurement, and the RDRAM bank-state model (C-4), remain
 open.** No regression from the D-cache charge: golden-log 0-diff (it keys on retired instructions,
 not stalls), the residue invariant, determinism, and the 950-test functional suite (Phase-1
 `Failed: 0`, still 90 suite-wide, `Random` timing tests pass, runs to `xioctl(EXIT)`) are all

@@ -1672,6 +1672,12 @@ impl Pipeline {
     /// a warmer average, as both emulators use.
     #[allow(clippy::doc_markdown)]
     const M_DCACHE_FILL: u32 = 40;
+    /// I-cache line fill cost in PClocks (`14..=15 + M(RDRAM)`, UM Table 11-2).
+    /// **FITTED** like [`Self::M_DCACHE_FILL`] (ledger C-1): the same `M(RDRAM)`
+    /// plus the UM's larger I-fill base, so D-fill + 6 = 46 (cen64 uses 48).
+    #[cfg_attr(test, allow(dead_code))]
+    #[allow(clippy::doc_markdown)]
+    const M_ICACHE_FILL: u32 = 46;
 
     /// Make the I-cache line covering `addr` resident.
     fn icache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {
@@ -1679,13 +1685,18 @@ impl Pipeline {
         let mut data = [0u8; 32];
         Self::pull_line(bus, base, &mut data);
         self.icache.install(base, data);
-        // NOTE: the I-cache fill cost (fitted ~46: the D-cache 40 + the UM's
-        // larger I-fill base, `14..=15` vs `8..=9`; cen64 uses 48) is deliberately
-        // NOT charged yet. Every instruction fetch that misses would stall here,
-        // and the CPU unit-test harness steps a fixed number of cycles assuming a
-        // ~1-cycle fetch, so charging it breaks ~74 of those tests wholesale.
-        // Wiring it needs those tests taught about the fetch stall first -- a
-        // separate change (ledger C-1).
+        // Called only on an I-cache miss (`ic_stage`), so the fill cost applies
+        // here (fitted, ledger C-1). **Deliberate test seam:** an I-cache miss
+        // fires on *every* cold fetch, and this crate's fine-grained pipeline unit
+        // tests step fixed cycle counts for a free-fetch model AND assert on the
+        // interlock/FPU stalls the fill would confound -- so the stall is charged
+        // in real execution and in every INTEGRATION test (the i-cache microbench,
+        // the systemtest, golden-log, residue -- where the pipeline runs as a
+        // dependency with `cfg(test)` false), but not in this crate's own units.
+        // The D-cache fill, by contrast, fires only on a rare cached load, so it
+        // is charged unconditionally (two units absorbed it directly).
+        #[cfg(not(test))]
+        self.stall_for(Self::M_ICACHE_FILL, Interlock::Icb);
     }
 
     /// Make the D-cache line covering `addr` resident, writing back whatever it

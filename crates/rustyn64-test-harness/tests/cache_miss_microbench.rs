@@ -106,3 +106,61 @@ fn the_dcache_fill_cost_matches_the_charged_m_rdram() {
          {CHARGED_M_RDRAM_PCLOCKS}; update both this constant and ledger C-1 together"
     );
 }
+
+/// The I-cache line-fill cost our emulator charges, in PClocks
+/// (`Pipeline::M_ICACHE_FILL`). Charged in real execution and integration tests
+/// (here) but not in the CPU crate's own pipeline units -- a deliberate test
+/// seam, since an I-cache miss fires on every cold fetch. FITTED like the
+/// D-cache (ledger C-1). Update with the pipeline constant.
+const CHARGED_M_ICACHE_FILL_PCLOCKS: f64 = 46.0;
+
+/// `addiu $t0, $t0, 1` — a one-PClock instruction that also counts its own
+/// retirements in `$t0`, so the loop's end is a retirement signal.
+const ADDIU_T0: u32 = 0x2508_0001;
+
+/// Execute `n` straight-line `addiu` instructions from cold KSEG0 and return the
+/// master ticks. Every 32-byte I-cache line (8 instructions) misses, so `n`
+/// instructions incur `n / 8` fills.
+fn run_icache_straight(n: u32) -> u64 {
+    let mut sys = System::new(0);
+    for i in 0..n {
+        let off = 0x1000usize + i as usize * 4;
+        sys.bus.rdram[off..off + 4].copy_from_slice(&ADDIU_T0.to_be_bytes());
+    }
+    sys.cpu.regs.gpr[8] = 0; // $t0
+    sys.cpu.set_pc(0xFFFF_FFFF_8000_1000);
+    let start = sys.master_ticks();
+    let mut guard = 0u64;
+    while sys.cpu.regs.gpr[8] != u64::from(n) && guard < 100_000_000 {
+        sys.step_to_next_edge();
+        guard += 1;
+    }
+    assert!(guard < 100_000_000, "i-cache straight run did not converge");
+    sys.master_ticks() - start
+}
+
+/// The I-cache fill cost, isolated against the verified 1-PClock base.
+///
+/// A straight-line block of `n` instructions larger than the 16 KiB I-cache
+/// misses every line, so its cost is `n` base PClocks + `n/8` fills. The base
+/// (1 PClock/instruction) is independently verified (CPUTIMINGNTSC / the COP0
+/// `Random` timing tests), so subtracting it isolates the per-fill cost -- which
+/// must equal the charged `M_ICACHE_FILL`, confirming the test seam is live in
+/// integration builds.
+#[test]
+fn the_icache_fill_cost_matches_the_charged_value() {
+    let n = 8192u32; // 32 KiB of code -- twice the I-cache, so every line misses.
+    let ticks = run_icache_straight(n);
+    // CPU steps every 2 master ticks: base = n instructions * 1 PClock * 2 ticks.
+    let base_ticks = f64::from(n) * 2.0;
+    let fills = f64::from(n) / 8.0; // 32-byte lines, 4-byte instructions
+    let per_fill_pclocks = (ticks as f64 - base_ticks) / fills / 2.0;
+    eprintln!(
+        "i-cache microbench: n={n} ticks={ticks} -> per-fill M = {per_fill_pclocks:.3} PClocks"
+    );
+    assert!(
+        (per_fill_pclocks - CHARGED_M_ICACHE_FILL_PCLOCKS).abs() < 1.0,
+        "per-fill cost {per_fill_pclocks:.3} disagrees with the charged \
+         M_ICACHE_FILL {CHARGED_M_ICACHE_FILL_PCLOCKS}; update both and ledger C-1"
+    );
+}
