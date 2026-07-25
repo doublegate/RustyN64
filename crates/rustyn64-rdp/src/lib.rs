@@ -1179,14 +1179,13 @@ pub struct CombineMode {
 /// (noise, LOD frac, the key/convert constants) are not modelled yet (**open
 /// residual R-10**) and read as zero.
 ///
-/// `#[non_exhaustive]`: like [`Rdp`], this input set grows every sprint as more
-/// exotic inputs are wired, so adding a field must stay a compatible change —
-/// construct it with `..Default::default()`. It is **transient** per-pixel state
-/// (built in `combined_color`, never stored in `System`), so it deliberately does
-/// **not** derive `Serialize`/`Deserialize` — it is never part of a save-state.
+/// This is **transient** per-pixel state — built in `combined_color`, consumed by
+/// `combine`, and discarded — never stored in `System`. It is therefore `pub(crate)`
+/// (not part of this crate's public API), does not derive `Serialize`/`Deserialize`
+/// (never in a save-state), and needs no `#[non_exhaustive]` (a new field is always a
+/// compatible change within the crate). Construct it with `..Default::default()`.
 #[derive(Debug, Default, Clone, Copy)]
-#[non_exhaustive]
-pub struct CombinerInputs {
+pub(crate) struct CombinerInputs {
     /// The previous cycle's output (cycle 0's result feeds cycle 1's `Combined`).
     pub combined: [u8; 4],
     /// Texel from tile 0.
@@ -2610,7 +2609,7 @@ impl Rdp {
     /// input tables (N64brew *…/Commands* §0x3C). Exotic inputs (noise, LOD frac,
     /// key/convert constants) are **open residual R-10** and read as zero.
     #[must_use]
-    pub fn combine_cycle(cfg: CombineCycle, inp: &CombinerInputs) -> [u8; 4] {
+    pub(crate) fn combine_cycle(cfg: CombineCycle, inp: &CombinerInputs) -> [u8; 4] {
         // RGB: A/B share the muladd/mulsub table, C the wide mul table, D the add.
         let mut out = [0u8; 4];
         for (ch, o) in out.iter_mut().enumerate().take(3) {
@@ -2639,7 +2638,7 @@ impl Rdp {
     /// hardware unconditionally; a `two_cycle` call that left `texel1` at its default
     /// would feed cycle 1 a zeroed `texel0`, which is a caller contract violation,
     /// not a mode this function guards against.
-    pub fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
+    pub(crate) fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
         if two_cycle {
             inp.combined = Self::combine_cycle(self.combine.cyc0, &inp);
             // The hardware pipelines the two texels: cycle 1's TEXEL0 reads the
@@ -5006,7 +5005,7 @@ mod tests {
     fn combine_cycle_passes_texel0_through() {
         let cfg = CombineCycle {
             rgb_a: 6, // One
-            rgb_b: 7, // select 7 = K4, which is 0 in this default `inp`, so effectively Zero
+            rgb_b: 8, // Zero (select 8+; unambiguous, unlike select 7 = K4)
             rgb_c: 1, // Texel0
             rgb_d: 7, // Zero
             a_a: 6,   // One
