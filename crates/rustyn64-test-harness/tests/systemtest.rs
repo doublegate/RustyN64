@@ -53,8 +53,9 @@ const LATER_PHASES: [&str; 11] = [
     "RSP", "SP ", "RDP", "MI ", "cart", "spmem", "pifram", "VI", "AI", "PI ", "SI ",
 ];
 
-/// Run the suite and return `(phase-1 failures, suite-wide failures, tests started, output)`.
-fn run() -> (Vec<String>, usize, usize, String) {
+/// Run the suite and return `(phase-1 failures, suite-wide failures, tests
+/// started, guest reached EXIT, output)`.
+fn run() -> (Vec<String>, usize, usize, bool, String) {
     let image = std::fs::read(ROM).expect("the committed n64-systemtest ROM");
     let mut sys = System::new(0);
 
@@ -86,6 +87,11 @@ fn run() -> (Vec<String>, usize, usize, String) {
     while sys.master_ticks() < deadline && !sys.bus.emux_exited() {
         sys.step_to_next_edge();
     }
+    // Did the guest reach its own `xioctl(EXIT)`, or did we stop on the budget?
+    // A mid-suite hang leaves this false while still producing a full Phase-1
+    // `Failed: 0` (the results before the hang), which is exactly how R-19 hid
+    // for so long -- so completion is now witnessed, not assumed.
+    let exited = sys.bus.emux_exited();
 
     // The suite picks its console at runtime. It prefers EMUX `xlog` when the
     // emulator advertises it (which we now do) and falls back to ISViewer
@@ -115,7 +121,7 @@ fn run() -> (Vec<String>, usize, usize, String) {
             phase1.push(line.to_string());
         }
     }
-    (phase1, failures, started, text)
+    (phase1, failures, started, exited, text)
 }
 
 /// Phase 1's cut criterion: `Failed: 0` in the CPU/COP0/TLB/COP1 categories.
@@ -125,7 +131,7 @@ fn run() -> (Vec<String>, usize, usize, String) {
 #[test]
 #[ignore = "~2 minutes in --release; run explicitly (see the module docs)"]
 fn phase_1_categories_report_no_failures() {
-    let (phase1, failures, started, text) = run();
+    let (phase1, failures, started, exited, text) = run();
 
     // Witness that the suite actually RAN before trusting a zero. An empty
     // output produces zero failures just as convincingly as a passing run, which
@@ -145,6 +151,17 @@ fn phase_1_categories_report_no_failures() {
         "only {started} tests started; the run was truncated, so the Phase 1 \
          count below is measured against a partial pass"
     );
+    // Witness COMPLETION, not just that it started. R-19 was a mid-suite hang
+    // that this gate could not see: it left a full Phase-1 `Failed: 0` (captured
+    // before the hang) while never reaching `xioctl(EXIT)`, so a whole later
+    // category (the `tlb64` 64-bit-addressing group) never ran. Requiring the
+    // guest's own EXIT closes that blind spot for good.
+    assert!(
+        exited,
+        "the suite did not reach xioctl(EXIT) ({started} tests started, \
+         {failures} suite-wide failures so far) -- it hung mid-run, so the \
+         Phase-1 count below is measured against a partial pass (see ledger R-19)"
+    );
 
     assert!(
         phase1.is_empty(),
@@ -155,7 +172,8 @@ fn phase_1_categories_report_no_failures() {
     );
 
     eprintln!(
-        "Phase 1 categories: 0 failing. {failures} failing suite-wide across \
-         {started} tests started (the remainder are RSP/RCP -- Phase 2's criterion)."
+        "Phase 1 categories: 0 failing (suite ran to xioctl(EXIT)). {failures} \
+         failing suite-wide across {started} tests started (the remainder are \
+         RSP/RCP -- Phase 2's criterion)."
     );
 }
