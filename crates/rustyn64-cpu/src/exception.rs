@@ -229,19 +229,6 @@ pub const fn writes_bad_vaddr(exc: Exception) -> bool {
     )
 }
 
-/// Does this exception write `EntryHi` / `Context` / `XContext`?
-///
-/// **TLB exceptions only** (UM Fig. 6-14, p. 201, step 2) — the flowchart is
-/// explicit that it *"is not set by bus error exceptions"*, and an address error
-/// leaves them **undefined** (UM §6.4.7, p. 186) rather than merely unchanged.
-#[must_use]
-pub const fn writes_tlb_context(exc: Exception) -> bool {
-    matches!(
-        exc,
-        Exception::TlbRefill { .. } | Exception::TlbInvalid { .. } | Exception::TlbModified
-    )
-}
-
 /// The result of dispatching an exception.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Dispatch {
@@ -419,17 +406,23 @@ pub fn dispatch(
         );
     }
 
-    // 3. EntryHi -- TLB exceptions only. Unlike Context, this one really is
-    //    gated: it is the TLB's own match register, and an address error never
-    //    consulted the TLB, so writing it would corrupt the entry a subsequent
-    //    `TLBWR` installs.
-    if writes_tlb_context(exc) {
+    // 3. EntryHi -- written whenever BadVAddr is, address errors INCLUDED. The UM
+    //    (§6.4.7, p. 186 / Fig. 6-14) calls it "undefined" on an address error,
+    //    but the hardware oracle pins a definite value: n64-systemtest's `tlb64`
+    //    group triggers an AdEL from a 64-bit load and asserts
+    //    `EntryHi == (VPN2 << 13) | (R << 62)` from the faulting address (ledger
+    //    R-20). "Undefined" in the manual is a licence, not a guarantee of
+    //    non-writing, and the oracle wins (ADR 0005). This matches how Context /
+    //    XContext are already filled on an address error two blocks up -- EntryHi
+    //    was the one register wrongly held back. The old worry that a stale
+    //    EntryHi corrupts a later `TLBWR` is unfounded: a real TLB miss reloads
+    //    EntryHi before its handler writes the entry.
+    if writes_bad_vaddr(exc) {
         let vpn2 = bad_vaddr & crate::tlb::VPN2_MASK;
         let hi = cop0.read(reg::ENTRY_HI);
         // The `R` field (63:62) comes from the faulting address too, not just
-        // `VPN2`. Leaving it zero puts every sign-extended kernel fault in
-        // region 0, so the handler's `TLBWR` would install an entry that can
-        // never match the address that faulted.
+        // `VPN2` -- leaving it zero puts every sign-extended kernel fault in
+        // region 0.
         let region = bad_vaddr & 0xC000_0000_0000_0000;
         // ASID is preserved; VPN2 and R are replaced.
         cop0.set_hardware(reg::ENTRY_HI, (hi & crate::tlb::ASID_MASK) | vpn2 | region);
@@ -781,22 +774,37 @@ mod tests {
         );
     }
 
-    /// `EntryHi`, unlike `Context`, really is TLB-only: it is the TLB's own
-    /// match register, and writing it on an address error would corrupt the
-    /// entry a later `TLBWR` installs.
+    /// **`EntryHi`'s VPN2/R IS written on an address error** (ledger R-20), the
+    /// same as `Context`/`XContext` -- the UM calls it "undefined" but the
+    /// hardware oracle (n64-systemtest `tlb64`) pins `(VPN2 << 13) | (R << 62)`
+    /// from the faulting address. ASID is preserved.
+    ///
+    /// Mutation guard: the address is chosen so both `VPN2` (bits 39:13) and the
+    /// region (bits 63:62) are non-zero, and the ASID is pre-seeded, so gating
+    /// `EntryHi` back to TLB-only, dropping the region, or clobbering the ASID
+    /// each turns the single assertion red.
     #[test]
-    fn an_address_error_leaves_entry_hi_alone() {
+    fn an_address_error_writes_entry_hi_vpn2_and_region() {
         let mut c = Cop0::new();
         c.set_hardware(reg::STATUS, 0);
-        c.set_hardware(reg::ENTRY_HI, 0);
+        // Pre-seed a non-zero ASID (low 8 bits) that must survive.
+        c.set_hardware(reg::ENTRY_HI, 0x5A);
+        let bad = 0xC000_00FF_0020_FFF4u64; // region 3, VPN2 non-zero, unaligned low bits irrelevant
         dispatch(
             &mut c,
             Exception::AddressError { store: false },
             0x8000_1000,
             false,
-            0xFFFF_FFFF_A400_1A42,
+            bad,
         );
-        assert_eq!(c.read(reg::ENTRY_HI), 0, "not a TLB exception");
+        let vpn = (bad >> 13) & 0x7FF_FFFF; // M27
+        let r = (bad >> 62) & 0b11;
+        let expected = (vpn << 13) | (r << 62) | 0x5A;
+        assert_eq!(
+            c.read(reg::ENTRY_HI),
+            expected,
+            "EntryHi = (VPN2 << 13) | (R << 62), ASID preserved",
+        );
     }
 
     /// **`Cause.CE` is written on every exception, not only on Coprocessor
