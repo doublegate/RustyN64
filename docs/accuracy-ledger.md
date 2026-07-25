@@ -44,7 +44,7 @@ bug, and a number that appeared without one is the failure this file exists to p
 
 | # | Constant | Value | How measured | Status |
 | --- | --- | --- | --- | --- |
-| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22** (measured); **D-cache fill: 40**, **I-cache fill: 46** (both fitted, ares/cen64) | RCP: CPUTIMINGNTSC mult/div differential (0.4%). Cache fills: **FITTED** — no hardware cached-miss oracle exists; verified by the first-party microbenches | **RCP-register `M` measured; D- + I-cache fills fitted + charged (I-cache via a unit-test seam); RDRAM bank-state (C-4) + a true cache-fill measurement open** |
+| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22** (measured); **D-cache fill: 40** (fitted, ares); **I-cache fill: 46** (fitted, = D-fill + UM Table 11-2 base offset; cen64 uses 48) | RCP: CPUTIMINGNTSC mult/div differential (0.4%). Cache fills: **FITTED** — no hardware cached-miss oracle exists; verified only for self-consistency by the first-party microbenches | **RCP-register `M` measured; D- + I-cache fills fitted + charged (I-cache via a unit-test seam); RDRAM bank-state (C-4) + a true cache-fill measurement open** |
 | C-2 | Exception epilogue cost (PCycles) | **2** | ~~measurement~~ **documented** — UM §4.7 p. 114 | **resolved; not a measured constant** |
 | C-3 | CP0I (CP0 bypass interlock) cost | **1** | **documented** — UM §4.6.9 p. 113 | **resolved; not a measured constant** |
 | C-7 | ITM (instruction micro-TLB miss) penalty | **3** | **documented** — UM §4.6.2 p. 107 | **resolved; not a measured constant** |

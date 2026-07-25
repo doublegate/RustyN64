@@ -8,6 +8,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — memory-access latency `M` charged (gap-analysis Stage D, ledger C-1)
+
+- **Uncached RCP-register `M` = 22 PClocks — MEASURED.** Derived from the
+  PeterLemon `CPUTIMINGNTSC` mult/div differential (the documented UM Table 3-12
+  stall costs as the calibration axis) and independently confirmed to 0.4% on the
+  ROM's absolute count. Charged at the uncached-read site (`Pipeline::M_RCP_REGISTER`).
+- **D-cache fill = 40, I-cache fill = 46 PClocks — FITTED, not measured.** No
+  hardware cached-miss timing oracle exists, so both are adopted from the
+  reference emulators (ares's `step(40*2)` fill; the I-cache is that + the UM's
+  larger I-fill base; cen64 charges 44/48 under "Currently using fixed values").
+  Verified by first-party cached-miss microbenches (D 39.99, I 46.05 PClocks).
+  The I-cache stall is charged behind a `#[cfg(not(test))]` seam — active in real
+  execution and integration tests, skipped in the CPU crate's own pipeline units
+  (an every-fetch stall would confound their fixed-cycle interlock assertions).
+- **A hardware timing ROM** (`tools/mrdram-timing-rom/`) that measures the real
+  D-cache fill cost on a console via a COP0-`Count` differential, so the fitted
+  values can be replaced with a measurement when hardware is available.
+- `M(RDRAM)` as a true measurement and the RDRAM bank-state model (C-4) remain open.
+
 ### Added — the first CPU-timing differential measurement (gap-analysis Stage D)
 
 - **`cpu_timing_differential`** reads the PeterLemon oracle's `COUNTWORD` — through
