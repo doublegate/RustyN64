@@ -1181,8 +1181,10 @@ pub struct CombineMode {
 ///
 /// `#[non_exhaustive]`: like [`Rdp`], this input set grows every sprint as more
 /// exotic inputs are wired, so adding a field must stay a compatible change —
-/// construct it with `..Default::default()`.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+/// construct it with `..Default::default()`. It is **transient** per-pixel state
+/// (built in `combined_color`, never stored in `System`), so it deliberately does
+/// **not** derive `Serialize`/`Deserialize` — it is never part of a save-state.
+#[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct CombinerInputs {
     /// The previous cycle's output (cycle 0's result feeds cycle 1's `Combined`).
