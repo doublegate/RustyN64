@@ -742,14 +742,17 @@ impl Bus {
     /// clamp, and the truncating RGBA5551→8 conversion the VI uses (`(px >> 8) & 0xF8`,
     /// not `expand5`'s replicating widening); the 5-bit **bilinear lerp** for **both**
     /// 16- and 32-bit sources (`aa_mode != REPLICATE` and a non-zero fraction, nearest
-    /// otherwise); the **gamma** curve; and, for 32-bit under `aa_mode` 0/1, the
-    /// coverage-gated **de-dither** (`cvg == 7`) and **AA-edge** (`cvg < 7`) filters and
-    /// the **divot** median (`divot_enable`). Alpha is `0xFF` (opaque) for display; the
-    /// VI carries coverage in its output alpha, which the harness compares as RGB-only.
+    /// otherwise); the **gamma** curve; and, under `aa_mode` 0/1 for **both** source
+    /// formats, the coverage-gated **de-dither** (`cvg == 7`) and **AA-edge**
+    /// (`cvg < 7`) filters and the **divot** median (`divot_enable`) — 16-bit reads
+    /// coverage from the hidden-bits plane, 32-bit from the alpha byte
+    /// (`vi_read_cov`). Alpha is `0xFF` (opaque) for display; the VI carries
+    /// coverage in its output alpha, which the harness compares as RGB-only.
     ///
-    /// Still to come (later slices, still substituted here): the **16-bit** coverage
-    /// path (needs the hidden-bits plane), the gamma-dither
-    /// variants, and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
+    /// Still to come (later slices, still substituted here): the gamma-dither
+    /// variants, the coverage filters under `aa_mode == 2` (`RESAMP_ONLY` forces
+    /// `cvg = 7`, so de-dither can still apply — currently gated to `aa_mode ≤ 1`),
+    /// and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
     /// serrate, and the exact `H_TOTAL`). Not yet wired into the frontend —
     /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
     /// the R-12 depth path landing ahead of its runtime caller).
@@ -860,17 +863,20 @@ impl Bus {
                 let sx = x_offs >> 10;
                 let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
-                // Fetch one source pixel as RGB8, dispatching on the framebuffer format
-                // and, for 32-bit under aa_mode 0/1, the coverage filter (de-dither).
+                // Fetch one source pixel as RGB8. Under aa_mode 0/1 the coverage path
+                // (de-dither / AA-edge / divot) runs for both formats — 16-bit reads
+                // coverage from the hidden-bits plane, 32-bit from the alpha byte
+                // ([`Bus::vi_read_cov`]). Under aa_mode 2/3 (RESAMP_ONLY / REPLICATE)
+                // coverage is forced full, so it is a plain format-dispatched fetch.
                 let fetch = |x: i32, y: i32| {
-                    if bpp == 2 {
-                        self.vi_fetch16(origin, src_stride, x, y)
-                    } else if aa_mode <= 1 {
+                    if aa_mode <= 1 {
                         if divot {
-                            self.vi_divot(origin, src_stride, x, y, dither_filter)
+                            self.vi_divot(origin, src_stride, x, y, dither_filter, bpp)
                         } else {
-                            self.vi_fetch32_coverage(origin, src_stride, x, y, dither_filter)
+                            self.vi_fetch_coverage(origin, src_stride, x, y, dither_filter, bpp)
                         }
+                    } else if bpp == 2 {
+                        self.vi_fetch16(origin, src_stride, x, y)
                     } else {
                         self.vi_fetch32(origin, src_stride, x, y)
                     }
@@ -929,24 +935,75 @@ impl Bus {
         self.rdram_read_u32(byte)
     }
 
-    /// A 32-bit source fetch for the coverage path (`aa_mode` 0/1). Reads the pixel's
-    /// coverage from alpha bits 7:5; a fully-covered pixel (`cvg == 7`) gets the
-    /// **de-dither** restore filter when `dither_filter` is set, otherwise the raw
-    /// colour. A partial pixel (`cvg < 7`) takes the **AA-edge** filter
-    /// ([`Bus::vi_video_filter`]). Ledger R-5.
+    /// Read the raw 16-bit RGBA5551 source halfword at `(x, y)` (big-endian,
+    /// bounds-safe), the 16-bit counterpart to [`Bus::vi_read32`]. Ledger R-5.
+    fn vi_read16(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> u16 {
+        let idx = src_stride.wrapping_mul(y).wrapping_add(x);
+        let byte = origin.wrapping_add_signed(idx.wrapping_mul(2));
+        (u16::from(self.rdram_read(byte)) << 8) | u16::from(self.rdram_read(byte.wrapping_add(1)))
+    }
+
+    /// Read one source pixel as **raw** RGB8 (no filters) plus its 3-bit coverage,
+    /// dispatching on the framebuffer format (`bpp` = 2 or 4). This is the sole
+    /// format-specific primitive of the coverage path — every downstream filter
+    /// (de-dither, AA-edge, divot) then operates on 8-bit channels regardless of
+    /// source depth (Angrylion `vi_fetch_filter16`/`32`). Ledger R-5.
     ///
-    /// De-dither (Angrylion `restore_filter32`): over the 8 taps of the 3×3
+    /// - **32-bit RGBA8888:** channels are the top three big-endian bytes; coverage
+    ///   is alpha bits 7:5 (`(px >> 5) & 7`).
+    /// - **16-bit RGBA5551:** channels are the truncating [`vi_rgb5551`] expansion;
+    ///   coverage combines the pixel's bit 0 (MSB) with the two **hidden bits** of
+    ///   the 9-bit RDRAM plane (`((px & 1) << 2) | rdram_hidden`), so `cvg == 7`
+    ///   requires bit 0 set **and** hidden bits `0b11`. The hidden read takes the
+    ///   pixel byte address (its own halfword index is derived internally).
+    fn vi_read_cov(
+        &self,
+        origin: u32,
+        src_stride: i32,
+        x: i32,
+        y: i32,
+        bpp: u32,
+    ) -> ([u8; 3], u32) {
+        // Callers derive `bpp` from `VI_CTRL.TYPE` mapped to 2 (RGBA5551) or 4
+        // (RGBA8888); any other value would silently take the 32-bit branch.
+        debug_assert!(bpp == 2 || bpp == 4, "vi_read_cov: bpp must be 2 or 4");
+        if bpp == 2 {
+            // The hidden-bits halfword shares the colour pixel's byte address.
+            let idx = src_stride.wrapping_mul(y).wrapping_add(x);
+            let byte = origin.wrapping_add_signed(idx.wrapping_mul(2));
+            let px = self.vi_read16(origin, src_stride, x, y);
+            let cvg = ((u32::from(px) & 1) << 2) | u32::from(self.rdram_read_hidden(byte));
+            (vi_rgb5551(px), cvg)
+        } else {
+            let px = self.vi_read32(origin, src_stride, x, y);
+            (
+                [(px >> 24) as u8, (px >> 16) as u8, (px >> 8) as u8],
+                (px >> 5) & 7,
+            )
+        }
+    }
+
+    /// A source fetch for the coverage path (`aa_mode` 0/1), format-generic over
+    /// `bpp` (2 = RGBA5551, 4 = RGBA8888). Reads the pixel's coverage via
+    /// [`Bus::vi_read_cov`]; a fully-covered pixel (`cvg == 7`) gets the **de-dither**
+    /// restore filter when `dither_filter` is set, otherwise the raw colour. A partial
+    /// pixel (`cvg < 7`) takes the **AA-edge** filter ([`Bus::vi_video_filter`]).
+    /// Ledger R-5.
+    ///
+    /// De-dither (Angrylion `restore_filter16`/`32`): over the 8 taps of the 3×3
     /// neighbourhood minus the centre, each channel is nudged ±1 toward the neighbour
-    /// (comparing the top-5-bit values), the noise-removing correction; the result is
-    /// truncated to `u8` (Angrylion stores it into a `u8` field unmasked).
+    /// (comparing the top-5-bit values `rgb8 >> 3` — the stored 5-bit channel in both
+    /// formats), the noise-removing correction; the result is truncated to `u8`
+    /// (Angrylion stores it into a `u8` field unmasked).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn vi_fetch32_cov(
+    fn vi_fetch_cov(
         &self,
         origin: u32,
         src_stride: i32,
         x: i32,
         y: i32,
         dither_filter: bool,
+        bpp: u32,
     ) -> ([u8; 3], u32) {
         // The 3×3 neighbourhood minus the centre (restore.c tap layout).
         const TAPS: [(i32, i32); 8] = [
@@ -959,13 +1016,11 @@ impl Bus {
             (-1, 0),
             (1, 0),
         ];
-        let px = self.vi_read32(origin, src_stride, x, y);
-        let center = [(px >> 24) as u8, (px >> 16) as u8, (px >> 8) as u8];
-        let cvg = (px >> 5) & 7;
+        let (center, cvg) = self.vi_read_cov(origin, src_stride, x, y, bpp);
         if cvg < 7 {
-            // Partial coverage → the AA edge filter (video_filter32).
+            // Partial coverage → the AA edge filter (video_filter16/32).
             return (
-                self.vi_video_filter(origin, src_stride, x, y, center, cvg),
+                self.vi_video_filter(origin, src_stride, x, y, center, cvg, bpp),
                 cvg,
             );
         }
@@ -979,12 +1034,8 @@ impl Bus {
             i32::from(center[2]),
         ];
         for (dx, dy) in TAPS {
-            let nb = self.vi_read32(origin, src_stride, x + dx, y + dy);
-            let nb5 = [
-                ((nb >> 27) & 0x1F) as u8,
-                ((nb >> 19) & 0x1F) as u8,
-                ((nb >> 11) & 0x1F) as u8,
-            ];
+            let (nb, _) = self.vi_read_cov(origin, src_stride, x + dx, y + dy, bpp);
+            let nb5 = [nb[0] >> 3, nb[1] >> 3, nb[2] >> 3];
             for c in 0..3 {
                 acc[c] += match center5[c].cmp(&nb5[c]) {
                     core::cmp::Ordering::Less => 1,
@@ -996,24 +1047,27 @@ impl Bus {
         ([acc[0] as u8, acc[1] as u8, acc[2] as u8], cvg)
     }
 
-    /// The filtered 32-bit coverage-path colour ([`Bus::vi_fetch32_cov`] without the
+    /// The filtered coverage-path colour ([`Bus::vi_fetch_cov`] without the
     /// coverage — for the non-divot path, which only needs the RGB).
-    fn vi_fetch32_coverage(
+    fn vi_fetch_coverage(
         &self,
         origin: u32,
         src_stride: i32,
         x: i32,
         y: i32,
         dither_filter: bool,
+        bpp: u32,
     ) -> [u8; 3] {
-        self.vi_fetch32_cov(origin, src_stride, x, y, dither_filter)
+        self.vi_fetch_cov(origin, src_stride, x, y, dither_filter, bpp)
             .0
     }
 
-    /// The 32-bit **divot** filter (Angrylion `divot_filter`): the per-channel median
-    /// of a pixel and its two horizontal neighbours (all post-de-dither/AA-edge). It is
-    /// **skipped** (the centre passes through) when all three are fully covered
-    /// (`(c.a & l.a & r.a) == 7`), so it only touches partial-coverage edges. Ledger R-5.
+    /// The **divot** filter (Angrylion `divot_filter`), format-generic over `bpp`: the
+    /// per-channel median of a pixel and its two horizontal neighbours (all
+    /// post-de-dither/AA-edge, via [`Bus::vi_fetch_cov`]). It is **skipped** (the centre
+    /// passes through) when all three are fully covered
+    /// (`cen_cvg & left_cvg & right_cvg == 7`), so it only touches partial-coverage
+    /// edges. Ledger R-5.
     fn vi_divot(
         &self,
         origin: u32,
@@ -1021,10 +1075,12 @@ impl Bus {
         x: i32,
         y: i32,
         dither_filter: bool,
+        bpp: u32,
     ) -> [u8; 3] {
-        let (cen, cen_cvg) = self.vi_fetch32_cov(origin, src_stride, x, y, dither_filter);
-        let (left, left_cvg) = self.vi_fetch32_cov(origin, src_stride, x - 1, y, dither_filter);
-        let (right, right_cvg) = self.vi_fetch32_cov(origin, src_stride, x + 1, y, dither_filter);
+        let (cen, cen_cvg) = self.vi_fetch_cov(origin, src_stride, x, y, dither_filter, bpp);
+        let (left, left_cvg) = self.vi_fetch_cov(origin, src_stride, x - 1, y, dither_filter, bpp);
+        let (right, right_cvg) =
+            self.vi_fetch_cov(origin, src_stride, x + 1, y, dither_filter, bpp);
         if (cen_cvg & left_cvg & right_cvg) == 7 {
             return cen; // all fully covered → no divot
         }
@@ -1045,14 +1101,15 @@ impl Bus {
         ]
     }
 
-    /// The 32-bit AA-edge filter for a partial-coverage pixel (Angrylion
-    /// `video_filter32`). Gathers the fully-covered pixels (`cvg == 7`) among the 6
-    /// taps — the up/down diagonals and the two-away left/right — plus the centre,
-    /// takes the per-channel penultimate min/max (`vi_video_max`), and pulls the
-    /// centre toward their midpoint weighted by `(7 - cvg)`:
+    /// The AA-edge filter for a partial-coverage pixel (Angrylion
+    /// `video_filter16`/`32`), format-generic over `bpp`. Gathers the fully-covered
+    /// pixels (`cvg == 7`) among the 6 taps — the up/down diagonals and the two-away
+    /// left/right — via [`Bus::vi_read_cov`], plus the centre, takes the per-channel
+    /// penultimate min/max (`vi_video_max`), and pulls the centre toward their midpoint
+    /// weighted by `(7 - cvg)`:
     /// `centre + (((penmin + penmax - 2*centre) * (7 - cvg)) + 4 >> 3)`, masked to 8
     /// bits (the intermediate is unsigned two's-complement, so wrapping). Ledger R-5.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
     fn vi_video_filter(
         &self,
         origin: u32,
@@ -1061,6 +1118,7 @@ impl Bus {
         y: i32,
         center: [u8; 3],
         cvg: u32,
+        bpp: u32,
     ) -> [u8; 3] {
         // Up/down diagonals + two-away left/right (video.c `dirs`).
         const TAPS: [(i32, i32); 6] = [(-1, -1), (1, -1), (-2, 0), (2, 0), (-1, 1), (1, 1)];
@@ -1070,11 +1128,11 @@ impl Bus {
         }
         let mut n = 1usize;
         for (dx, dy) in TAPS {
-            let nb = self.vi_read32(origin, src_stride, x + dx, y + dy);
-            if (nb >> 5) & 7 == 7 {
-                back[0][n] = (nb >> 24) & 0xFF;
-                back[1][n] = (nb >> 16) & 0xFF;
-                back[2][n] = (nb >> 8) & 0xFF;
+            let (nb, nb_cvg) = self.vi_read_cov(origin, src_stride, x + dx, y + dy, bpp);
+            if nb_cvg == 7 {
+                back[0][n] = u32::from(nb[0]);
+                back[1][n] = u32::from(nb[1]);
+                back[2][n] = u32::from(nb[2]);
                 n += 1;
             }
         }

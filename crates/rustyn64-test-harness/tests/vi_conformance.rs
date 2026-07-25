@@ -12,8 +12,9 @@
 //! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
 //! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), 32-bit source
 //! resampling (slice 4b), the de-dither restore filter (slice 4c), and the AA edge
-//! filter (slice 4d), and the divot median (slice 4e). The 16-bit coverage path and
-//! the field-rate half of R-6 (PAL 50 Hz cadence / interlace) land in later slices.
+//! filter (slice 4d), the divot median (slice 4e), and the 16-bit coverage path — the
+//! hidden-bits plane feeding de-dither / AA-edge / divot (slice 4f). The field-rate
+//! half of R-6 (PAL 50 Hz cadence / interlace) lands in a later slice.
 
 use rustyn64_core::Bus;
 use rustyn64_core::cpu::Bus as CpuBus;
@@ -34,6 +35,10 @@ struct ViVec {
     /// src_bpp`). Big-endian matches `RustyN64`'s `RDRAM` order, so they are placed
     /// directly at `origin` — the same logical framebuffer Angrylion read.
     src: Vec<u8>,
+    /// The 9th-bit hidden-coverage plane (format version 2 only): one byte per source
+    /// pixel, low 2 bits meaningful, in the same `(x, y)` order as `src`. Present for
+    /// 16-bit coverage vectors; `None` for version 1.
+    hidden: Option<Vec<u8>>,
     /// Golden output, `out_w * out_h` RGBA8 pixels.
     golden: Vec<u8>,
 }
@@ -44,16 +49,27 @@ fn be_u32(b: &[u8], i: usize) -> u32 {
 
 fn parse(bytes: &[u8]) -> ViVec {
     assert_eq!(be_u32(bytes, 0), 0x5649_5643, "bad .vivec magic");
-    assert_eq!(be_u32(bytes, 4), 1, "unsupported .vivec version");
+    let version = be_u32(bytes, 4);
+    assert!(version == 1 || version == 2, "unsupported .vivec version");
     let h = |i: usize| be_u32(bytes, i * 4);
     let (src_w, src_h) = (h(10), h(11));
     let src_bpp = h(12);
     assert!(src_bpp == 2 || src_bpp == 4, "src_bpp must be 2 or 4");
     let (out_w, out_h) = (h(13), h(14));
-    let off = 15 * 4;
+    let mut off = 15 * 4;
     let src_len = (src_w * src_h * src_bpp) as usize;
     let src = bytes[off..off + src_len].to_vec();
-    let golden = bytes[off + src_len..off + src_len + (out_w * out_h * 4) as usize].to_vec();
+    off += src_len;
+    // Version 2 carries the hidden-bits plane between the source and the golden.
+    let hidden = if version == 2 {
+        let n = (src_w * src_h) as usize;
+        let plane = bytes[off..off + n].to_vec();
+        off += n;
+        Some(plane)
+    } else {
+        None
+    };
+    let golden = bytes[off..off + (out_w * out_h * 4) as usize].to_vec();
     ViVec {
         ctrl: h(2),
         origin: h(3),
@@ -66,6 +82,7 @@ fn parse(bytes: &[u8]) -> ViVec {
         out_w,
         out_h,
         src,
+        hidden,
         golden,
     }
 }
@@ -83,6 +100,22 @@ fn assert_matches(name: &str, bytes: &[u8]) {
     // framebuffer Angrylion read (via its per-format access pattern).
     let base = v.origin as usize;
     bus.rdram[base..base + v.src.len()].copy_from_slice(&v.src);
+
+    // Version-2 vectors carry the 9th-bit hidden-coverage plane. Pack it into
+    // RustyN64's hidden-bits store (2 bits per halfword, 4 halfwords to a byte) at the
+    // same halfword indices the VI reads during scan-out: source pixel (x, y) is the
+    // contiguous halfword `(origin >> 1) + y*src_w + x`. Matches the driver's
+    // `rdram_put_hidden16` and `Bus::rdram_read_hidden`.
+    if let Some(hidden) = &v.hidden {
+        let mut plane = vec![0u8; bus.rdram.len() / 8];
+        let hw0 = base >> 1; // origin is halfword-aligned
+        for (i, &hv) in hidden.iter().enumerate() {
+            let hw = hw0 + i;
+            let shift = (hw & 3) * 2;
+            plane[hw >> 2] |= (hv & 0x3) << shift;
+        }
+        bus.rdram_hidden = Some(plane.into_boxed_slice());
+    }
 
     // Program the VI registers through the CPU MMIO path (VI regs are crate-private).
     CpuBus::write_u32(&mut bus, VI, v.ctrl); // VI_CTRL   (+0x00)
@@ -242,4 +275,42 @@ fn vi_aa_edge_32_matches_angrylion() {
 #[test]
 fn vi_divot_32_matches_angrylion() {
     assert_matches("vi_divot_32", include_bytes!("vectors/vi_divot_32.vivec"));
+}
+
+/// **The 16-bit de-dither restore filter (slice 4f).** `type = 2` (RGBA5551),
+/// `aa_mode = 0`, `dither_filter_enable` (`VI_STATUS = 0x00010002`), every pixel fully
+/// covered — here coverage comes from the **hidden-bits plane** (`((px & 1) << 2) |
+/// hidden`, bit 0 = 1 and hidden = `0b11` ⇒ `cvg = 7`), not a 32-bit alpha byte. The
+/// same `restore_filter` runs, comparing the stored 5-bit channels (`rgb8 >> 3`). This
+/// pins the 16-bit coverage read and the 5-bit→8-bit unpack against Angrylion.
+#[test]
+fn vi_dedither_16_matches_angrylion() {
+    assert_matches(
+        "vi_dedither_16",
+        include_bytes!("vectors/vi_dedither_16.vivec"),
+    );
+}
+
+/// **The 16-bit AA edge filter (slice 4f).** `type = 2`, `aa_mode = 0` (`VI_STATUS =
+/// 0x00000002`), every 4th column partial via the hidden plane (bit 0 = 0, hidden = 0
+/// ⇒ `cvg = 0`). A partial pixel takes `video_filter` over its fully-covered taps,
+/// unpacking each 5-bit channel to 8-bit — the same blend arithmetic as the 32-bit
+/// path. Confirms coverage is read from the hidden plane for the AA-edge branch.
+#[test]
+fn vi_aa_edge_16_matches_angrylion() {
+    assert_matches(
+        "vi_aa_edge_16",
+        include_bytes!("vectors/vi_aa_edge_16.vivec"),
+    );
+}
+
+/// **The 16-bit divot median filter (slice 4f).** `divot_enable` (bit 4), `type = 2`
+/// (`VI_STATUS = 0x00000012`), the every-4th-column-partial hidden-plane pattern plus a
+/// non-monotonic fully-covered probe triplet (source columns 17/18/19, row 10) so the
+/// all-fully-covered early-return is observable: its centre lands on an output pixel
+/// with the median differing from the centre. Confirms the divot path over 16-bit
+/// coverage. Deleting the early-return computes the median and fails the vector.
+#[test]
+fn vi_divot_16_matches_angrylion() {
+    assert_matches("vi_divot_16", include_bytes!("vectors/vi_divot_16.vivec"));
 }
