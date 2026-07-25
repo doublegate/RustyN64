@@ -5006,7 +5006,7 @@ mod tests {
     fn combine_cycle_passes_texel0_through() {
         let cfg = CombineCycle {
             rgb_a: 6, // One
-            rgb_b: 7, // K4 (0 by default here) -> Zero
+            rgb_b: 7, // select 7 = K4, which is 0 in this default `inp`, so effectively Zero
             rgb_c: 1, // Texel0
             rgb_d: 7, // Zero
             a_a: 6,   // One

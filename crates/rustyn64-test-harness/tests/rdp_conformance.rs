@@ -418,7 +418,7 @@ fn tex_tri_primlodfrac_16_matches_angrylion() {
 
 /// **The `Set Convert` K4 (rgb sub-B select 7) and K5 (rgb mul select 15) inputs (R-10).**
 /// `Set Convert` carries `K4 = 0x040`, `K5 = 0x0C0`; the combine computes `(One - K4) * K5`
-/// (Angrylion emits `0x5295`). Without either input wired both read 0 and the result is
+/// (Angrylion emits `0x94a5`). Without either input wired both read 0 and the result is
 /// `(One - 0) * 0 = 0` (black) — non-vacuous. Pins the `Set Convert` (0x2C) K4/K5 extract
 /// and the two combiner selects.
 #[test]

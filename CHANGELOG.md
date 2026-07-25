@@ -12,7 +12,8 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
 - **`PRIM_LOD_FRAC` and the `Set Convert` `K4`/`K5` constants now route through the
   colour combiner** instead of reading zero. `Set Prim Color` extracts
-  `prim_lod_frac` (and `min_level`) from its word-0 low byte; the new `Set Convert`
+  `prim_lod_frac` from its word-0 low byte (`min_level`, bits 12:8, stays deferred —
+  it lands with its LOD consumer); the new `Set Convert`
   (`0x2C`) dispatch extracts `K4`/`K5` (raw 9-bit, `lo[17:9]`/`lo[8:0]`). The
   combiner input mux wires `prim_lod_frac` to RGB mul-select 14 and alpha mul-select
   6, `K4` to RGB sub-B select 7, and `K5` to RGB mul-select 15. Validated
