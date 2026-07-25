@@ -653,22 +653,24 @@ impl Bus {
     /// the real active-span/overscan geometry (ledger **R-5**, gap-analysis Stage D).
     ///
     /// This is the accurate replacement for [`Bus::scanout`]'s 1:1 copy, built up a
-    /// slice at a time and validated byte-for-byte against Angrylion's VI pipeline
-    /// (`vi_process_full`) through the `.vivec` conformance vectors. **Slice 1**:
-    /// nearest-neighbour X/Y scale (the `aa_mode == VI_AA_REPLICATE` path — no
-    /// bilinear lerp) plus the geometry — the 2.10 fixed-point accumulator
-    /// (`line_x = x_offs >> 10`, source index `stride*srcY + srcX`), the NTSC 108-px
-    /// horizontal overscan (`h_start -= 108`), the 8/7-px `minhpass`/`maxhpass`
-    /// crop, the `PRESCALE_WIDTH`/`HEIGHT` clamp, and the truncating RGBA5551→8
-    /// conversion the VI uses (`(px >> 8) & 0xF8`, not `expand5`'s replicating
-    /// widening). Alpha is `0xFF` (opaque) for display; the VI carries coverage in
-    /// its output alpha, which the conformance harness compares as RGB-only.
+    /// slice at a time and validated RGB byte-for-byte against Angrylion's VI pipeline
+    /// (`vi_process_full`) through the `.vivec` conformance vectors. Implemented so
+    /// far: the geometry — the 2.10 fixed-point accumulator (`line_x = x_offs >> 10`,
+    /// source index `stride*srcY + srcX`), the NTSC 108-px horizontal overscan
+    /// (`h_start -= 108`), the 8/7-px `minhpass`/`maxhpass` crop, the
+    /// `PRESCALE_WIDTH`/`HEIGHT` clamp, and the truncating RGBA5551→8 conversion the
+    /// VI uses (`(px >> 8) & 0xF8`, not `expand5`'s replicating widening) — plus, for
+    /// the **16-bit** path, the 5-bit **bilinear lerp** when `aa_mode != REPLICATE`
+    /// and a fraction is non-zero (nearest otherwise). Alpha is `0xFF` (opaque) for
+    /// display; the VI carries coverage in its output alpha, which the conformance
+    /// harness compares as RGB-only.
     ///
-    /// Still to come (later slices, still 1:1-substituted here): the 5-bit bilinear
-    /// lerp (`aa_mode != REPLICATE`), the AA edge / divot / de-dither / gamma
-    /// filters, and PAL 50 Hz + interlace/serrate (R-6). Not yet wired into the
-    /// frontend — [`Bus::scanout`] remains the live path until the pipeline is
-    /// complete (mirrors the R-12 depth path landing ahead of its runtime caller).
+    /// Still to come (later slices, still substituted here): **32-bit** bilinear
+    /// (16-bit only for now — no oracle vector yet), the AA edge / divot / de-dither
+    /// / gamma filters (`aa_mode` 0/1, coverage-gated), and PAL 50 Hz +
+    /// interlace/serrate (R-6). Not yet wired into the frontend — [`Bus::scanout`]
+    /// remains the live path until the pipeline is complete (mirrors the R-12 depth
+    /// path landing ahead of its runtime caller).
     ///
     /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
     /// computed width/height is non-positive, or `out` is too small.
