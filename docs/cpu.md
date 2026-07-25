@@ -540,16 +540,18 @@ The **uncached RCP-register `M` is now measured: 22 PClocks** (`read_width`,
 and confirmed to 0.4% on the ROM's absolute count — accuracy ledger **C-1** and
 the reproducible `peterlemon_timing.rs` derivation test.
 
-The **RDRAM fill `M(RDRAM)` is not a scalar** — it is bank-state dependent, and it
-is now **derived from documented hardware** rather than borrowed from an emulator
-(ledger **C-1**). A 2 KiB RDRAM row spans 128 D-cache lines, so sequential access
-hits the open row (fast) and random access misses it (slow). Two documented
-regimes: the **row-hit (warm)** full D-cache fill ≈ **40 PClocks** (`M ≈ 32`,
-independently corroborated by ares 40 / cen64 44), and the **row-miss (cold)** fill
-≈ **60 PClocks** — measured from copetti's ~640 ns cold access × the documented
-93.75 MHz PClock (`M ≈ 52`). The **row-hit 40** is charged
-(`Pipeline::M_DCACHE_FILL`); charging the cold and dirty-writeback regimes needs the
-device-dependent `RasInterval` cycle values, which are undocumented, so the full
+The **RDRAM fill `M(RDRAM)` is not a scalar** — it is bank-state dependent, and its
+*shape* is now grounded in documented hardware (ledger **C-1**). A 2 KiB RDRAM row
+spans 128 D-cache lines, so sequential access hits the open row (fast) and random
+access misses it (slow) — two documented regimes: **row-hit (warm)** ≈ 40 PClocks
+and **row-miss (cold)** ≈ 60 PClocks (the cold anchor derived from copetti's
+~640 ns external estimate × the documented 93.75 MHz PClock, `M ≈ 52`). Today the
+emulator charges a single **40 PClocks** for *every* D-cache miss
+(`Pipeline::M_DCACHE_FILL`), with **no row-state dispatch** — so 40 is a
+**provisional row-hit-typical estimate**, not a measured number: the UM supplies
+the formula and the +6 transfer delta but not this warm value, and ares (40) /
+cen64 (44) are corroboration only. A true per-regime charge needs the
+device-dependent `RasInterval` cycle values, which are undocumented, so the
 bank-state model stays open under **C-4**. The **I-cache fill** is
 `M_DCACHE_FILL + 6` (`Pipeline::M_ICACHE_FILL` = 46 — the UM's 8-word I-line vs
 2-word D critical doubleword, Table 11-2 − 11-1; *defined* as that expression, so

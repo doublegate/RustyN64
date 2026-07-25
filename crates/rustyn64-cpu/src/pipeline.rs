@@ -1662,15 +1662,16 @@ impl Pipeline {
 
     /// D-cache line fill cost in PClocks (`8..=9 + M(RDRAM)`, UM Table 11-1).
     ///
-    /// This is the **row-hit (warm) regime** of `M(RDRAM)`, which is **not a
-    /// scalar** (ledger C-1). `M(RDRAM)` is bank-state dependent (C-4): a 2 KiB
-    /// RDRAM row spans 128 D-cache lines, so sequential access hits the open row
-    /// (**fast**) and random access misses it (**slow**). This 40 is the row-hit
-    /// case (`M ~= 32`), independently corroborated by ares (40) and cen64 (44).
-    /// The documented **cold/row-miss** fill is ~60 PClocks (copetti's ~640 ns
-    /// cold access x 93.75 MHz PClock, `M ~= 52`); charging it, and the
-    /// dirty-writeback case, needs the undocumented `RasInterval` cycles and is
-    /// deferred to C-4.
+    /// `M(RDRAM)` is **not a scalar** (ledger C-1) — it is bank-state dependent
+    /// (C-4): a 2 KiB RDRAM row spans 128 D-cache lines, so sequential access hits
+    /// the open row (**fast**) and random access misses it (**slow**). This code
+    /// charges this one value for **every** miss — there is **no row-state
+    /// dispatch yet** — so 40 is a **provisional row-hit-typical estimate**, not a
+    /// measured number: the UM gives the fill *formula* but not this warm value,
+    /// and ares (40) / cen64 (44) are corroboration only. The documented
+    /// **cold/row-miss** fill is ~60 PClocks (copetti's ~640 ns external estimate
+    /// x 93.75 MHz PClock, `M ~= 52`); charging it, and the dirty-writeback case,
+    /// needs the undocumented `RasInterval` cycles and is deferred to C-4.
     #[allow(clippy::doc_markdown)]
     const M_DCACHE_FILL: u32 = 40;
     /// I-cache line fill cost in PClocks (`14..=15 + M(RDRAM)`, UM Table 11-2).

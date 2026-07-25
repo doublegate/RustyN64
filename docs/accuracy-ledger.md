@@ -180,10 +180,13 @@ RCP registers share the RCP bus and are charged the same, flagged pending their 
 conflates the RCP-access latency with `sync`'s wait, which cannot be separated by this loop —
 recorded as a combined "uncached RCP access + sync" cost, honest about the conflation.
 
-**D-cache fill `M(RDRAM)` — DERIVED, two-regime; the cold anchor MEASURED at 60 PClocks, the
-row-hit typical charged at 40 (update 2026-07-25).** `M(RDRAM)` is **not a scalar**, and it is now
-grounded in documented hardware rather than borrowed from an emulator. Three independent sources
-converge:
+**D-cache fill `M(RDRAM)` — two-regime MODEL grounded in documentation; the cold anchor derived
+from an external estimate (~60 PClocks); the charged row-hit **40** still PROVISIONAL (update
+2026-07-25).** `M(RDRAM)` is **not a scalar**. What is now grounded in documented hardware is the
+*shape* — the two regimes, the fill formula, the clock — and the *cold* anchor; the specific warm
+number 40 remains a provisional row-hit-typical estimate (corroborated by two emulators, not
+measured), and it is charged **unconditionally for every D-cache miss** — there is no row-state
+dispatch yet (that is C-4). Three independent sources establish the shape:
 
 1. **The CPU-side formula (VR4300 UM Tables 11-1/11-2, verified by summing the rows).** A D-cache
    fill is `1 + 1 + (1..2) + 2 + M + 2 + 1 = 8..9 + M` PClocks; an I-cache fill is `…+ 8 + 1 =
@@ -195,11 +198,14 @@ converge:
    constant. The `±1` is the documented PClock:SClock = **1.5** synchronisation jitter (UM Table
    10-1; PClock = 1.5 × MasterClock = 93.75 MHz on the N64).
 
-2. **The cold-access latency, MEASURED (copetti, cross-confirmed by Beyond3D/community).** The
-   documented figure is **~640 ns** from *"initiating a memory transaction to finding the value in
-   cache"* — i.e. a full cold fill. At the documented 93.75 MHz PClock, `640 ns × 93.75 MHz =`
-   **60.0 PClocks** for the full cold D-cache fill ⇒ `M(cold) = 60 − 8 ≈ 52`. This is the strongest
-   hardware-grounded number available and is the **row-miss (random-access) regime**.
+2. **The cold-access latency — an EXTERNAL ESTIMATE, not a primary capture.** Copetti's N64
+   architecture write-up (<https://www.copetti.org/writings/consoles/nintendo-64/>) gives *"the
+   delay between initiating a memory transaction to finding the value in cache … around 640 ns"* —
+   a full cold fill (cross-confirmed loosely by Beyond3D/community, but no logic-analyser capture
+   backs a cycle count; treat 640 ns as a secondary-source estimate). Derivation: at the documented
+   93.75 MHz PClock, `640 ns × 93.75 MHz = 60.0 PClocks` for the full cold D-cache fill ⇒
+   `M(cold) ≈ 60 − 8 = 52`. This is the best-grounded number for the **row-miss (random-access)
+   regime**, but its provenance is one architecture article, not silicon.
 
 3. **The bank-state structure (N64brew RDRAM Interface + `Clock Timing`).** Each 1 MiB bank holds
    one open 2 KiB row; an access to the open row Acks (**hit, fast**), a different row NAcks and
@@ -209,15 +215,19 @@ converge:
    while pointer-chasing is all row-miss. This is why the warm fill is far below the 60-PClock cold
    figure — and why a single constant cannot be cycle-accurate. Full model: **C-4**.
 
-**Charged value and why it is not tuning.** The row-hit (warm) fill is charged **40 PClocks**
-(`Pipeline::M_DCACHE_FILL`) ⇒ `M(row-hit) ≈ 32`. This is the *derived row-hit regime*, not a value
-lifted from ares: both reference emulators independently land in it (ares 40 → `M≈32`, cen64 44 →
-`M≈36`) precisely because row-hit is the common case they were tuned against — convergent evidence
-for the regime, not the provenance of the number. The **cold/row-miss 60-PClock** anchor is
-recorded here as the other regime, and the dirty-writeback (`> 60`) as a third; charging either
-requires the device-dependent **RasInterval** cycle values, which are *undocumented* (N64brew: IPL3
-just *"setup optimal RAS timing"* from the per-device geometry) — so inventing them would be the
-fitted-constant trap, and they stay open under **C-4**. The `M_ICACHE_FILL = M_DCACHE_FILL + 6`
+**Charged value — provisional, and why it is charged anyway.** Every D-cache miss is charged a
+single **40 PClocks** (`Pipeline::M_DCACHE_FILL`) ⇒ `M ≈ 32`, regardless of bank state — the
+emulator does not yet know whether a given miss hits or misses the open RDRAM row (no row-state
+dispatch; that is C-4). 40 is therefore a **provisional row-hit-typical estimate**, not a measured
+value: the UM justifies the *formula* and the *+6* transfer delta but **not** this warm-row number,
+and the reason it is 40 rather than something invented is that both reference emulators independently
+land there (ares 40 → `M≈32`, cen64 44 → `M≈36`) — corroboration for the row-hit regime, not a
+measurement. It stays open until a per-regime measurement (hardware, or the two ROMs below) replaces
+it. The **cold/row-miss ~60-PClock** anchor (item 2) and the dirty-writeback (`> 60`) are recorded
+as the other two regimes but **not charged**; charging them needs the device-dependent
+**RasInterval** cycle values, which are *undocumented* (N64brew: IPL3 just *"setup optimal RAS
+timing"* from the per-device geometry) — so inventing them would be the fitted-constant trap, and
+they stay open under **C-4**. The `M_ICACHE_FILL = M_DCACHE_FILL + 6`
 relationship is enforced **at compile time** — `M_ICACHE_FILL` is *defined* as
 `Self::M_DCACHE_FILL + 6` (the UM's 8-word I-line vs 2-word D critical doubleword), so a future
 measured `M(RDRAM)` moves both together and they cannot desynchronise. The first-party **cached-miss
