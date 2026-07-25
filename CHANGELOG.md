@@ -8,6 +8,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — 2-cycle second texel (`tile+1`) (gap-analysis Stage D, ledger R-13)
+
+- **2-cycle mode samples a second texel from `tile+1`.** `combined_color` now
+  samples `texel1` from `tiles[1]` (the `RENDERTILE`/`RENDERTILE+1` case) at the
+  same coordinate in 2-cycle mode, and `combine` swaps `texel0`/`texel1` before the
+  second cycle (`combiner_2cycle_cycle1`), so cycle 1's `TEXEL0` reads `tile+1`.
+  Validated byte-for-byte against Angrylion by `tex_tri_2cycle_16` (two 1-texel
+  tiles red/green: both cycles output `TEXEL0`, so the swap makes the pixel green —
+  red without it) plus a mutation-checked `combine_two_cycle_swaps_texels` unit
+  test. Deferred: the LOD/mip tile selection (`lod_frac`), which pairs with R-10's
+  `lod_frac`/`prim_lod_frac` combiner inputs.
+
 ### Added — bilinear mask-wrap seam (gap-analysis Stage D, ledger R-13)
 
 - **The bilinear neighbour texel now handles the mask-wrap seam** (`sdiff`/`tdiff`).

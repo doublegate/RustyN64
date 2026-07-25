@@ -390,6 +390,19 @@ fn tex_tri_bilinear_wrap_16_matches_angrylion() {
     );
 }
 
+/// **2-cycle mode with a second texel from `tile+1` (R-13).** Two 1-texel tiles
+/// (tile 0 = red, tile 1 = green); a 2-cycle combine outputs TEXEL0 in both cycles.
+/// The hardware swaps texel0/texel1 before cycle 1, so cycle 1's TEXEL0 reads tile 1
+/// — the pixel is GREEN. Non-vacuous: a missing texel1 sample or no swap would leave
+/// cycle 1 reading tile 0 (red). Pins the two-tile sample + the `combine` texel swap.
+#[test]
+fn tex_tri_2cycle_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_2cycle_16",
+        include_bytes!("vectors/tex_tri_2cycle_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`

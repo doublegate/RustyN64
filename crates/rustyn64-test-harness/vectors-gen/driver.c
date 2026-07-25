@@ -795,6 +795,34 @@ static const uint32_t V24_TEX_TRI_BILINEAR_WRAP_16[] = {
     TEX_BLOCK(0, 0, 1, 0x10, 0, 0, 0, 0, 0), // dx.S = 0x10 (0.5 texel/pixel), T flat
 };
 
+// V25: 2-cycle mode with a SECOND texel from tile+1 (ledger R-13). Two 1-texel
+// tiles are loaded — tile 0 = red (TMEM word 0), tile 1 = green (TMEM word 1) — and
+// a 2-cycle combine outputs TEXEL0 in BOTH cycles (cyc0 D=texel0, cyc1 D=texel0).
+// The hardware swaps texel0/texel1 before cycle 1, so cycle 1's TEXEL0 reads tile 1
+// (green); the pixel is GREEN. Distinguishes the two-tile 2-cycle path + swap: a
+// missing texel1 sample (or no swap) would leave cycle 1 reading tile 0 = RED.
+// Constant texture coordinate (both tiles sample their single texel). Point sampled.
+static const uint16_t TEX_2CYC[2] = {0xF801u, 0x07C1u}; // red @0x3000, green @0x3002
+static const uint32_t V25_TEX_TRI_2CYCLE_16[] = {
+    0x2F100CF0u, 0x00000000u, // Set Other Modes: 2-CYCLE (cycle_type=1), bi_lerp0/1, point, dither off
+    0x3C000000u, 0x00008241u, // Set Combine: cyc0 D=texel0 (rgb+a), cyc1 D=texel0 (rgb+a)
+    0x3D100000u, 0x00003000u, // Set Texture Image: 16-bit, width 1, addr 0x3000 (red)
+    0x35100200u, 0x00000000u, // Set Tile 0: 16-bit, line 1, tmem word 0
+    0x32000000u, 0x00000000u, // Set Tile Size 0: SL0 TL0 SH0 TH0 (1 texel)
+    0x34000000u, 0x00000000u, // Load Tile 0: red -> TMEM word 0
+    0x3D100000u, 0x00003002u, // Set Texture Image: addr 0x3002 (green)
+    0x35100201u, 0x01000000u, // Set Tile 1: 16-bit, line 1, tmem word 1
+    0x32000000u, 0x01000000u, // Set Tile Size 1: SL0 TL0 SH0 TH0
+    0x34000000u, 0x01000000u, // Load Tile 1: green -> TMEM word 1
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    TEX_BLOCK(0, 0, 1, 0, 0, 0, 0, 0, 0), // constant coord: both tiles sample texel 0
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1072,6 +1100,11 @@ int main(int argc, char **argv) {
                   sizeof(V24_TEX_TRI_BILINEAR_WRAP_16) / 4, V24_TEX_TRI_BILINEAR_WRAP_16,
                   0x3000, 2, TEX_SEAM2};
     if (emit_vector(&v24, out_dir)) return 1;
+
+    Vector v25 = {"tex_tri_2cycle_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V25_TEX_TRI_2CYCLE_16) / 4, V25_TEX_TRI_2CYCLE_16,
+                  0x3000, 2, TEX_2CYC};
+    if (emit_vector(&v25, out_dir)) return 1;
 
     return 0;
 }

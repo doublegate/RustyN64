@@ -2317,6 +2317,13 @@ impl Rdp {
             let [s105, t105] =
                 interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
             inp.texel0 = self.sample_texel(&self.tiles[0], s105, t105);
+            // 2-cycle mode samples a SECOND texel from the next tile (`tile+1`, the
+            // `RENDERTILE`/`RENDERTILE+1` case) at the same coordinate — LOD-based mip
+            // tile selection is deferred (R-13). `combine` swaps texel0/texel1 for the
+            // second cycle so cycle 1's TEXEL0 reads `tile+1`.
+            if self.other_modes.cycle_type == 1 {
+                inp.texel1 = self.sample_texel(&self.tiles[1], s105, t105);
+            }
         }
         let shade_alpha = inp.shade[3];
         (
@@ -2566,6 +2573,10 @@ impl Rdp {
     pub fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
         if two_cycle {
             inp.combined = Self::combine_cycle(self.combine.cyc0, &inp);
+            // The hardware pipelines the two texels: cycle 1's TEXEL0 reads the
+            // second tile's sample and TEXEL1 the first, so the combiner swaps them
+            // before cycle 1 (`combiner_2cycle_cycle1`, R-13).
+            core::mem::swap(&mut inp.texel0, &mut inp.texel1);
         }
         Self::combine_cycle(self.combine.cyc1, &inp)
     }
@@ -4981,6 +4992,37 @@ mod tests {
         // Alpha also chains: cycle0 passes texel0's alpha (44) to Combined, and
         // cycle1's D = combined-alpha (C = lod-frac = 0), so the output is 44.
         assert_eq!(out[3], 44, "2-cycle chains alpha");
+    }
+
+    /// **Two-cycle mode swaps texel0/texel1 before cycle 1 (R-13).** Both cycles
+    /// output TEXEL0 (`D` select). Cycle 0 sees texel0 (red); the swap then makes
+    /// cycle 1's TEXEL0 the original texel1 (green), so the pixel is green. Without
+    /// the swap it would stay red — the mutation this row catches.
+    #[test]
+    fn combine_two_cycle_swaps_texels() {
+        let out_texel0 = CombineCycle {
+            rgb_a: 0,
+            rgb_b: 0,
+            rgb_c: 0,
+            rgb_d: 1, // Texel0 in the add slot
+            a_a: 0,
+            a_b: 0,
+            a_c: 0,
+            a_d: 1,
+        };
+        let mut rdp = Rdp::new();
+        rdp.combine.cyc0 = out_texel0;
+        rdp.combine.cyc1 = out_texel0;
+        let inp = CombinerInputs {
+            texel0: [255, 0, 0, 255],
+            texel1: [0, 255, 0, 255],
+            ..CombinerInputs::default()
+        };
+        assert_eq!(
+            rdp.combine(inp, true),
+            [0, 255, 0, 255],
+            "cycle 1 reads the swapped texel1 (green), not texel0 (red)"
+        );
     }
 
     // ---- T-33-003: the blender ----
