@@ -1182,6 +1182,14 @@ static int emit_vi_vectors(const char *out_dir) {
                         525u,                      80u,         48u};
     if (emit_vi_vector(&vbilodd, out_dir)) return 1;
 
+    // Slice 3 (ledger R-5): the gamma curve. VI_STATUS bit 3 (gamma_enable) set, bit 2
+    // (gamma_dither) clear, aa_mode = REPLICATE (0x030A) so nearest sampling with the
+    // sqrt gamma table applied to the final RGB. 1:1 scale isolates the curve.
+    ViVector vgamma = {"vi_gamma_1x_16", 0x0000030Au, 0x1000u, 80u,
+                       0x00000400u,      0x00000400u, 0x006C0094u, 0x00220042u,
+                       525u,             80u,         48u};
+    if (emit_vi_vector(&vgamma, out_dir)) return 1;
+
     return 0;
 }
 

@@ -60,6 +60,48 @@ fn vi_lerp3(a: [u8; 3], b: [u8; 3], frac: i32) -> [u8; 3] {
     o
 }
 
+/// The VI's integer square root (Angrylion `vi_integer_sqrt`), used to build the
+/// gamma curve. A restoring square-root: `res` accumulates the root two bits at a
+/// time from the top. Ledger R-5.
+const fn vi_integer_sqrt(a: u32) -> u32 {
+    let mut op = a;
+    let mut res = 0u32;
+    let mut one = 1u32 << 30;
+    while one > op {
+        one >>= 2;
+    }
+    while one != 0 {
+        if op >= res + one {
+            op -= res + one;
+            res += one << 1;
+        }
+        res >>= 1;
+        one >>= 2;
+    }
+    res
+}
+
+/// The VI gamma curve for one channel: `sqrt(v << 6) << 1` (Angrylion `gamma_table`,
+/// `vi_gamma_init`). Applied when `gamma_enable` is set and `gamma_dither` is not
+/// (the dithered variants are noise-based and deferred). Ledger R-5.
+#[allow(clippy::cast_possible_truncation)]
+const fn vi_gamma(v: u8) -> u8 {
+    (vi_integer_sqrt((v as u32) << 6) << 1) as u8
+}
+
+/// The 256-entry VI gamma lookup table, built at compile time from [`vi_gamma`]
+/// (Angrylion's `gamma_table`) — a table lookup per channel on the scan-out path
+/// instead of recomputing the integer square root per pixel.
+const GAMMA_TABLE: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        t[i] = vi_gamma(i as u8);
+        i += 1;
+    }
+    t
+};
+
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
@@ -696,6 +738,10 @@ impl Bus {
         // the bilinear resample when a fraction is non-zero. The AA-edge / de-dither
         // paths (aa_mode 0/1, coverage-gated) are a later slice.
         let aa_mode = (ctrl >> 8) & 0x3;
+        // Gamma (VI_CTRL bit 3) applies the sqrt curve to the final RGB; the dithered
+        // variants (bit 2 set) are noise-based and deferred, so plain gamma is applied
+        // only when gamma_enable is set and gamma_dither is not (bit 3 set, bit 2 clear).
+        let gamma = (ctrl & 0x0C) == 0x08;
         let origin = self.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF;
         let src_stride = (self.vi.read(vi::VI_WIDTH) & 0xFFF) as i32; // source pixels/row
         let h_video = self.vi.read(vi::VI_H_VIDEO);
@@ -770,10 +816,10 @@ impl Bus {
                 let sx = x_offs >> 10;
                 let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
-                if bpp == 2 {
+                let mut rgb = if bpp == 2 {
                     // Bilinear when aa_mode isn't REPLICATE and a fraction is non-zero
                     // (Angrylion `lerping`); otherwise the exact nearest sample.
-                    let rgb = if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
+                    if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
                         let p00 = self.vi_fetch16(origin, src_stride, sx, sy);
                         let p10 = self.vi_fetch16(origin, src_stride, sx + 1, sy);
                         let p01 = self.vi_fetch16(origin, src_stride, sx, sy + 1);
@@ -784,16 +830,21 @@ impl Bus {
                         vi_lerp3(col, ncol, xfrac)
                     } else {
                         self.vi_fetch16(origin, src_stride, sx, sy)
-                    };
-                    out[dst..dst + 3].copy_from_slice(&rgb);
+                    }
                 } else {
                     // 32-bit: nearest only; 32-bit VI resampling has no oracle vector
                     // yet, so bilinear for it is deferred rather than shipped untested.
                     let src_idx = src_row.wrapping_add(sx);
                     let byte = origin.wrapping_add((src_idx as u32).wrapping_mul(4));
-                    out[dst..dst + 3]
-                        .copy_from_slice(&self.rdram_read_u32(byte).to_be_bytes()[..3]);
+                    let w = self.rdram_read_u32(byte).to_be_bytes();
+                    [w[0], w[1], w[2]]
+                };
+                // Gamma is the final RGB stage (after scale, before write) — a table
+                // lookup per channel (the LUT is `vi_gamma` precomputed).
+                if gamma {
+                    rgb = rgb.map(|c| GAMMA_TABLE[usize::from(c)]);
                 }
+                out[dst..dst + 3].copy_from_slice(&rgb);
                 out[dst + 3] = 0xFF; // opaque display alpha (VI coverage is not shown)
             }
         }
@@ -1847,6 +1898,26 @@ mod tests {
             [0x29, 0, 0],
             "the +16 rounding rounds 0x28 up to 0x29"
         );
+    }
+
+    /// **`vi_gamma` — the VI sqrt gamma curve (R-5).** `gamma(v) = sqrt(v << 6) << 1`:
+    /// `gamma(0) = 0`, `gamma(0x40) = sqrt(0x1000) << 1 = 64 << 1 = 0x80`,
+    /// `gamma(0x48) = sqrt(0x1200) << 1 = 67 << 1 = 0x86`, `gamma(0xFF) = sqrt(0x3FC0)
+    /// << 1 = 127 << 1 = 0xFE`. The whole curve is then checked exhaustively against an
+    /// **independent** floor-sqrt (`u32::isqrt`, a different implementation than
+    /// `vi_integer_sqrt`), which also pins the precomputed `GAMMA_TABLE` to `vi_gamma`.
+    /// Dropping the `<< 1` fails the anchor cases.
+    #[test]
+    fn vi_gamma_curve() {
+        assert_eq!(vi_gamma(0), 0);
+        assert_eq!(vi_gamma(0x40), 0x80);
+        assert_eq!(vi_gamma(0x48), 0x86);
+        assert_eq!(vi_gamma(0xFF), 0xFE);
+        for v in 0..=255u8 {
+            let reference = ((u32::from(v) << 6).isqrt() << 1) as u8;
+            assert_eq!(vi_gamma(v), reference, "vi_gamma({v}) vs isqrt reference");
+            assert_eq!(GAMMA_TABLE[usize::from(v)], vi_gamma(v), "LUT entry {v}");
+        }
     }
 }
 

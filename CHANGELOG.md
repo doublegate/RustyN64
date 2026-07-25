@@ -8,6 +8,15 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI scan-out gamma curve, slice 3 (gap-analysis Stage D, ledger R-5)
+
+- **The VI gamma curve** in `Bus::scanout_scaled` (`gamma_enable`, VI_CTRL bit 3, with
+  the dither bit clear): the sqrt gamma table `gamma(v) = sqrt(v << 6) << 1`
+  (`vi_gamma`/`vi_integer_sqrt`, a port of Angrylion `vi_gamma_init`) applied to the
+  final RGB. Validated RGB byte-for-byte vs Angrylion by `vi_gamma_1x_16`
+  (`VI_STATUS = 0x030A`) plus a mutation-checked `vi_gamma_curve` unit test. The
+  noise-based gamma-dither variants stay deferred.
+
 ### Added — VI scan-out bilinear resample, slice 2 (gap-analysis Stage D, ledger R-5)
 
 - **The 5-bit bilinear lerp** in `Bus::scanout_scaled` (`aa_mode != REPLICATE` with a
