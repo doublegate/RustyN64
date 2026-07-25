@@ -65,10 +65,20 @@ pub const VI_REG_COUNT: usize = 16;
 ///
 /// The VI dot clock is off a separate crystal (~48.68 MHz) that the N64brew wiki
 /// gives only *roughly*, so rather than fit an imprecise dot-clock frequency, the
-/// field cadence is anchored to the standard **60 Hz** and the per-half-line
-/// period derived from the software-programmed `VI_V_TOTAL`. Documented as open
-/// residual R-6; PAL (50 Hz) is a later refinement.
+/// field cadence is anchored to the standard NTSC **60 Hz** and the per-half-line
+/// period derived from the software-programmed `VI_V_TOTAL`. PAL uses
+/// [`VI_FIELD_HZ_PAL`], selected by `Vi::field_hz` from the field length.
 pub const VI_FIELD_HZ: u64 = 60;
+
+/// Nominal PAL field rate (R-6): PAL's standard **50 Hz** field cadence.
+///
+/// The counterpart to NTSC's [`VI_FIELD_HZ`] — a documented broadcast standard
+/// (N64brew *Video Interface*: NTSC ~60 Hz / PAL 50 Hz), not a fitted value, so it
+/// is anchored the same way as the NTSC rate. Selected when the programmed field is
+/// PAL-length (`VI_V_TOTAL > 550`, ~625 half-lines vs NTSC's ~525), matching the
+/// scan-out geometry's `ispal` test. The interlace/serrate half-field quirk and the
+/// exact `H_TOTAL` sub-field timing remain deferred under R-6.
+pub const VI_FIELD_HZ_PAL: u64 = 50;
 
 /// The Video Interface register file (the `0x0440_0000` block).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,11 +136,23 @@ impl Vi {
         (self.regs[VI_V_TOTAL as usize] & 0x3FF) + 1
     }
 
-    /// Master ticks per scan half-line, from the nominal field rate and the
+    /// The nominal field rate for the programmed field length: PAL 50 Hz when the
+    /// field is PAL-length (`VI_V_TOTAL > 550`), else NTSC 60 Hz (R-6). Matches the
+    /// scan-out geometry's `ispal` test (`bus::scanout_scaled`) so cadence and
+    /// geometry agree on the region.
+    const fn field_hz(&self) -> u64 {
+        if (self.regs[VI_V_TOTAL as usize] & 0x3FF) > 550 {
+            VI_FIELD_HZ_PAL
+        } else {
+            VI_FIELD_HZ
+        }
+    }
+
+    /// Master ticks per scan half-line, from the field rate ([`Vi::field_hz`]) and the
     /// programmed `VI_V_TOTAL`. One division (not two) to avoid compounding the
     /// truncation. Zero-guarded by `total_halflines() >= 1`.
     fn ticks_per_halfline(&self) -> u64 {
-        crate::MASTER_HZ / (VI_FIELD_HZ * u64::from(self.total_halflines()))
+        crate::MASTER_HZ / (self.field_hz() * u64::from(self.total_halflines()))
     }
 
     /// Advance the scan position by the master ticks elapsed since the last call
@@ -330,5 +352,50 @@ mod tests {
             (mid + 10) % 263,
             "position continues relative across the field-length change"
         );
+    }
+
+    /// **A PAL-length field scans at 50 Hz, not 60 (R-6).** With `V_TOTAL + 1 = 625`
+    /// half-lines (PAL, `> 550`), one half-line is `MASTER_HZ / 50 / 625 = 6000`
+    /// master ticks — distinct from the `MASTER_HZ / 60 / 625 = 5000` an NTSC-rate
+    /// field would give, so this is non-vacuous: at `pal_per_hl` ticks the counter
+    /// has advanced exactly one half-line, while at the 60 Hz period it would already
+    /// be past it. Also confirms an NTSC-length field is unaffected.
+    #[test]
+    fn a_pal_length_field_scans_at_50hz() {
+        let mut vi = Vi::new();
+        vi.regs[VI_V_TOTAL as usize] = 624; // 625 half-lines → PAL (> 550)
+        let pal_per_hl = crate::MASTER_HZ / (VI_FIELD_HZ_PAL * 625);
+        let ntsc_per_hl = crate::MASTER_HZ / (VI_FIELD_HZ * 625);
+        assert_eq!(pal_per_hl, 6000);
+        assert_eq!(ntsc_per_hl, 5000);
+        vi.tick(0);
+        assert_eq!(vi.read(VI_V_CURRENT), 0);
+        // One PAL half-line period advances exactly one half-line.
+        vi.tick(pal_per_hl);
+        assert_eq!(
+            vi.read(VI_V_CURRENT),
+            1,
+            "advances at the 50 Hz PAL cadence"
+        );
+        // A fresh VI clocked for the same wall-ticks at the (wrong) 60 Hz period would
+        // already be on half-line 1 well before `pal_per_hl`; assert the PAL VI is
+        // still on 0 at the 60 Hz period, proving it is genuinely slower.
+        let mut vi2 = Vi::new();
+        vi2.regs[VI_V_TOTAL as usize] = 624;
+        vi2.tick(0);
+        vi2.tick(ntsc_per_hl);
+        assert_eq!(
+            vi2.read(VI_V_CURRENT),
+            0,
+            "at the 60 Hz period the PAL field has not yet crossed a half-line"
+        );
+
+        // An NTSC-length field is unaffected — still 60 Hz.
+        let mut ntsc = Vi::new();
+        ntsc.regs[VI_V_TOTAL as usize] = 524; // 525 half-lines → NTSC
+        let ntsc525 = crate::MASTER_HZ / (VI_FIELD_HZ * 525);
+        ntsc.tick(0);
+        ntsc.tick(ntsc525);
+        assert_eq!(ntsc.read(VI_V_CURRENT), 1, "NTSC field still 60 Hz");
     }
 }

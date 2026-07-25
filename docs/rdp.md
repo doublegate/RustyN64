@@ -684,16 +684,18 @@ state is all-zero, so `VI_CTRL.TYPE == 0` and the VI is off.
 
 **The scan position and the VI interrupt are driven by the scheduler**
 (`Vi::tick`, called each RCP step): `VI_V_CURRENT` advances one half-line every
-`MASTER_HZ / 60 / (VI_V_TOTAL + 1)` master ticks (accumulating the fractional
+`MASTER_HZ / field_hz / (VI_V_TOTAL + 1)` master ticks (accumulating the fractional
 remainder), wrapping at `VI_V_TOTAL + 1`, and raises `MI_INTR.vi` once per field
 when it lands on `VI_V_INTR` — the per-half-line step means a call spanning many
 half-lines cannot skip it, and a `VI_V_INTR` beyond the field never fires.
 `VI_CTRL.TYPE == 0` suppresses the interrupt, and the position is kept relative so
 a mid-run `VI_V_TOTAL` change re-bases without a scale jump. The field cadence is
-anchored to nominal 60 Hz NTSC (open residual **R-6**; the exact `H_TOTAL`
-sub-field timing, PAL's 50 Hz, and the interlace `VI_V_INTR` bit-0 quirk are
-deferred). The VI dot clock (VCLK, ≈48.68 MHz NTSC) is the sole fractional-domain
-crystal (`docs/scheduler.md`).
+**region-aware** (R-6): `Vi::field_hz` picks the standard PAL **50 Hz** when the
+field is PAL-length (`VI_V_TOTAL > 550`) and NTSC **60 Hz** otherwise — the same
+`ispal` split the scan-out geometry uses, so cadence and geometry agree on the
+region. **Still deferred under R-6:** the exact `H_TOTAL` sub-field timing and the
+interlace/serrate `VI_V_INTR` bit-0 quirk. The VI dot clock (VCLK, ≈48.68 MHz NTSC)
+is the sole fractional-domain crystal (`docs/scheduler.md`).
 
 **Still deferred:**
 
