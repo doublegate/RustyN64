@@ -80,6 +80,12 @@ Start:
   // Stack (top of RDRAM-ish, not really used).
   lui  sp, 0x8020
 
+  // Zero the ISViewer running-length counter. RDRAM is NOT pre-zeroed on
+  // hardware, so PrintHex must not read garbage into it.
+  lui  t8, ISVLEN >> 16
+  ori  t8, t8, ISVLEN & 0xFFFF
+  sw   r0, 0(t8)
+
   // ---- MISS block: N strided cached loads, each a new line ----
   lui  t1, DATA >> 16
   ori  t1, t1, DATA & 0xFFFF   // t1 = load pointer
@@ -98,6 +104,8 @@ MissLoop:
   // ---- HIT block: N loads from ONE address (hits after first fill) ----
   lui  t1, DATA >> 16
   ori  t1, t1, DATA & 0xFFFF
+  lw   r0, 0(t1)               // warm the line: MissLoop evicted it, so pre-fill
+  nop                          //   it OUTSIDE the timed window -> pure hits
   ori  t2, r0, N
   mtc0 r0, COUNT
   nop

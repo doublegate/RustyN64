@@ -16,6 +16,7 @@
 # Then, from this directory:
 #   sh build.sh
 set -e
+cd "$(dirname "$0")"          # run from this directory regardless of caller
 : "${BASS:=bass}"
 "$BASS" mrdram_timing.asm
 echo "built mrdram_timing.z64 ($(wc -c < mrdram_timing.z64) bytes)"

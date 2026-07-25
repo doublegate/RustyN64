@@ -34,16 +34,20 @@ fn the_timing_rom_measures_the_charged_dcache_fill() {
     let mut sys = System::new(0);
     rom::load_direct(&mut sys, &image, entry).expect("load the ROM");
 
-    // Two N=1024 load loops plus setup; the ROM then spins.
-    for _ in 0..3_000_000 {
+    // Run until the ROM writes its sentinel (the N word), rather than a bare
+    // magic step count: the two N=1024 loops finish, then it stores the results
+    // and spins. The cap is a generous backstop against a ROM that never writes.
+    let mut steps = 0u64;
+    while word(&sys, 0x200C) == 0 && steps < 20_000_000 {
         sys.step_to_next_edge();
+        steps += 1;
     }
 
     let delta_miss = word(&sys, 0x2000);
     let delta_hit = word(&sys, 0x2004);
     let diff = word(&sys, 0x2008);
     let n = word(&sys, 0x200C);
-    assert_eq!(n, 1024, "the ROM ran its loops and wrote N");
+    assert_eq!(n, 1024, "the ROM ran its loops and wrote its sentinel N");
     assert!(
         delta_miss > delta_hit,
         "the miss loop must be slower than the hit loop (miss={delta_miss} hit={delta_hit})"
