@@ -1080,8 +1080,25 @@ typedef struct {
     uint32_t v_sync;  // VI_V_SYNC (V_TOTAL; > 550 selects PAL)
     uint32_t src_w, src_h; // source framebuffer dimensions
     uint32_t bpp;     // source bytes/pixel: 0 or 2 = RGBA5551, 4 = RGBA8888
-    uint32_t aa;      // 0 = every pixel fully covered; 1 = every 4th column partial (cvg 0)
+    uint32_t aa;      // 0 = every pixel fully covered; 1 = every 4th column partial (cvg 0);
+                      // 2 = as 1, plus a non-monotonic fully-covered probe triplet (divot bypass)
 } ViVector;
+
+// Non-monotonic fully-covered probe triplet for the divot vector (aa == 2). The
+// three columns x = PROBE_X-1 / PROBE_X / PROBE_X+1 are all fully covered (none is
+// an x%4==0 partial column), so the divot filter's all-fully-covered early-return
+// fires and the centre must PASS THROUGH UNCHANGED. Because the values are
+// non-monotonic (low / high / mid per channel), the per-channel median of the
+// three does NOT equal the centre — so deleting the early-return and computing the
+// median instead would change the centre pixel and fail the vector. This is what
+// makes the bypass observable (CodeRabbit #155). PROBE_X = 18 -> {17,18,19} are
+// all fully covered (none is an x%4==0 partial column), and all three lie inside
+// the scanned-out source window (columns 8..32 for this vector's 1:1 h-scale, so
+// the x=1..3 range is never sampled). x=18 maps to output column 10 with zero
+// x-fraction (nearest sample), so that output pixel IS the divot centre. PROBE_Y
+// = 10 is an interior sampled row (source rows 0..15 are scanned out).
+#define VI_DIVOT_PROBE_X 18u
+#define VI_DIVOT_PROBE_Y 10u
 
 // A deterministic distinct source pixel (RGBA5551): encodes x and y into separate
 // channels so any mis-addressed sample lands on a visibly wrong colour.
@@ -1102,6 +1119,20 @@ static uint32_t vi_src_pixel32(uint32_t x, uint32_t y, uint32_t aa) {
     // centre and the filter would output the raw colour, hiding a raw-fetch mutation.
     if (aa && (x % 4u == 0u)) {
         return (0x08u << 24) | (0x08u << 16) | (0x08u << 8) | 0x00u;
+    }
+    // aa == 2: a non-monotonic fully-covered probe triplet (see VI_DIVOT_PROBE_*).
+    // All three pixels keep alpha 0xFF (cvg 7), so the divot bypass fires; the
+    // centre's median across the triplet differs from the centre in every channel.
+    if (aa == 2u && y == VI_DIVOT_PROBE_Y) {
+        if (x == VI_DIVOT_PROBE_X - 1u) {
+            return (0x10u << 24) | (0x20u << 16) | (0x30u << 8) | 0xFFu; // left  (low)
+        }
+        if (x == VI_DIVOT_PROBE_X) {
+            return (0xF0u << 24) | (0xE0u << 16) | (0xD0u << 8) | 0xFFu; // centre (high)
+        }
+        if (x == VI_DIVOT_PROBE_X + 1u) {
+            return (0x80u << 24) | (0x90u << 16) | (0xA0u << 8) | 0xFFu; // right (mid)
+        }
     }
     return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
 }
@@ -1279,10 +1310,13 @@ static int emit_vi_vectors(const char *out_dir) {
     // aa_mode = 0, type = 3 (0x00000013), 32-bit with the same every-4th-column partial
     // pattern. A pixel whose 3 horizontal neighbours are not all fully covered (the
     // partial columns and their immediate neighbours) takes the per-channel median of
-    // the post-AA values; the rest pass through. 1:1 scale so no lerp.
+    // the post-AA values; the rest pass through. 1:1 scale so no lerp. aa = 2 adds a
+    // non-monotonic fully-covered probe triplet (VI_DIVOT_PROBE_*) so the divot
+    // all-fully-covered EARLY-RETURN is observable: its centre must pass through
+    // unchanged even though the triplet's per-channel median differs from it.
     ViVector vdivot = {"vi_divot_32", 0x00000013u, 0x1000u, 80u,
                        0x00000400u,   0x00000400u, 0x006C0094u, 0x00220042u,
-                       525u,          80u,         48u,        4u, 1u};
+                       525u,          80u,         48u,        4u, 2u};
     if (emit_vi_vector(&vdivot, out_dir)) return 1;
 
     return 0;
