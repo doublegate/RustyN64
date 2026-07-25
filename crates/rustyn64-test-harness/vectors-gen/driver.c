@@ -1067,7 +1067,7 @@ static int emit_fuzz(const char *out_dir, uint64_t seed, int count, const char *
 // → `vi_process_full`): it places a 16-bit source framebuffer in RDRAM, sets the VI
 // registers, captures the resampled/cropped output via `vdac_write`, and writes a
 // `.vivec` = 15 big-endian u32 header + the logical source pixels (BE 16-bit) + the
-// golden RGBA8 output. RustyN64 replays it through `Bus::scanout` (ledger R-5/R-6).
+// golden RGBA8 output. RustyN64 replays it through `Bus::scanout_scaled` (R-5/R-6).
 typedef struct {
     const char *name;
     uint32_t ctrl;    // VI_STATUS/VI_CTRL (type[1:0], aa_mode[9:8], ...)

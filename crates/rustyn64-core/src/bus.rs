@@ -713,9 +713,14 @@ impl Bus {
         // Horizontal overscan crop; vertical is handled by the `v_start` origin.
         let minhpass = if h_start_clamped { 0 } else { 8 };
         let maxhpass = if hres_clamped { hres } else { hres - 7 };
-        let serrate = (ctrl >> 6) & 1; // interlace (R-6, expect 0 here)
+        // Interlace/serrate (`VI_CTRL` bit 6) is deferred to R-6: this slice models
+        // only the progressive field, so the height is `vres`. Angrylion doubles it
+        // (`vres << serrate`) and doubles the source walk per field — modelling only
+        // the height doubling here would fabricate a half-rate double-height frame,
+        // which is worse than not modelling interlace at all, so serrate is ignored
+        // until R-6 lands the field cadence and a vector for it.
         let width = (maxhpass - minhpass).max(0);
-        let height = (vres << serrate).max(0);
+        let height = vres.max(0);
         if width == 0 || height == 0 {
             return (0, 0);
         }
