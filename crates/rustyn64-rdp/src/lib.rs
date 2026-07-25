@@ -4403,6 +4403,14 @@ mod tests {
             0,
             "left shift wraps in 16-bit space (SIGN16)"
         );
+        // CLAMP PRECEDES MASK: with both clamp on AND a non-zero mask, texel 5 past
+        // SH=3 must clamp to 3 (then `3 & 3 = 3`), NOT wrap to `5 & 3 = 1`. Masking
+        // first would give 1 — this row is the one that fails under that mutation.
+        assert_eq!(
+            sample_coord(5 << 5, 0, 2, false, true, 0, sh),
+            3,
+            "clamp precedes mask"
+        );
     }
 
     /// **A copy-mode Texture Rectangle round-trips a texture.** `Load Tile` loads a
