@@ -337,8 +337,10 @@ fn sample_coord(
     lo: u16,
     hi: u16,
 ) -> u32 {
-    // Point sampling discards the sub-texel fraction and the neighbour diff; the base
-    // texel is exactly the bilinear base (`sample_axis`), so the two never disagree.
+    // Point sampling discards the sub-texel fraction and the neighbour diff, so the
+    // `is_t` argument (which only affects the T-axis neighbour diff) is irrelevant
+    // here — `false` is safe for both axes. The base texel is exactly the bilinear
+    // base (`sample_axis`), so the point and bilinear paths never disagree.
     sample_axis(coord, shift, mask, mirror, clamp_en, lo, hi, false).0 as u32
 }
 
@@ -2264,7 +2266,13 @@ impl Rdp {
             true,
         );
         // The neighbour is the masked base plus the mask-coupled diff (+1 / 0 / -1 /
-        // wrap), NOT re-masked — `mask_coupled` chose `diff` for exactly this.
+        // wrap), NOT re-masked — `mask_coupled` chose `diff` for exactly this. The
+        // diff keeps the neighbour non-negative (the -1 case only fires when base>=1,
+        // the wrap case lands on 0), so the `as u32` never wraps to a huge value.
+        debug_assert!(
+            sb + sdiff >= 0 && tb + tdiff >= 0,
+            "neighbour texel is non-negative"
+        );
         let (s0, t0) = (sb as u32, tb as u32);
         let (s1, t1) = ((sb + sdiff) as u32, (tb + tdiff) as u32);
         bilinear_3point(
@@ -4618,6 +4626,11 @@ mod tests {
         assert_eq!(mask_coupled(6, 2, true, false), (1, -1));
         // Mirror ON seam (base 3 = top of forward half): duplicate, diff 0.
         assert_eq!(mask_coupled(3, 2, true, false), (3, 0));
+        // NEGATIVE base (clamp off, coord below SL) is handled bit-correctly, as in
+        // Angrylion: `(s >> mask) & 1` is bit `mask` of `s` for ANY sign (arithmetic
+        // shift preserves the low bits), NOT "1 for all negatives". base -3, mask 1:
+        // wrap = (-3 >> 1) & 1 = bit 1 of -3 = 0; masked -3 & 1 = 1; (1-0)&1 = seam → 0.
+        assert_eq!(mask_coupled(-3, 1, true, false), (1, 0));
     }
 
     /// **`bilinear_3point` blends the four texels by the two triangle cases

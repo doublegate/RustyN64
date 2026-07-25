@@ -773,8 +773,9 @@ static const uint32_t V23_TEX_TRI_BILINEAR_16[] = {
 // V24: the bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, ledger R-13). A 2-texel tile
 // (`mask_s = 1`, so S wraps mod 2: red, green) is bilinear-sampled with S advancing
 // 0.5 texel/pixel. At S = 1.5 the base texel is 1 (the top of the wrap period), so
-// the bilinear NEIGHBOUR must wrap back to texel 0 (red) — Angrylion's `tcmask_coupled`
-// picks `sdiff = -1` there. The pre-fix sampler used a hardcoded `+1`, reading texel 2
+// the bilinear NEIGHBOUR must wrap back to texel 0 (red) — a mirror-OFF PERIOD-END
+// wrap, where `tcmask_coupled` picks `sdiff = -base` (here -1, since base = 1), NOT a
+// mirror seam. The pre-fix sampler used a hardcoded `+1`, reading texel 2
 // (UNLOADED = black) instead, so the seam column blends green+red here vs green+black
 // there — non-vacuous BECAUSE the wrapped texel (red) differs from the unloaded one.
 static const uint16_t TEX_SEAM2[2] = {0xF801u, 0x07C1u}; // red, green
