@@ -78,6 +78,11 @@ pub const DPC_ADDR_MASK: u32 = 0x00FF_FFF8;
 /// load is in flight (N64brew *Reality Display Processor/Commands* §0x26). One
 /// `tick` is one GCLK.
 pub const SYNC_LOAD_GCLK: u32 = 25;
+
+/// `Set Other Modes.cycle_type` value for **2-cycle** mode (`0` = 1-cycle,
+/// `1` = 2-cycle, `2` = copy, `3` = fill).
+pub const CYCLE_TYPE_2CYCLE: u8 = 1;
+
 /// `Sync Pipe` (0x27) pipeline stall, in GCLK cycles.
 ///
 /// Fixed and unconditional (N64brew *…/Commands* §0x27).
@@ -2316,18 +2321,22 @@ impl Rdp {
         if let Some(tex) = tex {
             let [s105, t105] =
                 interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
+            // The primitive's base tile is not yet threaded from the triangle command
+            // (bits 50:48) — both the 1-cycle path here and the 2-cycle `tile+1` below
+            // use tiles 0/1. Selecting `tiles[t]`/`tiles[(t+1)&7]` for a non-zero base
+            // tile is a pre-existing R-13 gap (a separate slice with its own vector).
             inp.texel0 = self.sample_texel(&self.tiles[0], s105, t105);
             // 2-cycle mode samples a SECOND texel from the next tile (`tile+1`, the
             // `RENDERTILE`/`RENDERTILE+1` case) at the same coordinate — LOD-based mip
             // tile selection is deferred (R-13). `combine` swaps texel0/texel1 for the
             // second cycle so cycle 1's TEXEL0 reads `tile+1`.
-            if self.other_modes.cycle_type == 1 {
+            if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE {
                 inp.texel1 = self.sample_texel(&self.tiles[1], s105, t105);
             }
         }
         let shade_alpha = inp.shade[3];
         (
-            self.combine(inp, self.other_modes.cycle_type == 1),
+            self.combine(inp, self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE),
             shade_alpha,
         )
     }
@@ -2570,6 +2579,12 @@ impl Rdp {
     /// cycle 0 feeding cycle 1's `Combined` input in 2-cycle mode. `two_cycle`
     /// comes from `Set Other Modes` (T-33-003).
     #[must_use]
+    /// Run the combiner. In `two_cycle` mode the caller must have populated
+    /// `inp.texel1` (the `tile+1` sample) — the render path (`combined_color`)
+    /// samples it whenever `cycle_type` is 2-cycle. The swap below then matches the
+    /// hardware unconditionally; a `two_cycle` call that left `texel1` at its default
+    /// would feed cycle 1 a zeroed `texel0`, which is a caller contract violation,
+    /// not a mode this function guards against.
     pub fn combine(&self, mut inp: CombinerInputs, two_cycle: bool) -> [u8; 4] {
         if two_cycle {
             inp.combined = Self::combine_cycle(self.combine.cyc0, &inp);
