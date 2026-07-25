@@ -107,9 +107,10 @@ __pycache__/
 !/tests/roms/peterlemon-timing/CPUTIMINGNTSC.z64
 !/tests/roms/peterlemon-timing/CP1TIMINGNTSC.z64
 
-# First-party homebrew timing ROM (authored here, MIT OR Apache-2.0; 32 KiB, no
-# Nintendo code). Re-included by exact filename. See tools/mrdram-timing-rom/.
+# First-party homebrew timing ROMs (authored here, MIT OR Apache-2.0; no Nintendo
+# code). Re-included by exact filename. See tools/mrdram-timing-rom/.
 !/tools/mrdram-timing-rom/mrdram_timing.z64
+!/tools/mrdram-timing-rom/icache_timing.z64
 
 # ...then hard-exclude the external tier again, so no negation above can ever
 # accidentally re-include a commercial dump. Order matters: this comes last.

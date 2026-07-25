@@ -210,7 +210,16 @@ block twice the 16 KiB I-cache (every line misses) and, subtracting the verified
 measures **46.05 PClocks/fill**; the systemtest still completes (Phase-1 `Failed: 0`, 90 suite-wide,
 `xioctl(EXIT)`, ~33 s vs ~31 s) and golden-log 0-diff / residue / determinism hold. The D-cache
 fill, by contrast, fires only on a rare cached load and is charged unconditionally (two units
-absorbed it). **`M(RDRAM)` as a true measurement, and the RDRAM bank-state model (C-4), remain
+absorbed it). To make the eventual hardware measurement one console-run away, two bare-metal
+timing ROMs are authored in `tools/mrdram-timing-rom/` (MIT OR Apache-2.0, blank IPL3):
+`mrdram_timing.z64` measures the D-cache fill via a COP0-`Count` miss-vs-hit differential, and
+`icache_timing.z64` measures the I-cache fill by timing a straight-line block larger than the
+16 KiB I-cache and subtracting the verified 1-PClock base. Both emit their raw numbers over
+ISViewer for a flashcart to read, and each has an emulator runner
+(`mrdram_timing_rom.rs`, `icache_timing_rom.rs`) that boots the ROM through `load_direct` and
+asserts it reads back the charged constant (the I-cache ROM measures 46.09 in-emulator, the
+charged 46) — proof the measurement path is correct end-to-end, and a guard tying each ROM to
+its constant. **`M(RDRAM)` as a true measurement, and the RDRAM bank-state model (C-4), remain
 open.** No regression from the D-cache charge: golden-log 0-diff (it keys on retired instructions,
 not stalls), the residue invariant, determinism, and the 950-test functional suite (Phase-1
 `Failed: 0`, still 90 suite-wide, `Random` timing tests pass, runs to `xioctl(EXIT)`) are all

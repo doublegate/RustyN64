@@ -22,9 +22,14 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   The I-cache stall is charged behind a `#[cfg(not(test))]` seam — active in real
   execution and integration tests, skipped in the CPU crate's own pipeline units
   (an every-fetch stall would confound their fixed-cycle interlock assertions).
-- **A hardware timing ROM** (`tools/mrdram-timing-rom/`) that measures the real
-  D-cache fill cost on a console via a COP0-`Count` differential, so the fitted
-  values can be replaced with a measurement when hardware is available.
+- **Two hardware timing ROMs** (`tools/mrdram-timing-rom/`) that measure the real
+  cache fill costs on a console, so the fitted values can be replaced with a
+  measurement when hardware is available: `mrdram_timing.z64` (D-cache fill, a
+  COP0-`Count` differential of cached loads that miss vs. hit) and
+  `icache_timing.z64` (I-cache fill, a straight-line instruction block larger than
+  the 16 KiB I-cache, base-subtracted). Both emit their result over ISViewer for a
+  flashcart to read, and each has an emulator runner asserting it reads back the
+  charged constant (`icache_timing_rom.rs` measures 46.09, the charged 46).
 - `M(RDRAM)` as a true measurement and the RDRAM bank-state model (C-4) remain open.
 
 ### Added — the first CPU-timing differential measurement (gap-analysis Stage D)

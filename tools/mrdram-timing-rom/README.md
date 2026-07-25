@@ -1,12 +1,20 @@
-# M(RDRAM) cached-load timing ROM
+# VR4300 cache-fill timing ROMs
 
-A bare-metal N64 ROM that **measures the VR4300 D-cache line-fill cost on real
-hardware** — the memory latency `M(RDRAM)` that accuracy-ledger **C-1** currently
-carries as a value *fitted* from ares/cen64 (no hardware oracle exists in the
-emulation community's test corpus). Run this on a console and it yields the real
-number.
+Two bare-metal N64 ROMs that **measure the VR4300 cache line-fill costs on real
+hardware** — the memory latencies that accuracy-ledger **C-1** currently carries
+as values *fitted* from ares/cen64 (no hardware oracle exists in the emulation
+community's test corpus). Run them on a console and they yield the real numbers.
 
-## What it measures, and how
+- **`mrdram_timing.z64`** — the **D-cache** line-fill cost (a differential of
+  cached loads that miss vs. hit).
+- **`icache_timing.z64`** — the **I-cache** line-fill cost (a straight-line
+  instruction block larger than the 16 KiB I-cache, so every fetch line misses).
+
+The D-cache ROM is described in full below; the I-cache ROM is its companion and
+shares the build, header convention, and ISViewer output — see
+[I-cache variant](#i-cache-variant) at the end.
+
+## What the D-cache ROM measures, and how
 
 The D-cache miss cost is `8..=9 + M(RDRAM)` PClocks (VR4300 User's Manual
 Table 11-1). This ROM isolates it with a **differential**, timed by the COP0
@@ -36,10 +44,10 @@ either way. `fill_cost = word[2] / word[3] × 2` PClocks.
 architecture-table placement. Then:
 
 ```sh
-BASS=/path/to/bass sh build.sh   # -> mrdram_timing.z64 (32 KiB)
+BASS=/path/to/bass sh build.sh   # -> mrdram_timing.z64 (32 KiB) + icache_timing.z64 (96 KiB)
 ```
 
-The assembled `mrdram_timing.z64` is committed for convenience.
+Both assembled ROMs are committed for convenience.
 
 ## Verify in the emulator
 
@@ -68,8 +76,37 @@ cargo test -p rustyn64-test-harness --release --test mrdram_timing_rom -- --noca
    `0x2000`), compute `word[2] / word[3] × 2`, and that is the real
    `M(RDRAM)`-inclusive D-cache fill in PClocks. Drop it into ledger C-1 and the
    emulator's `Pipeline::M_DCACHE_FILL`, and the fitted value becomes a measured
-   one. (An I-cache variant — a straight-line block larger than the 16 KiB
-   I-cache — is the obvious follow-up for `M_ICACHE_FILL`.)
+   one.
+
+## I-cache variant
+
+`icache_timing.asm` → `icache_timing.z64` measures the **I-cache** line-fill cost
+(`M_ICACHE_FILL`, ledger C-1, currently fitted at 46 PClocks). Rather than a
+load differential it runs a **straight-line block of `N = 8192` `addiu`
+instructions** (32 KiB, larger than the 16 KiB I-cache), so every 32-byte fetch
+line (8 instructions) misses. Each `addiu` has no interlock, so its execute cost
+is exactly one PClock — the base that is subtracted:
+
+```text
+fill_PClocks = (delta * 2 - N) / (N / 8)
+```
+
+(`delta` is the COP0-`Count` span of the block; `Count` ticks once per 2
+PClocks; there are `N/8` line fills.) It writes `delta` and `N` to uncached
+RDRAM at phys `0x10000` / `0x10004` (past the 32 KiB code block) and prints both
+via ISViewer, exactly like the D-cache ROM. Header convention, blank IPL3, and
+hardware-run steps are identical — just read `delta` and `N` and apply the
+formula. Its emulator runner is
+`crates/rustyn64-test-harness/tests/icache_timing_rom.rs`:
+
+```sh
+cargo test -p rustyn64-test-harness --release --test icache_timing_rom -- --nocapture
+# -> I-cache fill = 46.09 PClocks (our charged M_ICACHE_FILL)
+```
+
+The residual 0.09 over the charged 46 is fixed jal/jr/pipeline-fill overhead not
+captured by the `N × 1` base, diluted across 1024 fills; on hardware the block
+dominates identically, so the measured number is the real fill cost.
 
 ## Licence
 
