@@ -542,12 +542,14 @@ the reproducible `peterlemon_timing.rs` derivation test.
 The **D-cache fill is charged 40 PClocks** (`Pipeline::M_DCACHE_FILL`), but this
 is **FITTED, not measured**: no hardware cached-miss timing oracle exists, so the
 value is adopted from ares (cross-checked by cen64's 44) and recorded as such in
-ledger **C-1**. The first-party `cache_miss_microbench.rs` verifies the charge
-lands (39.99 PClocks) and is the instrument that would replace it with a real
-number. The **I-cache fill** (fitted ~46) is not yet charged (it stalls every
-fetch miss, which the fixed-cycle CPU unit tests are not yet written for), and
-`M(RDRAM)` as a true measurement plus the RDRAM bank-state model (C-4) remain
-**open**.
+ledger **C-1**. The first-party `cache_miss_microbench.rs` verifies both charges
+land (D-cache 39.99, I-cache 46.05 PClocks) and is the instrument that would
+replace them with a real number. The **I-cache fill** (fitted 46,
+`Pipeline::M_ICACHE_FILL`) is charged behind a `#[cfg(not(test))]` seam — active
+in real execution and every integration test, but skipped in this crate's own
+pipeline units, where an every-fetch stall would confound the fixed-cycle
+interlock/FPU-timing assertions. `M(RDRAM)` as a true measurement plus the RDRAM
+bank-state model (C-4) remain **open**.
 
 ### The interlock taxonomy
 
