@@ -10,8 +10,9 @@
 //!
 //! Covered so far: nearest-neighbour scaling + the active-span/overscan geometry +
 //! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
-//! and the sqrt gamma curve (slice 3). The AA-edge / divot / de-dither filters,
-//! 32-bit bilinear, and R-6 (PAL/interlace) land in later slices.
+//! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), and 32-bit source
+//! resampling (slice 4b). The AA-edge / divot / de-dither filters and the field-rate
+//! half of R-6 (PAL 50 Hz cadence / interlace) land in later slices.
 
 use rustyn64_core::Bus;
 use rustyn64_core::cpu::Bus as CpuBus;
@@ -26,12 +27,12 @@ struct ViVec {
     h_video: u32,
     v_video: u32,
     v_sync: u32,
-    src_w: u32,
-    src_h: u32,
     out_w: u32,
     out_h: u32,
-    /// Logical source pixels (RGBA5551), row-major `src_w * src_h`.
-    src: Vec<u16>,
+    /// The raw source framebuffer bytes (logical pixels, big-endian, `src_w * src_h *
+    /// src_bpp`). Big-endian matches `RustyN64`'s `RDRAM` order, so they are placed
+    /// directly at `origin` — the same logical framebuffer Angrylion read.
+    src: Vec<u8>,
     /// Golden output, `out_w * out_h` RGBA8 pixels.
     golden: Vec<u8>,
 }
@@ -46,15 +47,12 @@ fn parse(bytes: &[u8]) -> ViVec {
     let h = |i: usize| be_u32(bytes, i * 4);
     let (src_w, src_h) = (h(10), h(11));
     let src_bpp = h(12);
-    assert_eq!(src_bpp, 2, "slice 1 only handles 16-bit source");
+    assert!(src_bpp == 2 || src_bpp == 4, "src_bpp must be 2 or 4");
     let (out_w, out_h) = (h(13), h(14));
-    let mut off = 15 * 4;
-    let mut src = Vec::with_capacity((src_w * src_h) as usize);
-    for _ in 0..src_w * src_h {
-        src.push(u16::from_be_bytes([bytes[off], bytes[off + 1]]));
-        off += 2;
-    }
-    let golden = bytes[off..off + (out_w * out_h * 4) as usize].to_vec();
+    let off = 15 * 4;
+    let src_len = (src_w * src_h * src_bpp) as usize;
+    let src = bytes[off..off + src_len].to_vec();
+    let golden = bytes[off + src_len..off + src_len + (out_w * out_h * 4) as usize].to_vec();
     ViVec {
         ctrl: h(2),
         origin: h(3),
@@ -64,8 +62,6 @@ fn parse(bytes: &[u8]) -> ViVec {
         h_video: h(7),
         v_video: h(8),
         v_sync: h(9),
-        src_w,
-        src_h,
         out_w,
         out_h,
         src,
@@ -81,15 +77,11 @@ fn assert_matches(name: &str, bytes: &[u8]) {
     let v = parse(bytes);
     let mut bus = Bus::new();
 
-    // Place the logical source pixels big-endian (RustyN64's RDRAM order) — the same
-    // logical framebuffer Angrylion read via its WORD_ADDR_XOR placement.
-    for y in 0..v.src_h {
-        for x in 0..v.src_w {
-            let px = v.src[(y * v.src_w + x) as usize];
-            let b = (v.origin + (y * v.src_w + x) * 2) as usize;
-            bus.rdram[b..b + 2].copy_from_slice(&px.to_be_bytes());
-        }
-    }
+    // The source bytes are big-endian logical pixels (16- or 32-bit), which is
+    // RustyN64's RDRAM order, so they drop in directly at `origin` — the same logical
+    // framebuffer Angrylion read (via its per-format access pattern).
+    let base = v.origin as usize;
+    bus.rdram[base..base + v.src.len()].copy_from_slice(&v.src);
 
     // Program the VI registers through the CPU MMIO path (VI regs are crate-private).
     CpuBus::write_u32(&mut bus, VI, v.ctrl); // VI_CTRL   (+0x00)
@@ -102,9 +94,9 @@ fn assert_matches(name: &str, bytes: &[u8]) {
     CpuBus::write_u32(&mut bus, VI + 0x34, v.y_scale); // VI_Y_SCALE(+0x34)
 
     let mut frame = vec![0u8; (v.out_w * v.out_h * 4) as usize];
-    let (w, h) = bus.scanout_scaled(&mut frame);
+    let got_dims = bus.scanout_scaled(&mut frame);
     assert_eq!(
-        (w, h),
+        got_dims,
         (v.out_w, v.out_h),
         "{name}: scan-out geometry differs from the golden"
     );
@@ -195,5 +187,17 @@ fn vi_pal_geometry_16_matches_angrylion() {
     assert_matches(
         "vi_pal_geometry_16",
         include_bytes!("vectors/vi_pal_geometry_16.vivec"),
+    );
+}
+
+/// **32-bit RGBA8888 source with the bilinear resample (slice 4b).** `type = 3`,
+/// `aa_mode = RESAMP_ONLY` (`VI_STATUS = 0x0203`), 2× upscale. Exercises the 32-bit
+/// fetch (`vi_fetch32`, the big-endian R/G/B bytes) through the same `vi_lerp3` path
+/// as the 16-bit bilinear — the source alpha carries coverage, not shown.
+#[test]
+fn vi_scale_bilinear_32_matches_angrylion() {
+    assert_matches(
+        "vi_scale_bilinear_32",
+        include_bytes!("vectors/vi_scale_bilinear_32.vivec"),
     );
 }

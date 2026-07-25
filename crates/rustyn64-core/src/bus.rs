@@ -808,7 +808,6 @@ impl Bus {
 
         for oy in 0..height {
             let curry = y_start + oy * y_add;
-            let src_row = src_stride.wrapping_mul(curry >> 10); // pixels
             let sy = curry >> 10;
             let yfrac = (curry >> 5) & 0x1F;
             for ox in 0..width {
@@ -816,28 +815,23 @@ impl Bus {
                 let sx = x_offs >> 10;
                 let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
-                let mut rgb = if bpp == 2 {
-                    // Bilinear when aa_mode isn't REPLICATE and a fraction is non-zero
-                    // (Angrylion `lerping`); otherwise the exact nearest sample.
-                    if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
-                        let p00 = self.vi_fetch16(origin, src_stride, sx, sy);
-                        let p10 = self.vi_fetch16(origin, src_stride, sx + 1, sy);
-                        let p01 = self.vi_fetch16(origin, src_stride, sx, sy + 1);
-                        let p11 = self.vi_fetch16(origin, src_stride, sx + 1, sy + 1);
-                        // Vertical lerp of each column, then horizontal between them.
-                        let col = vi_lerp3(p00, p01, yfrac);
-                        let ncol = vi_lerp3(p10, p11, yfrac);
-                        vi_lerp3(col, ncol, xfrac)
+                // Fetch one source pixel as RGB8, dispatching on the framebuffer format.
+                let fetch = |x: i32, y: i32| {
+                    if bpp == 2 {
+                        self.vi_fetch16(origin, src_stride, x, y)
                     } else {
-                        self.vi_fetch16(origin, src_stride, sx, sy)
+                        self.vi_fetch32(origin, src_stride, x, y)
                     }
+                };
+                // Bilinear when aa_mode isn't REPLICATE and a fraction is non-zero
+                // (Angrylion `lerping`): four texels, vertical lerp per column then
+                // horizontal between them. Otherwise the exact nearest sample.
+                let mut rgb = if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
+                    let col = vi_lerp3(fetch(sx, sy), fetch(sx, sy + 1), yfrac);
+                    let ncol = vi_lerp3(fetch(sx + 1, sy), fetch(sx + 1, sy + 1), yfrac);
+                    vi_lerp3(col, ncol, xfrac)
                 } else {
-                    // 32-bit: nearest only; 32-bit VI resampling has no oracle vector
-                    // yet, so bilinear for it is deferred rather than shipped untested.
-                    let src_idx = src_row.wrapping_add(sx);
-                    let byte = origin.wrapping_add((src_idx as u32).wrapping_mul(4));
-                    let w = self.rdram_read_u32(byte).to_be_bytes();
-                    [w[0], w[1], w[2]]
+                    fetch(sx, sy)
                 };
                 // Gamma is the final RGB stage (after scale, before write) — a table
                 // lookup per channel (the LUT is `vi_gamma` precomputed).
@@ -862,6 +856,17 @@ impl Bus {
         let px = (u16::from(self.rdram_read(byte)) << 8)
             | u16::from(self.rdram_read(byte.wrapping_add(1)));
         vi_rgb5551(px)
+    }
+
+    /// Fetch a 32-bit RGBA8888 source pixel at `(x, y)` as RGB8 (the big-endian
+    /// R/G/B bytes; the alpha byte carries coverage, not shown). Reads big-endian
+    /// through `rdram_read_u32`, bounds-safe like `vi_fetch16`. Ledger R-5.
+    #[allow(clippy::cast_sign_loss)]
+    fn vi_fetch32(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> [u8; 3] {
+        let idx = src_stride.wrapping_mul(y).wrapping_add(x);
+        let byte = origin.wrapping_add((idx as u32).wrapping_mul(4));
+        let w = self.rdram_read_u32(byte).to_be_bytes();
+        [w[0], w[1], w[2]]
     }
 
     /// Apply a write to the SP register block, performing whatever it starts.
