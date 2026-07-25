@@ -287,11 +287,8 @@ fn interpolate_shade(
 /// and the tile-size clamp operate on the true coordinate (ledger R-13).
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "base_x derives from the s15.16 major-edge x, in range for the cast"
-)]
-#[allow(
     clippy::tuple_array_conversions,
-    reason = "the perspective divide returns (s, t); packing both into the coord array is intentional"
+    reason = "base_x is in range for the cast; the perspective divide's (s, t) is packed into the coord array"
 )]
 fn interpolate_st(
     tex: &TexSetup,
@@ -336,12 +333,18 @@ fn sample_coord(
     shift: u8,
     mask: u8,
     mirror: bool,
-    clamp: bool,
+    clamp_en: bool,
     lo: u16,
     hi: u16,
 ) -> u32 {
     let shift = shift.min(15); // the hardware shift field is 4 bits
     // 1. Shift on the sign-extended i16 (codes 0–10 right, 11–15 left by 16−code).
+    //    The left shift wraps in 16-bit space — a shifted result that overflows i16
+    //    stays truncated + sign-extended (`SIGN16`), matching `tcshift_cycle`'s
+    //    `coord <<= (16-shifter); coord = SIGN16(coord)` (equivalent because the low
+    //    16 bits of `coord << n` depend only on `coord`'s low 16 bits). This is the
+    //    hardware behaviour, NOT a bug: widening `coord` to i32 before the shift
+    //    would produce a different (unsigned-looking) result the RDP does not.
     let shifted = if shift < 11 {
         i32::from(coord as i16) >> shift
     } else {
@@ -349,16 +352,20 @@ fn sample_coord(
     };
     // 2. Over-max flag — `(shifted >> 3) >= SH`, against the RAW absolute SH,
     //    BEFORE the tile-origin subtraction (`tcshift_cycle` computes `maxs` here).
+    //    This also catches every large-positive coordinate, so the `0x10000` sign
+    //    test below only ever sees the reachable small-positive / negative range.
     let over_max = (shifted >> 3) >= i32::from(hi);
     // 3. Tile-origin subtraction (`TRELATIVE`): `SL` (`u10.2`) `<< 3` = the `s.5` scale.
     let rel = shifted - (i32::from(lo) << 3);
     // 4. Clamp — active when the tile clamp bit is set OR `mask == 0`.
-    let mut s = if clamp || mask == 0 {
+    let mut s = if clamp_en || mask == 0 {
         if over_max {
             // `clampdiffs`: the tile WIDTH in texels, `(SH>>2) − (SL>>2)`.
             ((i32::from(hi) >> 2) - (i32::from(lo) >> 2)) & 0x3FF
         } else if rel & 0x1_0000 == 0 {
-            rel >> 5 // non-negative: the integer texel
+            // Non-negative (bit 16 = the RDP's sign marker, `!(locs & 0x10000)` in
+            // `tcclamp_cycle_light`; over_max already removed large positives).
+            rel >> 5
         } else {
             0 // went below the tile origin: clamp low
         }
@@ -4379,6 +4386,22 @@ mod tests {
             sample_coord(4 << 5, 1, 0, false, false, 0, sh),
             2,
             "shift >>1"
+        );
+        // Left-shift codes (11-15): code 12 = <<4. Mask off (mask=5) isolates the
+        // shift. `0x10 << 4 = 0x100`, `>> 5 = 8`; matches the tested `wrap_coord`.
+        assert_eq!(
+            sample_coord(0x10, 12, 5, false, false, 0, sh),
+            8,
+            "shift code 12 = <<4"
+        );
+        // The left shift wraps in i16 (SIGN16), matching `tcshift_cycle`: `1024 << 5`
+        // overflows to -32768 (not +32768), so this is NOT clamped/zeroed as a
+        // positive would be. With mask 10 it lands at 0 — the point is that the code
+        // reproduces the hardware wrap rather than widening to i32 first.
+        assert_eq!(
+            sample_coord(1024, 11, 10, false, false, 0, sh),
+            0,
+            "left shift wraps in 16-bit space (SIGN16)"
         );
     }
 
