@@ -8,9 +8,10 @@
 //! carries coverage in its output alpha, which `RustyN64` renders as opaque `0xFF`
 //! for display, so alpha is not part of the comparison).
 //!
-//! Slice 1 covers nearest-neighbour scaling (`aa_mode = REPLICATE`): the 2.10
-//! accumulator, the active-span/overscan geometry, and the truncating RGBA5551→8
-//! conversion. Bilinear + the AA/divot/de-dither filters land in later slices.
+//! Covered so far: nearest-neighbour scaling + the active-span/overscan geometry +
+//! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
+//! and the sqrt gamma curve (slice 3). The AA-edge / divot / de-dither filters,
+//! 32-bit bilinear, and R-6 (PAL/interlace) land in later slices.
 
 use rustyn64_core::Bus;
 use rustyn64_core::cpu::Bus as CpuBus;
@@ -168,5 +169,17 @@ fn vi_scale_bilinear_odd_16_matches_angrylion() {
     assert_matches(
         "vi_scale_bilinear_odd_16",
         include_bytes!("vectors/vi_scale_bilinear_odd_16.vivec"),
+    );
+}
+
+/// **The gamma curve (slice 3).** `gamma_enable` set, `gamma_dither` clear
+/// (`VI_STATUS = 0x030A`), nearest sampling. The sqrt gamma table is applied to the
+/// final RGB (`gamma(0x40) = sqrt(0x1000) << 1 = 0x80`), so the output differs from
+/// the raw sample — non-vacuous. Pins `vi_gamma`/`vi_integer_sqrt` against Angrylion.
+#[test]
+fn vi_gamma_1x_16_matches_angrylion() {
+    assert_matches(
+        "vi_gamma_1x_16",
+        include_bytes!("vectors/vi_gamma_1x_16.vivec"),
     );
 }
