@@ -126,12 +126,25 @@ pub const fn lwl(rt: u64, word: u32, byte: u64) -> u64 {
 
 /// `LWR` — merge the bytes from the start of the containing word up to the
 /// addressed byte into the **bottom** of `rt`, preserving `rt`'s high bytes.
+///
+/// Bits 63:32 diverge from `LWL` (ledger R-20). `LWL` always writes the word's
+/// most-significant byte, so its result is always sign-extended; a **partial**
+/// `LWR` (`byte < 3`) never writes bit 31, and the VR4300 then leaves bits 63:32
+/// of `rt` UNCHANGED rather than sign-extending. Only the full-word case
+/// (`byte == 3`) writes bit 31 and sign-extends. n64-systemtest's `tlb64` load
+/// battery pins this with a sentinel whose upper half is non-zero; the earlier
+/// unconditional `sext32` zeroed it on every partial offset.
 #[must_use]
 pub const fn lwr(rt: u64, word: u32, byte: u64) -> u64 {
     let shift = (3 - byte as u32) * 8;
     // Bits of `rt` that survive: everything above the loaded bytes.
     let keep = if shift == 0 { 0 } else { !(u32::MAX >> shift) };
-    sext32((word >> shift) | ((rt as u32) & keep))
+    let lo = (word >> shift) | ((rt as u32) & keep);
+    if byte == 3 {
+        sext32(lo)
+    } else {
+        (rt & 0xFFFF_FFFF_0000_0000) | (lo as u64)
+    }
 }
 
 /// `LDL` — the doubleword form of [`lwl`]. `byte` is `addr & 7`.
@@ -283,6 +296,40 @@ mod tests {
         assert_eq!(lwl(rt, 0x1122_3344, 2) as u32 & 0xFFFF, 0xCCDD);
         // LWR at byte 1 loads 2 bytes into the bottom, keeping rt's top 2 bytes.
         assert_eq!(lwr(rt, 0x1122_3344, 1) as u32 >> 16, 0xAABB);
+    }
+
+    /// **A partial `LWR` leaves bits 63:32 of `rt` untouched and does NOT
+    /// sign-extend; only the full-word case (`byte == 3`) sign-extends** (ledger
+    /// R-20, the values are n64-systemtest's `tlb64` load battery).
+    ///
+    /// Mutation guard: the sentinel's upper half (`0xBEEF_0000`) is non-zero, so
+    /// the old unconditional `sext32` — which zeroed it here (`0xBADDECAF`'s
+    /// bit 31 clear at these offsets) — turns the three partial assertions red
+    /// while the full-word one stays green.
+    #[test]
+    fn a_partial_lwr_preserves_rt_upper_half_and_only_the_full_word_sign_extends() {
+        let rt = 0xBEEF_0000_0102_0304;
+        let word = 0xBADD_ECAF;
+        assert_eq!(
+            lwr(rt, word, 0),
+            0xBEEF_0000_0102_03BA,
+            "@0: 1 byte, upper preserved"
+        );
+        assert_eq!(
+            lwr(rt, word, 1),
+            0xBEEF_0000_0102_BADD,
+            "@1: 2 bytes, upper preserved"
+        );
+        assert_eq!(
+            lwr(rt, word, 2),
+            0xBEEF_0000_01BA_DDEC,
+            "@2: 3 bytes, upper preserved"
+        );
+        assert_eq!(
+            lwr(rt, word, 3),
+            0xFFFF_FFFF_BADD_ECAF,
+            "@3: whole word, sign-extended"
+        );
     }
 
     #[test]
