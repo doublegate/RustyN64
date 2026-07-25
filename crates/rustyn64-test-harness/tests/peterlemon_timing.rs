@@ -135,23 +135,35 @@ fn measured_vs_expected(path: &str) -> Option<(u32, u32)> {
     let mut i = 0x1000; // the code + data load at physical RDRAM 0x1000.
     while i + 4 <= sys.bus.rdram.len() {
         if is_expected(word(i)) {
-            if cur_first.is_none() {
-                cur_first = Some(i);
-                cur_n = 0;
-            } else if i - cur_last > 32 {
-                if cur_n > best_n {
-                    (best_first, best_last, best_n) = (cur_first.unwrap(), cur_last, cur_n);
+            match cur_first {
+                None => {
+                    cur_first = Some(i);
+                    cur_n = 0;
                 }
-                cur_first = Some(i);
-                cur_n = 0;
+                // The table has a genuine internal gap (one covered instruction's
+                // count is not `0xDB1x`), so the cluster must tolerate a small gap
+                // to span it and reach the true last entry; a strictly-adjacent
+                // scan would split the table there and mislocate `COUNTWORD`. The
+                // trailing word (`COUNTWORD`, then font data) is not `0xDB1x`, so
+                // the cluster still ends at the real last entry.
+                Some(first) if i - cur_last > 32 => {
+                    if cur_n > best_n {
+                        (best_first, best_last, best_n) = (first, cur_last, cur_n);
+                    }
+                    cur_first = Some(i);
+                    cur_n = 0;
+                }
+                Some(_) => {}
             }
             cur_last = i;
             cur_n += 1;
         }
         i += 4;
     }
-    if cur_n > best_n {
-        (best_first, best_last, best_n) = (cur_first.unwrap_or(0), cur_last, cur_n);
+    if let Some(first) = cur_first
+        && cur_n > best_n
+    {
+        (best_first, best_last, best_n) = (first, cur_last, cur_n);
     }
     if best_n < 15 || best_last + 8 > sys.bus.rdram.len() {
         return None;
@@ -160,11 +172,13 @@ fn measured_vs_expected(path: &str) -> Option<(u32, u32)> {
     let countword_phys = u32::try_from(best_last + 4).ok()?; // physical RDRAM offset
     let expected = word(best_first);
     // Read COUNTWORD the way the CPU sees it: from the write-back D-cache if the
-    // line is resident (it is — the ROM just stored it), else RDRAM. `read` of 4
-    // bytes returns the value in the low 32 bits, so it fits a u32.
+    // line is resident (it is — the ROM just stored it), else RDRAM. Both paths are
+    // big-endian: `Dcache::read` returns a 4-byte value MSB-first in the low 32
+    // bits (matching how the CPU stored it), the same order as `from_be_bytes`, so
+    // a resident hit and the RDRAM fallback agree.
     let dc = &sys.cpu.pipeline.dcache;
     let measured = if dc.hits(countword_phys) {
-        u32::try_from(dc.read(countword_phys, 4) & 0xFFFF_FFFF).unwrap_or(0)
+        u32::try_from(dc.read(countword_phys, 4)).unwrap_or(0)
     } else {
         word(best_last + 4)
     };
