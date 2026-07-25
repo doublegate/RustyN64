@@ -14,14 +14,25 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   PeterLemon `CPUTIMINGNTSC` mult/div differential (the documented UM Table 3-12
   stall costs as the calibration axis) and independently confirmed to 0.4% on the
   ROM's absolute count. Charged at the uncached-read site (`Pipeline::M_RCP_REGISTER`).
-- **D-cache fill = 40, I-cache fill = 46 PClocks — FITTED, not measured.** No
-  hardware cached-miss timing oracle exists, so both are adopted from the
-  reference emulators (ares's `step(40*2)` fill; the I-cache is that + the UM's
-  larger I-fill base; cen64 charges 44/48 under "Currently using fixed values").
-  Verified by first-party cached-miss microbenches (D 39.99, I 46.05 PClocks).
-  The I-cache stall is charged behind a `#[cfg(not(test))]` seam — active in real
-  execution and integration tests, skipped in the CPU crate's own pipeline units
-  (an every-fetch stall would confound their fixed-cycle interlock assertions).
+- **`M(RDRAM)` DERIVED as a two-regime hardware quantity, not a fitted constant.**
+  It is not a scalar: a 2 KiB RDRAM row spans 128 D-cache lines, so sequential
+  access hits the open row (fast) and random access misses it (slow). The
+  **row-hit (warm)** full D-cache fill ≈ 40 PClocks (`M ≈ 32`, independently
+  corroborated by ares 40 / cen64 44); the **row-miss (cold)** fill ≈ 60 PClocks —
+  *measured* from the documented ~640 ns cold access × the 93.75 MHz PClock
+  (`M ≈ 52`). The row-hit 40 is charged (`M_DCACHE_FILL`); the cold and
+  dirty-writeback regimes need the undocumented `RasInterval` cycles and stay open
+  under C-4 (whose structural model — Ack/NAck/dirty + `RI_BANK_STATUS` — is now
+  fully recorded). Grounded in the VR4300 UM (Tables 11-1/11-2: `8..=9 + M` /
+  `14..=15 + M`, `M` an external-agent parameter), the N64brew RDRAM/clock docs,
+  and copetti's latency figure — replacing "adopted from ares" with a derivation.
+- **I-cache fill = 46 PClocks = `M_DCACHE_FILL + 6`**, the UM's 8-word I-line vs
+  2-word D critical-doubleword (Table 11-2 − 11-1), now pinned to the UM by a unit
+  test so the two constants cannot desynchronise. Both charges verified by
+  first-party cached-miss microbenches (D 39.99, I 46.05 PClocks). The I-cache
+  stall is charged behind a `#[cfg(not(test))]` seam — active in real execution
+  and integration tests, skipped in the CPU crate's own pipeline units (an
+  every-fetch stall would confound their fixed-cycle interlock assertions).
 - **Two hardware timing ROMs** (`tools/mrdram-timing-rom/`) that measure the real
   cache fill costs on a console, so the fitted values can be replaced with a
   measurement when hardware is available: `mrdram_timing.z64` (D-cache fill, a

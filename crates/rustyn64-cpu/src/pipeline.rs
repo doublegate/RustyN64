@@ -1662,19 +1662,22 @@ impl Pipeline {
 
     /// D-cache line fill cost in PClocks (`8..=9 + M(RDRAM)`, UM Table 11-1).
     ///
-    /// **FITTED, not measured** (ledger C-1). No hardware cached-miss timing
-    /// oracle exists: PeterLemon's timing ROMs cover only ALU ops, and the RDRAM
-    /// fill latency is RDRAM-bank-state dependent (C-4), so no single value is
-    /// truly cycle-accurate. Adopted from **ares** (`cpu.step(40 * 2)` per fill),
-    /// the accuracy-reference emulator, cross-validated against **cen64**'s 44
-    /// (explicitly "Currently using fixed values"). Implies `M(RDRAM) ~= 32`. The
-    /// hardware cold-access figure is higher (~640 ns ~= 60 PClocks); 40 reflects
-    /// a warmer average, as both emulators use.
+    /// The **row-hit (warm) regime**, `M(RDRAM)` is **not a scalar** (ledger C-1).
+    /// `M(RDRAM)` is bank-state dependent (C-4): a 2 KiB RDRAM row spans 128
+    /// D-cache lines, so sequential access hits the open row (**fast**) and
+    /// random access misses it (**slow**). This 40 is the row-hit case
+    /// (`M ~= 32`), independently corroborated by ares (40) and cen64 (44). The
+    /// documented **cold/row-miss** fill is ~60 PClocks (copetti's ~640 ns cold
+    /// access x 93.75 MHz PClock, `M ~= 52`); charging it, and the dirty-writeback
+    /// case, needs the undocumented `RasInterval` cycles and is deferred to C-4.
     #[allow(clippy::doc_markdown)]
     const M_DCACHE_FILL: u32 = 40;
     /// I-cache line fill cost in PClocks (`14..=15 + M(RDRAM)`, UM Table 11-2).
-    /// **FITTED** like [`Self::M_DCACHE_FILL`] (ledger C-1): the same `M(RDRAM)`
-    /// plus the UM's larger I-fill base, so D-fill + 6 = 46 (cen64 uses 48).
+    ///
+    /// The same row-hit `M(RDRAM)` as [`Self::M_DCACHE_FILL`] plus the UM's larger
+    /// I-fill base: the I-line transfers 8 words vs the D-line's critical 2, so
+    /// `14 - 8 = +6` (Table 11-2 minus 11-1), giving `40 + 6 = 46` (cen64 uses
+    /// 48). The `+6` is asserted against the UM by a unit test (ledger C-1).
     #[cfg_attr(test, allow(dead_code))]
     #[allow(clippy::doc_markdown)]
     const M_ICACHE_FILL: u32 = 46;
@@ -5723,6 +5726,23 @@ mod tests {
                  single-cycle one must not"
             );
         }
+    }
+
+    /// The I-cache and D-cache fill costs share the same `M(RDRAM)` term; they
+    /// differ only by the line-transfer size the UM documents. Table 11-2 (I-fill,
+    /// `14..=15 + M`) minus Table 11-1 (D-fill, `8..=9 + M`) is exactly **6** — the
+    /// I-line transfers its full 8 words while the D-line restarts on the critical
+    /// doubleword (2 words). Pinning the delta to the UM means a future change to
+    /// either constant (e.g. replacing the fitted row-hit `M` with a measured
+    /// bank-state model, ledger C-1/C-4) cannot silently desynchronise them.
+    #[test]
+    fn the_cache_fill_constants_match_the_um_line_transfer_delta() {
+        assert_eq!(
+            Pipeline::M_ICACHE_FILL,
+            Pipeline::M_DCACHE_FILL + 6,
+            "UM Table 11-2 minus 11-1 = 6 (8-word I-line vs 2-word D critical \
+             doubleword); if M(RDRAM) changes, change both together (ledger C-1)"
+        );
     }
 
     /// `NEG.S` and `ABS.S` share the arm `MOV.S` was missing from, and are just

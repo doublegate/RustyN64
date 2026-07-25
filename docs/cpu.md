@@ -525,31 +525,40 @@ Two rules the table alone does not convey:
   modelled** — those operands are charged the full rate, so the model is slower
   than hardware there and never faster. Accuracy ledger **C-29**.
 
-**`M` is not documented anywhere.** It is the memory access time in PCycles, and
-both cache-miss formulas are parameterised on it. The only figures available are
-informal estimates (RDRAM "about 10-20+ clock wait time"; RCP registers "5-6
-PClock cycles"; MI registers "about 2"; RSP DMEM/IMEM "4-5"). It must be
-**measured** against test ROMs and recorded in the accuracy ledger — never
-quietly tuned until a ROM passes. For scale, CEN64 charges a flat 38/44/48
-PClocks for uncached/D-fill/I-fill and ares charges 40 for a D-fill; the two most
-accurate N64 emulators disagree, and neither number came from a spec.
+**The UM defines `M` but gives it no value.** It is *"Time needed to access
+memory, measured in PClock cycles"* (UM Tables 11-1/11-2), and the manual is
+explicit that the processor releases the SysAD bus to slave state and waits an
+**external-agent-determined** number of SClock cycles (UM §12.6.2/12.6.8) — so `M`
+is a memory-system parameter, not a CPU constant, and it differs per target region
+and RDRAM bank state. It must be **measured/derived** and recorded in the accuracy
+ledger — never quietly tuned until a ROM passes. For scale, CEN64 charges a flat
+38/44/48 PClocks for uncached/D-fill/I-fill and ares charges 40 for a D-fill; the
+two most accurate N64 emulators disagree, and neither number came from a spec.
 
 The **uncached RCP-register `M` is now measured: 22 PClocks** (`read_width`,
 `Pipeline::M_RCP_REGISTER`), derived from the CPUTIMINGNTSC mult/div differential
 and confirmed to 0.4% on the ROM's absolute count — accuracy ledger **C-1** and
 the reproducible `peterlemon_timing.rs` derivation test.
 
-The **D-cache fill is charged 40 PClocks** (`Pipeline::M_DCACHE_FILL`), but this
-is **FITTED, not measured**: no hardware cached-miss timing oracle exists, so the
-value is adopted from ares (cross-checked by cen64's 44) and recorded as such in
-ledger **C-1**. The first-party `cache_miss_microbench.rs` verifies both charges
-land (D-cache 39.99, I-cache 46.05 PClocks) and is the instrument that would
-replace them with a real number. The **I-cache fill** (fitted 46,
-`Pipeline::M_ICACHE_FILL`) is charged behind a `#[cfg(not(test))]` seam — active
-in real execution and every integration test, but skipped in this crate's own
-pipeline units, where an every-fetch stall would confound the fixed-cycle
-interlock/FPU-timing assertions. `M(RDRAM)` as a true measurement plus the RDRAM
-bank-state model (C-4) remain **open**.
+The **RDRAM fill `M(RDRAM)` is not a scalar** — it is bank-state dependent, and it
+is now **derived from documented hardware** rather than borrowed from an emulator
+(ledger **C-1**). A 2 KiB RDRAM row spans 128 D-cache lines, so sequential access
+hits the open row (fast) and random access misses it (slow). Two documented
+regimes: the **row-hit (warm)** full D-cache fill ≈ **40 PClocks** (`M ≈ 32`,
+independently corroborated by ares 40 / cen64 44), and the **row-miss (cold)** fill
+≈ **60 PClocks** — measured from copetti's ~640 ns cold access × the documented
+93.75 MHz PClock (`M ≈ 52`). The **row-hit 40** is charged
+(`Pipeline::M_DCACHE_FILL`); charging the cold and dirty-writeback regimes needs the
+device-dependent `RasInterval` cycle values, which are undocumented, so the full
+bank-state model stays open under **C-4**. The **I-cache fill** is
+`M_DCACHE_FILL + 6` (`Pipeline::M_ICACHE_FILL` = 46 — the UM's 8-word I-line vs
+2-word D critical doubleword, Table 11-2 − 11-1; pinned by a unit test), charged
+behind a `#[cfg(not(test))]` seam — active in real execution and every integration
+test, but skipped in this crate's own pipeline units where an every-fetch stall
+would confound the fixed-cycle interlock/FPU-timing assertions. The first-party
+`cache_miss_microbench.rs` verifies both charges land (D 39.99, I 46.05 PClocks),
+and the two hardware timing ROMs (`tools/mrdram-timing-rom/`) put the true
+per-regime numbers one console-run away.
 
 ### The interlock taxonomy
 
