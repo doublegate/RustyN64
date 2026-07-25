@@ -1690,6 +1690,12 @@ impl Pipeline {
 
     /// Make the D-cache line covering `addr` resident, writing back whatever it
     /// evicts.
+    ///
+    /// A dirty-line writeback (the `push_line` below) is charged the **same**
+    /// fixed `M_DCACHE_FILL` as a clean miss -- the fitted 40 does not separate
+    /// clean- from dirty-eviction cost (a real hardware measurement would; the
+    /// writeback is an extra RDRAM transaction). Honest given the value is a
+    /// fitted anchor, not a measurement (ledger C-1).
     fn dcache_fill<B: Bus>(&mut self, bus: &mut B, addr: u32) {
         let Some(evicted) = self.dcache.miss_plan(addr) else {
             return; // hit -- no fill, no cost

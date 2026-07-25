@@ -70,6 +70,10 @@ fn run_loop(n: u32, stride: u32) -> u64 {
         sys.step_to_next_edge();
         guard += 1;
     }
+    assert!(
+        guard < 50_000_000,
+        "microbench loop timed out (n={n} stride={stride}) -- it did not converge"
+    );
     sys.master_ticks() - start
 }
 
