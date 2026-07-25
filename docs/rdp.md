@@ -536,8 +536,11 @@ saturation, the `w <= 0` carry, the 17-bit clamp), validated by a hand-computed 
 test. The **tile coordinate transform** (shift → tile-origin subtraction → clamp → mask/mirror) is now
 applied to the raw `s10.5` coordinate before the fetch (`sample_coord`, the ParaLLEl-RDP sampler order:
 clamp active when `clamp_s || mask_s == 0`, over-`SH` clamps to `(SH>>2)−(SL>>2)`, clamp *before* mask),
-validated against Angrylion by `tex_tri_clamp_16` and `tex_tri_wrap_16`. Scope (**open residual R-13**):
-**bilinear** (`sample_type = 1`) and the **LOD/`texel1`** 2-cycle path remain for the conformance pass.
+validated against Angrylion by `tex_tri_clamp_16` and `tex_tri_wrap_16`. The N64's **3-point
+bilinear** filter (`sample_type = 1`) is now modelled too (`bilinear_3point`: four texels blended
+by `upper = (sfrac+tfrac) & 0x20`, the lower/upper triangle each a `+0x10 >> 5` round; the fraction
+is zeroed when the coordinate clamps), validated by `tex_tri_bilinear_16`. Scope (**open residual
+R-13**): the mask-wrap-seam `sdiff`/`tdiff`, `mid_texel`, and the **LOD/`texel1`** 2-cycle path remain.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 

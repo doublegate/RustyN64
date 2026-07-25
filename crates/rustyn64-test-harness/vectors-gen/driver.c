@@ -744,6 +744,32 @@ static const uint32_t V21_TEX_TRI_WRAP_16[] = {
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0), // dx.S = 0x20 = one texel/pixel (s.5)
 };
 
+// V23: the N64 3-point BILINEAR filter (`sample_type = 1`) on a textured triangle
+// (ledger R-13). The 8x8 gradient texture `tex8x8` (R = 4x, G = 4y) is sampled with
+// S advancing 0.5 texel/column (dx.S = 0x10) and T 0.5 texel/row (de.T = 0x10), so
+// covered pixels land BETWEEN texels — each output is a 3-point blend of the four
+// neighbours. Both fractions vary across the triangle, so pixels exercise BOTH the
+// lower-left (`sfrac+tfrac < 0x20`) and upper-right (`>= 0x20`) triangle branches.
+// The sampled range stays within S,T <= ~3.5 (base+neighbour in-bounds), avoiding
+// the deferred mask-wrap seam. Point sampling would show hard texel steps; bilinear
+// smooths them — Angrylion defines the golden.
+static const uint32_t V23_TEX_TRI_BILINEAR_16[] = {
+    0x2F0028F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, SAMPLE_TYPE=1 (bit 45), persp off
+    0x3C000000u, 0x00000041u, // Set Combine Mode: texel0 passthrough
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x0000C030u, // Set Tile 0: 16-bit, line 2, tmem 0, mask_s=3, mask_t=3 (8x8)
+    0x32000000u, 0x0001C01Cu, // Set Tile Size 0: SL0 TL0 SH7 TH7 (8x8 texels)
+    0x34000000u, 0x0001C01Cu, // Load Tile 0: 8x8 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0 (a widening staircase, 2D coverage)
+    // dx.S = 0x10 (0.5 texel/col), de.T = 0x10 (0.5 texel/row); base (0,0,1).
+    TEX_BLOCK(0, 0, 1, 0x10, 0, 0, 0, 0x10, 0),
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1011,6 +1037,11 @@ int main(int argc, char **argv) {
                    sizeof(V21_TEX_TRI_WRAP_16) / 4, V21_TEX_TRI_WRAP_16,
                    0x3000, 4, TEX_CLAMP4};
     if (emit_vector(&v21b, out_dir)) return 1;
+
+    Vector v23 = {"tex_tri_bilinear_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V23_TEX_TRI_BILINEAR_16) / 4, V23_TEX_TRI_BILINEAR_16,
+                  0x3000, 64, tex8x8};
+    if (emit_vector(&v23, out_dir)) return 1;
 
     return 0;
 }

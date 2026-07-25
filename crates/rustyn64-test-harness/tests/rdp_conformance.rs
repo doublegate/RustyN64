@@ -362,6 +362,20 @@ fn tex_tri_wrap_16_matches_angrylion() {
     );
 }
 
+/// **The N64 3-point BILINEAR filter (`sample_type = 1`, R-13).** An 8×8 gradient
+/// texture sampled with S and T advancing 0.5 texel/pixel, so each covered pixel is
+/// a 3-point blend of its four neighbours — R interpolates `0,2,4,6,8,10` (the
+/// half-texel averages), where point sampling would hard-step `0,0,4,4,8,8`. Both
+/// fractions vary across the triangle, so pixels exercise the lower-left AND
+/// upper-right (`sfrac+tfrac >= 0x20`) branches of `bilinear_3point`.
+#[test]
+fn tex_tri_bilinear_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_bilinear_16",
+        include_bytes!("vectors/tex_tri_bilinear_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`

@@ -337,42 +337,31 @@ fn sample_coord(
     lo: u16,
     hi: u16,
 ) -> u32 {
+    // Point sampling discards the sub-texel fraction; the base texel is exactly the
+    // bilinear base (`sample_axis`), so the two never disagree.
+    sample_axis(coord, shift, mask, mirror, clamp_en, lo, hi).0 as u32
+}
+
+/// Shift step of the tile transform (`tcshift_cycle`): codes 0–10 shift right,
+/// 11–15 shift left by `16 − code`, both on the sign-extended `i16`.
+///
+/// The left shift wraps in 16-bit space — a result that overflows `i16` stays
+/// truncated + sign-extended (`SIGN16`), matching `coord <<= (16-shifter);
+/// coord = SIGN16(coord)` (equivalent because the low 16 bits of `coord << n`
+/// depend only on `coord`'s low 16 bits). This is the hardware behaviour, NOT a
+/// bug: widening to `i32` before the shift would give a different result.
+fn tile_shift(coord: i32, shift: u8) -> i32 {
     let shift = shift.min(15); // the hardware shift field is 4 bits
-    // 1. Shift on the sign-extended i16 (codes 0–10 right, 11–15 left by 16−code).
-    //    The left shift wraps in 16-bit space — a shifted result that overflows i16
-    //    stays truncated + sign-extended (`SIGN16`), matching `tcshift_cycle`'s
-    //    `coord <<= (16-shifter); coord = SIGN16(coord)` (equivalent because the low
-    //    16 bits of `coord << n` depend only on `coord`'s low 16 bits). This is the
-    //    hardware behaviour, NOT a bug: widening `coord` to i32 before the shift
-    //    would produce a different (unsigned-looking) result the RDP does not.
-    let shifted = if shift < 11 {
+    if shift < 11 {
         i32::from(coord as i16) >> shift
     } else {
         i32::from((coord as i16).wrapping_shl(u32::from(16 - shift)))
-    };
-    // 2. Over-max flag — `(shifted >> 3) >= SH`, against the RAW absolute SH,
-    //    BEFORE the tile-origin subtraction (`tcshift_cycle` computes `maxs` here).
-    //    This also catches every large-positive coordinate, so the `0x10000` sign
-    //    test below only ever sees the reachable small-positive / negative range.
-    let over_max = (shifted >> 3) >= i32::from(hi);
-    // 3. Tile-origin subtraction (`TRELATIVE`): `SL` (`u10.2`) `<< 3` = the `s.5` scale.
-    let rel = shifted - (i32::from(lo) << 3);
-    // 4. Clamp — active when the tile clamp bit is set OR `mask == 0`.
-    let mut s = if clamp_en || mask == 0 {
-        if over_max {
-            // `clampdiffs`: the tile WIDTH in texels, `(SH>>2) − (SL>>2)`.
-            ((i32::from(hi) >> 2) - (i32::from(lo) >> 2)) & 0x3FF
-        } else if rel & 0x1_0000 == 0 {
-            // Non-negative (bit 16 = the RDP's sign marker, `!(locs & 0x10000)` in
-            // `tcclamp_cycle_light`; over_max already removed large positives).
-            rel >> 5
-        } else {
-            0 // went below the tile origin: clamp low
-        }
-    } else {
-        rel >> 5
-    };
-    // 5. Mask / mirror (`mask == 0` ⇒ identity, no wrap).
+    }
+}
+
+/// Mask/mirror step of the tile transform (`tcmask`): `mask == 0` ⇒ identity;
+/// otherwise wrap to `mask` bits, reflecting on the alternate span when `mirror`.
+fn tile_mask(mut s: i32, mask: u8, mirror: bool) -> i32 {
     let mask = mask.min(10); // hardware caps the mask width at 10
     if mask != 0 {
         let m = 1i32 << mask;
@@ -381,7 +370,96 @@ fn sample_coord(
         }
         s &= m - 1;
     }
-    s as u32
+    s
+}
+
+/// The per-axis tile sampler: map a raw `s10.5` coordinate to `(base_texel, frac)`
+/// via shift → tile-origin subtraction → **clamp** → mask/mirror (the ParaLLEl-RDP
+/// sampler order; ledger R-13). `frac` is the 5-bit sub-texel weight the bilinear
+/// filter uses; per `tcclamp_cycle` it is **zeroed when the coordinate clamps**
+/// (high, or negative), so the filter degenerates to the edge texel there. The
+/// point sampler ([`sample_coord`]) simply drops `frac`.
+///
+/// `lo`/`hi` are the tile's `SL`/`SH` (or `TL`/`TH`) `Set Tile Size` fields
+/// (`u10.2`). The over-max test compares against the **raw absolute** `hi`; the
+/// substituted clamp value is the **relative** tile width `(hi>>2) − (lo>>2)`.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "the fraction is masked to 5 bits (0..=0x1f), always non-negative"
+)]
+fn sample_axis(
+    coord: i32,
+    shift: u8,
+    mask: u8,
+    mirror: bool,
+    clamp_en: bool,
+    lo: u16,
+    hi: u16,
+) -> (i32, u32) {
+    let shifted = tile_shift(coord, shift);
+    // Over-max flag against the RAW absolute `hi`, BEFORE the tile-origin subtraction
+    // (`tcshift_cycle` computes it here) — also removes every large positive, so the
+    // `0x10000` sign test below only ever sees the reachable small range.
+    let over_max = (shifted >> 3) >= i32::from(hi);
+    // Tile-origin subtraction (`TRELATIVE`): `SL` (`u10.2`) `<< 3` = the `s.5` scale.
+    let rel = shifted - (i32::from(lo) << 3);
+    let mut frac = (rel & 0x1F) as u32; // 5-bit sub-texel fraction, captured pre-clamp
+    // Clamp — active when the tile clamp bit is set OR `mask == 0`; zeroes `frac`.
+    let base = if clamp_en || mask == 0 {
+        if over_max {
+            frac = 0;
+            // `clampdiffs`: the tile WIDTH in texels, `(SH>>2) − (SL>>2)`.
+            ((i32::from(hi) >> 2) - (i32::from(lo) >> 2)) & 0x3FF
+        } else if rel & 0x1_0000 == 0 {
+            // Non-negative (bit 16 = the RDP's sign marker, `!(locs & 0x10000)`).
+            rel >> 5
+        } else {
+            frac = 0;
+            0 // went below the tile origin: clamp low
+        }
+    } else {
+        rel >> 5
+    };
+    (tile_mask(base, mask, mirror), frac)
+}
+
+/// The N64's **3-point (triangular) bilinear** filter: blend the four texels
+/// `t0=(s,t)`, `t1=(s+1,t)`, `t2=(s,t+1)`, `t3=(s+1,t+1)` by the 5-bit `sfrac`,
+/// `tfrac` — a faithful port of ParaLLEl-RDP `texture_pipeline_cycle` (`tex.c`).
+/// `upper = (sfrac + tfrac) & 0x20` selects the triangle: the lower-left uses
+/// `t0,t1,t2`, the upper-right uses `t3,t2,t1` with inverted fractions. Each
+/// channel is a `+0x10 >> 5` round of a convex combination, so it stays in `0..=255`.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "sfrac/tfrac are 5-bit (0..=0x1f); the convex-combination output is 0..=255"
+)]
+fn bilinear_3point(
+    t0: [u8; 4],
+    t1: [u8; 4],
+    t2: [u8; 4],
+    t3: [u8; 4],
+    sfrac: u32,
+    tfrac: u32,
+) -> [u8; 4] {
+    let (sf, tf) = (sfrac as i32, tfrac as i32);
+    let upper = (sfrac + tfrac) & 0x20 != 0;
+    let mut out = [0u8; 4];
+    for x in 0..4 {
+        let (c0, c1, c2, c3) = (
+            i32::from(t0[x]),
+            i32::from(t1[x]),
+            i32::from(t2[x]),
+            i32::from(t3[x]),
+        );
+        let v = if upper {
+            c3 + (((0x20 - sf) * (c2 - c3) + (0x20 - tf) * (c1 - c3) + 0x10) >> 5)
+        } else {
+            c0 + ((sf * (c1 - c0) + tf * (c2 - c0) + 0x10) >> 5)
+        };
+        out[x] = v as u8; // convex combination + round: always 0..=255
+    }
+    out
 }
 
 /// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
@@ -758,6 +836,9 @@ pub struct OtherModes {
     /// §0x2F; parallel-rdp `dither.c`). Modes 0/1 dither; 2 (noise, **R-10**)
     /// currently reads the magic cell; 3 never rounds up (dither off).
     pub rgb_dither_mode: u8,
+    /// Texture sample type (bit 45): `false` = point-sample one texel, `true` =
+    /// the N64's 3-point bilinear filter (R-13). Applied in the triangle sampler.
+    pub sample_type: bool,
 }
 
 /// The resolved per-pixel blender input colours (each RGBA8888).
@@ -2101,6 +2182,71 @@ impl Rdp {
         Some(tex)
     }
 
+    /// Sample `tile` at the raw `s10.5` coordinate `(s105, t105)` — point or the
+    /// 3-point bilinear filter per `Set Other Modes.sample_type` (R-13). Point
+    /// applies the tile transform ([`sample_coord`]) and fetches one texel;
+    /// bilinear runs [`sample_axis`] per axis for `(base, frac)`, fetches the four
+    /// texels at `(s,t)/(s+1,t)/(s,t+1)/(s+1,t+1)`, and blends with
+    /// [`bilinear_3point`]. The four texels share the one base clamp/mask; the exact
+    /// mask-wrap-seam `sdiff`/`tdiff` (`0`/`-1` at the wrap edge) is deferred — the
+    /// neighbour is the base plus one, correct except across a mask seam.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        reason = "fetch_texel masks the coordinate into the 4 KiB TMEM space, as the point path does"
+    )]
+    fn sample_texel(&self, tile: &TileDescriptor, s105: i32, t105: i32) -> [u8; 4] {
+        if !self.other_modes.sample_type {
+            let s = sample_coord(
+                s105,
+                tile.shift_s,
+                tile.mask_s,
+                tile.mirror_s,
+                tile.clamp_s,
+                tile.sl,
+                tile.sh,
+            );
+            let t = sample_coord(
+                t105,
+                tile.shift_t,
+                tile.mask_t,
+                tile.mirror_t,
+                tile.clamp_t,
+                tile.tl,
+                tile.th,
+            );
+            return self.fetch_texel(tile, s, t);
+        }
+        let (sb, sfrac) = sample_axis(
+            s105,
+            tile.shift_s,
+            tile.mask_s,
+            tile.mirror_s,
+            tile.clamp_s,
+            tile.sl,
+            tile.sh,
+        );
+        let (tb, tfrac) = sample_axis(
+            t105,
+            tile.shift_t,
+            tile.mask_t,
+            tile.mirror_t,
+            tile.clamp_t,
+            tile.tl,
+            tile.th,
+        );
+        let (s0, t0) = (sb as u32, tb as u32);
+        let (s1, t1) = ((sb + 1) as u32, (tb + 1) as u32);
+        bilinear_3point(
+            self.fetch_texel(tile, s0, t0),
+            self.fetch_texel(tile, s1, t0),
+            self.fetch_texel(tile, s0, t1),
+            self.fetch_texel(tile, s1, t1),
+            sfrac,
+            tfrac,
+        )
+    }
+
     /// Compute a pixel's colour through the combiner from the interpolated shade
     /// and/or sampled texel (plus the prim/env registers). `shade`/`tex` are the
     /// decoded setups, `None` when that attribute is absent. The two-cycle mode
@@ -2132,28 +2278,7 @@ impl Rdp {
         if let Some(tex) = tex {
             let [s105, t105] =
                 interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
-            // Apply the tile shift / origin-subtraction / clamp / mask (R-13) to the
-            // raw s10.5 coordinate before the fetch — the sampler order.
-            let tile = &self.tiles[0];
-            let s = sample_coord(
-                s105,
-                tile.shift_s,
-                tile.mask_s,
-                tile.mirror_s,
-                tile.clamp_s,
-                tile.sl,
-                tile.sh,
-            );
-            let t = sample_coord(
-                t105,
-                tile.shift_t,
-                tile.mask_t,
-                tile.mirror_t,
-                tile.clamp_t,
-                tile.tl,
-                tile.th,
-            );
-            inp.texel0 = self.fetch_texel(tile, s, t);
+            inp.texel0 = self.sample_texel(&self.tiles[0], s105, t105);
         }
         let shade_alpha = inp.shade[3];
         (
@@ -2443,6 +2568,7 @@ impl Rdp {
             persp_tex_en: (hi >> 19) & 1 != 0, // command bit 51
             aa_enable: (lo >> 3) & 1 != 0,     // command bit 3
             rgb_dither_mode: ((hi >> 6) & 0x3) as u8, // command bits 39:38
+            sample_type: (hi >> 13) & 1 != 0,  // command bit 45
         };
     }
 
@@ -4410,6 +4536,52 @@ mod tests {
             sample_coord(5 << 5, 0, 2, false, true, 0, sh),
             3,
             "clamp precedes mask"
+        );
+    }
+
+    /// **`sample_axis` captures the sub-texel fraction and zeroes it on clamp
+    /// (R-13 bilinear).** The base agrees with `sample_coord` (point); the extra
+    /// output is the 5-bit `frac` the 3-point filter weights by.
+    #[test]
+    fn sample_axis_returns_fraction_zeroed_on_clamp() {
+        let sh = 7u16 << 2; // 8-texel tile
+        // 1.5 texels, no clamp (mask=3): base 1, frac 0x10 (half a texel).
+        assert_eq!(sample_axis(0x30, 0, 3, false, false, 0, sh), (1, 0x10));
+        // Whole texel: frac 0.
+        assert_eq!(sample_axis(2 << 5, 0, 3, false, false, 0, sh), (2, 0));
+        // Past SH with clamp forced (mask==0): base clamps to 7, frac zeroed.
+        assert_eq!(sample_axis(0xF0, 0, 0, false, false, 0, sh), (7, 0));
+        // Below the origin with clamp: base 0, frac zeroed.
+        assert_eq!(sample_axis(-0x10, 0, 0, false, false, 0, sh), (0, 0));
+    }
+
+    /// **`bilinear_3point` blends the four texels by the two triangle cases
+    /// (R-13).** Hand-computed from the ParaLLEl-RDP formula: a mutation to the
+    /// upper/lower selector, the delta pairing, or the `+0x10 >> 5` round fails a
+    /// row. `t0=(s,t)`, `t1=(s+1,t)`, `t2=(s,t+1)`, `t3=(s+1,t+1)`.
+    #[test]
+    fn bilinear_3point_blends_both_triangles() {
+        let (t0, t1, t2, t3) = ([0, 0, 0, 0], [32, 0, 0, 0], [0, 32, 0, 0], [32, 32, 0, 0]);
+        // Lower triangle: sfrac=0x10 (½), tfrac=0. R = 0 + (16·32 + 0 + 16)>>5 = 16.
+        assert_eq!(bilinear_3point(t0, t1, t2, t3, 0x10, 0)[0], 16, "lower R");
+        assert_eq!(bilinear_3point(t0, t1, t2, t3, 0x10, 0)[1], 0, "lower G");
+        // Upper triangle: sfrac=tfrac=0x18 (¾, sum 0x30 ≥ 0x20). Weights t3 ½, t2 ¼,
+        // t1 ¼ → R = 32·½ + 0·¼ + 32·¼ = 24; G = 32·½ + 32·¼ + 0·¼ = 24.
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x18, 0x18)[0],
+            24,
+            "upper R"
+        );
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x18, 0x18)[1],
+            24,
+            "upper G"
+        );
+        // Zero fraction is the exact base texel (no blend).
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0, 0),
+            t0,
+            "frac 0 = base texel"
         );
     }
 

@@ -8,6 +8,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — 3-point bilinear texture filter (gap-analysis Stage D, ledger R-13)
+
+- **The N64's characteristic 3-point (triangular) bilinear filter is modelled**
+  (`Set Other Modes.sample_type`, bit 45). `bilinear_3point` blends the four texels
+  `(s,t)/(s+1,t)/(s,t+1)/(s+1,t+1)` by `upper = (sfrac+tfrac) & 0x20`: the lower-left
+  triangle uses `t0,t1,t2`, the upper-right `t3,t2,t1` with inverted fractions, each
+  channel a `+0x10 >> 5` round — a faithful port of ParaLLEl-RDP
+  `texture_pipeline_cycle`. The per-axis `sample_axis` captures the 5-bit sub-texel
+  fraction and zeroes it on clamp (`tcclamp_cycle`); the point sampler shares the
+  same base transform. Validated byte-for-byte against Angrylion by
+  `tex_tri_bilinear_16` (an 8×8 gradient sampled at 0.5 texel/pixel in both axes,
+  hitting both triangle branches), plus mutation-checked `bilinear_3point` and
+  `sample_axis` unit tests. Still deferred: the mask-wrap-seam `sdiff`/`tdiff`,
+  `mid_texel`, and the LOD/`texel1` 2-cycle path.
+
 ### Added — tile coordinate clamp/wrap for textured triangles (gap-analysis Stage D, ledger R-13)
 
 - **Point-sampled textured triangles now apply the tile shift / clamp / mask /
