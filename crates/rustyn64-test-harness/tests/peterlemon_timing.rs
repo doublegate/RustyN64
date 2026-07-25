@@ -23,13 +23,7 @@
 
 // `r`/`g`/`b` pixel channels and `w`/`h` scan-out dims read best as their
 // conventional single letters here; "PeterLemon" is a name, not a code item.
-// `suboptimal_flops` fires on the regression's `a*b + c` accumulations; the
-// straightforward form reads clearer than `mul_add` for a one-off derivation.
-#![allow(
-    clippy::many_single_char_names,
-    clippy::doc_markdown,
-    clippy::suboptimal_flops
-)]
+#![allow(clippy::many_single_char_names, clippy::doc_markdown)]
 
 use rustyn64_core::System;
 use rustyn64_test_harness::rom;
@@ -285,6 +279,8 @@ fn cpu_timing_differential() {
 /// `M ~= B - 4`. This runs no ROM — it is the arithmetic over documented
 /// constants, kept in-tree so the derivation cannot silently rot.
 #[test]
+// The regression's `a*b + c` accumulations read clearer than `mul_add` here.
+#[allow(clippy::suboptimal_flops)]
 fn m_is_derived_from_the_multdiv_differential_not_fitted() {
     // (documented instruction stall c_i, hardware-baked expected count) — the
     // c_i are UM Table 3-12; the counts are CPUTIMINGNTSC's `*COUNT` table

@@ -1758,14 +1758,27 @@ impl Pipeline {
             _ => 0,
         };
         // Charge the uncached RCP-register access latency `M` (T-11-003, ledger
-        // C-1). Reuses the `Dcm` interlock (whose doc already carries the `+ M`
-        // term) rather than adding a serialized enum variant that would perturb
-        // the save-state format (ADR 0005). Only this region is *measured*; other
-        // uncached reads (RDRAM) stay at 0 pending their own measurement.
-        if (Self::M_RCP_REGISTER_LO..=Self::M_RCP_REGISTER_HI).contains(&addr) {
+        // C-1). `addr` is physical (`p.addr`), so the KSEG1 `0xA4xx_xxxx` a game
+        // uses arrives here as `0x04xx_xxxx`. Reuses the `Dcm` interlock (whose
+        // doc already carries the `+ M` term) rather than adding a serialized enum
+        // variant that would perturb the save-state format (ADR 0005). Only this
+        // region is *measured*; other uncached reads (RDRAM) stay at 0.
+        //
+        // Charged once per access. `M` was measured for a 32-bit `lw`; the width
+        // == 8 case issues two bus words, but a 64-bit uncached read of an RCP
+        // register (an `ld` spanning two 32-bit registers) is not something the
+        // oracle covers, so its two-transaction cost is left unmeasured rather
+        // than assumed to be `2 * M`.
+        if Self::is_rcp_mmio(addr) {
             self.stall_for(Self::M_RCP_REGISTER, Interlock::Dcm);
         }
         v
+    }
+
+    /// Is the physical address `addr` in the RCP MMIO block charged
+    /// [`Self::M_RCP_REGISTER`]?
+    const fn is_rcp_mmio(addr: u32) -> bool {
+        Self::M_RCP_REGISTER_LO <= addr && addr <= Self::M_RCP_REGISTER_HI
     }
 
     /// Write the low `width` big-endian bytes of `value`, through the D-cache
