@@ -222,8 +222,9 @@ fn vi_dedither_32_matches_angrylion() {
 /// (`cvg = 0`). A partial pixel takes `video_filter32`: it gathers the fully-covered
 /// pixels among its 6 diagonal/two-away taps, takes the penultimate min/max per
 /// channel (`vi_video_max`), and pulls the centre toward their midpoint by
-/// `(7 - cvg)/8`. Non-vacuous — the partial columns differ from the raw sample, the
-/// fully-covered columns are raw. 1:1 scale so no lerp.
+/// `(7 - cvg)/8`. The partial pixels are a fixed dark colour (not the gradient's local
+/// midpoint), so the filter changes them measurably at **interior** pixels too, not
+/// just the top boundary — a raw-fetch mutation fails everywhere. 1:1 scale so no lerp.
 #[test]
 fn vi_aa_edge_32_matches_angrylion() {
     assert_matches(

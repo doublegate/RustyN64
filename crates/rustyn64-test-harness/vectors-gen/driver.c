@@ -1095,8 +1095,15 @@ static uint32_t vi_src_pixel32(uint32_t x, uint32_t y, uint32_t aa) {
     uint32_t r = (x * 4u) & 0xFFu, g = (y * 4u) & 0xFFu, b = ((x + y) * 4u) & 0xFFu;
     // aa: every 4th column is partial (cvg 0, alpha 0x00), so a partial pixel's 6 taps
     // (all at x±1/x±2 columns) are fully covered and the AA edge filter has neighbours.
-    uint32_t a = (aa && (x % 4u == 0u)) ? 0x00u : 0xFFu;
-    return (r << 24) | (g << 16) | (b << 8) | a;
+    // A partial pixel is given a fixed DARK colour (0x08) — deliberately NOT its
+    // neighbours' midpoint, unlike the smooth gradient — so `video_filter32` pulls it
+    // measurably brighter at INTERIOR pixels too, not just at the top boundary. With
+    // the gradient value the neighbour penultimate min/max are symmetric about the
+    // centre and the filter would output the raw colour, hiding a raw-fetch mutation.
+    if (aa && (x % 4u == 0u)) {
+        return (0x08u << 24) | (0x08u << 16) | (0x08u << 8) | 0x00u;
+    }
+    return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
 }
 
 // Place a logical 32-bit source pixel so Angrylion's VI fetch reads it verbatim —

@@ -775,8 +775,8 @@ impl Bus {
             _ => return (0, 0),
         };
         // aa_mode (VI_CTRL bits 9:8): 3 = REPLICATE (nearest); anything else enables
-        // the bilinear resample when a fraction is non-zero. The AA-edge / de-dither
-        // paths (aa_mode 0/1, coverage-gated) are a later slice.
+        // the bilinear resample when a fraction is non-zero. aa_mode 0/1 additionally
+        // reads real coverage and runs the de-dither / AA-edge filters (32-bit path).
         let aa_mode = (ctrl >> 8) & 0x3;
         // Gamma (VI_CTRL bit 3) applies the sqrt curve to the final RGB; the dithered
         // variants (bit 2 set) are noise-based and deferred, so plain gamma is applied
@@ -926,8 +926,8 @@ impl Bus {
     /// A 32-bit source fetch for the coverage path (`aa_mode` 0/1). Reads the pixel's
     /// coverage from alpha bits 7:5; a fully-covered pixel (`cvg == 7`) gets the
     /// **de-dither** restore filter when `dither_filter` is set, otherwise the raw
-    /// colour. A partial pixel (`cvg < 7`) takes the AA-edge filter — **deferred**, so
-    /// it returns the raw colour for now (later slice). Ledger R-5.
+    /// colour. A partial pixel (`cvg < 7`) takes the **AA-edge** filter
+    /// ([`Bus::vi_video_filter`]). Ledger R-5.
     ///
     /// De-dither (Angrylion `restore_filter32`): over the 8 taps of the 3×3
     /// neighbourhood minus the centre, each channel is nudged ±1 toward the neighbour

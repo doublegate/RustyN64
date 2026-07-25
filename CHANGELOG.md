@@ -15,9 +15,10 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   fully-covered pixels among its 6 diagonal/two-away taps, takes the per-channel
   penultimate min/max (`vi_video_max`, ported verbatim), and pulls the centre toward
   their midpoint weighted by `(7 - cvg)/8`. Validated by `vi_aa_edge_32`
-  (`VI_STATUS = 0x00000003`, every 4th source column partial) RGB byte-for-byte vs
-  Angrylion, mutation-checked. The divot median and 16-bit coverage path remain later
-  slices.
+  (`VI_STATUS = 0x00000003`, every 4th source column partial, coloured so interior
+  pixels distinguish filtering from a raw fetch) RGB byte-for-byte vs Angrylion,
+  mutation-checked. n64-systemtest impact: not measured (`scanout_scaled` has no
+  runtime driver). The divot median and 16-bit coverage path remain later slices.
 
 ### Added — VI de-dither restore filter, slice 4c (gap-analysis Stage D, ledger R-5)
 
