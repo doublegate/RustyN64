@@ -144,6 +144,14 @@ cancelled — a first-party microbenchmark (the accuracy-battery / `T-71-001` sh
 n64-systemtest `timing` set's targeted per-access tests (blocked on the post-917 hang, above). This
 oracle **signals** the gap and bounds it; it does not, by itself, *isolate* `M`.
 
+**And the slope is still not `M` on its own.** It is the whole added read's cost:
+`slope = base_pipeline_cost(lw) + M(region)`. So `M(region) = slope − base_pipeline_cost(lw)`, and
+because `M` is not a single number (it varies with target region — RDRAM vs RCP register vs SP
+memory — and RDRAM bank state, C-4), **any measurement must record the access region and cache
+state** it was taken under, alongside the oracle's expected-vs-measured deltas. Recording the raw
+slope as `M` would recreate the fitted-constant error at one remove — it would fold the `lw`'s own
+pipeline cost into "`M`".
+
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
 **2 PCycles, and the manual says so.** UM §4.7 (p. 114), the opening sentence of the section:
