@@ -265,3 +265,71 @@ fn cpu_timing_differential() {
          number (ledger §C-1); the VI tick rate is verified correct, so the gap is CPU-side."
     );
 }
+
+/// Derive `M` (uncached RCP-register read latency) from the CPUTIMINGNTSC
+/// mult/div differential — the reproducible, falsifiable measurement behind the
+/// `M_RCP_REGISTER = 22` constant (ledger C-1, T-11-003).
+///
+/// The ROM times each instruction in an identical loop and bakes in the
+/// hardware iteration count. Instructions of *documented* stall cost `c_i`
+/// (UM Table 3-12) give `expected_i = W / (B + c_i)`: a linear regression of
+/// `1/expected_i` on `c_i` recovers the window `W` and the base-loop cost `B`
+/// (which contains `M`) WITHOUT tuning to any single absolute count. Our own
+/// base loop is exactly 4 PClocks (measured, `cpu_timing_differential`), so
+/// `M ~= B - 4`. This runs no ROM — it is the arithmetic over documented
+/// constants, kept in-tree so the derivation cannot silently rot.
+#[test]
+// The regression's `a*b + c` accumulations read clearer than `mul_add` here.
+#[allow(clippy::suboptimal_flops)]
+fn m_is_derived_from_the_multdiv_differential_not_fitted() {
+    // (documented instruction stall c_i, hardware-baked expected count) — the
+    // c_i are UM Table 3-12; the counts are CPUTIMINGNTSC's `*COUNT` table
+    // (`ref-proj/PeterLemon-N64/.../CPUTIMINGNTSC.asm`).
+    // Counts are the baked `*COUNT` values in decimal (0xDB1C = 56_092, etc.).
+    let pts: [(f64, f64); 9] = [
+        (1.0, 56_092.0),  // add   (1-cycle ALU baseline, 0xDB1C)
+        (5.0, 49_988.0),  // mult   (0xC344)
+        (5.0, 49_986.0),  // multu  (0xC342)
+        (8.0, 45_999.0),  // dmult  (0xB3B7)
+        (8.0, 46_010.0),  // dmultu (0xB3BA)
+        (37.0, 24_177.0), // div    (0x5E71)
+        (37.0, 24_177.0), // divu   (0x5E71)
+        (69.0, 16_108.0), // ddiv   (0x3EEC)
+        (69.0, 16_108.0), // ddivu  (0x3EEC)
+    ];
+    // Regress y = 1/expected against x = c:  slope = 1/W, intercept = B/W.
+    let n = 9.0_f64;
+    let (mut sx, mut sy) = (0.0, 0.0);
+    for &(c, e) in &pts {
+        sx += c;
+        sy += 1.0 / e;
+    }
+    let (mx, my) = (sx / n, sy / n);
+    let (mut cov, mut var) = (0.0, 0.0);
+    for &(c, e) in &pts {
+        cov += (c - mx) * (1.0 / e - my);
+        var += (c - mx) * (c - mx);
+    }
+    let slope = cov / var;
+    let w = 1.0 / slope; // window, PClocks
+    let b = (my - slope * mx) * w; // base-loop cost, PClocks (contains M)
+    let m = b - 4.0; // our base loop is exactly 4 PClocks (four 1-cycle instrs)
+
+    // Fit quality: the model must predict every baked count within a few percent.
+    for &(c, e) in &pts {
+        let model = w / (b + c);
+        let err = (model - e).abs() / e;
+        assert!(
+            err < 0.03,
+            "fit err {err:.3} at c={c}: model {model:.0} vs {e:.0}"
+        );
+    }
+    println!("derived: W = {w:.0} PClocks, B = {b:.2} PClocks, M = B - 4 = {m:.2} PClocks");
+    // The measured M rounds to the charged constant. This is a *measurement*
+    // band, not a fit target: the constant was independently confirmed by the
+    // absolute count landing at 56_330 vs 56_092 (0.4%) once charged.
+    assert!(
+        (20.0..=23.0).contains(&m),
+        "M derived from the differential is {m:.2}; the charged 22 must sit in the band"
+    );
+}

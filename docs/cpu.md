@@ -528,11 +528,18 @@ Two rules the table alone does not convey:
 **`M` is not documented anywhere.** It is the memory access time in PCycles, and
 both cache-miss formulas are parameterised on it. The only figures available are
 informal estimates (RDRAM "about 10-20+ clock wait time"; RCP registers "5-6
-PClock cycles"; MI registers "about 2"; RSP DMEM/IMEM "4-5"). It must be fitted
-against test ROMs and recorded in the accuracy ledger as a measured constant —
-never quietly tuned until a ROM passes. For scale, CEN64 charges a flat 38/44/48
+PClock cycles"; MI registers "about 2"; RSP DMEM/IMEM "4-5"). It must be
+**measured** against test ROMs and recorded in the accuracy ledger — never
+quietly tuned until a ROM passes. For scale, CEN64 charges a flat 38/44/48
 PClocks for uncached/D-fill/I-fill and ares charges 40 for a D-fill; the two most
 accurate N64 emulators disagree, and neither number came from a spec.
+
+The **uncached RCP-register `M` is now measured: 22 PClocks** (`read_width`,
+`Pipeline::M_RCP_REGISTER`), derived from the CPUTIMINGNTSC mult/div differential
+and confirmed to 0.4% on the ROM's absolute count — accuracy ledger **C-1** and
+the reproducible `peterlemon_timing.rs` derivation test. `M(RDRAM)` and the
+D-/I-cache-fill `M` remain **unmeasured** (charged 0): no cached-miss timing
+oracle exists in the committed set yet.
 
 ### The interlock taxonomy
 

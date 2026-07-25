@@ -44,7 +44,7 @@ bug, and a number that appeared without one is the failure this file exists to p
 
 | # | Constant | Value | How measured | Status |
 | --- | --- | --- | --- | --- |
-| C-1 | `M` — memory access time (PCycles) | — | — | **not yet measured** |
+| C-1 | `M` — memory access time (PCycles) | **RCP register (uncached): 22**; RDRAM / cache-fill: — | **measured** (RCP) — CPUTIMINGNTSC mult/div differential, confirmed 0.4% on the absolute count | **RCP-register `M` measured + charged; RDRAM / cache-fill `M` still open** |
 | C-2 | Exception epilogue cost (PCycles) | **2** | ~~measurement~~ **documented** — UM §4.7 p. 114 | **resolved; not a measured constant** |
 | C-3 | CP0I (CP0 bypass interlock) cost | **1** | **documented** — UM §4.6.9 p. 113 | **resolved; not a measured constant** |
 | C-7 | ITM (instruction micro-TLB miss) penalty | **3** | **documented** — UM §4.6.2 p. 107 | **resolved; not a measured constant** |
@@ -151,6 +151,39 @@ memory — and RDRAM bank state, C-4), **any measurement must record the access 
 state** it was taken under, alongside the oracle's expected-vs-measured deltas. Recording the raw
 slope as `M` would recreate the fitted-constant error at one remove — it would fold the `lw`'s own
 pipeline cost into "`M`".
+
+**MEASURED — RCP-register `M` = 22 PClocks (update 2026-07-25, once the R-19 fix let the timing
+suite complete).** The clean isolation the guard-rail asked for was found in CPUTIMINGNTSC itself,
+without a variable-`N` ROM. Every block times a different instruction in the *same* loop
+`[test, lw VI_V_CURRENT, sync, bne, addiu]`, and the multi-cycle **mult/div** test instructions
+have **documented** stall costs (UM Table 3-12: `mult`/`multu` 5, `dmult`/`dmultu` 8, `div`/`divu`
+37, `ddiv`/`ddivu` 69). Those known costs are the varying axis a variable-`N` read loop would have
+provided. Fitting `expected_i = W / (B + c_i)` across the nine instructions (a linear regression of
+`1/expected_i` on `c_i`) recovers, **independently of any single absolute count**:
+
+> **window `W` ≈ 1.52 × 10⁶ PClocks**, **hardware base-loop `B` ≈ 25.5 PClocks/iter** (model
+> error < 1.5% on the high-leverage mult/div points; the reproducible arithmetic is
+> `peterlemon_timing.rs::m_is_derived_from_the_multdiv_differential_not_fitted`).
+
+Our own base loop is **exactly 4.00 PClocks** (four one-cycle instructions, no memory latency —
+confirmed by `cpu_timing_differential` reading 304 180 = `W`/(4+1) before any charge, and by the
+`Random` timing tests passing so every base instruction cost is right). So the missing
+`B − 4 ≈ 21.5 PClocks` **is** the uncached `lw VI_V_CURRENT` latency `M`. Charged as **22** (integer
+PClocks) at the uncached-read site (`pipeline::read_width`, RCP MMIO range `0x0400_0000..=
+0x04FF_FFFF`, `Pipeline::M_RCP_REGISTER`), the ROM's absolute count moves **304 180 → 56 330** vs the
+hardware-baked **56 092 — a 0.4% match**. That agreement is the **independent confirmation** the
+guard-rail demanded, *not* the fit target: 22 came from the mult/div slope, and the absolute count
+was then checked as a consequence.
+
+**Scope + honesty.** This is `M` for an **uncached RCP-register read** (measured on VI; the sibling
+RCP registers share the RCP bus and are charged the same, flagged pending their own vectors). It
+conflates the RCP-access latency with `sync`'s wait, which cannot be separated by this loop —
+recorded as a combined "uncached RCP access + sync" cost, honest about the conflation.
+**`M(RDRAM)` and the D-/I-cache-fill `8..=9 + M` / `14..=15 + M` costs remain unmeasured** (charged
+0): CPUTIMINGNTSC has no cached-miss test block, so a separate oracle (a first-party cached-fill
+microbench, or a hardware capture) is needed for them. No regression from the charge: golden-log
+0-diff (it keys on retired instructions, not stalls), the residue invariant, determinism, and the
+950-test functional suite are all unchanged.
 
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 
