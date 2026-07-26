@@ -533,11 +533,13 @@ This applies standalone and combined with the depth test. Validated by a hand-co
 
 - **Decode.** `decode_texture` reads the 8-word texture block (`S`/`T` base + per-x/per-major-edge
   deltas, `s16.16`; `W` is the deferred perspective term) into `TexSetup`.
-- **Sample and combine.** `interpolate_st` gives the per-pixel coordinate (the **non-perspective**
-  path — the integer part of the interpolated `s16.16`); `combined_color` samples the command's
-  **base tile** with `fetch_texel` and runs the combiner (with any shade). The base tile is the
-  triangle command's `tile[2:0]` at **bits 50:48** (N64brew *Reality Display Processor / Commands*,
-  the Edge Coefficients word-0 field table). Works standalone and with shade/depth.
+- **Sample and combine.** `interpolate_st` gives the per-pixel texture coordinate
+  (perspective-correct when `persp_tex_en` is set — see *Perspective-correct texturing* below);
+  `combined_color` samples the command's **base tile** via `sample_texel` (the tile
+  shift/clamp/mask transform and the 3-point filter, then `fetch_texel`) and runs the combiner
+  (with any shade). The base tile is the triangle command's `tile[2:0]` at **bits 50:48** (N64brew
+  *Reality Display Processor / Commands*, the Edge Coefficients word-0 field table). Works
+  standalone and with shade/depth.
 
 Validated by a textured-triangle test that samples a loaded RGBA16 texel through a texel-passthrough
 combiner.
