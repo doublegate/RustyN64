@@ -389,6 +389,20 @@ fn tex_tri_bilinear_16_matches_angrylion() {
     );
 }
 
+/// **The mid-texel filter (Set Other Modes bit 44, R-13).** The same bilinear setup as
+/// `tex_tri_bilinear_16` but over a non-planar checkerboard with `mid_texel` set: at the
+/// exact texel centre (`sfrac == tfrac == 0x10`) the RDP averages the four neighbours
+/// instead of the 3-point triangle pick. Non-vacuous because the checkerboard makes the
+/// two disagree — the golden carries the midpoint value (`0x8001`, R=16) that a 3-point
+/// pick (checkerboard extremes) never produces; a renderer ignoring bit 44 mismatches it.
+#[test]
+fn tex_tri_mid_texel_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_mid_texel_16",
+        include_bytes!("vectors/tex_tri_mid_texel_16.rvec"),
+    );
+}
+
 /// **The bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, R-13).** A 2-texel tile
 /// (`mask_s = 1`, red/green) sampled bilinearly across the wrap: at `S = 1.5` the
 /// base is the top texel, so the neighbour must WRAP to texel 0 (red) — the seam

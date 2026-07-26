@@ -462,6 +462,11 @@ fn sample_axis(
 /// `upper = (sfrac + tfrac) & 0x20` selects the triangle: the lower-left uses
 /// `t0,t1,t2`, the upper-right uses `t3,t2,t1` with inverted fractions. Each
 /// channel is a `+0x10 >> 5` round of a convex combination, so it stays in `0..=255`.
+///
+/// When `mid_texel` (Set Other Modes bit 44) is set **and** the sample lands
+/// exactly on the texel centre (`sfrac == tfrac == 0x10`), the RDP replaces the
+/// triangle pick with a **four-texel average** (Angrylion `tex.c` `center` case:
+/// `t3 + ((((t1+t2)<<6) − (t3<<7) + ((!t3+t0)<<6) + 0xc0) >> 8)`).
 #[allow(
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
@@ -474,9 +479,12 @@ fn bilinear_3point(
     t3: [u8; 4],
     sfrac: u32,
     tfrac: u32,
+    mid_texel: bool,
 ) -> [u8; 4] {
     let (sf, tf) = (sfrac as i32, tfrac as i32);
     let upper = (sfrac + tfrac) & 0x20 != 0;
+    // The exact-centre four-texel average, active only under `mid_texel`.
+    let center = mid_texel && sfrac == 0x10 && tfrac == 0x10;
     let mut out = [0u8; 4];
     for x in 0..4 {
         let (c0, c1, c2, c3) = (
@@ -485,7 +493,10 @@ fn bilinear_3point(
             i32::from(t2[x]),
             i32::from(t3[x]),
         );
-        let v = if upper {
+        let v = if center {
+            // Four-neighbour average (`!c3` = C `~t3`, i.e. `-c3 - 1`).
+            c3 + ((((c1 + c2) << 6) - (c3 << 7) + ((!c3 + c0) << 6) + 0xc0) >> 8)
+        } else if upper {
             c3 + (((0x20 - sf) * (c2 - c3) + (0x20 - tf) * (c1 - c3) + 0x10) >> 5)
         } else {
             c0 + ((sf * (c1 - c0) + tf * (c2 - c0) + 0x10) >> 5)
@@ -914,6 +925,11 @@ pub struct OtherModes {
     /// Texture sample type (bit 45): `false` = point-sample one texel, `true` =
     /// the N64's 3-point bilinear filter (R-13). Applied in the triangle sampler.
     pub sample_type: bool,
+    /// Mid-texel filter (bit 44, R-13): when set and the bilinear sample lands
+    /// exactly on the texel centre (`sfrac == tfrac == 0x10`), the four neighbours
+    /// are averaged instead of the 3-point triangle pick (Angrylion `tex.c`, the
+    /// `center`/`centerrg` case). Only meaningful with `sample_type`.
+    pub mid_texel: bool,
 }
 
 /// The resolved per-pixel blender input colours (each RGBA8888).
@@ -2413,6 +2429,7 @@ impl Rdp {
             self.fetch_texel(tile, s1, t1),
             sfrac,
             tfrac,
+            self.other_modes.mid_texel,
         )
     }
 
@@ -2795,6 +2812,7 @@ impl Rdp {
             aa_enable: (lo >> 3) & 1 != 0,            // command bit 3
             rgb_dither_mode: ((hi >> 6) & 0x3) as u8, // command bits 39:38
             sample_type: (hi >> 13) & 1 != 0,         // command bit 45
+            mid_texel: (hi >> 12) & 1 != 0,           // command bit 44
         };
     }
 
@@ -4856,25 +4874,62 @@ mod tests {
     fn bilinear_3point_blends_both_triangles() {
         let (t0, t1, t2, t3) = ([0, 0, 0, 0], [32, 0, 0, 0], [0, 32, 0, 0], [32, 32, 0, 0]);
         // Lower triangle: sfrac=0x10 (½), tfrac=0. R = 0 + (16·32 + 0 + 16)>>5 = 16.
-        assert_eq!(bilinear_3point(t0, t1, t2, t3, 0x10, 0)[0], 16, "lower R");
-        assert_eq!(bilinear_3point(t0, t1, t2, t3, 0x10, 0)[1], 0, "lower G");
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x10, 0, false)[0],
+            16,
+            "lower R"
+        );
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x10, 0, false)[1],
+            0,
+            "lower G"
+        );
         // Upper triangle: sfrac=tfrac=0x18 (¾, sum 0x30 ≥ 0x20). Weights t3 ½, t2 ¼,
         // t1 ¼ → R = 32·½ + 0·¼ + 32·¼ = 24; G = 32·½ + 32·¼ + 0·¼ = 24.
         assert_eq!(
-            bilinear_3point(t0, t1, t2, t3, 0x18, 0x18)[0],
+            bilinear_3point(t0, t1, t2, t3, 0x18, 0x18, false)[0],
             24,
             "upper R"
         );
         assert_eq!(
-            bilinear_3point(t0, t1, t2, t3, 0x18, 0x18)[1],
+            bilinear_3point(t0, t1, t2, t3, 0x18, 0x18, false)[1],
             24,
             "upper G"
         );
         // Zero fraction is the exact base texel (no blend).
         assert_eq!(
-            bilinear_3point(t0, t1, t2, t3, 0, 0),
+            bilinear_3point(t0, t1, t2, t3, 0, 0, false),
             t0,
             "frac 0 = base texel"
+        );
+    }
+
+    /// **`mid_texel` averages all four texels at the exact centre (R-13).** At
+    /// `sfrac == tfrac == 0x10` the 3-point filter picks the UPPER triangle and
+    /// ignores `t0`; `mid_texel` instead averages all four neighbours (Angrylion
+    /// `tex.c` `center` case). `t0` is placed off the gradient plane so the two
+    /// disagree — a mutation that drops the centre branch returns the 3-point value.
+    #[test]
+    fn bilinear_mid_texel_averages_the_four_texels_at_the_centre() {
+        let (t0, t1, t2, t3) = ([200, 0, 0, 0], [32, 0, 0, 0], [64, 0, 0, 0], [96, 0, 0, 0]);
+        // 3-point UPPER ignores t0: 96 + ((16·(64−96) + 16·(32−96) + 16) >> 5) = 48.
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x10, 0x10, false)[0],
+            48,
+            "3-point ignores t0"
+        );
+        // Four-texel average uses t0: 96 + (((96<<6) − (96<<7) + ((!96+200)<<6) + 0xc0) >> 8)
+        // = 96 + (640 >> 8) = 96 + 2 = 98.
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x10, 0x10, true)[0],
+            98,
+            "mid_texel averages all four"
+        );
+        // Off-centre, `mid_texel` has no effect (the centre condition is false).
+        assert_eq!(
+            bilinear_3point(t0, t1, t2, t3, 0x10, 0, true),
+            bilinear_3point(t0, t1, t2, t3, 0x10, 0, false),
+            "mid_texel only fires at the exact centre"
         );
     }
 

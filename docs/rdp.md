@@ -562,8 +562,12 @@ tile** is threaded from the triangle command's `tile[2:0]` field (**bits 50:48**
 Display Processor / Commands* Edge-Coefficients word-0 table; `(ewdata[0] >> 16) & 7` in Angrylion
 `rasterizer.c`) into the sampler — `tiles[base_tile]` / `tiles[(base_tile + 1) & 7]`, not a
 hardwired tile 0/1 — validated against Angrylion by `tex_tri_base_tile_16` (the ramp loaded into
-tile 3 renders identically to tile 0; a `tiles[0]` read renders black). Scope
-(**open residual R-13**): `mid_texel` and the **LOD/mip tile selection** (`lod_frac`) remain.
+tile 3 renders identically to tile 0; a `tiles[0]` read renders black). The **mid-texel** filter
+(Set Other Modes bit 44) is modelled too: at the exact texel centre (`sfrac == tfrac == 0x10`) the
+four neighbours are averaged instead of the 3-point pick (validated against Angrylion by
+`tex_tri_mid_texel_16` over a non-planar checkerboard, whose centre carries the midpoint value a
+3-point pick never produces). Scope (**open residual R-13**): only the **LOD/mip tile selection**
+(`lod_frac`) remains.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 
