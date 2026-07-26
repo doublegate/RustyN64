@@ -30,7 +30,7 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   tile 0/1. Validated byte-for-byte against Angrylion by `tex_tri_base_tile_16` (the
   ramp loaded into tile 3 renders identically to `tex_tri_16`, while a `tiles[0]` read
   samples the unloaded low TMEM and renders black — mutation-witnessed). Still open
-  under R-13: `mid_texel` and the LOD/mip tile selection (`lod_frac`).
+  under R-13: the LOD/mip tile selection (`lod_frac`).
 
 ### Added — RDP chroma-key alpha compare (gap-analysis Stage D, ledger R-10)
 
