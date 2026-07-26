@@ -444,6 +444,21 @@ fn tex_tri_convert_kneg_16_matches_angrylion() {
     );
 }
 
+/// **The chroma-key KeyCentre (rgb sub-B select 6) and KeyScale (rgb mul select 6)
+/// inputs (R-10).** `Set Key GB`/`Set Key R` program per-channel centre
+/// `[0x20, 0x40, 0x60]` and scale `[0x40, 0x80, 0xC0]`; the combine `(One − centre) *
+/// scale >> 8` is `[56, 96, 120]` → RGBA5551 `0x3b1f` (Angrylion's golden). Without
+/// either input wired both read 0 and the result is `(One − 0) * 0 = 0` (black) —
+/// non-vacuous. Pins the `Set Key` (0x2A/0x2B) centre/scale decode **and** the two
+/// combiner selects end-to-end against Angrylion.
+#[test]
+fn tex_tri_chromakey_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_chromakey_16",
+        include_bytes!("vectors/tex_tri_chromakey_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`
