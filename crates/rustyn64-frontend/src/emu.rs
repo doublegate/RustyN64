@@ -298,11 +298,14 @@ impl EmuCore {
     /// `FB_MAX_W * FB_MAX_H`). It also returns `(0, 0)` while the VI is off or
     /// unconfigured (cold boot / no ROM).
     ///
-    /// A returned `(0, 0)` — or a valid-but-oversized geometry that fits the
-    /// backing store yet exceeds the blit's `FB_MAX` texture — is presented as a
-    /// black frame at the default resolution; the whole buffer is cleared so no
-    /// stale pixels from a previous, larger frame survive. (Interlace/serrate is
-    /// deferred under R-6, so scanned heights stay within `FB_MAX_H`.)
+    /// Two guards keep an over-large geometry off the screen. `scanout_scaled` bounds
+    /// its width by the DAC prescale (≤ `FB_MAX_W`) but its height can reach the
+    /// 625-line prescale: a field whose `w * h * 4` overflows `frame.rgba` trips
+    /// `scanout_scaled`'s own `(0, 0)` self-guard, and any other dimension past
+    /// `FB_MAX` (in practice a tall height) is rejected by `presentable_geometry`.
+    /// Either way — and while the VI is off — the frame is presented black at the
+    /// default resolution, and the whole buffer is cleared so no stale pixels from a
+    /// previous, larger frame survive.
     fn produce_frame(&mut self) {
         let (w, h) = self.system.bus.scanout_scaled(&mut self.frame.rgba);
         if let Some((w, h)) = presentable_geometry(w, h) {
@@ -564,6 +567,50 @@ mod tests {
         assert!(
             emu.frame().rgba[..n].iter().all(|&b| b == 0),
             "black frame while the VI is off"
+        );
+    }
+
+    /// **`produce_frame` presents the accurate scaled scan-out, not the 1:1 copy.**
+    /// Programs a 16-bit VI whose active-span/overscan geometry makes the accurate
+    /// `Bus::scanout_scaled` dims differ from the 1:1 `Bus::scanout` dims, asserts the
+    /// two genuinely disagree (so the test can tell them apart), then confirms the
+    /// frame `produce_frame` presents carries the `scanout_scaled` dims — pinning that
+    /// the frontend routes through the accurate path.
+    #[test]
+    fn produce_frame_presents_the_scaled_scan_out() {
+        use rustyn64_core::cpu::Bus as CpuBus;
+        const VI: u32 = 0x0440_0000;
+        let mut emu = EmuCore::new(0);
+        // 16-bit REPLICATE, 80-px source at 0x1000, NTSC field, the same active-span
+        // geometry the VI conformance vectors use (output crops to 25x16).
+        CpuBus::write_u32(&mut emu.system.bus, VI, 0x0000_0302); // VI_CTRL
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x04, 0x1000); // VI_ORIGIN
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x08, 80); // VI_WIDTH
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x18, 525); // VI_V_TOTAL (NTSC)
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x24, 0x006C_0094); // VI_H_VIDEO
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x28, 0x0022_0042); // VI_V_VIDEO
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x30, 0x0000_0400); // VI_X_SCALE
+        CpuBus::write_u32(&mut emu.system.bus, VI + 0x34, 0x0000_0400); // VI_Y_SCALE
+
+        let mut scaled = vec![0u8; (FB_MAX_W * FB_MAX_H * 4) as usize];
+        let scaled_dims = emu.system.bus.scanout_scaled(&mut scaled);
+        let mut one_to_one = vec![0u8; (FB_MAX_W * FB_MAX_H * 4) as usize];
+        let one_to_one_dims = emu.system.bus.scanout(&mut one_to_one);
+        assert_ne!(
+            scaled_dims, one_to_one_dims,
+            "test setup must distinguish the accurate and 1:1 scan-out geometries"
+        );
+        assert_eq!(
+            scaled_dims,
+            (25, 16),
+            "accurate scan-out crops to the active span"
+        );
+
+        emu.produce_frame();
+        assert_eq!(
+            (emu.frame().w, emu.frame().h),
+            scaled_dims,
+            "produce_frame presents the scanout_scaled geometry"
         );
     }
 

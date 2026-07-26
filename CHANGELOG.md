@@ -10,7 +10,7 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
 ### Changed — the frontend now presents the accurate VI scan-out (ledger R-5)
 
-- **`emu::Emu::produce_frame` calls `Bus::scanout_scaled`** instead of the 1:1
+- **`emu::EmuCore::produce_frame` calls `Bus::scanout_scaled`** instead of the 1:1
   `Bus::scanout`, so the on-screen picture uses the real `VI_X_SCALE`/`VI_Y_SCALE`
   resampling, active-span/overscan geometry, and the coverage/gamma post-filters
   (all Angrylion-validated, R-5 slices 1–4f) rather than an unscaled copy. This
