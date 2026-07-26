@@ -305,6 +305,19 @@ fn tex_tri_16_matches_angrylion() {
     assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
 }
 
+/// **Primitive base-tile threading (R-13).** The 8-colour ramp is loaded into tile 3
+/// (at a non-zero TMEM word) and the triangle names tile 3 in its command (bits 50:48).
+/// The golden is byte-identical to `tex_tri_16` (same ramp, same triangle, just via a
+/// non-zero tile), which is exactly the point: a renderer that hardwires tile 0 samples
+/// the unloaded low TMEM and renders black. Guards `combined_color`'s tile selection.
+#[test]
+fn tex_tri_base_tile_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_base_tile_16",
+        include_bytes!("vectors/tex_tri_base_tile_16.rvec"),
+    );
+}
+
 /// A textured triangle with a **constant** texture coordinate (`dsdx = 0`, `S = 0`),
 /// so every covered pixel samples texel 0 = red — independent of the R-13 `>> 5`
 /// coordinate scale. It isolates the texture *sampler* (Load Tile → TMEM →

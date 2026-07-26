@@ -978,6 +978,34 @@ static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
     SHADE_BLOCK_FLAT(0x40, 0x60, 0x80, 0xFF), // flat shade -> chromabypass + col17 source
 };
 
+// V31: PRIMITIVE BASE-TILE THREADING (R-13) — the triangle command's tile field
+// (bits 50:48 = `(ewdata[0] >> 16) & 7`, Angrylion rasterizer.c:1887) selects which
+// of the 8 tile descriptors the sampler reads. RustyN64 hardwired tiles[0]/tiles[1];
+// this vector proves the thread. The 8-colour ramp (TEX8_RAMP, as V11) is loaded into
+// **tile 3** at a NON-ZERO TMEM word (0x40 -> byte 0x200), and the triangle names
+// **tile 3** (op 0x0A830020). Tile 0 is set as RGBA16 over the UNLOADED low TMEM, so a
+// renderer that wrongly samples tile 0 reads zeros -> black. The golden is therefore the
+// V11 ramp (identical picture, just via tile 3), and a `tiles[0]` regression collapses
+// it to black -> fails. Non-vacuous: the colourful ramp is produced ONLY by the correct
+// tile-3 selection of the tile-3 load.
+static const uint32_t V31_TEX_TRI_BASE_TILE_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
+    0x3C000000u, 0x00000041u, // Set Combine: rgb_d=1 / a_d=1 (texel0 passthrough)
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000030u, // Set Tile 0: RGBA16, line 2, tmem 0, mask_s=3 (UNLOADED -> black)
+    0x35100440u, 0x03000030u, // Set Tile 3: RGBA16, line 2, tmem 0x40 (byte 0x200), mask_s=3
+    0x32000000u, 0x0301C000u, // Set Tile Size 3: SL0 TL0 SH7 TH0
+    0x34000000u, 0x0301C000u, // Load Tile 3: SL0 TL0 SH7 TH0 -> tile 3 TMEM
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A830020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, TILE 3 (bits 50:48)
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // S base 0, T base 0, W base 1.0; dx.S = 1.0 (one texel per pixel); rest 0.
+    TEX_BLOCK(0, 0, 1, 1, 0, 0, 0, 0, 0),
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1651,6 +1679,11 @@ int main(int argc, char **argv) {
                   sizeof(V30_TEX_TRI_CHROMAKEY_ALPHA_16) / 4, V30_TEX_TRI_CHROMAKEY_ALPHA_16,
                   0, 0, NULL};
     if (emit_vector(&v30, out_dir)) return 1;
+
+    Vector v31 = {"tex_tri_base_tile_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V31_TEX_TRI_BASE_TILE_16) / 4, V31_TEX_TRI_BASE_TILE_16,
+                  0x3000, 8, TEX8_RAMP};
+    if (emit_vector(&v31, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 

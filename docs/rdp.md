@@ -533,9 +533,13 @@ This applies standalone and combined with the depth test. Validated by a hand-co
 
 - **Decode.** `decode_texture` reads the 8-word texture block (`S`/`T` base + per-x/per-major-edge
   deltas, `s16.16`; `W` is the deferred perspective term) into `TexSetup`.
-- **Sample and combine.** `interpolate_st` gives the per-pixel coordinate (the **non-perspective**
-  path — the integer part of the interpolated `s16.16`); `combined_color` samples tile 0 with
-  `fetch_texel` and runs the combiner (with any shade). Works standalone and with shade/depth.
+- **Sample and combine.** `interpolate_st` gives the per-pixel texture coordinate
+  (perspective-correct when `persp_tex_en` is set — see *Perspective-correct texturing* below);
+  `combined_color` samples the command's **base tile** via `sample_texel` (the tile
+  shift/clamp/mask transform and the 3-point filter, then `fetch_texel`) and runs the combiner
+  (with any shade). The base tile is the triangle command's `tile[2:0]` at **bits 50:48** (N64brew
+  *Reality Display Processor / Commands*, the Edge Coefficients word-0 field table). Works
+  standalone and with shade/depth.
 
 Validated by a textured-triangle test that samples a loaded RGBA16 texel through a texel-passthrough
 combiner.
@@ -552,9 +556,14 @@ bilinear** filter (`sample_type = 1`) is now modelled too (`bilinear_3point`: fo
 by `upper = (sfrac+tfrac) & 0x20`, the lower/upper triangle each a `+0x10 >> 5` round; the fraction
 is zeroed when the coordinate clamps), validated by `tex_tri_bilinear_16`. The **mask-wrap seam** is handled too (`mask_coupled`: the
 bilinear neighbour is `base + sdiff`/`tdiff` — `+1` / `0` at a seam / `-1` mirrored / wrap-to-0 —
-not a bare `+1`; validated by `tex_tri_bilinear_wrap_16`). **2-cycle mode** samples a second texel from `tile+1`
-and swaps `texel0`/`texel1` before cycle 1 (validated by `tex_tri_2cycle_16`). Scope (**open residual
-R-13**): `mid_texel` and the **LOD/mip tile selection** (`lod_frac`) remain.
+not a bare `+1`; validated by `tex_tri_bilinear_wrap_16`). **2-cycle mode** samples a second texel from `base_tile + 1`
+and swaps `texel0`/`texel1` before cycle 1 (validated by `tex_tri_2cycle_16`). The **primitive base
+tile** is threaded from the triangle command's `tile[2:0]` field (**bits 50:48**, N64brew *Reality
+Display Processor / Commands* Edge-Coefficients word-0 table; `(ewdata[0] >> 16) & 7` in Angrylion
+`rasterizer.c`) into the sampler — `tiles[base_tile]` / `tiles[(base_tile + 1) & 7]`, not a
+hardwired tile 0/1 — validated against Angrylion by `tex_tri_base_tile_16` (the ramp loaded into
+tile 3 renders identically to tile 0; a `tiles[0]` read renders black). Scope
+(**open residual R-13**): `mid_texel` and the **LOD/mip tile selection** (`lod_frac`) remain.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 
