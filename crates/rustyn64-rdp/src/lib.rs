@@ -1180,9 +1180,10 @@ pub struct CombineMode {
 
 /// The resolved per-pixel combiner input signals (each RGBA8888).
 ///
-/// The combiner muxes these by the [`CombineCycle`] selects. Exotic inputs
-/// (noise, LOD frac, the key/convert constants) are not modelled yet (**open
-/// residual R-10**) and read as zero.
+/// The combiner muxes these by the [`CombineCycle`] selects. The register-sourced
+/// exotic inputs (prim-LOD-frac, the convert `K4`/`K5`, the chroma-key centre/scale)
+/// are wired; the rest (noise, the derivative `lod_frac`, the YUV `K0`–`K3` convert)
+/// are not modelled yet (**open residual R-10**) and read as zero.
 ///
 /// This is **transient** per-pixel state — built in `combined_color`, consumed by
 /// `combine`, and discarded — never stored in `System`. It is therefore `pub(crate)`
@@ -2395,8 +2396,9 @@ impl Rdp {
         let mut inp = CombinerInputs {
             prim: unpack_rgba(self.prim_color),
             env: unpack_rgba(self.env_color),
-            // R-10 exotic combiner inputs sourced from registers (noise, lod_frac,
-            // chroma key, and the YUV K0..K3 convert are deferred).
+            // R-10 register-sourced exotic combiner inputs: prim-LOD-frac, the Set
+            // Convert K4/K5, and the chroma-key centre/scale. Still deferred (read as
+            // zero): noise, the derivative-computed lod_frac, and the YUV K0..K3 convert.
             prim_lod_frac: i16::from(self.prim_lod_frac),
             k4: self.k4,
             k5: self.k5,
@@ -2643,8 +2645,10 @@ impl Rdp {
     /// Muxes the [`CombinerInputs`] by the cycle's selects into `(A − B) * C + D`
     /// per channel (`combine_channel`), clamps to `[0, 255]` (`clamp_9bit`), and
     /// does the same for alpha. The RGB and alpha combiners use different
-    /// input tables (N64brew *…/Commands* §0x3C). Exotic inputs (noise, LOD frac,
-    /// key/convert constants) are **open residual R-10** and read as zero.
+    /// input tables (N64brew *…/Commands* §0x3C). The register-sourced exotic inputs
+    /// (prim-LOD-frac, the convert `K4`/`K5`, and the chroma-key centre/scale) are
+    /// wired; the remaining exotic inputs (noise, the derivative `lod_frac`, and the
+    /// YUV `K0`–`K3` convert) are **open residual R-10** and read as zero.
     #[must_use]
     pub(crate) fn combine_cycle(cfg: CombineCycle, inp: &CombinerInputs) -> [u8; 4] {
         // RGB: A/B share the muladd/mulsub table, C the wide mul table, D the add.
