@@ -2419,8 +2419,9 @@ impl Rdp {
     /// Compute a pixel's colour through the combiner from the interpolated shade
     /// and/or sampled texel (plus the prim/env registers). `shade`/`tex` are the
     /// decoded setups, `None` when that attribute is absent. The two-cycle mode
-    /// comes from `Set Other Modes`. Texture uses the non-perspective coordinate
-    /// (`interpolate_st`) sampled from `base_tile` (and `base_tile + 1` in 2-cycle).
+    /// comes from `Set Other Modes`. Texture uses the interpolated coordinate
+    /// (`interpolate_st`, perspective-correct when `persp_tex_en` is set) sampled
+    /// from `base_tile` (and `base_tile + 1` in 2-cycle).
     ///
     /// Returns the combiner output **and** the interpolated shade alpha, which the
     /// blender selects separately (`A`-select 2) from the combiner output alpha
