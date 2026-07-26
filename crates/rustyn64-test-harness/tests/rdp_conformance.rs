@@ -460,13 +460,17 @@ fn tex_tri_chromakey_16_matches_angrylion() {
 }
 
 /// **The chroma-key alpha compare (`key_en`, Set Other Modes bit 40) — R-10.** With
-/// `key_en`, the combiner outputs the sub-A "chromabypass" colour (here Shade =
-/// `[0x40,0x60,0x80]`) and derives the pixel alpha from `chroma_key_min` over the
-/// pre-`>>8` 17-bit combined colour + the `Set Key` widths. Angrylion's golden is
-/// `0x4321` (shade RGB, alpha bit set). Clearing `key_en` would output the *combined*
-/// colour (Shade·Shade, clamped) with the alpha-combiner result — a different pixel,
-/// so this is non-vacuous. Pins the `key_en`/`key_width` decode, the 17-bit combined
-/// value, and `chroma_key_min` end-to-end against Angrylion.
+/// `key_en`, the combiner outputs the sub-A "chromabypass" colour (Shade) and derives
+/// the pixel alpha from `chroma_key_min` over the pre-`>>8` 17-bit combined colour + the
+/// `Set Key` widths. The **key alpha is made observable** by enabling alpha-compare
+/// (bit 0) with a `Set Blend Color` threshold of `0x80`: the Shade triangle is written
+/// only where the key alpha `>= 0x80`. The combine (`rgb_a=rgb_b=Shade` → 17-bit `0x80`,
+/// `width_r=0x10`) yields key alpha `0x80` exactly, so the triangle IS drawn — and a
+/// broken `chroma_key_min` shifting it below `0x80` makes the triangle vanish (a −1
+/// mutation is verified to fail), while clearing `key_en` outputs the combined colour
+/// (black) instead of Shade. Pins the `key_en`/`key_width` decode, the 17-bit combined
+/// value, and `chroma_key_min` end-to-end against Angrylion (the `chroma_key_min` fold
+/// itself is additionally unit-tested with hand-computed values).
 #[test]
 fn tex_tri_chromakey_alpha_16_matches_angrylion() {
     assert_matches(

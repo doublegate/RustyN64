@@ -615,7 +615,8 @@ const fn combine_channel_17bit(a: i32, b: i32, c: i32, d: i32) -> i32 {
 fn chroma_key_min(col17: [i32; 3], width: [u16; 3]) -> u8 {
     let mut keyalpha = i32::MAX;
     for ch in 0..3 {
-        let mut k = (col17[ch] << 15) >> 15; // SIGN(col, 17)
+        // Sign-extend the 17-bit value (mask first so an unmasked caller is safe).
+        let mut k = ((col17[ch] & 0x1_FFFF) << 15) >> 15; // SIGN(col, 17)
         if k > 0 {
             k = if (k & 0xf) == 8 { -k + 0x10 } else { -k };
         }
@@ -1652,8 +1653,8 @@ impl Rdp {
                 self.key_scale[2] = lo as u8;
             }
             OP_SET_KEY_R => {
-                // word 1 (lo): width_r[31:16], centre_r[15:8], scale_r[7:0]
-                // (Angrylion `rdp_set_key_r`).
+                // word 1 (lo): width_r[27:16] (12-bit), centre_r[15:8], scale_r[7:0]
+                // (Angrylion `rdp_set_key_r`, `(args[1] >> 16) & 0xfff`).
                 self.key_width[0] = ((lo >> 16) & 0xFFF) as u16;
                 self.key_center[0] = (lo >> 8) as u8;
                 self.key_scale[0] = lo as u8;
@@ -3805,19 +3806,23 @@ mod tests {
         assert_eq!(rdp.color_image, 0x0010_0000);
     }
 
-    /// **`Set Key GB`/`Set Key R` decode the chroma-key centre/scale per channel
-    /// (R-10).** Pins the bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`:
-    /// GB word-1 is `centre_g[31:24] scale_g[23:16] centre_b[15:8] scale_b[7:0]`, and
-    /// R word-1 is `width_r[31:16] centre_r[15:8] scale_r[7:0]` (width unused). Distinct
-    /// per-channel values so a field-swap in the decode is caught.
+    /// **`Set Key GB`/`Set Key R` decode the chroma-key centre/scale/width per channel
+    /// (R-10).** Pins the bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`: GB
+    /// word-0 is `width_g[23:12] width_b[11:0]`, word-1 `centre_g[31:24] scale_g[23:16]
+    /// centre_b[15:8] scale_b[7:0]`; R word-1 is `width_r[27:16] centre_r[15:8]
+    /// scale_r[7:0]`. Distinct per-channel values (incl. distinct 12-bit widths) so a
+    /// field-swap or wrong extraction in the decode is caught.
     #[test]
-    fn set_key_decodes_centre_and_scale_per_channel() {
+    fn set_key_decodes_centre_scale_and_width_per_channel() {
         let (rdp, _) = run_commands(&[
-            (0x2A00_0000, 0x4080_60C0), // Set Key GB: cg=0x40 sg=0x80 cb=0x60 sb=0xC0
-            (0x2B00_0000, 0x0000_2040), // Set Key R:  wr=0 cr=0x20 sr=0x40
+            // Set Key GB: wg=0x111 wb=0x222; cg=0x40 sg=0x80 cb=0x60 sb=0xC0.
+            (0x2A11_1222, 0x4080_60C0),
+            // Set Key R: wr=0x333; cr=0x20 sr=0x40.
+            (0x2B00_0000, 0x0333_2040),
         ]);
         assert_eq!(rdp.key_center, [0x20, 0x40, 0x60], "centre [r, g, b]");
         assert_eq!(rdp.key_scale, [0x40, 0x80, 0xC0], "scale [r, g, b]");
+        assert_eq!(rdp.key_width, [0x333, 0x111, 0x222], "width [r, g, b]");
     }
 
     /// **`Set Fill Color` and `Set Scissor` store their values.**
@@ -5224,6 +5229,14 @@ mod tests {
         assert_eq!(chroma_key_min([0x18, 0x300, 0x300], [8, 0x40, 0x40]), 120);
         // A large col17 drives k negative -> the minimum clamps to 0.
         assert_eq!(chroma_key_min([0x400, 0x10, 0x10], [8, 8, 8]), 0);
+        // Bit 16 set: SIGN(col17, 17) is NEGATIVE (col17 - 0x20000), so the `k > 0`
+        // fold is skipped. 0x1FFF0 -> -16; r: (8<<4) - 16 = 112, the minimum vs the
+        // wider g/b. This exercises the signed-fold branch (a broken sign-extend that
+        // read 0x1FFF0 as positive would fold to a large negative and clamp to 0).
+        assert_eq!(
+            chroma_key_min([0x1_FFF0, 0x300, 0x300], [8, 0x40, 0x40]),
+            112
+        );
     }
 
     /// **Two-cycle mode chains cycle 0 into cycle 1's `Combined` input.** Cycle 0

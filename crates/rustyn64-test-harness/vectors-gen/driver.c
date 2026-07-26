@@ -954,17 +954,21 @@ static const uint32_t V29_TEX_TRI_CHROMAKEY_16[] = {
 };
 
 // V30: the chroma-key ALPHA compare (key_en, Set Other Modes bit 40) — ledger R-10.
-// With key_en, the combiner outputs the sub-A "chromabypass" colour (here Shade =
-// [0x40,0x60,0x80], sidestepping the One=0x100 clamp edge) and derives the pixel alpha
-// from `chroma_key_min` over the pre->>8 17-bit combined colour + the Set Key widths.
-// Set Combine: rgb_a=Shade rgb_b=Zero rgb_c=Shade rgb_d=Zero (so col17 = Shade*Shade),
-// alpha=One. Clearing key_en changes BOTH the RGB (combined vs sub-A) and the alpha
-// (combiner vs keyalpha) — non-vacuous.
+// The key alpha (`chroma_key_min`) must be OBSERVABLE, so alpha-compare is enabled
+// (bit 0) with a Set Blend Color threshold of 0x80: the pixel is written only if the
+// key alpha >= 0x80. With rgb_a=rgb_b=Shade the 17-bit combined colour is 0x80 (A−B=0
+// → 0x80 constant), so per channel `SIGN(0x80)=128` folds to `-128`, then `+width<<4`:
+// width_r=0x10 → 256−128 = 128 = 0x80 (the min across r/g/b), which meets the 0x80
+// threshold, so the Shade chromabypass triangle IS drawn. A broken `chroma_key_min`
+// (wrong sign/fold/width/min) shifts the key alpha below 0x80 → the triangle vanishes;
+// clearing key_en outputs the *combined* colour (black, A−B=0) instead of Shade. Both
+// make this non-vacuous — the golden's drawn Shade pixels observe the key alpha.
 static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
-    0x2F0001F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off, KEY_EN (hi bit 8)
-    0x2A040040u, 0x408060C0u, // Set Key GB: wg=0x40 wb=0x40; cg=0x40 sg=0x80 cb=0x60 sb=0xC0
-    0x2B000000u, 0x00402040u, // Set Key R:  wr=0x40 cr=0x20 sr=0x40
-    0x3C000084u, 0x081C01C6u, // Set Combine: rgb_a=Shade rgb_b=Zero rgb_c=Shade rgb_d=Zero; a=One
+    0x2F0001F0u, 0x00000001u, // Set Other Modes: 1-cycle, KEY_EN (bit 40), ALPHA_COMPARE (bit 0)
+    0x39000000u, 0x00000080u, // Set Blend Color: alpha threshold = 0x80
+    0x2A014018u, 0x00000000u, // Set Key GB: wg=0x14 wb=0x18 (centre/scale unused here)
+    0x2B000000u, 0x00100000u, // Set Key R:  wr=0x10 (centre/scale unused)
+    0x3C000080u, 0x041C01C6u, // Set Combine: rgb_a=Shade rgb_b=Shade rgb_c=Combined rgb_d=Zero; a=One
     0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0

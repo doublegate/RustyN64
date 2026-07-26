@@ -33,8 +33,8 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   (`combine_cycle_routes_chroma_key`), and the `tex_tri_chromakey_16` conformance
   vector validates the path byte-for-byte end-to-end against Angrylion (RGBA5551
   `0x3b1f`, black if unwired). n64-systemtest impact: none (no RDP-combiner
-  coverage). Still deferred under R-10: noise, the derivative `lod_frac`, the
-  chroma-key alpha compare, and the YUV convert `K0`–`K3`.
+  coverage). Still deferred under R-10: noise, the derivative `lod_frac`, and the
+  YUV convert `K0`–`K3` (the chroma-key alpha compare is wired above).
 
 ### Changed — the frontend now presents the accurate VI scan-out (ledger R-5)
 
