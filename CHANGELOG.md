@@ -8,6 +8,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — VI PAL 50 Hz field rate (gap-analysis Stage D, ledger R-6)
+
+- **Region-aware VI scan cadence.** `Vi::field_hz` selects the PAL **50 Hz** field
+  rate (`VI_FIELD_HZ_PAL`) when the programmed field is PAL-length (`VI_V_TOTAL >
+  550`, the shared `VI_PAL_V_TOTAL_THRESHOLD`) and NTSC 60 Hz otherwise, so
+  `Vi::tick` scans PAL games at the correct cadence — the same `ispal` split the
+  scan-out geometry already uses. 50 Hz is the documented PAL broadcast standard
+  (not a fitted value). Pinned by the `a_pal_length_field_scans_at_50hz` and
+  `the_pal_threshold_is_exactly_550` unit tests (mutation-checked); NTSC fields are
+  unaffected. **n64-systemtest impact: not measured** — the suite runs NTSC and has
+  no VI field-timing group, so the PAL cadence is unreachable by it. The exact
+  `H_TOTAL` sub-field timing and the interlace/serrate `VI_V_INTR` bit-0 quirk
+  remain deferred under R-6.
+
 ### Added — VI 16-bit coverage path, slice 4f (gap-analysis Stage D, ledger R-5)
 
 - **The 16-bit RGBA5551 coverage path** in `Bus::scanout_scaled`. The coverage

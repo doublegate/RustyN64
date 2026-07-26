@@ -752,10 +752,11 @@ impl Bus {
     /// Still to come (later slices, still substituted here): the gamma-dither
     /// variants, the coverage filters under `aa_mode == 2` (`RESAMP_ONLY` forces
     /// `cvg = 7`, so de-dither can still apply — currently gated to `aa_mode ≤ 1`),
-    /// and the field-rate half of R-6 (the PAL 50 Hz cadence, interlace /
-    /// serrate, and the exact `H_TOTAL`). Not yet wired into the frontend —
-    /// [`Bus::scanout`] remains the live path until the pipeline is complete (mirrors
-    /// the R-12 depth path landing ahead of its runtime caller).
+    /// and the remaining R-6 field timing (interlace / serrate and the exact
+    /// `H_TOTAL`; the PAL 50 Hz field rate itself is handled by `Vi::field_hz`, which
+    /// drives the same `ispal` region split this geometry uses). Not yet wired into
+    /// the frontend — [`Bus::scanout`] remains the live path until the pipeline is
+    /// complete (mirrors the R-12 depth path landing ahead of its runtime caller).
     ///
     /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
     /// computed width/height is non-positive, or `out` is too small.
@@ -812,7 +813,7 @@ impl Bus {
 
         // Active-span adjust: NTSC/PAL horizontal overscan, then left/top clamps that
         // fold the cropped offset back into the scale accumulator start.
-        let ispal = v_sync > 550;
+        let ispal = v_sync > vi::VI_PAL_V_TOTAL_THRESHOLD;
         let mut h_start = h_start_raw - if ispal { 128 } else { 108 };
         let mut h_start_clamped = false;
         if h_start < 0 {
