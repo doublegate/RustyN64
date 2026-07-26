@@ -8,6 +8,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — RDP chroma-key alpha compare (gap-analysis Stage D, ledger R-10)
+
+- **`key_en` (Set Other Modes bit 40) chroma-keying.** `Set Key GB`/`R` now also
+  store the per-channel `key_width`, and when `key_en` is set `Rdp::combine` takes
+  the Angrylion `combiner_1cycle` key path: the RGB output is the sub-A chromabypass
+  colour and the pixel alpha is `chroma_key_min` over the pre-`>>8` 17-bit combined
+  colour and the key widths. The new behaviour is gated on `key_en`, so the common
+  combiner path is byte-identical (all 31 prior RDP conformance vectors unchanged).
+  Validated byte-for-byte against Angrylion by `tex_tri_chromakey_alpha_16` (golden
+  `0x4321`, non-vacuous — clearing `key_en` outputs the combined colour) plus
+  mutation-checked unit tests. n64-systemtest impact: none. Still deferred under
+  R-10: noise (un-oracled), the derivative `lod_frac`, and the YUV `K0`–`K3` convert.
+
 ### Added — RDP chroma-key combiner inputs (gap-analysis Stage D, ledger R-10)
 
 - **`Set Key GB` (0x2A) / `Set Key R` (0x2B) now decode** the per-channel chroma-key

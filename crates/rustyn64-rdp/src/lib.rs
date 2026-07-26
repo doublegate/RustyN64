@@ -597,6 +597,34 @@ fn clamp_9bit(color: i32) -> u8 {
     special_expand(color).clamp(0, 0xFF) as u8
 }
 
+/// The combiner equation's **pre-`>>8` 17-bit** result — what the chroma-key alpha
+/// compare consumes (Angrylion `color_combiner_equation`). Same terms as
+/// [`combine_channel`] but returning `((A − B) * C + (D << 8) + 0x80) & 0x1ffff`
+/// rather than the `>> 8`'d colour.
+const fn combine_channel_17bit(a: i32, b: i32, c: i32, d: i32) -> i32 {
+    (((special_expand(a) - special_expand(b)) * sext9(c)) + (special_expand(d) << 8) + 0x80)
+        & 0x1_FFFF
+}
+
+/// The chroma-key alpha (Angrylion `chroma_key_min`): per channel, fold the sign of
+/// the 17-bit combined value into a distance, offset by the programmed half-width,
+/// take the minimum across R/G/B, and clamp to `[0, 0xff]`. `col17` is the pre-`>>8`
+/// combined colour ([`combine_channel_17bit`]); `width` is the 12-bit `Set Key` width
+/// per channel.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn chroma_key_min(col17: [i32; 3], width: [u16; 3]) -> u8 {
+    let mut keyalpha = i32::MAX;
+    for ch in 0..3 {
+        let mut k = (col17[ch] << 15) >> 15; // SIGN(col, 17)
+        if k > 0 {
+            k = if (k & 0xf) == 8 { -k + 0x10 } else { -k };
+        }
+        k += i32::from(width[ch]) << 4;
+        keyalpha = keyalpha.min(k);
+    }
+    keyalpha.clamp(0, 0xff) as u8
+}
+
 /// The combiner's "1" input — `0x100` in the internal `.8` representation, not
 /// `0xFF` (N64brew *…/Commands* §0x3C).
 const COMBINER_ONE: i16 = 0x100;
@@ -869,6 +897,9 @@ pub struct OtherModes {
     pub z_mode: u8,
     /// Alpha-compare enable (gates the pixel write; R-11).
     pub alpha_compare_en: bool,
+    /// Chroma-key enable (bit 40): the combiner outputs the sub-A colour and derives
+    /// the pixel alpha from the key window (`chroma_key_min`). R-10.
+    pub key_en: bool,
     /// Perspective-correct texturing (bit 51): divide the interpolated `S`/`T` by `W`.
     pub persp_tex_en: bool,
     /// Anti-aliasing enable (bit 3): sub-pixel edge coverage governs which edge
@@ -1384,13 +1415,15 @@ pub struct Rdp {
     /// `Set Convert` `K5` (see `k4`).
     pub k5: i16,
     /// Chroma-key **centre** per channel `[r, g, b]` (`Set Key R` 0x2B / `Set Key GB`
-    /// 0x2A) — the combiner RGB sub-B input (select 6). `0..=255`. The key **width**
-    /// (used only by the deferred chroma-key alpha compare, not the combiner mux) is
-    /// not stored — it has no consumer yet, so it lands with that path. R-10.
+    /// 0x2A) — the combiner RGB sub-B input (select 6). `0..=255`. R-10.
     pub key_center: [u8; 3],
     /// Chroma-key **scale** per channel `[r, g, b]` (`Set Key R`/`GB`) — the combiner
     /// RGB mul input (select 6). `0..=255`. R-10.
     pub key_scale: [u8; 3],
+    /// Chroma-key **width** per channel `[r, g, b]` (`Set Key R`/`GB`, 12-bit) — the
+    /// half-width of the key window, consumed by the `key_en` chroma-key alpha compare
+    /// (`chroma_key_min`), not the combiner mux. R-10.
+    pub key_width: [u16; 3],
     /// The environment colour, RGBA8888 (`Set Env Color`, 0x3B).
     pub env_color: u32,
     /// The blend colour, RGBA8888 (`Set Blend Color`, 0x39).
@@ -1608,18 +1641,20 @@ impl Rdp {
                 self.k5 = (lo & 0x1FF) as i16;
             }
             OP_SET_KEY_GB => {
-                // word 1 (lo): centre_g[31:24], scale_g[23:16], centre_b[15:8],
-                // scale_b[7:0] (Angrylion `rdp_set_key_gb`). The widths — word 0 (hi):
-                // width_g[23:12], width_b[11:0] — drive only the deferred chroma-key
-                // alpha compare, not the combiner mux, so they are not stored.
+                // word 0 (hi): width_g[23:12], width_b[11:0]; word 1 (lo):
+                // centre_g[31:24], scale_g[23:16], centre_b[15:8], scale_b[7:0]
+                // (Angrylion `rdp_set_key_gb`). Widths feed the `key_en` alpha compare.
+                self.key_width[1] = ((hi >> 12) & 0xFFF) as u16;
+                self.key_width[2] = (hi & 0xFFF) as u16;
                 self.key_center[1] = (lo >> 24) as u8;
                 self.key_scale[1] = (lo >> 16) as u8;
                 self.key_center[2] = (lo >> 8) as u8;
                 self.key_scale[2] = lo as u8;
             }
             OP_SET_KEY_R => {
-                // word 1 (lo): width_r[31:16] (deferred), centre_r[15:8], scale_r[7:0]
+                // word 1 (lo): width_r[31:16], centre_r[15:8], scale_r[7:0]
                 // (Angrylion `rdp_set_key_r`).
+                self.key_width[0] = ((lo >> 16) & 0xFFF) as u16;
                 self.key_center[0] = (lo >> 8) as u8;
                 self.key_scale[0] = lo as u8;
             }
@@ -2687,7 +2722,26 @@ impl Rdp {
             // before cycle 1 (`combiner_2cycle_cycle1`, R-13).
             core::mem::swap(&mut inp.texel0, &mut inp.texel1);
         }
-        Self::combine_cycle(self.combine.cyc1, &inp)
+        let cyc = self.combine.cyc1;
+        if self.other_modes.key_en {
+            // Chroma-key alpha compare (Angrylion `combiner_1cycle` key_en path, R-10):
+            // the RGB output is the sub-A "chromabypass" colour (clamped), and the pixel
+            // alpha is derived from the key window over the pre-`>>8` 17-bit combined
+            // colour. Gated on `key_en` so the common path (below) is byte-identical.
+            let mut col17 = [0i32; 3];
+            let mut rgb = [0u8; 3];
+            for (ch, (c17, out)) in col17.iter_mut().zip(rgb.iter_mut()).enumerate() {
+                let a = i32::from(rgb_input_a(cyc.rgb_a, &inp, ch));
+                let b = i32::from(rgb_input_b(cyc.rgb_b, &inp, ch));
+                let c = i32::from(rgb_input_c(cyc.rgb_c, &inp, ch));
+                let d = i32::from(rgb_input_d(cyc.rgb_d, &inp, ch));
+                *c17 = combine_channel_17bit(a, b, c, d);
+                *out = clamp_9bit(a); // chromabypass = sub-A input, clamped
+            }
+            let keyalpha = chroma_key_min(col17, self.key_width);
+            return [rgb[0], rgb[1], rgb[2], keyalpha];
+        }
+        Self::combine_cycle(cyc, &inp)
     }
 
     /// Decode `Set Other Modes` (0x2F) into [`OtherModes`]. The blend selects and
@@ -2723,10 +2777,11 @@ impl Rdp {
             z_update_en: (lo >> 5) & 1 != 0,
             z_mode: ((lo >> 10) & 0x3) as u8,
             alpha_compare_en: lo & 1 != 0,
-            persp_tex_en: (hi >> 19) & 1 != 0, // command bit 51
-            aa_enable: (lo >> 3) & 1 != 0,     // command bit 3
+            key_en: (hi >> 8) & 1 != 0,               // command bit 40
+            persp_tex_en: (hi >> 19) & 1 != 0,        // command bit 51
+            aa_enable: (lo >> 3) & 1 != 0,            // command bit 3
             rgb_dither_mode: ((hi >> 6) & 0x3) as u8, // command bits 39:38
-            sample_type: (hi >> 13) & 1 != 0,  // command bit 45
+            sample_type: (hi >> 13) & 1 != 0,         // command bit 45
         };
     }
 
@@ -5153,6 +5208,22 @@ mod tests {
             ..CombinerInputs::default()
         };
         assert_eq!(Rdp::combine_cycle(cfg, &inp), [56, 96, 120, 255]);
+    }
+
+    /// **`chroma_key_min` folds each channel, offsets by the width, and takes the
+    /// minimum (R-10).** Per channel `k = SIGN(col17, 17)`; if `k > 0`, `k = -k`
+    /// (or `-k + 0x10` when the low nibble is 8); then `k = (width << 4) + k`; the
+    /// result is `min(kr, kg, kb)` clamped to `[0, 0xff]`. Hand-computed cases:
+    #[test]
+    fn chroma_key_min_folds_and_takes_the_minimum() {
+        // Positive col17, low nibble != 8: k = (width<<4) - col17.
+        // r: 128 - 0x10 = 112; g: 128 - 0x20 = 96; b: 128 - 0x30 = 80 -> min 80.
+        assert_eq!(chroma_key_min([0x10, 0x20, 0x30], [8, 8, 8]), 80);
+        // Low-nibble == 8 special fold: k = -col17 + 0x10. col17 0x18 -> -0x18+0x10 = -8;
+        // r: 128 - 8 = 120; the wider g/b (256) leave r the minimum.
+        assert_eq!(chroma_key_min([0x18, 0x300, 0x300], [8, 0x40, 0x40]), 120);
+        // A large col17 drives k negative -> the minimum clamps to 0.
+        assert_eq!(chroma_key_min([0x400, 0x10, 0x10], [8, 8, 8]), 0);
     }
 
     /// **Two-cycle mode chains cycle 0 into cycle 1's `Combined` input.** Cycle 0

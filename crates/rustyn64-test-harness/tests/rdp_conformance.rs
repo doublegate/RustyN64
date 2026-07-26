@@ -459,6 +459,22 @@ fn tex_tri_chromakey_16_matches_angrylion() {
     );
 }
 
+/// **The chroma-key alpha compare (`key_en`, Set Other Modes bit 40) — R-10.** With
+/// `key_en`, the combiner outputs the sub-A "chromabypass" colour (here Shade =
+/// `[0x40,0x60,0x80]`) and derives the pixel alpha from `chroma_key_min` over the
+/// pre-`>>8` 17-bit combined colour + the `Set Key` widths. Angrylion's golden is
+/// `0x4321` (shade RGB, alpha bit set). Clearing `key_en` would output the *combined*
+/// colour (Shade·Shade, clamped) with the alpha-combiner result — a different pixel,
+/// so this is non-vacuous. Pins the `key_en`/`key_width` decode, the 17-bit combined
+/// value, and `chroma_key_min` end-to-end against Angrylion.
+#[test]
+fn tex_tri_chromakey_alpha_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_chromakey_alpha_16",
+        include_bytes!("vectors/tex_tri_chromakey_alpha_16.rvec"),
+    );
+}
+
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
 /// against Angrylion. Copy mode blits texels straight from TMEM to the colour image
 /// (no combiner, no 1-cycle texel pipeline), so it sidesteps the gaps `tex_tri_16`
