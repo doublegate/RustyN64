@@ -17,7 +17,9 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   deferred chroma-key alpha compare) is not stored, matching the `min_level`
   precedent. Two mutation-checked unit tests pin the decode field positions
   (`set_key_decodes_centre_and_scale_per_channel`) and the mux routing
-  (`combine_cycle_routes_chroma_key`). n64-systemtest impact: none (no RDP-combiner
+  (`combine_cycle_routes_chroma_key`), and the `tex_tri_chromakey_16` conformance
+  vector validates the path byte-for-byte end-to-end against Angrylion (RGBA5551
+  `0x3b1f`, black if unwired). n64-systemtest impact: none (no RDP-combiner
   coverage). Still deferred under R-10: noise, the derivative `lod_frac`, the
   chroma-key alpha compare, and the YUV convert `K0`–`K3`.
 

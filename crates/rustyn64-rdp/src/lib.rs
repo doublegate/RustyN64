@@ -628,7 +628,7 @@ fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         5 => i16::from(inp.env[ch]),
         6 => i16::from(inp.key_center[ch]), // Chroma-key centre (Set Key R/GB)
         7 => inp.k4, // Convert K4 (raw 0..511; combine_channel's special_expand sign-extends)
-        _ => 0,      // 8+ Zero
+        _ => 0,      // 8+ Zero (no R-10-deferred select remains for B; both 6 and 7 wired)
     }
 }
 
@@ -1608,8 +1608,9 @@ impl Rdp {
             }
             OP_SET_KEY_GB => {
                 // word 1 (lo): centre_g[31:24], scale_g[23:16], centre_b[15:8],
-                // scale_b[7:0] (Angrylion `rdp_set_key_gb`). The widths (hi word) drive
-                // only the deferred chroma-key alpha compare, so they are not stored.
+                // scale_b[7:0] (Angrylion `rdp_set_key_gb`). The widths — word 0 (hi):
+                // width_g[23:12], width_b[11:0] — drive only the deferred chroma-key
+                // alpha compare, not the combiner mux, so they are not stored.
                 self.key_center[1] = (lo >> 24) as u8;
                 self.key_scale[1] = (lo >> 16) as u8;
                 self.key_center[2] = (lo >> 8) as u8;

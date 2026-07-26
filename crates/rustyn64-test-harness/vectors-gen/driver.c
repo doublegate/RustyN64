@@ -932,6 +932,27 @@ static const uint32_t V28_TEX_TRI_CONVERT_KNEG_16[] = {
     SHADE_BLOCK_FLAT(0x40, 0x40, 0x40, 0xFF), // flat shade (ignored by the combine)
 };
 
+// V29: the chroma-key KeyCentre (RGB sub-B select 6) and KeyScale (RGB mul select 6)
+// combiner inputs from Set Key GB (0x2A) / Set Key R (0x2B) — ledger R-10. Per channel
+// centre [0x20,0x40,0x60], scale [0x40,0x80,0xC0], so the combine `(One - centre) *
+// scale >> 8` is [56,96,120] (a distinct RGB, quantised to RGBA5551). Without the inputs
+// wired both read 0 and the result is `(One - 0) * 0 = 0` (black) — non-vacuous. The Set
+// Combine word only differs from V27 in rgb_b (7->6, KeyCentre) and rgb_c (15->6,
+// KeyScale); the alpha/cyc0 fields are identical (alpha = One).
+static const uint32_t V29_TEX_TRI_CHROMAKEY_16[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off
+    0x2A000000u, 0x408060C0u, // Set Key GB: cg=0x40 sg=0x80 cb=0x60 sb=0xC0
+    0x2B000000u, 0x00002040u, // Set Key R:  wr=0 cr=0x20 sr=0x40
+    0x3C0000C6u, 0x061C01C6u, // Set Combine: rgb = (One - KeyCentre) * KeyScale + Zero; a=One
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    SHADE_BLOCK_FLAT(0x40, 0x40, 0x40, 0xFF), // flat shade (ignored by the combine)
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1595,6 +1616,11 @@ int main(int argc, char **argv) {
                   sizeof(V28_TEX_TRI_CONVERT_KNEG_16) / 4, V28_TEX_TRI_CONVERT_KNEG_16,
                   0, 0, NULL};
     if (emit_vector(&v28, out_dir)) return 1;
+
+    Vector v29 = {"tex_tri_chromakey_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V29_TEX_TRI_CHROMAKEY_16) / 4, V29_TEX_TRI_CHROMAKEY_16,
+                  0, 0, NULL};
+    if (emit_vector(&v29, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 

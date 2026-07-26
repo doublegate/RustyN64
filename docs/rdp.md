@@ -403,7 +403,8 @@ mul-select 15), each validated byte-for-byte against Angrylion (`tex_tri_primlod
 `tex_tri_convert_k45_16`, and `tex_tri_convert_kneg_16` — the last a negative `K4 = −64`
 proving K4/K5 are stored raw `0..511` and sign-extended in the combiner, not at decode). The
 **chroma-key centre/scale** (`Set Key GB`/`Set Key R` → RGB sub-B / mul select 6) are likewise
-wired (unit-tested decode + mux routing). The remaining exotic inputs — **noise**, the
+wired, validated by unit tests (decode + mux routing) and the `tex_tri_chromakey_16` conformance
+vector byte-for-byte against Angrylion. The remaining exotic inputs — **noise**, the
 derivative-computed **LOD fraction**, the **chroma-key alpha compare** (the `key_en` path that uses
 the key *width*), and the **YUV convert `K0`–`K3`** — still read as zero until the LOD/key/noise
 state lands. The arithmetic, the 16-field decode, the mux, and the 2-cycle
