@@ -890,6 +890,11 @@ pub struct BlendCycle {
     clippy::struct_excessive_bools,
     reason = "these are independent hardware mode bits from Set Other Modes, not a state machine"
 )]
+// This render state grows a field nearly every sprint (mid_texel, key_en, … most
+// recently); `#[non_exhaustive]` keeps that additive for external consumers, who
+// build it from `Default` rather than an exhaustive literal (the in-crate decoder
+// still uses a full literal, which same-crate construction permits).
+#[non_exhaustive]
 pub struct OtherModes {
     /// Cycle type: 0 = 1-cycle, 1 = 2-cycle, 2 = copy, 3 = fill.
     pub cycle_type: u8,

@@ -617,7 +617,8 @@ static const uint32_t V14_TEX_RECT_8X8_16[] = {
     0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 DtDy=1.0
 };
 static uint16_t tex8x8[64];
-// An 8x8 RGBA5551 CHECKERBOARD (bright red `0xF801` / dark `0x0001` by `(x+y)&1`),
+// An 8x8 RGBA5551 CHECKERBOARD (bright red `0xF801` = R31 G0 B0 A1 / dark `0x0001`
+// = R0 G0 B0 A1, by `(x+y)&1`; the low bit is the 5551 alpha, set so both are opaque),
 // used by the mid-texel vector. A checkerboard is deliberately NON-planar: in every
 // 2x2 quad `t0 == t3` and `t1 == t2` are the opposite value, so the 3-point centre
 // pick (which ignores `t0`) yields the opposite-parity value while the mid-texel
