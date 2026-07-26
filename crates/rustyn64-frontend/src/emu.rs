@@ -8,8 +8,9 @@
 //! # Video source
 //!
 //! The presented frame comes from the core's VI scan-out: `produce_frame` calls
-//! [`rustyn64_core::Bus::scanout`], which converts the framebuffer at `VI_ORIGIN`
-//! to RGBA8 (the LLE RDP/VI path). While the VI is off or unconfigured (cold
+//! [`rustyn64_core::Bus::scanout_scaled`], which converts the framebuffer at
+//! `VI_ORIGIN` to RGBA8 through the accurate VI pipeline (scale-resample + filters,
+//! ledger R-5). While the VI is off or unconfigured (cold
 //! boot / no ROM), scan-out reports `(0, 0)` and a black frame at the default
 //! resolution is shown.
 //!
@@ -69,7 +70,7 @@ pub struct EmuCore {
     /// The deterministic core.
     system: System,
     /// The staged video framebuffer, filled each frame from the core's real VI
-    /// scan-out (`Bus::scanout`) — the LLE RDP/VI path, not a test pattern.
+    /// scan-out (`Bus::scanout_scaled`) — the LLE RDP/VI path, not a test pattern.
     frame: Frame,
     /// Drained audio samples (interleaved stereo f32), consumed by the ring.
     audio: Vec<f32>,
@@ -287,19 +288,23 @@ impl EmuCore {
 
     /// Scan the core's framebuffer out into the presented frame.
     ///
-    /// `Bus::scanout` reads the VI registers and converts the framebuffer at
-    /// `VI_ORIGIN` to RGBA8 (the LLE RDP/VI path). It **self-guards against a
-    /// buffer overrun** from untrusted VI registers: it returns `(0, 0)` and
-    /// writes nothing when its output cannot hold `w * h * 4` bytes, so a ROM
-    /// cannot make it overrun `frame.rgba`. It also returns `(0, 0)` while the VI
-    /// is off or unconfigured (cold boot / no ROM).
+    /// `Bus::scanout_scaled` reads the VI registers and converts the framebuffer at
+    /// `VI_ORIGIN` to RGBA8 through the **accurate** VI pipeline (the real
+    /// `VI_X_SCALE`/`VI_Y_SCALE` resampling, active-span/overscan geometry, and the
+    /// coverage/gamma post-filters — ledger R-5), replacing the earlier 1:1
+    /// `Bus::scanout`. It **self-guards against a buffer overrun** from untrusted VI
+    /// registers: it returns `(0, 0)` and writes nothing when its output cannot hold
+    /// `w * h * 4` bytes, so a ROM cannot make it overrun `frame.rgba` (sized
+    /// `FB_MAX_W * FB_MAX_H`). It also returns `(0, 0)` while the VI is off or
+    /// unconfigured (cold boot / no ROM).
     ///
     /// A returned `(0, 0)` — or a valid-but-oversized geometry that fits the
     /// backing store yet exceeds the blit's `FB_MAX` texture — is presented as a
     /// black frame at the default resolution; the whole buffer is cleared so no
-    /// stale pixels from a previous, larger frame survive.
+    /// stale pixels from a previous, larger frame survive. (Interlace/serrate is
+    /// deferred under R-6, so scanned heights stay within `FB_MAX_H`.)
     fn produce_frame(&mut self) {
-        let (w, h) = self.system.bus.scanout(&mut self.frame.rgba);
+        let (w, h) = self.system.bus.scanout_scaled(&mut self.frame.rgba);
         if let Some((w, h)) = presentable_geometry(w, h) {
             self.frame.w = w;
             self.frame.h = h;
@@ -546,7 +551,7 @@ mod tests {
         assert_eq!(presentable_geometry(1, FB_MAX_H + 1), None, "too tall");
     }
 
-    /// With no ROM the VI is off, so `Bus::scanout` returns `(0, 0)` and
+    /// With no ROM the VI is off, so `Bus::scanout_scaled` returns `(0, 0)` and
     /// `produce_frame` presents a black frame at the default resolution — the
     /// wiring falls back rather than blitting stale/garbage memory.
     #[test]

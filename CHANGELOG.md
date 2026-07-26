@@ -8,6 +8,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Changed — the frontend now presents the accurate VI scan-out (ledger R-5)
+
+- **`emu::Emu::produce_frame` calls `Bus::scanout_scaled`** instead of the 1:1
+  `Bus::scanout`, so the on-screen picture uses the real `VI_X_SCALE`/`VI_Y_SCALE`
+  resampling, active-span/overscan geometry, and the coverage/gamma post-filters
+  (all Angrylion-validated, R-5 slices 1–4f) rather than an unscaled copy. This
+  completes the R-12-style "land the method ahead of its caller, then wire it".
+  `scanout_scaled` self-guards on the `FB_MAX 640×480` backing store (returns
+  `(0, 0)` → black frame on oversize), and interlace/serrate remains deferred (R-6)
+  so scanned heights stay within it. `Bus::scanout` is retained for the harness
+  frame tests. Deterministic (the frontend is outside the deterministic core per
+  ADR 0004); no save-state or format change.
+
 ### Added — VI PAL 50 Hz field rate (gap-analysis Stage D, ledger R-6)
 
 - **Region-aware VI scan cadence.** `Vi::field_hz` selects the PAL **50 Hz** field
