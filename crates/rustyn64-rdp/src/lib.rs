@@ -1968,6 +1968,10 @@ impl Rdp {
             return;
         }
         let flip = hi >> 23 & 1 != 0;
+        // The primitive's base tile (bits 50:48 of the command = `hi` bits 18:16;
+        // `(ewdata[0] >> 16) & 7` in Angrylion `rasterizer.c`). Selects the tile
+        // descriptor the texture sampler reads (and `base+1` in 2-cycle mode).
+        let base_tile = ((hi >> 16) & 7) as usize;
         let yl = sext(hi & 0x3FFF, 14);
         let mut ym = sext(lo >> 16 & 0x3FFF, 14);
         let yh = sext(lo & 0x3FFF, 14);
@@ -2130,6 +2134,7 @@ impl Rdp {
                     cov,
                     shade_setup.as_ref(),
                     tex_setup.as_ref(),
+                    base_tile,
                     bus,
                 );
             } else if has_color {
@@ -2142,6 +2147,7 @@ impl Rdp {
                     let (mut color, _shade_alpha) = self.combined_color(
                         shade_setup.as_ref(),
                         tex_setup.as_ref(),
+                        base_tile,
                         major_x,
                         line,
                         y_base,
@@ -2414,16 +2420,21 @@ impl Rdp {
     /// and/or sampled texel (plus the prim/env registers). `shade`/`tex` are the
     /// decoded setups, `None` when that attribute is absent. The two-cycle mode
     /// comes from `Set Other Modes`. Texture uses the non-perspective coordinate
-    /// (`interpolate_st`) sampled from tile 0.
+    /// (`interpolate_st`) sampled from `base_tile` (and `base_tile + 1` in 2-cycle).
     ///
     /// Returns the combiner output **and** the interpolated shade alpha, which the
     /// blender selects separately (`A`-select 2) from the combiner output alpha
     /// (`A`-select 0) — the two differ whenever the alpha combiner transforms the
     /// shade alpha. Shade alpha is `0` when the triangle carries no shade block.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "per-pixel combiner inputs: setups, base tile, and interpolation origin"
+    )]
     fn combined_color(
         &self,
         shade: Option<&ShadeSetup>,
         tex: Option<&TexSetup>,
+        base_tile: usize,
         major_x: i64,
         line: i32,
         y_base: i32,
@@ -2449,17 +2460,16 @@ impl Rdp {
         if let Some(tex) = tex {
             let [s105, t105] =
                 interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
-            // The primitive's base tile is not yet threaded from the triangle command
-            // (bits 50:48) — both the 1-cycle path here and the 2-cycle `tile+1` below
-            // use tiles 0/1. Selecting `tiles[t]`/`tiles[(t+1)&7]` for a non-zero base
-            // tile is a pre-existing R-13 gap (a separate slice with its own vector).
-            inp.texel0 = self.sample_texel(&self.tiles[0], s105, t105);
-            // 2-cycle mode samples a SECOND texel from the next tile (`tile+1`, the
-            // `RENDERTILE`/`RENDERTILE+1` case) at the same coordinate — LOD-based mip
-            // tile selection is deferred (R-13). `combine` swaps texel0/texel1 for the
-            // second cycle so cycle 1's TEXEL0 reads `tile+1`.
+            // The primitive's base tile comes from the triangle command (bits 50:48,
+            // `(ewdata[0] >> 16) & 7` — Angrylion `rasterizer.c`); the sampler reads
+            // that descriptor, not a hardwired tile 0. LOD-based mip tile selection
+            // within the base/`base+1` pair is still deferred (R-13).
+            inp.texel0 = self.sample_texel(&self.tiles[base_tile], s105, t105);
+            // 2-cycle mode samples a SECOND texel from the next tile (`base+1`, the
+            // `RENDERTILE`/`RENDERTILE+1` case) at the same coordinate. `combine` swaps
+            // texel0/texel1 for the second cycle so cycle 1's TEXEL0 reads `base+1`.
             if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE {
-                inp.texel1 = self.sample_texel(&self.tiles[1], s105, t105);
+                inp.texel1 = self.sample_texel(&self.tiles[(base_tile + 1) & 7], s105, t105);
             }
         }
         let shade_alpha = inp.shade[3];
@@ -2567,6 +2577,7 @@ impl Rdp {
         cov: Option<(&[i32; COVERAGE_SUBPIXELS], &[i32; COVERAGE_SUBPIXELS])>,
         shade: Option<&ShadeSetup>,
         tex: Option<&TexSetup>,
+        base_tile: usize,
         bus: &mut B,
     ) {
         let yu = line as u32;
@@ -2600,7 +2611,7 @@ impl Rdp {
                 // Shaded/textured triangles take the combiner colour; else the FILL register.
                 if shade.is_some() || tex.is_some() {
                     let (mut color, shade_alpha) =
-                        self.combined_color(shade, tex, major_x, line, y_base, x);
+                        self.combined_color(shade, tex, base_tile, major_x, line, y_base, x);
                     // Alpha-compare gates the write AND the z-write on the combiner
                     // alpha (before blend/coverage touch the alpha byte). This is
                     // observably equivalent to the RDP's pre-depth-test ordering

@@ -8,6 +8,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — RDP primitive base-tile threading (gap-analysis Stage D, ledger R-13)
+
+- **The triangle command's base tile now selects the texture tile.** `triangle_fill`
+  decodes the base tile (`(hi >> 16) & 7`, bits 50:48 — `ewdata[0]` in Angrylion) and
+  threads it through `combined_color`/`depth_span`, which sample `tiles[base_tile]`
+  (and `tiles[(base_tile + 1) & 7]` for the 2-cycle `texel1`) instead of a hardwired
+  tile 0/1. Validated byte-for-byte against Angrylion by `tex_tri_base_tile_16` (the
+  ramp loaded into tile 3 renders identically to `tex_tri_16`, while a `tiles[0]` read
+  samples the unloaded low TMEM and renders black — mutation-witnessed). Still open
+  under R-13: `mid_texel` and the LOD/mip tile selection (`lod_frac`).
+
 ### Added — RDP chroma-key alpha compare (gap-analysis Stage D, ledger R-10)
 
 - **`key_en` (Set Other Modes bit 40) chroma-keying.** `Set Key GB`/`R` now also
