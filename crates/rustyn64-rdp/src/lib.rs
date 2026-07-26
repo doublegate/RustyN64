@@ -616,8 +616,8 @@ fn rgb_input_a(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
     }
 }
 
-/// The RGB `B` (mulsub) input. Same as `A` except 6/7 are KeyCenter/ConvertK4
-/// (both R-10 → 0), so 6+ reads as zero.
+/// The RGB `B` (mulsub) input. Same as `A` except 6/7 are `KeyCenter` (`Set Key`)
+/// and `ConvertK4` (`Set Convert`); 8+ read as zero.
 fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
     match sel {
         0 => i16::from(inp.combined[ch]),
@@ -626,13 +626,15 @@ fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         3 => i16::from(inp.prim[ch]),
         4 => i16::from(inp.shade[ch]),
         5 => i16::from(inp.env[ch]),
+        6 => i16::from(inp.key_center[ch]), // Chroma-key centre (Set Key R/GB)
         7 => inp.k4, // Convert K4 (raw 0..511; combine_channel's special_expand sign-extends)
-        _ => 0,      // 6 KeyCenter — R-10; 8+ Zero
+        _ => 0,      // 8+ Zero
     }
 }
 
 /// The RGB `C` (mul) input (5-bit table). Alpha-channel inputs (7–12) tap the
-/// alpha of the corresponding signal; the key/LOD/convert inputs are R-10 → 0.
+/// alpha of the corresponding signal; `KeyScale` (6, `Set Key`) and Convert `K5` (15)
+/// are wired, `LODFrac` (13) is R-10 → 0.
 fn rgb_input_c(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
     match sel {
         0 => i16::from(inp.combined[ch]),
@@ -647,9 +649,10 @@ fn rgb_input_c(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         10 => i16::from(inp.prim[3]),
         11 => i16::from(inp.shade[3]),
         12 => i16::from(inp.env[3]),
-        14 => inp.prim_lod_frac, // Prim LOD fraction
-        15 => inp.k5,            // Convert K5 (raw 0..511; combine_channel's sext9 sign-extends)
-        _ => 0,                  // 6 KeyScale, 13 LODFrac — R-10; 16+ Zero
+        6 => i16::from(inp.key_scale[ch]), // Chroma-key scale (Set Key R/GB)
+        14 => inp.prim_lod_frac,           // Prim LOD fraction
+        15 => inp.k5, // Convert K5 (raw 0..511; combine_channel's sext9 sign-extends)
+        _ => 0,       // 13 LODFrac — R-10; 16+ Zero
     }
 }
 
@@ -811,6 +814,8 @@ const OP_SET_FILL_COLOR: u8 = 0x37;
 const OP_SET_FOG_COLOR: u8 = 0x38;
 const OP_SET_BLEND_COLOR: u8 = 0x39;
 const OP_SET_CONVERT: u8 = 0x2C;
+const OP_SET_KEY_GB: u8 = 0x2A;
+const OP_SET_KEY_R: u8 = 0x2B;
 const OP_SET_PRIM_COLOR: u8 = 0x3A;
 const OP_SET_ENV_COLOR: u8 = 0x3B;
 const OP_SET_COMBINE_MODE: u8 = 0x3C;
@@ -1211,6 +1216,12 @@ pub(crate) struct CombinerInputs {
     /// **raw 0..511** value; `combine_channel` sign-extends it via `sext9`
     /// (Angrylion `SIGNF(c, 9)`). Stored raw, like `k4`. R-10.
     pub k5: i16,
+    /// Chroma-key centre `[r, g, b]` (`Set Key R`/`GB`) — the combiner RGB sub-B
+    /// input (select 6), fed as an 8-bit value like `prim`/`env`. R-10.
+    pub key_center: [u8; 3],
+    /// Chroma-key scale `[r, g, b]` (`Set Key R`/`GB`) — the combiner RGB mul input
+    /// (select 6), 8-bit. R-10.
+    pub key_scale: [u8; 3],
 }
 
 /// TMEM size in bytes — 4 KiB of on-chip texture memory.
@@ -1371,6 +1382,14 @@ pub struct Rdp {
     pub k4: i16,
     /// `Set Convert` `K5` (see `k4`).
     pub k5: i16,
+    /// Chroma-key **centre** per channel `[r, g, b]` (`Set Key R` 0x2B / `Set Key GB`
+    /// 0x2A) — the combiner RGB sub-B input (select 6). `0..=255`. The key **width**
+    /// (used only by the deferred chroma-key alpha compare, not the combiner mux) is
+    /// not stored — it has no consumer yet, so it lands with that path. R-10.
+    pub key_center: [u8; 3],
+    /// Chroma-key **scale** per channel `[r, g, b]` (`Set Key R`/`GB`) — the combiner
+    /// RGB mul input (select 6). `0..=255`. R-10.
+    pub key_scale: [u8; 3],
     /// The environment colour, RGBA8888 (`Set Env Color`, 0x3B).
     pub env_color: u32,
     /// The blend colour, RGBA8888 (`Set Blend Color`, 0x39).
@@ -1586,6 +1605,21 @@ impl Rdp {
                 // hi word and lo[31:18]) are deliberately ignored — deferred, R-10.
                 self.k4 = ((lo >> 9) & 0x1FF) as i16;
                 self.k5 = (lo & 0x1FF) as i16;
+            }
+            OP_SET_KEY_GB => {
+                // word 1 (lo): centre_g[31:24], scale_g[23:16], centre_b[15:8],
+                // scale_b[7:0] (Angrylion `rdp_set_key_gb`). The widths (hi word) drive
+                // only the deferred chroma-key alpha compare, so they are not stored.
+                self.key_center[1] = (lo >> 24) as u8;
+                self.key_scale[1] = (lo >> 16) as u8;
+                self.key_center[2] = (lo >> 8) as u8;
+                self.key_scale[2] = lo as u8;
+            }
+            OP_SET_KEY_R => {
+                // word 1 (lo): width_r[31:16] (deferred), centre_r[15:8], scale_r[7:0]
+                // (Angrylion `rdp_set_key_r`).
+                self.key_center[0] = (lo >> 8) as u8;
+                self.key_scale[0] = lo as u8;
             }
             OP_SET_ENV_COLOR => self.env_color = lo,
             OP_SET_BLEND_COLOR => self.blend_color = lo,
@@ -2365,6 +2399,8 @@ impl Rdp {
             prim_lod_frac: i16::from(self.prim_lod_frac),
             k4: self.k4,
             k5: self.k5,
+            key_center: self.key_center,
+            key_scale: self.key_scale,
             ..CombinerInputs::default()
         };
         if let Some(shade) = shade {
@@ -3707,6 +3743,21 @@ mod tests {
         assert_eq!(rdp.color_image_size, 3);
         assert_eq!(rdp.color_image_width, 320);
         assert_eq!(rdp.color_image, 0x0010_0000);
+    }
+
+    /// **`Set Key GB`/`Set Key R` decode the chroma-key centre/scale per channel
+    /// (R-10).** Pins the bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`:
+    /// GB word-1 is `centre_g[31:24] scale_g[23:16] centre_b[15:8] scale_b[7:0]`, and
+    /// R word-1 is `width_r[31:16] centre_r[15:8] scale_r[7:0]` (width unused). Distinct
+    /// per-channel values so a field-swap in the decode is caught.
+    #[test]
+    fn set_key_decodes_centre_and_scale_per_channel() {
+        let (rdp, _) = run_commands(&[
+            (0x2A00_0000, 0x4080_60C0), // Set Key GB: cg=0x40 sg=0x80 cb=0x60 sb=0xC0
+            (0x2B00_0000, 0x0000_2040), // Set Key R:  wr=0 cr=0x20 sr=0x40
+        ]);
+        assert_eq!(rdp.key_center, [0x20, 0x40, 0x60], "centre [r, g, b]");
+        assert_eq!(rdp.key_scale, [0x40, 0x80, 0xC0], "scale [r, g, b]");
     }
 
     /// **`Set Fill Color` and `Set Scissor` store their values.**
@@ -5069,6 +5120,34 @@ mod tests {
             ..CombinerInputs::default()
         };
         assert_eq!(Rdp::combine_cycle(cfg, &inp), [48, 48, 48, 255]);
+    }
+
+    /// **Chroma-key centre/scale reach the combiner as RGB sub-B select 6 and RGB
+    /// mul-select 6 (`Set Key R`/`GB`, R-10).** `A = One`, `B = KeyCentre`,
+    /// `C = KeyScale`, `D = Zero`, so RGB is `(One − centre) * scale >> 8`. Per-channel
+    /// centre `[32, 64, 96]` and scale `[64, 128, 192]` give distinct results
+    /// (`(256−32)*64 = 56`, `(256−64)*128 = 96`, `(256−96)*192 = 120`, each `+ 0x80 >> 8`),
+    /// so a channel-swap on either input is caught. Alpha is a fixed `One` (keys are
+    /// RGB-only). Mutation guard: an unwired `KeyCentre` (→ 0) gives `[64, 128, 192]`-ish
+    /// and an unwired `KeyScale` (→ 0) gives `[0, 0, 0]` — either changes the result.
+    #[test]
+    fn combine_cycle_routes_chroma_key() {
+        let cfg = CombineCycle {
+            rgb_a: 6, // One
+            rgb_b: 6, // KeyCentre (sub-B)
+            rgb_c: 6, // KeyScale (mul)
+            rgb_d: 7, // Zero
+            a_a: 7,   // Zero
+            a_b: 7,   // Zero
+            a_c: 7,   // Zero
+            a_d: 6,   // One
+        };
+        let inp = CombinerInputs {
+            key_center: [32, 64, 96],
+            key_scale: [64, 128, 192],
+            ..CombinerInputs::default()
+        };
+        assert_eq!(Rdp::combine_cycle(cfg, &inp), [56, 96, 120, 255]);
     }
 
     /// **Two-cycle mode chains cycle 0 into cycle 1's `Combined` input.** Cycle 0

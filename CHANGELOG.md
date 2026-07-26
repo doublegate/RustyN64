@@ -8,6 +8,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — RDP chroma-key combiner inputs (gap-analysis Stage D, ledger R-10)
+
+- **`Set Key GB` (0x2A) / `Set Key R` (0x2B) now decode** the per-channel chroma-key
+  centre and scale (bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`), and they
+  route through the combiner as **KeyCentre** (RGB sub-B select 6) and **KeyScale**
+  (RGB mul-select 6) instead of reading zero. The key *width* (used only by the
+  deferred chroma-key alpha compare) is not stored, matching the `min_level`
+  precedent. Two mutation-checked unit tests pin the decode field positions
+  (`set_key_decodes_centre_and_scale_per_channel`) and the mux routing
+  (`combine_cycle_routes_chroma_key`). n64-systemtest impact: none (no RDP-combiner
+  coverage). Still deferred under R-10: noise, the derivative `lod_frac`, the
+  chroma-key alpha compare, and the YUV convert `K0`–`K3`.
+
 ### Changed — the frontend now presents the accurate VI scan-out (ledger R-5)
 
 - **`emu::EmuCore::produce_frame` calls `Bus::scanout_scaled`** instead of the 1:1
