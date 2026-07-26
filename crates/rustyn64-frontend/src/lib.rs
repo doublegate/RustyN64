@@ -25,7 +25,7 @@
 //! # Status (Phase 6 — frontend integration)
 //!
 //! The shell presents the **real machine**: the video framebuffer is filled from
-//! the core's VI scan-out (`Bus::scanout`, the LLE RDP/VI path landed in Phase 3),
+//! the core's accurate VI scan-out (`Bus::scanout_scaled`, the LLE RDP/VI path),
 //! the audio ring is fed by the real AI drain (Phase 4), and controller input
 //! reaches the game through the SI joybus (Phase 5). All rate control, pacing, and
 //! resampling live here in the frontend; the deterministic core never learns what
