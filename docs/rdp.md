@@ -404,10 +404,12 @@ mul-select 15), each validated byte-for-byte against Angrylion (`tex_tri_primlod
 proving K4/K5 are stored raw `0..511` and sign-extended in the combiner, not at decode). The
 **chroma-key centre/scale** (`Set Key GB`/`Set Key R` → RGB sub-B / mul select 6) are likewise
 wired, validated by unit tests (decode + mux routing) and the `tex_tri_chromakey_16` conformance
-vector byte-for-byte against Angrylion. The remaining exotic inputs — **noise**, the
-derivative-computed **LOD fraction**, the **chroma-key alpha compare** (the `key_en` path that uses
-the key *width*), and the **YUV convert `K0`–`K3`** — still read as zero until the LOD/key/noise
-state lands. The arithmetic, the 16-field decode, the mux, and the 2-cycle
+vector byte-for-byte against Angrylion. The **chroma-key alpha compare** (`key_en`, Set Other Modes bit 40) is also wired: the combiner
+outputs the sub-A chromabypass colour and derives the pixel alpha from `chroma_key_min` over the
+17-bit combined colour + the `Set Key` widths (gated on `key_en`, common path byte-identical;
+validated by `tex_tri_chromakey_alpha_16`). The remaining exotic inputs — **noise** (un-oracled),
+the derivative-computed **LOD fraction**, and the **YUV convert `K0`–`K3`** — still read as zero
+until the LOD/noise/YUV state lands. The arithmetic, the 16-field decode, the mux, and the 2-cycle
 chaining are unit-tested against hand-computed values. `combine` now has its runtime caller — `combined_color` routes the
 interpolated shade and sampled texel through it per pixel (T-33-004 2b) — but no systemtest drives
 the render path, so the oracle stays **93**.

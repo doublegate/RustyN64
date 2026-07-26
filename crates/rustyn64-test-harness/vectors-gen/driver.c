@@ -953,6 +953,31 @@ static const uint32_t V29_TEX_TRI_CHROMAKEY_16[] = {
     SHADE_BLOCK_FLAT(0x40, 0x40, 0x40, 0xFF), // flat shade (ignored by the combine)
 };
 
+// V30: the chroma-key ALPHA compare (key_en, Set Other Modes bit 40) — ledger R-10.
+// The key alpha (`chroma_key_min`) must be OBSERVABLE, so alpha-compare is enabled
+// (bit 0) with a Set Blend Color threshold of 0x80: the pixel is written only if the
+// key alpha >= 0x80. With rgb_a=rgb_b=Shade the 17-bit combined colour is 0x80 (A−B=0
+// → 0x80 constant), so per channel `SIGN(0x80)=128` folds to `-128`, then `+width<<4`:
+// width_r=0x10 → 256−128 = 128 = 0x80 (the min across r/g/b), which meets the 0x80
+// threshold, so the Shade chromabypass triangle IS drawn. A broken `chroma_key_min`
+// (wrong sign/fold/width/min) shifts the key alpha below 0x80 → the triangle vanishes;
+// clearing key_en outputs the *combined* colour (black, A−B=0) instead of Shade. Both
+// make this non-vacuous — the golden's drawn Shade pixels observe the key alpha.
+static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
+    0x2F0001F0u, 0x00000001u, // Set Other Modes: 1-cycle, KEY_EN (bit 40), ALPHA_COMPARE (bit 0)
+    0x39000000u, 0x00000080u, // Set Blend Color: alpha threshold = 0x80
+    0x2A014018u, 0x00000000u, // Set Key GB: wg=0x14 wb=0x18 (centre/scale unused here)
+    0x2B000000u, 0x00100000u, // Set Key R:  wr=0x10 (centre/scale unused)
+    0x3C000080u, 0x041C01C6u, // Set Combine: rgb_a=Shade rgb_b=Shade rgb_c=Combined rgb_d=Zero; a=One
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    SHADE_BLOCK_FLAT(0x40, 0x60, 0x80, 0xFF), // flat shade -> chromabypass + col17 source
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1621,6 +1646,11 @@ int main(int argc, char **argv) {
                   sizeof(V29_TEX_TRI_CHROMAKEY_16) / 4, V29_TEX_TRI_CHROMAKEY_16,
                   0, 0, NULL};
     if (emit_vector(&v29, out_dir)) return 1;
+
+    Vector v30 = {"tex_tri_chromakey_alpha_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V30_TEX_TRI_CHROMAKEY_ALPHA_16) / 4, V30_TEX_TRI_CHROMAKEY_ALPHA_16,
+                  0, 0, NULL};
+    if (emit_vector(&v30, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
