@@ -8,6 +8,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — RDP mid-texel filter (gap-analysis Stage D, ledger R-13)
+
+- **`mid_texel` (Set Other Modes bit 44).** When set and a bilinear sample lands
+  exactly on the texel centre (`sfrac == tfrac == 0x10`), `bilinear_3point` now
+  averages the four neighbours (`t3 + ((((t1+t2)<<6) − (t3<<7) + ((!t3+t0)<<6) +
+  0xc0) >> 8)`, Angrylion `tex.c` `center` case) instead of the 3-point triangle
+  pick. Validated byte-for-byte against Angrylion by `tex_tri_mid_texel_16` over a
+  non-planar checkerboard (a smooth gradient is planar, so bit 44 would be
+  invisible), whose golden carries the midpoint value a 3-point pick never
+  produces; mutation-witnessed at pixel (3,3), plus a mutation-checked
+  `bilinear_3point` unit test. Only the LOD/mip `lod_frac` residual now remains
+  open under R-13.
+
 ### Added — RDP primitive base-tile threading (gap-analysis Stage D, ledger R-13)
 
 - **The triangle command's base tile now selects the texture tile.** `triangle_fill`
@@ -17,7 +30,7 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   tile 0/1. Validated byte-for-byte against Angrylion by `tex_tri_base_tile_16` (the
   ramp loaded into tile 3 renders identically to `tex_tri_16`, while a `tiles[0]` read
   samples the unloaded low TMEM and renders black — mutation-witnessed). Still open
-  under R-13: `mid_texel` and the LOD/mip tile selection (`lod_frac`).
+  under R-13: the LOD/mip tile selection (`lod_frac`).
 
 ### Added — RDP chroma-key alpha compare (gap-analysis Stage D, ledger R-10)
 

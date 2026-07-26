@@ -617,6 +617,14 @@ static const uint32_t V14_TEX_RECT_8X8_16[] = {
     0x00000000u, 0x10000400u, // S=0 T=0 | DsDx=4.0 DtDy=1.0
 };
 static uint16_t tex8x8[64];
+// An 8x8 RGBA5551 CHECKERBOARD (bright red `0xF801` = R31 G0 B0 A1 / dark `0x0001`
+// = R0 G0 B0 A1, by `(x+y)&1`; the low bit is the 5551 alpha, set so both are opaque),
+// used by the mid-texel vector. A checkerboard is deliberately NON-planar: in every
+// 2x2 quad `t0 == t3` and `t1 == t2` are the opposite value, so the 3-point centre
+// pick (which ignores `t0`) yields the opposite-parity value while the mid-texel
+// four-texel average yields the midpoint — the two differ, making the vector
+// non-vacuous where a smooth gradient (planar) would collapse them to the same value.
+static uint16_t tex_chk8x8[64];
 
 // V15: a MAGNIFIED COPY-mode Texture Rectangle — an 8-texel texture (fully loaded,
 // so no unloaded-TMEM read) blitted into an 8x1 image with DsDx = 2.0 (0.5
@@ -1004,6 +1012,32 @@ static const uint32_t V31_TEX_TRI_BASE_TILE_16[] = {
     0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
     // S base 0, T base 0, W base 1.0; dx.S = 1.0 (one texel per pixel); rest 0.
     TEX_BLOCK(0, 0, 1, 1, 0, 0, 0, 0, 0),
+};
+
+// V32: the MID-TEXEL filter (Set Other Modes bit 44, ledger R-13). Same bilinear setup
+// as V23 (0.5 texel/column and /row, so odd-column/odd-row covered pixels sample the
+// exact texel centre `sfrac == tfrac == 0x10`) but over the NON-planar CHECKERBOARD
+// texture `tex_chk8x8` and with `mid_texel` set. At the centre the RDP replaces the
+// 3-point triangle pick (which ignores `t0`) with a four-texel average (Angrylion
+// `tex.c` `center` case) — on a checkerboard the 3-point yields the opposite-parity
+// value while the average yields the midpoint, so bit 44 visibly changes those pixels.
+// The checkerboard is essential: a smooth gradient is planar, so its centre average
+// equals its 3-point pick and bit 44 would be invisible (a vacuous golden).
+static const uint32_t V32_TEX_TRI_MID_TEXEL_16[] = {
+    0x2F0038F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, SAMPLE_TYPE=1 (bit 45), MID_TEXEL=1 (bit 44)
+    0x3C000000u, 0x00000041u, // Set Combine Mode: texel0 passthrough
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x0000C030u, // Set Tile 0: 16-bit, line 2, tmem 0, mask_s=3, mask_t=3 (8x8)
+    0x32000000u, 0x0001C01Cu, // Set Tile Size 0: SL0 TL0 SH7 TH7 (8x8 texels)
+    0x34000000u, 0x0001C01Cu, // Load Tile 0: 8x8 texels
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32, ym=32, yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0 (a widening staircase, 2D coverage)
+    // dx.S = 0x10 (0.5 texel/col), de.T = 0x10 (0.5 texel/row); base (0,0,1).
+    TEX_BLOCK(0, 0, 1, 0x10, 0, 0, 0, 0x10, 0),
 };
 
 // ---- Seeded fuzz generator (SplitMix64) ----
@@ -1538,6 +1572,10 @@ int main(int argc, char **argv) {
         for (uint32_t x = 0; x < 8; x++)
             tex8x8[y * 8 + x] =
                 (uint16_t)(((x * 4u) << 11) | ((y * 4u) << 6) | 1u);
+    // Checkerboard for the mid-texel vector: bright red / dark by (x+y) parity.
+    for (uint32_t y = 0; y < 8; y++)
+        for (uint32_t x = 0; x < 8; x++)
+            tex_chk8x8[y * 8 + x] = ((x + y) & 1u) ? 0x0001u : 0xF801u;
 
     Vector v1 = {"fill_rect_16", 0x2000, 0x1000, 8, 8, 2,
                  sizeof(V1_FILL_RECT_16) / 4, V1_FILL_RECT_16};
@@ -1684,6 +1722,11 @@ int main(int argc, char **argv) {
                   sizeof(V31_TEX_TRI_BASE_TILE_16) / 4, V31_TEX_TRI_BASE_TILE_16,
                   0x3000, 8, TEX8_RAMP};
     if (emit_vector(&v31, out_dir)) return 1;
+
+    Vector v32 = {"tex_tri_mid_texel_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V32_TEX_TRI_MID_TEXEL_16) / 4, V32_TEX_TRI_MID_TEXEL_16,
+                  0x3000, 64, tex_chk8x8};
+    if (emit_vector(&v32, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
