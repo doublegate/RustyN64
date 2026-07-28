@@ -516,8 +516,10 @@ fn bilinear_3point(
 /// set when any of bits 16:14 survive.
 fn lod_delta(scurr: i32, snext: i32, tcurr: i32, tnext: i32, previous: i32) -> i32 {
     let fold = |next: i32, curr: i32| {
-        let d =
-            sext(next.cast_unsigned() & 0x1_FFFF, 17) - sext(curr.cast_unsigned() & 0x1_FFFF, 17);
+        // Mask to 17 bits first: the masked value is provably non-negative, so
+        // widening it to `sext`'s `u32` cannot lose a sign.
+        let d = sext((next & 0x1_FFFF).cast_unsigned(), 17)
+            - sext((curr & 0x1_FFFF).cast_unsigned(), 17);
         if d & 0x2_0000 != 0 { !d & 0x1_FFFF } else { d }
     };
     let d = fold(snext, scurr).max(fold(tnext, tcurr)).max(previous);
