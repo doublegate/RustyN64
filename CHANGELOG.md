@@ -8,6 +8,24 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — RDP LOD fraction, 2-cycle (gap-analysis Stage D, ledger R-13/R-10)
+
+- **The derivative-computed `lod_frac` now reaches the combiner** (RGB mul-select
+  13 / alpha mul-select 0, previously dead), closing that half of R-10. In 2-cycle
+  mode the LOD is the larger of the coordinate deltas to the next pixel in x
+  (`+dsdx`) and the next scanline in y (`+dsdy`), each through the same perspective
+  divide as the pixel's own coordinate — a port of Angrylion `tclod_2cycle` +
+  `lodfrac_lodtile_signals`. Supporting state now decoded: the per-Y texture
+  derivative (block words 5/7, previously unparsed), `Set Prim Color`'s
+  `min_level`, the triangle command's `level[2:0]` (`max_level`), and
+  `Set Other Modes` `tex_lod_en`/`sharpen_tex_en`/`detail_tex_en`. Computation is
+  gated on Angrylion's `dolod`, so a combine that does not select the fraction is
+  byte-identical (all 34 prior conformance vectors unchanged). Validated
+  byte-for-byte against Angrylion by `tex_tri_lodfrac_16` (LOD 112 → fraction
+  `0xc0`, golden `0xc631`), with three mutation checks and hand-computed
+  `lod_delta` / `lod_frac_of` unit tests. Still open under R-13: the 1-cycle LOD
+  form (needs span-edge signals; reads zero) and LOD-driven mip tile selection.
+
 ### Added — RDP mid-texel filter (gap-analysis Stage D, ledger R-13)
 
 - **`mid_texel` (Set Other Modes bit 44).** When set and a bilinear sample lands

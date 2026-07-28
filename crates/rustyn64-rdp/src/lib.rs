@@ -278,12 +278,30 @@ fn interpolate_shade(
     out
 }
 
-/// Interpolate the per-pixel texture coordinate `(s, t)` for pixel `(x, y)` from a
-/// triangle's texture coefficients — the **non-perspective** path
-/// (`no_perspective_divide(stw >> 16)`, `interpolation.h`/`perspective.h`): walk
-/// the `s16.16` `S`/`T` by `de` down the scanline and `dx` across, then take the
-/// integer part (`>> 16`) as the coordinate. The `W` perspective divide is the
-/// deferred perspective slice.
+/// The raw `S`/`T`/`W` accumulators for pixel `(x, y)`, **before** the `>> 16` and
+/// the (non-)perspective divide: walk the `s16.16` `S`/`T`/`W` by `de` down the
+/// scanline and `dx` across (`interpolation.h`).
+///
+/// Kept separate from [`divide_stw`] so the LOD (R-13) can tap this same
+/// accumulator and step it by `dx`/`dy` without re-deriving the scanline walk;
+/// `divide_stw(interpolate_stw_raw(..), persp)` is the plain per-pixel coordinate.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "base_x is in range for the cast"
+)]
+fn interpolate_stw_raw(tex: &TexSetup, major_x: i64, y: i32, y_base: i32, x: i32) -> [i32; 3] {
+    let base_x = (major_x >> 16) as i32;
+    let mut stw = [0i32; 3];
+    for (c, o) in stw.iter_mut().enumerate() {
+        let scan = tex.base[c].wrapping_add(tex.de[c].wrapping_mul(y.wrapping_sub(y_base)));
+        *o = scan.wrapping_add((tex.dx[c] & !0x1f).wrapping_mul(x.wrapping_sub(base_x)));
+    }
+    stw
+}
+
+/// Take the integer part of the raw accumulators and run the (non-)perspective
+/// divide: `no_perspective_divide` is just `(s, t)`; the perspective path divides
+/// by `W`.
 ///
 /// Returns the raw **`s10.5`** coordinate (the 5 low bits are the sub-texel
 /// fraction), *before* the tile transform: the caller runs [`sample_coord`]
@@ -291,31 +309,16 @@ fn interpolate_shade(
 /// tile-relative integer texel. Keeping the fraction here is what lets the shift
 /// and the tile-size clamp operate on the true coordinate (ledger R-13).
 #[allow(
-    clippy::cast_possible_truncation,
     clippy::tuple_array_conversions,
-    reason = "base_x is in range for the cast; the perspective divide's (s, t) is packed into the coord array"
+    reason = "the perspective divide's (s, t) is packed into the coord array"
 )]
-fn interpolate_st(
-    tex: &TexSetup,
-    persp: bool,
-    major_x: i64,
-    y: i32,
-    y_base: i32,
-    x: i32,
-) -> [i32; 2] {
-    let base_x = (major_x >> 16) as i32;
-    let mut stw = [0i32; 3];
-    for (c, o) in stw.iter_mut().enumerate() {
-        let scan = tex.base[c].wrapping_add(tex.de[c].wrapping_mul(y.wrapping_sub(y_base)));
-        let v = scan.wrapping_add((tex.dx[c] & !0x1f).wrapping_mul(x.wrapping_sub(base_x)));
-        *o = v >> 16; // the integer coordinate fed to the (non-)perspective divide
-    }
-    // `no_perspective_divide` is just `(s, t)`; the perspective path divides by W.
+fn divide_stw(stw: [i32; 3], persp: bool) -> [i32; 2] {
+    let (s, t, w) = (stw[0] >> 16, stw[1] >> 16, stw[2] >> 16);
     if persp {
-        let (s, t) = perspective_divide(stw[0], stw[1], stw[2]);
+        let (s, t) = perspective_divide(s, t, w);
         [s, t]
     } else {
-        [stw[0], stw[1]]
+        [s, t]
     }
 }
 
@@ -506,6 +509,79 @@ fn bilinear_3point(
     out
 }
 
+/// Accumulate one LOD delta pair — a port of Angrylion `tclod_4x17_to_15`
+/// (`tcoord.c`). Each axis' delta is a 17-bit signed difference folded to its
+/// magnitude (`~d & 0x1ffff` when negative); the LOD is the running maximum of
+/// the S delta, the T delta, and `previous`. Bit 14 is the "too large" marker
+/// set when any of bits 16:14 survive.
+fn lod_delta(scurr: i32, snext: i32, tcurr: i32, tnext: i32, previous: i32) -> i32 {
+    let fold = |next: i32, curr: i32| {
+        // Mask to 17 bits first: the masked value is provably non-negative, so
+        // widening it to `sext`'s `u32` cannot lose a sign.
+        let d = sext((next & 0x1_FFFF).cast_unsigned(), 17)
+            - sext((curr & 0x1_FFFF).cast_unsigned(), 17);
+        if d & 0x2_0000 != 0 { !d & 0x1_FFFF } else { d }
+    };
+    let d = fold(snext, scurr).max(fold(tnext, tcurr)).max(previous);
+    let mut lod = d & 0x7FFF;
+    if d & 0x1_C000 != 0 {
+        lod |= 0x4000;
+    }
+    lod
+}
+
+/// `log2table` (Angrylion `tcoord.c`): the index of the highest set bit, with
+/// `0` and `1` both mapping to `0` — i.e. `i.ilog2()` for `i >= 1`.
+const fn lod_log2(i: u32) -> u32 {
+    if i < 2 { 0 } else { i.ilog2() }
+}
+
+/// The LOD fraction — the `lf` output of Angrylion `lodfrac_lodtile_signals`
+/// (`tcoord.c`). Returned **raw** (0..=0x1ff, the `0x100` bit set by
+/// `sharpen_tex_en`) exactly as the hardware holds it; the combiner sign-extends
+/// it downstream via `sext9`, matching how `K4`/`K5` are stored (ledger R-10).
+///
+/// The mip `l_tile`/`magnify` outputs are deliberately not returned: this slice
+/// closes the combiner's `lod_frac` input, while LOD-driven **tile selection**
+/// stays deferred under R-13.
+fn lod_frac_of(
+    lodclamp: bool,
+    lod: i32,
+    min_level: u8,
+    max_level: u8,
+    sharpen: bool,
+    detail: bool,
+) -> i16 {
+    let min_level = i32::from(min_level);
+    let plain = !sharpen && !detail; // neither sharpen nor detail texturing
+    if lod & 0x4000 != 0 || lodclamp {
+        return 0xFF; // clamped / too distant: fully on the coarser level
+    }
+    if lod < min_level || lod < 32 {
+        // Magnifying: `lod` is below the finest level, so there is nothing to
+        // interpolate toward unless sharpen/detail texturing asks for it.
+        let distant = max_level == 0;
+        return if plain {
+            if distant { 0xFF } else { 0 }
+        } else {
+            let base = if lod < min_level { min_level } else { lod };
+            let lf = base << 3;
+            (if sharpen { lf | 0x100 } else { lf }) as i16
+        };
+    }
+    let l_tile = lod_log2((lod >> 5).cast_unsigned() & 0xFF);
+    let distant = if max_level == 0 {
+        true
+    } else {
+        lod & 0x6000 != 0 || l_tile >= u32::from(max_level)
+    };
+    if plain && distant {
+        0xFF
+    } else {
+        (((lod << 3) >> l_tile) & 0xFF) as i16
+    }
+}
+
 /// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
 /// transcribed in its `(base, slope · 4)` source form). Indexed by the top 6 bits
 /// of the normalised `W`; `(base, slope)` give `rcp = ((slope · wnorm) >> 10) + base`.
@@ -690,9 +766,10 @@ fn rgb_input_c(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         11 => i16::from(inp.shade[3]),
         12 => i16::from(inp.env[3]),
         6 => i16::from(inp.key_scale[ch]), // Chroma-key scale (Set Key R/GB)
+        13 => inp.lod_frac,                // LOD fraction (raw 0..511; sext9 sign-extends)
         14 => inp.prim_lod_frac,           // Prim LOD fraction
         15 => inp.k5, // Convert K5 (raw 0..511; combine_channel's sext9 sign-extends)
-        _ => 0,       // 13 LODFrac — R-10; 16+ Zero
+        _ => 0,       // 16+ Zero
     }
 }
 
@@ -734,8 +811,9 @@ fn alpha_input_c(sel: u8, inp: &CombinerInputs) -> i16 {
         3 => i16::from(inp.prim[3]),
         4 => i16::from(inp.shade[3]),
         5 => i16::from(inp.env[3]),
+        0 => inp.lod_frac,      // LOD fraction (raw 0..511; sext9 sign-extends)
         6 => inp.prim_lod_frac, // Prim LOD fraction
-        _ => 0,                 // 0 LODFrac — R-10; 7 Zero
+        _ => 0,                 // 7 Zero
     }
 }
 
@@ -859,6 +937,11 @@ const OP_SET_KEY_R: u8 = 0x2B;
 const OP_SET_PRIM_COLOR: u8 = 0x3A;
 const OP_SET_ENV_COLOR: u8 = 0x3B;
 const OP_SET_COMBINE_MODE: u8 = 0x3C;
+
+/// The alpha mul-select that reads the LOD fraction. It is **zero**, which is also
+/// the reset/default select — so a `Set Combine` that leaves the alpha mul field
+/// clear really does ask for `LODFrac`, exactly as on hardware (R-13).
+const LOD_FRAC_ALPHA_MUL_SELECT: u8 = 0;
 const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
 const OP_SET_DEPTH_IMAGE: u8 = 0x3E;
 const OP_SET_COLOR_IMAGE: u8 = 0x3F;
@@ -930,6 +1013,16 @@ pub struct OtherModes {
     /// Texture sample type (bit 45): `false` = point-sample one texel, `true` =
     /// the N64's 3-point bilinear filter (R-13). Applied in the triangle sampler.
     pub sample_type: bool,
+    /// LOD enable (bit 48): the derivative-based mip level drives tile selection.
+    /// Decoded and fed to the LOD fraction; LOD-driven **tile** selection is the
+    /// remaining R-13 residual, so this does not yet re-tile.
+    pub tex_lod_en: bool,
+    /// Sharpen-texture enable (bit 49): keeps the LOD fraction live when
+    /// magnifying and sets its `0x100` bit (R-13).
+    pub sharpen_tex_en: bool,
+    /// Detail-texture enable (bit 50): keeps the LOD fraction live when
+    /// magnifying (R-13).
+    pub detail_tex_en: bool,
     /// Mid-texel filter (bit 44, R-13): when set and the bilinear sample lands
     /// exactly on the texel centre (`sfrac == tfrac == 0x10`), the four neighbours
     /// are averaged instead of the 3-point triangle pick (Angrylion `tex.c`, the
@@ -1022,6 +1115,10 @@ struct TexSetup {
     base: [i32; 3],
     dx: [i32; 3],
     de: [i32; 3],
+    /// Per-**Y** derivative (`DsDy`/`DtDy`/`DwDy`, words 5/7). Unlike `de` (the
+    /// major-edge step the scanline walk uses), this is the true vertical
+    /// gradient the **LOD** needs for its second delta pair (R-13).
+    dy: [i32; 3],
 }
 
 /// Unpack an RGBA8888 register word into `[r, g, b, a]` bytes.
@@ -1260,6 +1357,11 @@ pub(crate) struct CombinerInputs {
     /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — combiner mul
     /// input (RGB select 14, alpha select 6). `0..=255` (R-10).
     pub prim_lod_frac: i16,
+    /// The derivative-computed **LOD fraction** — combiner mul input (RGB select
+    /// 13, alpha select 0). Held **raw** (`0..=0x1ff`; the `0x100` bit is set by
+    /// `sharpen_tex_en`), sign-extended downstream by `sext9` exactly like
+    /// `K4`/`K5`. R-13.
+    pub lod_frac: i16,
     /// `Set Convert` (0x2C) `K4` — combiner RGB sub-B input (select 7). Held as the
     /// **raw 0..511** value the hardware stores; `combine_channel` sign-extends it via
     /// `special_expand` (bit-identical to Angrylion's `special_9bit_exttable`), so a
@@ -1427,10 +1529,16 @@ pub struct Rdp {
     /// The primitive colour, RGBA8888 (`Set Prim Color`, 0x3A).
     pub prim_color: u32,
     /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — a combiner mul
-    /// input (R-10). The `min_level` field (bits 12:8) is not stored yet: it has no
-    /// consumer until the deferred LOD/mip path, and it lands with that consumer
-    /// rather than as unread state.
+    /// input (R-10).
     pub prim_lod_frac: u8,
+    /// `Set Prim Color` `min_level` (word-0 bits 12:8): the floor the LOD is held
+    /// at while magnifying (Angrylion `lodfrac_lodtile_signals`). R-13.
+    pub min_level: u8,
+    /// The current primitive's `level[2:0]` (triangle command bits 53:51) — the
+    /// number of mip levels past the base tile. Per-primitive render state, set
+    /// by the triangle decode, exactly as Angrylion holds it (`rasterizer.c`
+    /// `state[wid].max_level = (ewdata[0] >> 19) & 7`). R-13.
+    pub max_level: u8,
     /// `Set Convert` (0x2C) `K4`/`K5` — combiner sub-B / mul inputs, raw 9-bit
     /// (`K0..K3`, the YUV-convert coefficients, are deferred). R-10.
     pub k4: i16,
@@ -1648,10 +1756,11 @@ impl Rdp {
             }
             OP_SET_FILL_COLOR => self.fill_color = lo,
             OP_SET_PRIM_COLOR => {
-                // word 0 (hi): min_level[12:8] (deferred — no consumer until LOD),
+                // word 0 (hi): min_level[12:8] (the LOD magnify floor, R-13),
                 // prim_lod_frac[7:0]; word 1 (lo): RGBA.
                 self.prim_color = lo;
                 self.prim_lod_frac = (hi & 0xFF) as u8;
+                self.min_level = ((hi >> 8) & 0x1F) as u8;
             }
             OP_SET_CONVERT => {
                 // K4 = lo[17:9], K5 = lo[8:0], stored as the raw 0..511 value the
@@ -1993,6 +2102,10 @@ impl Rdp {
         // `(ewdata[0] >> 16) & 7` in Angrylion `rasterizer.c`). Selects the tile
         // descriptor the texture sampler reads (and `base+1` in 2-cycle mode).
         let base_tile = ((hi >> 16) & 7) as usize;
+        // `level[2:0]` (bits 53:51): the mip-level count, which the LOD fraction
+        // reads (`max_level == 0` means "no mip chain", so the LOD is fully
+        // distant). Per-primitive state, as in Angrylion `rasterizer.c`. R-13.
+        self.max_level = ((hi >> 19) & 7) as u8;
         let yl = sext(hi & 0x3FFF, 14);
         let mut ym = sext(lo >> 16 & 0x3FFF, 14);
         let yh = sext(lo & 0x3FFF, 14);
@@ -2358,6 +2471,7 @@ impl Rdp {
             tex.base[c] = assemble(0, 2, c); // int word 0, frac word 2
             tex.dx[c] = assemble(1, 3, c); // per-x
             tex.de[c] = assemble(4, 6, c); // per-major-edge
+            tex.dy[c] = assemble(5, 7, c); // per-y (LOD only)
         }
         Some(tex)
     }
@@ -2481,8 +2595,19 @@ impl Rdp {
                 interpolate_shade(&shade.base, &shade.dx, &shade.de, major_x, line, y_base, x);
         }
         if let Some(tex) = tex {
-            let [s105, t105] =
-                interpolate_st(tex, self.other_modes.persp_tex_en, major_x, line, y_base, x);
+            let persp = self.other_modes.persp_tex_en;
+            let stw = interpolate_stw_raw(tex, major_x, line, y_base, x);
+            let [s105, t105] = divide_stw(stw, persp);
+            // The derivative-computed LOD fraction (R-13). Gated two ways: on
+            // Angrylion's `dolod` (something actually consumes the fraction), so
+            // the common path pays neither the two extra perspective divides nor
+            // any behaviour change; and on **2-cycle** mode, because only the
+            // 2-cycle LOD form is modelled — the 1-cycle form needs span-edge
+            // signals the rasteriser does not have, so it stays deferred and
+            // reads zero rather than being approximated with the wrong formula.
+            if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE && self.lod_active() {
+                inp.lod_frac = self.lod_frac_2cycle(tex, stw, persp, [s105, t105]);
+            }
             // The primitive's base tile comes from the triangle command (bits 50:48,
             // `(ewdata[0] >> 16) & 7` — Angrylion `rasterizer.c`); the sampler reads
             // that descriptor, not a hardwired tile 0. LOD-based mip tile selection
@@ -2499,6 +2624,70 @@ impl Rdp {
         (
             self.combine(inp, self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE),
             shade_alpha,
+        )
+    }
+
+    /// Whether the LOD fraction has to be computed for this primitive — the
+    /// Angrylion `other_modes.f.dolod` gate (`rdp.c`): either `tex_lod_en` is on,
+    /// or the combiner actually selects `LODFrac` as a mul input (RGB select 13 /
+    /// alpha select 0) in either cycle. When false the fraction is unread, so
+    /// skipping it is behaviour-preserving as well as cheaper.
+    fn lod_active(&self) -> bool {
+        let uses = |c: &CombineCycle| c.rgb_c == 13 || c.a_c == LOD_FRAC_ALPHA_MUL_SELECT;
+        self.other_modes.tex_lod_en || uses(&self.combine.cyc0) || uses(&self.combine.cyc1)
+    }
+
+    /// The 2-cycle LOD fraction — a port of Angrylion `tclod_2cycle` (`tcoord.c`)
+    /// down to its `lf` output.
+    ///
+    /// The LOD is the larger of the texture-coordinate deltas to the next pixel in
+    /// **x** (`stw + dsdx`) and the next scanline in **y** (`stw + dsdy`, the true
+    /// vertical gradient — *not* the major-edge `de` the scanline walk uses), each
+    /// taken through the same perspective divide as the pixel's own coordinate.
+    /// A coordinate with bits 18:17 set clamps the LOD to its maximum.
+    ///
+    /// Scope: this is the **2-cycle** form. The 1-cycle form
+    /// (`tclod_1cycle_current_simple`) differs — it compares the `x+1` and `x+2`
+    /// taps and needs the span-edge signals (`endspan`/`longspan`/`midspan`,
+    /// `validline`) that the rasteriser does not model — so it stays deferred
+    /// under R-13 rather than being approximated with the 2-cycle formula.
+    #[allow(
+        clippy::similar_names,
+        reason = "nexts/nextt and nextys/nextyt are Angrylion's own names for the two LOD taps"
+    )]
+    fn lod_frac_2cycle(&self, tex: &TexSetup, stw: [i32; 3], persp: bool, init: [i32; 2]) -> i16 {
+        // Step the raw accumulator by a derivative, then divide exactly as the
+        // pixel's own coordinate was divided.
+        let step = |d: [i32; 3]| {
+            let mut n = stw;
+            for (o, dv) in n.iter_mut().zip(d) {
+                *o = o.wrapping_add(dv);
+            }
+            divide_stw(n, persp)
+        };
+        // The hardware truncates each derivative before use: `dsdx & ~0x1f`,
+        // `dsdy & ~0x7fff` (Angrylion `spans_ds` / `spans_dsdy`).
+        let dx = [tex.dx[0] & !0x1F, tex.dx[1] & !0x1F, tex.dx[2] & !0x1F];
+        let dy = [
+            tex.dy[0] & !0x7FFF,
+            tex.dy[1] & !0x7FFF,
+            tex.dy[2] & !0x7FFF,
+        ];
+        let [nexts, nextt] = step(dx);
+        let [nextys, nextyt] = step(dy);
+        let lodclamp = (init[0] | init[1] | nexts | nextt | nextys | nextyt) & 0x6_0000 != 0;
+        let mut lod = 0;
+        if !lodclamp {
+            lod = lod_delta(init[0], nexts, init[1], nextt, 0);
+            lod = lod_delta(init[0], nextys, init[1], nextyt, lod);
+        }
+        lod_frac_of(
+            lodclamp,
+            lod,
+            self.min_level,
+            self.max_level,
+            self.other_modes.sharpen_tex_en,
+            self.other_modes.detail_tex_en,
         )
     }
 
@@ -2818,6 +3007,9 @@ impl Rdp {
             rgb_dither_mode: ((hi >> 6) & 0x3) as u8, // command bits 39:38
             sample_type: (hi >> 13) & 1 != 0,         // command bit 45
             mid_texel: (hi >> 12) & 1 != 0,           // command bit 44
+            detail_tex_en: (hi >> 18) & 1 != 0,       // command bit 50
+            sharpen_tex_en: (hi >> 17) & 1 != 0,      // command bit 49
+            tex_lod_en: (hi >> 16) & 1 != 0,          // command bit 48
         };
     }
 
@@ -4935,6 +5127,58 @@ mod tests {
             bilinear_3point(t0, t1, t2, t3, 0x10, 0, true),
             bilinear_3point(t0, t1, t2, t3, 0x10, 0, false),
             "mid_texel only fires at the exact centre"
+        );
+    }
+
+    /// **`lod_delta` takes the largest folded 17-bit delta (R-13).** Hand-computed
+    /// from Angrylion `tclod_4x17_to_15`: each axis' difference is folded to its
+    /// magnitude, the result is the max over S, T and `previous`, and bit 14 is the
+    /// "too large" marker.
+    #[test]
+    fn lod_delta_folds_and_takes_the_maximum() {
+        // S steps 48, T steps 16 -> 48 wins.
+        assert_eq!(lod_delta(0, 48, 0, 16, 0), 48, "max over the two axes");
+        // `previous` participates in the same max.
+        assert_eq!(lod_delta(0, 48, 0, 16, 112), 112, "previous participates");
+        // A NEGATIVE step folds to a magnitude (`~d & 0x1ffff`), not a signed value:
+        // going from 48 down to 0 is a delta of 48 - 1 = 47 after the fold.
+        assert_eq!(lod_delta(48, 0, 0, 0, 0), 47, "negative delta folds");
+        // A delta big enough to reach bits 16:14 sets the 0x4000 saturation marker.
+        assert!(
+            lod_delta(0, 0x1_0000, 0, 0, 0) & 0x4000 != 0,
+            "0x4000 marks a too-large LOD"
+        );
+    }
+
+    /// **`lod_frac_of` reproduces the Angrylion `lf` cases (R-13).** Hand-computed
+    /// per branch; each row fails if the branch order, the `<< 3`, the `l_tile`
+    /// shift, or the `max_level` "distant" test is wrong.
+    #[test]
+    fn lod_frac_of_covers_each_branch() {
+        // The oracle vector's own case: lod 112, max_level 2 -> l_tile = log2(3) = 1,
+        // not distant, so lf = ((112 << 3) >> 1) & 0xff = 0xc0.
+        assert_eq!(
+            lod_frac_of(false, 112, 0, 2, false, false),
+            0xC0,
+            "in-range"
+        );
+        // Same LOD with NO mip chain (max_level 0) is "distant" -> saturates.
+        assert_eq!(lod_frac_of(false, 112, 0, 0, false, false), 0xFF, "distant");
+        // A clamped coordinate saturates regardless of the LOD.
+        assert_eq!(lod_frac_of(true, 112, 0, 2, false, false), 0xFF, "lodclamp");
+        // Magnifying (lod < 32) with a mip chain and no sharpen/detail -> 0.
+        assert_eq!(lod_frac_of(false, 16, 0, 2, false, false), 0, "magnify");
+        // Magnifying with SHARPEN keeps the fraction live and sets bit 8.
+        assert_eq!(
+            lod_frac_of(false, 16, 0, 2, true, false),
+            (16 << 3) | 0x100,
+            "sharpen keeps the fraction and sets 0x100"
+        );
+        // `min_level` is the floor the magnify branch uses instead of the LOD.
+        assert_eq!(
+            lod_frac_of(false, 4, 8, 2, false, true),
+            8 << 3,
+            "detail uses min_level as the floor"
         );
     }
 

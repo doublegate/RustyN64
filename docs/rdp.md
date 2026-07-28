@@ -566,8 +566,24 @@ tile 3 renders identically to tile 0; a `tiles[0]` read renders black). The **mi
 (Set Other Modes bit 44) is modelled too: at the exact texel centre (`sfrac == tfrac == 0x10`) the
 four neighbours are averaged instead of the 3-point pick (validated against Angrylion by
 `tex_tri_mid_texel_16` over a non-planar checkerboard, whose centre carries the midpoint value a
-3-point pick never produces). Scope (**open residual R-13**): only the **LOD/mip tile selection**
-(`lod_frac`) remains.
+3-point pick never produces).
+
+**LOD fraction.** *Provenance: this rule is an **oracle-measured port**, not a documented hardware
+fact — it is transcribed from the Angrylion study oracle (`tcoord.c`, `tclod_2cycle` +
+`lodfrac_lodtile_signals` + `tclod_4x17_to_15`) and validated byte-for-byte by the conformance
+vector `tex_tri_lodfrac_16`; see `docs/accuracy-ledger.md` **R-13** for the full disposition.*
+
+In **2-cycle** mode the derivative-computed `lod_frac` is modelled: the LOD is the larger of the coordinate
+deltas to the next pixel in **x** (`+dsdx`) and the next scanline in **y** (`+dsdy` — the true
+vertical gradient from texture-block words 5/7, *not* the major-edge `de` the scanline walk uses),
+each taken through the same perspective divide as the pixel's own coordinate; `lod_frac_of` then
+maps it to the raw 9-bit fraction using `min_level` (`Set Prim Color` bits 12:8), `max_level`
+(the triangle command's `level[2:0]`, bits 53:51), and `sharpen_tex_en`/`detail_tex_en`. It feeds
+the combiner's `LODFrac` mul input (RGB select 13 / alpha select 0), validated against Angrylion by
+`tex_tri_lodfrac_16`. Computation is gated on Angrylion's `dolod`, so a combine that does not select
+it is unaffected. Scope (**open residual R-13**): the **1-cycle** LOD form (it compares the `x+1`
+and `x+2` taps and needs span-edge signals the rasteriser does not model, so it reads zero) and the
+LOD-driven **mip tile selection** remain.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 
