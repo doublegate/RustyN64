@@ -584,7 +584,7 @@ the combiner's `LODFrac` mul input (RGB select 13 / alpha select 0), validated a
 it is unaffected.
 
 **Mip tile selection.** With `tex_lod_en` (bit 48) the LOD also picks which tiles the two cycles
-sample (`lod_mip_tiles`): a *distant* LOD pins the level to `max_level`, otherwise it is `l_tile`;
+sample (`lod_mip_tiles`): a *distant* LOD pins the level to `max_level`; otherwise it is `l_tile`;
 the pair straddles the mip boundary (`base+level`, `base+level+1`) and collapses to a single tile
 where there is nothing to blend toward (distant, or magnifying without `sharpen_tex_en`);
 `detail_tex_en` shifts both one level finer; indices wrap mod 8. Validated against Angrylion by

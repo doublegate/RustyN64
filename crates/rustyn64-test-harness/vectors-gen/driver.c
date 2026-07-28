@@ -1096,8 +1096,11 @@ static const uint32_t V33_TEX_TRI_LODFRAC_16[] = {
 //
 // Three 1-texel tiles are loaded with DISTINCT colours (tile 0 red, tile 1 green,
 // tile 2 blue) and the combiner passes TEXEL0 through, so the pixel names the tile
-// that was actually sampled: GREEN when the LOD selects tile 1, RED if the selection
-// is ignored and the base tile is sampled. That is what makes it non-vacuous.
+// that was actually sampled. Mind the 2-cycle texel SWAP: `combine` exchanges
+// texel0/texel1 before cycle 1, so cycle 1's TEXEL0 is the pair's SECOND tile.
+// With the LOD selecting the pair (1, 2) the pixel is therefore BLUE (tile 2);
+// if the selection is ignored the pair is the default (0, 1) and the pixel is
+// GREEN (tile 1). That blue-vs-green difference is what makes it non-vacuous.
 static const uint16_t TEX_MIP3[3] = {0xF801u, 0x07C1u, 0x003Fu}; // red, green, blue
 static const uint32_t V34_TEX_TRI_MIP_TILE_16[] = {
     // NOTE both bi_lerp0 (bit 11) AND bi_lerp1 (bit 10) must be set: cycle 1 runs
