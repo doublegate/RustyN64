@@ -8,6 +8,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — RDP LOD-driven mip tile selection (gap-analysis Stage D, ledger R-13)
+
+- **`tex_lod_en` (Set Other Modes bit 48) now re-tiles the sample.** The 2-cycle
+  sampler reads the mip pair the LOD selects instead of `base`/`base+1` — a distant
+  LOD pins the level to `max_level`, the pair straddles the mip boundary and
+  collapses where there is nothing to blend toward, `detail_tex_en` shifts both one
+  level finer, and indices wrap mod 8 (port of the tile-selection tail of Angrylion
+  `tclod_2cycle`). `lod_frac_of` is generalised to `lod_signals`, returning all four
+  Angrylion outputs instead of discarding three. Validated byte-for-byte by
+  `tex_tri_mip_tile_16` (three 1-texel tiles; the LOD selects tile 2, so the pixel is
+  blue — green if the selection is ignored, mutation-verified), plus a hand-computed
+  `lod_mip_tiles` unit test over every branch. Only the 1-cycle LOD form now remains
+  open under R-13.
+
 ### Added — RDP LOD fraction, 2-cycle (gap-analysis Stage D, ledger R-13/R-10)
 
 - **The derivative-computed `lod_frac` now reaches the combiner** (RGB mul-select

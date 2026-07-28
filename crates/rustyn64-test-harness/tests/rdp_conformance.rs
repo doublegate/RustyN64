@@ -420,6 +420,17 @@ fn tex_tri_lodfrac_16_matches_angrylion() {
     );
 }
 
+/// **LOD-driven mip tile selection (`tex_lod_en`, R-13).** Same LOD setup as
+/// `tex_tri_lodfrac_16` (LOD 112, `level = 2`, so `l_tile = 1`), with three 1-texel
+/// tiles holding distinct colours, so the pixel names which tile the LOD selected.
+#[test]
+fn tex_tri_mip_tile_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_mip_tile_16",
+        include_bytes!("vectors/tex_tri_mip_tile_16.rvec"),
+    );
+}
+
 /// **The bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, R-13).** A 2-texel tile
 /// (`mask_s = 1`, red/green) sampled bilinearly across the wrap: at `S = 1.5` the
 /// base is the top texel, so the neighbour must WRAP to texel 0 (red) — the seam
