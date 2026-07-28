@@ -142,12 +142,18 @@ pub fn replay(v: &Vector<'_>) -> Vec<u8> {
     // Load the command list into RDRAM verbatim (big-endian words, as generated).
     let base = v.cmd_addr as usize;
     let fb = v.fb_addr as usize;
-    let fb_len = (v.width * v.height * v.bpp) as usize;
+    // Widen BEFORE multiplying: `width * height * bpp` in u32 can wrap for a
+    // directly-constructed `Vector` (all fields are public), which would silently
+    // produce a bogus framebuffer length.
+    let fb_len = (v.width as usize) * (v.height as usize) * (v.bpp as usize);
     let pre = v.preload_addr as usize;
+    let fits = |start: usize, len: usize| {
+        start
+            .checked_add(len)
+            .is_some_and(|end| end <= bus.rdram.len())
+    };
     assert!(
-        base + v.cmds.len() <= bus.rdram.len()
-            && fb + fb_len <= bus.rdram.len()
-            && pre + v.preload.len() <= bus.rdram.len(),
+        fits(base, v.cmds.len()) && fits(fb, fb_len) && fits(pre, v.preload.len()),
         "vector addresses exceed RDRAM ({} bytes)",
         bus.rdram.len()
     );
@@ -184,7 +190,10 @@ pub fn first_mismatch(bytes: &[u8]) -> Option<Mismatch> {
         return None;
     }
     let bpp = v.bpp as usize;
-    for i in (0..got.len()).step_by(bpp) {
+    // Bound by the SHORTER slice: a length mismatch must be reported as such, not
+    // indexed past the end of the golden.
+    let common = got.len().min(v.golden_fb.len());
+    for i in (0..common).step_by(bpp) {
         if got[i..i + bpp] != v.golden_fb[i..i + bpp] {
             let px = (i / bpp) as u32;
             return Some(Mismatch {
