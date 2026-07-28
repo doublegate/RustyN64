@@ -8,6 +8,24 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — the accuracy battery is real (gap-analysis Stage C, `T-71-001`/`T-HARNESS-03`)
+
+- **`AccuracyScorer::default_battery_stub` → `default_battery`.** The battery no
+  longer returns an empty probe set: it scores every committed Angrylion RDP
+  conformance vector (35 probes, `rdp-conformance/<vector>`), replayed through
+  RustyN64's own RDP and compared byte-for-byte against the oracle's golden
+  framebuffer. Every expected value is externally defined — never RustyN64's own
+  output. `docs/STATUS.md` now reports a real **100% (35/35)** instead of
+  "0% (battery stubbed)".
+- **An empty battery no longer scores 1.0.** `AccuracyReport::ratio` returned
+  `1.0` for an empty battery ("vacuously green"); a battery that ran nothing has
+  proven nothing, so it now scores `0.0`. Added `AccuracyReport::failures()` so a
+  regression names the offending vectors.
+- **New `conformance` module.** The `.rvec` parse/replay moved from the test file
+  into `src/` so the conformance test and the battery share one implementation and
+  one vector table — a vector can no longer be exercised by one and invisible to
+  the other, and a name typo fails loudly.
+
 ### Added — RDP LOD-driven mip tile selection (gap-analysis Stage D, ledger R-13)
 
 - **`tex_lod_en` (Set Other Modes bit 48) now re-tiles the sample.** The 2-cycle

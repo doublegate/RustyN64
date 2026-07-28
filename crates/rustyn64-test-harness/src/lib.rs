@@ -7,8 +7,9 @@
 //!    golden log (the golden source is STUBBED until a reference trace lands).
 //! 2. [`runner`] — [`run_until_complete`], which steps a [`System`] until a
 //!    completion sentinel (the n64-systemtest result protocol).
-//! 3. [`accuracy`] — a first-party probe scorer over a battery of
-//!    named probes (the battery itself is STUBBED).
+//! 3. [`accuracy`] — a probe scorer over a battery of named probes, whose
+//!    default battery scores every committed Angrylion RDP conformance vector
+//!    ([`conformance`]) — expected values are the oracle's, never our own.
 //! 4. [`frame`] — a `.snap` / screenshot frame-hash comparator for the visual
 //!    golden corpus (the hash is real; the corpus loader is a frontend job).
 //!
@@ -28,12 +29,14 @@
 #![allow(clippy::cast_precision_loss)]
 
 pub mod accuracy;
+pub mod conformance;
 pub mod frame;
 pub mod golden;
 pub mod rom;
 pub mod runner;
 
 pub use accuracy::{AccuracyReport, AccuracyScorer, ProbeResult};
+pub use conformance::{Mismatch, RDP_VECTORS, Vector};
 pub use frame::{FrameComparison, frame_hash};
 pub use golden::{GoldenDiff, GoldenLogDiffer, TraceRecord};
 pub use runner::{CompletionStatus, run_until_complete};
