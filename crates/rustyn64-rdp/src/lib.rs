@@ -562,6 +562,10 @@ fn lod_signals(
     sharpen: bool,
     detail: bool,
 ) -> LodSignals {
+    // `lod` is a 15-bit magnitude, never negative: its only producer, `lod_delta`,
+    // returns `d & 0x7fff` (optionally `| 0x4000`). That is what makes the bit-14
+    // test below safe on a signed type — the same `int32_t` the oracle uses.
+    debug_assert!((0..=0x7FFF).contains(&lod), "lod is a 15-bit magnitude");
     let min_level = i32::from(min_level);
     let plain = !sharpen && !detail; // neither sharpen nor detail texturing
     if lod & 0x4000 != 0 || lodclamp {
@@ -632,7 +636,10 @@ fn lod_mip_tiles(
     };
     if detail {
         // Detail texturing samples one level finer than the plain path.
-        let t1 = (base_tile + level + usize::from(!sig.magnify)) & 7;
+        // One level finer unless magnifying (`usize::from(bool)` is 1 for true, 0
+        // for false; clippy's `bool_to_int_with_if` requires this form over an `if`).
+        let finer = usize::from(!sig.magnify);
+        let t1 = (base_tile + level + finer) & 7;
         let t2 = if !sig.distant && !sig.magnify {
             (base_tile + level + 2) & 7
         } else {
@@ -5318,6 +5325,19 @@ mod tests {
             lod_mip_tiles(0, sig(1, false, false), 2, false, true),
             (2, 3),
             "detail shifts by one"
+        );
+        // Detail while MAGNIFYING does not take the extra finer step, and the pair
+        // collapses onto consecutive tiles rather than straddling.
+        assert_eq!(
+            lod_mip_tiles(0, sig(0, true, false), 2, false, true),
+            (0, 1),
+            "detail + magnify"
+        );
+        // Detail while DISTANT pins the level to max_level and stops straddling.
+        assert_eq!(
+            lod_mip_tiles(0, sig(1, false, true), 2, false, true),
+            (3, 3),
+            "detail + distant"
         );
         // Every index wraps into the 8 tile descriptors.
         assert_eq!(
