@@ -403,6 +403,20 @@ fn tex_tri_mid_texel_16_matches_angrylion() {
     );
 }
 
+/// **The derivative-computed LOD fraction (R-13).** A 2-cycle textured triangle whose
+/// texture coordinate advances 48 per pixel and 0 per scanline, so the LOD settles at
+/// 48; with `level = 1` in the triangle command the fraction is the real interpolation
+/// weight `((48 << 3) >> 0) & 0xff = 0x80` rather than the saturated `0xff`. Cycle 1
+/// emits `(One - Zero) * LODFrac + Zero`, so the pixel **is** the fraction — the golden
+/// `0x8421` (RGB 16,16,16 = 0x80) versus black if the input reads zero.
+#[test]
+fn tex_tri_lodfrac_16_matches_angrylion() {
+    assert_matches(
+        "tex_tri_lodfrac_16",
+        include_bytes!("vectors/tex_tri_lodfrac_16.rvec"),
+    );
+}
+
 /// **The bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, R-13).** A 2-texel tile
 /// (`mask_s = 1`, red/green) sampled bilinearly across the wrap: at `S = 1.5` the
 /// base is the top texel, so the neighbour must WRAP to texel 0 (red) — the seam

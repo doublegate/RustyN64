@@ -328,6 +328,19 @@ static int emit_vector(const Vector *v, const char *out_dir) {
 // A full 16-word texture-coordinate block: S/T/W integer base, per-x (dx) and
 // per-major-edge (de) integer deltas; fractional words zero. Each 64-bit word
 // packs S in bits 63:48, T in 47:32, W in 31:16 (S,T in the hi u32, W in the lo).
+// As TEX_BLOCK but with the per-**Y** derivative (`DsDy`/`DtDy`/`DwDy`, the 6th
+// 64-bit word) set. Only the LOD reads it — the scanline walk steps by `de` — so it
+// is the field that distinguishes a correct LOD from one that reuses `de`.
+#define TEX_BLOCK_DY(bs, bt, bw, dxs, dxt, dxw, des, det, dew, dys, dyt, dyw) \
+    HALVES(bs, bt), HALVES(bw, 0),          /* int base   S,T | W */          \
+        HALVES(dxs, dxt), HALVES(dxw, 0),   /* dx  int */                     \
+        0u, 0u,                             /* base frac */                   \
+        0u, 0u,                             /* dx  frac */                    \
+        HALVES(des, det), HALVES(dew, 0),   /* de  int */                     \
+        HALVES(dys, dyt), HALVES(dyw, 0),   /* dy  int */                     \
+        0u, 0u,                             /* de  frac */                    \
+        0u, 0u                              /* dy  frac */
+
 #define TEX_BLOCK(bs, bt, bw, dxs, dxt, dxw, des, det, dew)  \
     HALVES(bs, bt), HALVES(bw, 0),      /* int base   S,T | W */ \
         HALVES(dxs, dxt), HALVES(dxw, 0), /* dx  int */           \
@@ -1040,6 +1053,41 @@ static const uint32_t V32_TEX_TRI_MID_TEXEL_16[] = {
     TEX_BLOCK(0, 0, 1, 0x10, 0, 0, 0, 0x10, 0),
 };
 
+// V33: the derivative-computed LOD FRACTION combiner input (ledger R-13/R-10) —
+// the `LODFrac` mul select, distinct from V26's PRIM_LOD_FRAC register input.
+//
+// A **2-cycle** textured triangle (the 2-cycle LOD form is the one that needs no
+// span-edge signals). The LOD is the LARGER of the per-x and per-y coordinate
+// deltas, and this vector makes those differ so the golden pins BOTH taps:
+//   dx.S =  48 -> x delta  48
+//   dy.S = 112 -> y delta 112   (`de` stays 0, so `de` cannot stand in for `dy`)
+// so the LOD settles at 112. With `level = 2` (`max_level`, bits 53:51) it is not
+// "distant" (`l_tile = log2(112>>5) = 1 < 2`), so the fraction is the real
+// interpolation weight `((112 << 3) >> 1) & 0xff = 0xc0` rather than the saturated
+// 0xff. Cycle 1 computes `(One - Zero) * LODFrac + Zero`, so the pixel IS the LOD
+// fraction. Two ways non-vacuous: unwiring the input renders black, and an
+// implementation that reads `de` (0) instead of `dy` for the y tap gets LOD 48 ->
+// 0x80 instead of 0xc0.
+static const uint32_t V33_TEX_TRI_LODFRAC_16[] = {
+    0x2F1008F0u, 0x00000000u, // Set Other Modes: 2-CYCLE (bits 21:20=01), bi_lerp0=1, dither off
+    0x3C0000CDu, 0x081C01C6u, // Set Combine: cyc1 rgb = (One - Zero) * LODFrac(13) + Zero; alpha One
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000030u, // Set Tile 0: 16-bit, line 2, tmem 0, mask_s=3
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: SL0 TL0 SH7 TH0
+    0x34000000u, 0x0001C000u, // Load Tile 0: 8 texels
+    0x35100400u, 0x01000030u, // Set Tile 1: 16-bit, line 2, tmem 0, mask_s=3 (2-cycle texel1)
+    0x32000000u, 0x0101C000u, // Set Tile Size 1: SL0 TL0 SH7 TH0
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A900020u, 0x00200000u, // op=0x0A (tex), lft=1, LEVEL=2 (bits 53:51), tile 0, yl=32 ym=32 yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // dx.S = 48 (x delta), de = 0 (flat scanline walk), dy.S = 112 (y delta, LOD only).
+    // The LOD is max(48, 112) = 112 -> fraction 0xc0.
+    TEX_BLOCK_DY(0, 0, 1, 48, 0, 0, 0, 0, 0, 112, 0, 0),
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1727,6 +1775,11 @@ int main(int argc, char **argv) {
                   sizeof(V32_TEX_TRI_MID_TEXEL_16) / 4, V32_TEX_TRI_MID_TEXEL_16,
                   0x3000, 64, tex_chk8x8};
     if (emit_vector(&v32, out_dir)) return 1;
+
+    Vector v33 = {"tex_tri_lodfrac_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V33_TEX_TRI_LODFRAC_16) / 4, V33_TEX_TRI_LODFRAC_16,
+                  0x3000, 8, TEX8_RAMP};
+    if (emit_vector(&v33, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
