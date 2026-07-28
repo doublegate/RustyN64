@@ -536,37 +536,59 @@ const fn lod_log2(i: u32) -> u32 {
     if i < 2 { 0 } else { i.ilog2() }
 }
 
-/// The LOD fraction — the `lf` output of Angrylion `lodfrac_lodtile_signals`
-/// (`tcoord.c`). Returned **raw** (0..=0x1ff, the `0x100` bit set by
-/// `sharpen_tex_en`) exactly as the hardware holds it; the combiner sign-extends
-/// it downstream via `sext9`, matching how `K4`/`K5` are stored (ledger R-10).
-///
-/// The mip `l_tile`/`magnify` outputs are deliberately not returned: this slice
-/// closes the combiner's `lod_frac` input, while LOD-driven **tile selection**
-/// stays deferred under R-13.
-fn lod_frac_of(
+/// The four outputs of Angrylion `lodfrac_lodtile_signals` (`tcoord.c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LodSignals {
+    /// The LOD fraction, **raw** (`0..=0x1ff`, the `0x100` bit set by
+    /// `sharpen_tex_en`) exactly as the hardware holds it; the combiner
+    /// sign-extends it downstream via `sext9`, matching how `K4`/`K5` are stored
+    /// (ledger R-10).
+    frac: i16,
+    /// The mip level the LOD lands on (`log2` of the LOD's high bits).
+    l_tile: u32,
+    /// The LOD is below the finest level — magnifying rather than minifying.
+    magnify: bool,
+    /// The LOD is past the coarsest available level (or there is no mip chain).
+    distant: bool,
+}
+
+/// Decode an LOD magnitude into its fraction and mip signals — a port of
+/// Angrylion `lodfrac_lodtile_signals` (`tcoord.c`).
+fn lod_signals(
     lodclamp: bool,
     lod: i32,
     min_level: u8,
     max_level: u8,
     sharpen: bool,
     detail: bool,
-) -> i16 {
+) -> LodSignals {
     let min_level = i32::from(min_level);
     let plain = !sharpen && !detail; // neither sharpen nor detail texturing
     if lod & 0x4000 != 0 || lodclamp {
-        return 0xFF; // clamped / too distant: fully on the coarser level
+        // Clamped / too far: pinned to the coarsest level, fully on it.
+        return LodSignals {
+            frac: 0xFF,
+            l_tile: 0,
+            magnify: false,
+            distant: true,
+        };
     }
     if lod < min_level || lod < 32 {
         // Magnifying: `lod` is below the finest level, so there is nothing to
         // interpolate toward unless sharpen/detail texturing asks for it.
         let distant = max_level == 0;
-        return if plain {
+        let frac = if plain {
             if distant { 0xFF } else { 0 }
         } else {
             let base = if lod < min_level { min_level } else { lod };
             let lf = base << 3;
             (if sharpen { lf | 0x100 } else { lf }) as i16
+        };
+        return LodSignals {
+            frac,
+            l_tile: 0,
+            magnify: true,
+            distant,
         };
     }
     let l_tile = lod_log2((lod >> 5).cast_unsigned() & 0xFF);
@@ -575,11 +597,58 @@ fn lod_frac_of(
     } else {
         lod & 0x6000 != 0 || l_tile >= u32::from(max_level)
     };
-    if plain && distant {
+    let frac = if plain && distant {
         0xFF
     } else {
         (((lod << 3) >> l_tile) & 0xFF) as i16
+    };
+    LodSignals {
+        frac,
+        l_tile,
+        magnify: false,
+        distant,
     }
+}
+
+/// The mip tile pair the LOD selects, when `tex_lod_en` is set — a port of the
+/// tile-selection tail of Angrylion `tclod_2cycle` (`tcoord.c`).
+///
+/// A "distant" LOD pins the level to `max_level`; otherwise it is `l_tile`. The
+/// pair is `(base + level, base + level + 1)` so the two cycles straddle the mip
+/// boundary, collapsing to the same tile where there is nothing to blend toward
+/// (distant, or magnifying without sharpen). Detail texturing shifts both by one.
+/// Every index wraps into the 8 tile descriptors.
+fn lod_mip_tiles(
+    base_tile: usize,
+    sig: LodSignals,
+    max_level: u8,
+    sharpen: bool,
+    detail: bool,
+) -> (usize, usize) {
+    let level = if sig.distant {
+        usize::from(max_level)
+    } else {
+        sig.l_tile as usize
+    };
+    if detail {
+        // Detail texturing samples one level finer than the plain path.
+        let t1 = (base_tile + level + usize::from(!sig.magnify)) & 7;
+        let t2 = if !sig.distant && !sig.magnify {
+            (base_tile + level + 2) & 7
+        } else {
+            (base_tile + level + 1) & 7
+        };
+        return (t1, t2);
+    }
+    let t1 = (base_tile + level) & 7;
+    // The second tile advances only when there is a coarser level to blend
+    // toward: not when distant, and not when plainly magnifying.
+    let t2 = if sig.distant || (!sharpen && sig.magnify) {
+        t1
+    } else {
+        (t1 + 1) & 7
+    };
+    (t1, t2)
 }
 
 /// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
@@ -2605,19 +2674,36 @@ impl Rdp {
             // 2-cycle LOD form is modelled — the 1-cycle form needs span-edge
             // signals the rasteriser does not have, so it stays deferred and
             // reads zero rather than being approximated with the wrong formula.
-            if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE && self.lod_active() {
-                inp.lod_frac = self.lod_frac_2cycle(tex, stw, persp, [s105, t105]);
-            }
             // The primitive's base tile comes from the triangle command (bits 50:48,
             // `(ewdata[0] >> 16) & 7` — Angrylion `rasterizer.c`); the sampler reads
-            // that descriptor, not a hardwired tile 0. LOD-based mip tile selection
-            // within the base/`base+1` pair is still deferred (R-13).
-            inp.texel0 = self.sample_texel(&self.tiles[base_tile], s105, t105);
-            // 2-cycle mode samples a SECOND texel from the next tile (`base+1`, the
-            // `RENDERTILE`/`RENDERTILE+1` case) at the same coordinate. `combine` swaps
-            // texel0/texel1 for the second cycle so cycle 1's TEXEL0 reads `base+1`.
+            // that descriptor, not a hardwired tile 0. In 2-cycle mode the second
+            // texel comes from the next tile (the `RENDERTILE`/`RENDERTILE+1` case),
+            // and `combine` swaps texel0/texel1 for the second cycle so cycle 1's
+            // TEXEL0 reads it.
+            let (mut tile0, mut tile1) = (base_tile, (base_tile + 1) & 7);
+            if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE && self.lod_active() {
+                // The 2-cycle LOD (R-13). Gated on Angrylion's `dolod` — something
+                // consumes it — so the common path pays neither the two extra
+                // perspective divides nor any behaviour change; and on 2-cycle mode,
+                // because only the 2-cycle LOD form is modelled (the 1-cycle form
+                // needs span-edge signals the rasteriser does not have, so it stays
+                // deferred rather than being approximated with the wrong formula).
+                let sig = self.lod_2cycle(tex, stw, persp, [s105, t105]);
+                inp.lod_frac = sig.frac;
+                // With `tex_lod_en` the LOD also picks the mip pair to sample.
+                if self.other_modes.tex_lod_en {
+                    (tile0, tile1) = lod_mip_tiles(
+                        base_tile,
+                        sig,
+                        self.max_level,
+                        self.other_modes.sharpen_tex_en,
+                        self.other_modes.detail_tex_en,
+                    );
+                }
+            }
+            inp.texel0 = self.sample_texel(&self.tiles[tile0], s105, t105);
             if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE {
-                inp.texel1 = self.sample_texel(&self.tiles[(base_tile + 1) & 7], s105, t105);
+                inp.texel1 = self.sample_texel(&self.tiles[tile1], s105, t105);
             }
         }
         let shade_alpha = inp.shade[3];
@@ -2655,7 +2741,7 @@ impl Rdp {
         clippy::similar_names,
         reason = "nexts/nextt and nextys/nextyt are Angrylion's own names for the two LOD taps"
     )]
-    fn lod_frac_2cycle(&self, tex: &TexSetup, stw: [i32; 3], persp: bool, init: [i32; 2]) -> i16 {
+    fn lod_2cycle(&self, tex: &TexSetup, stw: [i32; 3], persp: bool, init: [i32; 2]) -> LodSignals {
         // Step the raw accumulator by a derivative, then divide exactly as the
         // pixel's own coordinate was divided.
         let step = |d: [i32; 3]| {
@@ -2681,7 +2767,7 @@ impl Rdp {
             lod = lod_delta(init[0], nexts, init[1], nextt, 0);
             lod = lod_delta(init[0], nextys, init[1], nextyt, lod);
         }
-        lod_frac_of(
+        lod_signals(
             lodclamp,
             lod,
             self.min_level,
@@ -5150,35 +5236,94 @@ mod tests {
         );
     }
 
-    /// **`lod_frac_of` reproduces the Angrylion `lf` cases (R-13).** Hand-computed
+    /// **`lod_signals` reproduces the Angrylion `lf` cases (R-13).** Hand-computed
     /// per branch; each row fails if the branch order, the `<< 3`, the `l_tile`
     /// shift, or the `max_level` "distant" test is wrong.
     #[test]
-    fn lod_frac_of_covers_each_branch() {
+    fn lod_signals_covers_each_branch() {
+        let frac =
+            |clamp, lod, min, max, sharp, det| lod_signals(clamp, lod, min, max, sharp, det).frac;
         // The oracle vector's own case: lod 112, max_level 2 -> l_tile = log2(3) = 1,
         // not distant, so lf = ((112 << 3) >> 1) & 0xff = 0xc0.
-        assert_eq!(
-            lod_frac_of(false, 112, 0, 2, false, false),
-            0xC0,
-            "in-range"
-        );
+        assert_eq!(frac(false, 112, 0, 2, false, false), 0xC0, "in-range");
         // Same LOD with NO mip chain (max_level 0) is "distant" -> saturates.
-        assert_eq!(lod_frac_of(false, 112, 0, 0, false, false), 0xFF, "distant");
+        assert_eq!(frac(false, 112, 0, 0, false, false), 0xFF, "distant");
         // A clamped coordinate saturates regardless of the LOD.
-        assert_eq!(lod_frac_of(true, 112, 0, 2, false, false), 0xFF, "lodclamp");
+        assert_eq!(frac(true, 112, 0, 2, false, false), 0xFF, "lodclamp");
         // Magnifying (lod < 32) with a mip chain and no sharpen/detail -> 0.
-        assert_eq!(lod_frac_of(false, 16, 0, 2, false, false), 0, "magnify");
+        assert_eq!(frac(false, 16, 0, 2, false, false), 0, "magnify");
         // Magnifying with SHARPEN keeps the fraction live and sets bit 8.
         assert_eq!(
-            lod_frac_of(false, 16, 0, 2, true, false),
+            frac(false, 16, 0, 2, true, false),
             (16 << 3) | 0x100,
             "sharpen keeps the fraction and sets 0x100"
         );
         // `min_level` is the floor the magnify branch uses instead of the LOD.
         assert_eq!(
-            lod_frac_of(false, 4, 8, 2, false, true),
+            frac(false, 4, 8, 2, false, true),
             8 << 3,
             "detail uses min_level as the floor"
+        );
+        // The mip signals that drive tile selection.
+        let s = lod_signals(false, 112, 0, 2, false, false);
+        assert_eq!(
+            (s.l_tile, s.magnify, s.distant),
+            (1, false, false),
+            "level 1"
+        );
+        let far = lod_signals(false, 112, 0, 1, false, false);
+        assert!(far.distant, "l_tile >= max_level is distant");
+        let mag = lod_signals(false, 16, 0, 2, false, false);
+        assert!(mag.magnify && mag.l_tile == 0, "magnify pins level 0");
+    }
+
+    /// **`lod_mip_tiles` picks the mip pair (R-13).** Hand-computed from the
+    /// tile-selection tail of Angrylion `tclod_2cycle`: the pair straddles the mip
+    /// boundary, collapses where there is nothing to blend toward, and wraps into
+    /// the 8 descriptors.
+    #[test]
+    fn lod_mip_tiles_selects_the_pair() {
+        let sig = |l_tile, magnify, distant| LodSignals {
+            frac: 0,
+            l_tile,
+            magnify,
+            distant,
+        };
+        // In-range level 1 from base 0 -> sample tiles 1 and 2 (the oracle vector).
+        assert_eq!(
+            lod_mip_tiles(0, sig(1, false, false), 2, false, false),
+            (1, 2),
+            "straddles the mip boundary"
+        );
+        // Distant pins the level to `max_level` and collapses the pair.
+        assert_eq!(
+            lod_mip_tiles(0, sig(1, false, true), 3, false, false),
+            (3, 3),
+            "distant pins to max_level and collapses"
+        );
+        // Plain magnification also collapses (nothing finer to blend toward)...
+        assert_eq!(
+            lod_mip_tiles(0, sig(0, true, false), 2, false, false),
+            (0, 0),
+            "magnify collapses"
+        );
+        // ...unless sharpen texturing is on, which keeps the second tile.
+        assert_eq!(
+            lod_mip_tiles(0, sig(0, true, false), 2, true, false),
+            (0, 1),
+            "sharpen keeps the pair while magnifying"
+        );
+        // Detail texturing shifts both one level finer.
+        assert_eq!(
+            lod_mip_tiles(0, sig(1, false, false), 2, false, true),
+            (2, 3),
+            "detail shifts by one"
+        );
+        // Every index wraps into the 8 tile descriptors.
+        assert_eq!(
+            lod_mip_tiles(7, sig(1, false, false), 2, false, false),
+            (0, 1),
+            "wraps mod 8"
         );
     }
 

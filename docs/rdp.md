@@ -576,14 +576,25 @@ vector `tex_tri_lodfrac_16`; see `docs/accuracy-ledger.md` **R-13** for the full
 In **2-cycle** mode the derivative-computed `lod_frac` is modelled: the LOD is the larger of the coordinate
 deltas to the next pixel in **x** (`+dsdx`) and the next scanline in **y** (`+dsdy` — the true
 vertical gradient from texture-block words 5/7, *not* the major-edge `de` the scanline walk uses),
-each taken through the same perspective divide as the pixel's own coordinate; `lod_frac_of` then
+each taken through the same perspective divide as the pixel's own coordinate; `lod_signals` then
 maps it to the raw 9-bit fraction using `min_level` (`Set Prim Color` bits 12:8), `max_level`
 (the triangle command's `level[2:0]`, bits 53:51), and `sharpen_tex_en`/`detail_tex_en`. It feeds
 the combiner's `LODFrac` mul input (RGB select 13 / alpha select 0), validated against Angrylion by
 `tex_tri_lodfrac_16`. Computation is gated on Angrylion's `dolod`, so a combine that does not select
-it is unaffected. Scope (**open residual R-13**): the **1-cycle** LOD form (it compares the `x+1`
-and `x+2` taps and needs span-edge signals the rasteriser does not model, so it reads zero) and the
-LOD-driven **mip tile selection** remain.
+it is unaffected.
+
+**Mip tile selection.** With `tex_lod_en` (bit 48) the LOD also picks which tiles the two cycles
+sample (`lod_mip_tiles`): a *distant* LOD pins the level to `max_level`, otherwise it is `l_tile`;
+the pair straddles the mip boundary (`base+level`, `base+level+1`) and collapses to a single tile
+where there is nothing to blend toward (distant, or magnifying without `sharpen_tex_en`);
+`detail_tex_en` shifts both one level finer; indices wrap mod 8. Validated against Angrylion by
+`tex_tri_mip_tile_16`. Scope (**open residual R-13**): only the **1-cycle** LOD form remains — it
+compares the `x+1` and `x+2` taps and needs span-edge signals the rasteriser does not model, so it
+reads zero rather than being approximated with the 2-cycle formula.
+
+> **Authoring note for 2-cycle textured vectors:** set **both** `bi_lerp0` (bit 11) *and*
+> `bi_lerp1` (bit 10). Cycle 1's filter is selected by `bi_lerp1`, and leaving it clear sends that
+> cycle down the YUV colour-convert path instead of the texel fetch.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 

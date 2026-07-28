@@ -1088,6 +1088,48 @@ static const uint32_t V33_TEX_TRI_LODFRAC_16[] = {
     TEX_BLOCK_DY(0, 0, 1, 48, 0, 0, 0, 0, 0, 112, 0, 0),
 };
 
+// V34: LOD-DRIVEN MIP TILE SELECTION (`tex_lod_en`, Set Other Modes bit 48) —
+// ledger R-13. Same 2-cycle LOD setup as V33 (dx.S = 48, dy.S = 112, de = 0 -> LOD
+// 112; `level = 2` so it is not "distant"), so `l_tile = log2(112>>5) = 1`. With
+// `tex_lod_en` the sampler must therefore read tile `base + l_tile` = **tile 1**,
+// not the base tile 0 — and the second cycle reads tile 2.
+//
+// Three 1-texel tiles are loaded with DISTINCT colours (tile 0 red, tile 1 green,
+// tile 2 blue) and the combiner passes TEXEL0 through, so the pixel names the tile
+// that was actually sampled: GREEN when the LOD selects tile 1, RED if the selection
+// is ignored and the base tile is sampled. That is what makes it non-vacuous.
+static const uint16_t TEX_MIP3[3] = {0xF801u, 0x07C1u, 0x003Fu}; // red, green, blue
+static const uint32_t V34_TEX_TRI_MIP_TILE_16[] = {
+    // NOTE both bi_lerp0 (bit 11) AND bi_lerp1 (bit 10) must be set: cycle 1 runs
+    // `texture_pipeline_cycle(.., 1)`, whose filter is selected by bi_lerp1, and a
+    // clear bi_lerp1 sends cycle 1 down the YUV colour-convert path (which, with
+    // unset convert coefficients, renders white here rather than the sampled texel).
+    0x2F110CF0u, 0x00000000u, // Set Other Modes: 2-CYCLE, TEX_LOD_EN (bit 48), bi_lerp0/1, dither off
+    0x3C000000u, 0x00008241u, // Set Combine: cyc0 D=texel0, cyc1 D=texel0 (passthrough)
+    0x3D100000u, 0x00003000u, // Set Texture Image: 16-bit, width 1, addr 0x3000 (red)
+    0x35100200u, 0x00000000u, // Set Tile 0: 16-bit, line 1, tmem word 0
+    0x32000000u, 0x00000000u, // Set Tile Size 0: 1 texel
+    0x34000000u, 0x00000000u, // Load Tile 0: red -> TMEM word 0
+    0x3D100000u, 0x00003002u, // Set Texture Image: addr 0x3002 (green)
+    0x35100201u, 0x01000000u, // Set Tile 1: 16-bit, line 1, tmem word 1
+    0x32000000u, 0x01000000u, // Set Tile Size 1: 1 texel
+    0x34000000u, 0x01000000u, // Load Tile 1: green -> TMEM word 1
+    0x3D100000u, 0x00003004u, // Set Texture Image: addr 0x3004 (blue)
+    0x35100202u, 0x02000000u, // Set Tile 2: 16-bit, line 1, tmem word 2
+    0x32000000u, 0x02000000u, // Set Tile Size 2: 1 texel
+    0x34000000u, 0x02000000u, // Load Tile 2: blue -> TMEM word 2
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A900020u, 0x00200000u, // op=0x0A (tex), lft=1, LEVEL=2, tile 0, yl=32 ym=32 yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00020000u, 0x00000000u, // XH = 2.0
+    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    // dx.S = 48, de = 0, dy.S = 112 -> LOD 112 -> l_tile 1. S/T stay at texel 0 of
+    // whichever tile is chosen (each tile holds a single texel), so the colour is
+    // purely a report of WHICH tile the LOD selected.
+    TEX_BLOCK_DY(0, 0, 1, 48, 0, 0, 0, 0, 0, 112, 0, 0),
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1780,6 +1822,11 @@ int main(int argc, char **argv) {
                   sizeof(V33_TEX_TRI_LODFRAC_16) / 4, V33_TEX_TRI_LODFRAC_16,
                   0x3000, 8, TEX8_RAMP};
     if (emit_vector(&v33, out_dir)) return 1;
+
+    Vector v34 = {"tex_tri_mip_tile_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V34_TEX_TRI_MIP_TILE_16) / 4, V34_TEX_TRI_MIP_TILE_16,
+                  0x3000, 3, TEX_MIP3};
+    if (emit_vector(&v34, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
