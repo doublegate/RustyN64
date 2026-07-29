@@ -838,6 +838,15 @@ impl Pipeline {
             self.nmi_pending = false;
             self.abort_from(Stage::Dc, Exception::Nmi);
         } else if self.prev_was_run && self.cop0.interrupt_pending() {
+            // NOTE (ledger R-18, open): `abort_from(Stage::Dc, ..)` charges `EPC`
+            // to whatever sits in `ex_dc`, and that is not always the instruction
+            // the interrupt should be attributed to — a bubble charges `EPC = 0`,
+            // and an `ERET` that has already redirected in EX charges `EPC` to
+            // itself, destroying the return address it was about to consume.
+            // Measured, reproduced, and NOT fixed here: the candidate fix changes
+            // *when* interrupts are accepted, which is timing-visible and
+            // determinism-affecting, so it needs a decision rather than a patch.
+            // See `an_interrupt_across_an_eret_is_charged_to_the_target_not_the_eret`.
             self.abort_from(Stage::Dc, Exception::Interrupt);
         }
         // The memory access. This is the point the scheduler interleaves the RCP
@@ -4588,6 +4597,102 @@ mod tests {
             p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1),
             0,
             "EXL cleared"
+        );
+    }
+
+    /// **An interrupt pending across an `ERET` is taken at the `ERET`'s TARGET,
+    /// never at the `ERET` itself** — ledger R-18, and the defect that stopped
+    /// Banjo-Tooie dead.
+    ///
+    /// `ERET` resolves in `EX`, where it clears `Status.EXL` and points
+    /// `next_pc` at `EPC`. `DC` runs its interrupt check one cycle later, by
+    /// which time `EXL` reads 0 and `interrupt_pending()` is true — so the
+    /// interrupt was stamped onto the instruction sitting in `ex_dc`, **which is
+    /// the `ERET`**. That overwrites `EPC` with the `ERET`'s own address, and
+    /// the return address it was about to consume is gone. The handler then
+    /// returns to the `ERET`, which resumes at itself: an architectural
+    /// livelock, measured at 390,625 `ERET` retirements per frame with no other
+    /// instruction ever reaching `WB`.
+    ///
+    /// The assertion is on `EPC`, not on "an interrupt happened". Both the
+    /// broken and the fixed machine take the interrupt; they differ only in
+    /// **which PC it is charged to**, so an assertion that merely observed the
+    /// vector being entered would pass either way.
+    #[test]
+    #[ignore = "R-18: reproduces an OPEN defect — the fix changes interrupt \
+                acceptance timing and needs a decision, not a patch"]
+    fn an_interrupt_across_an_eret_is_charged_to_the_target_not_the_eret() {
+        /// [`Ram`], but with the interrupt line held asserted.
+        ///
+        /// `dc_stage` re-samples `bus.poll_irq()` into `Cause.IP2` every cycle,
+        /// so seeding `IP2` on the COP0 block directly is erased on the next
+        /// cycle — the first version of this test did exactly that and passed
+        /// having taken no interrupt at all.
+        struct IrqRam(Ram);
+        impl Bus for IrqRam {
+            fn read_u8(&mut self, a: u32) -> u8 {
+                self.0.read_u8(a)
+            }
+            fn write_u8(&mut self, a: u32, v: u8) {
+                self.0.write_u8(a, v);
+            }
+            fn read_u32(&mut self, a: u32) -> u32 {
+                self.0.read_u32(a)
+            }
+            fn poll_irq(&mut self) -> bool {
+                true
+            }
+        }
+
+        const TARGET: u64 = 0xFFFF_FFFF_8000_5000;
+        let eret = (0o20 << 26) | (0o20 << 21) | 0o30;
+        let program = alloc::vec![eret, addiu_zero(5, 0x1234)];
+        let mut bus = IrqRam(Ram::new(program));
+        let mut regs = Regs::new();
+        let mut p = Pipeline::new();
+        // In a handler: EXL set, IE set, IM allowing IP2, and IP2 asserted. This
+        // is the state libultra's interrupt epilogue actually reaches — the
+        // handler unmasks and returns with an RCP interrupt still pending.
+        //
+        // `EXL` is **set**, which is what isolates this to the `ERET`. While a
+        // handler runs, `interrupt_pending()` is false however hard the line is
+        // asserted, so nothing can fire until the `ERET` itself clears `EXL` in
+        // EX — which places the `ERET` in `ex_dc` on exactly the cycle the
+        // interrupt becomes takeable. With `EXL` clear instead, the interrupt
+        // fires during pipeline fill and is charged to a *bubble* (`EPC == 0`) —
+        // a different defect that would mask this one.
+        p.cop0
+            .set_hardware(crate::cop0::reg::STATUS, (1 << 1) | (0xFF << 8) | 1);
+        p.cop0.set_hardware(crate::cop0::reg::EPC, TARGET);
+        p.cop0.set_ip(2, true);
+        let mut pc = KSEG0_PROG;
+
+        for _ in 0..12 {
+            p.advance(&mut bus, &mut regs, &mut pc);
+        }
+
+        // Witness that an interrupt was actually taken. Without this the test is
+        // vacuous: if nothing ever fires, `EPC` is simply never written and the
+        // assertions below pass on a machine that did no work at all.
+        let status = p.cop0.read(crate::cop0::reg::STATUS);
+        let cause = p.cop0.read(crate::cop0::reg::CAUSE) as u32;
+        assert_ne!(
+            status & (1 << 1),
+            0,
+            "no interrupt was taken at all (Status={status:#018X}, Cause={cause:#010X}) \
+             -- this test would prove nothing"
+        );
+
+        let epc = p.cop0.read(crate::cop0::reg::EPC);
+        assert_ne!(
+            epc, KSEG0_PROG,
+            "the interrupt was charged to the ERET itself ({epc:#018X}); ERET would \
+             then resume at its own address forever (R-18 livelock)"
+        );
+        assert_eq!(
+            epc, TARGET,
+            "an interrupt taken across an ERET belongs to the instruction the ERET \
+             returned to, so EPC must still be the target"
         );
     }
 
