@@ -12,19 +12,24 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
 - **`AccuracyScorer::default_battery_stub` → `default_battery`.** The battery no
   longer returns an empty probe set: it scores every committed Angrylion RDP
-  conformance vector (35 probes, `rdp-conformance/<vector>`), replayed through
-  RustyN64's own RDP and compared byte-for-byte against the oracle's golden
-  framebuffer. Every expected value is externally defined — never RustyN64's own
-  output. `docs/STATUS.md` now reports a real **100% (35/35)** instead of
-  "0% (battery stubbed)".
+  conformance vector across **two** oracle suites — 35 RDP rasteriser vectors
+  (`rdp-conformance/<vector>`) and 13 VI scan-out vectors
+  (`vi-conformance/<vector>`) — replayed through RustyN64 and compared
+  byte-for-byte against the oracle's golden output. Every expected value is
+  externally defined — never RustyN64's own output. `docs/STATUS.md` now reports a
+  real **100% (48/48)** instead of "0% (battery stubbed)".
 - **An empty battery no longer scores 1.0.** `AccuracyReport::ratio` returned
   `1.0` for an empty battery ("vacuously green"); a battery that ran nothing has
   proven nothing, so it now scores `0.0`. Added `AccuracyReport::failures()` so a
   regression names the offending vectors.
-- **New `conformance` module.** The `.rvec` parse/replay moved from the test file
-  into `src/` so the conformance test and the battery share one implementation and
-  one vector table — a vector can no longer be exercised by one and invisible to
-  the other, and a name typo fails loudly.
+- **New `conformance` module.** The `.rvec` and `.vivec` parse/replay moved from
+  the test files into `src/` so the conformance tests and the battery share one
+  implementation and one vector table per suite — a vector can no longer be
+  exercised by one and invisible to the other, and a name typo fails loudly.
+- **The FIFO drain is observed, not fitted.** The RDP replay drained for
+  `n_words * 2 + 16` ticks, an undocumented constant that could score a partly
+  rendered frame as an oracle result; it now drains until `DPC_CURRENT >= DPC_END`
+  with a backstop that asserts rather than falling through.
 
 ### Added — RDP LOD-driven mip tile selection (gap-analysis Stage D, ledger R-13)
 

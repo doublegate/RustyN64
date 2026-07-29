@@ -16,134 +16,21 @@
 //! hidden-bits plane feeding de-dither / AA-edge / divot (slice 4f). The field-rate
 //! half of R-6 (PAL 50 Hz cadence / interlace) lands in a later slice.
 
-use rustyn64_core::Bus;
-use rustyn64_core::cpu::Bus as CpuBus;
+use rustyn64_test_harness::conformance::{ViMismatch, vi_first_mismatch, vi_vector_bytes};
 
-/// The `.vivec` header (15 big-endian `u32`).
-struct ViVec {
-    ctrl: u32,
-    origin: u32,
-    width: u32,
-    x_scale: u32,
-    y_scale: u32,
-    h_video: u32,
-    v_video: u32,
-    v_sync: u32,
-    out_w: u32,
-    out_h: u32,
-    /// The raw source framebuffer bytes (logical pixels, big-endian, `src_w * src_h *
-    /// src_bpp`). Big-endian matches `RustyN64`'s `RDRAM` order, so they are placed
-    /// directly at `origin` — the same logical framebuffer Angrylion read.
-    src: Vec<u8>,
-    /// The 9th-bit hidden-coverage plane (format version 2 only): one byte per source
-    /// pixel, low 2 bits meaningful, in the same `(x, y)` order as `src`. Present for
-    /// 16-bit coverage vectors; `None` for version 1.
-    hidden: Option<Vec<u8>>,
-    /// Golden output, `out_w * out_h` RGBA8 pixels.
-    golden: Vec<u8>,
-}
-
-fn be_u32(b: &[u8], i: usize) -> u32 {
-    u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
-}
-
-fn parse(bytes: &[u8]) -> ViVec {
-    assert_eq!(be_u32(bytes, 0), 0x5649_5643, "bad .vivec magic");
-    let version = be_u32(bytes, 4);
-    assert!(version == 1 || version == 2, "unsupported .vivec version");
-    let h = |i: usize| be_u32(bytes, i * 4);
-    let (src_w, src_h) = (h(10), h(11));
-    let src_bpp = h(12);
-    assert!(src_bpp == 2 || src_bpp == 4, "src_bpp must be 2 or 4");
-    let (out_w, out_h) = (h(13), h(14));
-    let mut off = 15 * 4;
-    let src_len = (src_w * src_h * src_bpp) as usize;
-    let src = bytes[off..off + src_len].to_vec();
-    off += src_len;
-    // Version 2 carries the hidden-bits plane between the source and the golden.
-    let hidden = if version == 2 {
-        let n = (src_w * src_h) as usize;
-        let plane = bytes[off..off + n].to_vec();
-        off += n;
-        Some(plane)
-    } else {
-        None
-    };
-    let golden = bytes[off..off + (out_w * out_h * 4) as usize].to_vec();
-    ViVec {
-        ctrl: h(2),
-        origin: h(3),
-        width: h(4),
-        x_scale: h(5),
-        y_scale: h(6),
-        h_video: h(7),
-        v_video: h(8),
-        v_sync: h(9),
-        out_w,
-        out_h,
-        src,
-        hidden,
-        golden,
-    }
-}
-
-/// Build a [`Bus`], place the source framebuffer big-endian at `origin`, program the
-/// VI registers, and scan out through [`Bus::scanout_scaled`], asserting the RGB
-/// matches the Angrylion golden.
-fn assert_matches(name: &str, bytes: &[u8]) {
-    const VI: u32 = 0x0440_0000; // VI register block base
-    let v = parse(bytes);
-    let mut bus = Bus::new();
-
-    // The source bytes are big-endian logical pixels (16- or 32-bit), which is
-    // RustyN64's RDRAM order, so they drop in directly at `origin` — the same logical
-    // framebuffer Angrylion read (via its per-format access pattern).
-    let base = v.origin as usize;
-    bus.rdram[base..base + v.src.len()].copy_from_slice(&v.src);
-
-    // Version-2 vectors carry the 9th-bit hidden-coverage plane. Pack it into
-    // RustyN64's hidden-bits store (2 bits per halfword, 4 halfwords to a byte) at the
-    // same halfword indices the VI reads during scan-out: source pixel (x, y) is the
-    // contiguous halfword `(origin >> 1) + y*src_w + x`. Matches the driver's
-    // `rdram_put_hidden16` and `Bus::rdram_read_hidden`.
-    if let Some(hidden) = &v.hidden {
-        let mut plane = vec![0u8; bus.rdram.len() / 8];
-        let hw0 = base >> 1; // origin is halfword-aligned
-        for (i, &hv) in hidden.iter().enumerate() {
-            let hw = hw0 + i;
-            let shift = (hw & 3) * 2;
-            plane[hw >> 2] |= (hv & 0x3) << shift;
-        }
-        bus.rdram_hidden = Some(plane.into_boxed_slice());
-    }
-
-    // Program the VI registers through the CPU MMIO path (VI regs are crate-private).
-    CpuBus::write_u32(&mut bus, VI, v.ctrl); // VI_CTRL   (+0x00)
-    CpuBus::write_u32(&mut bus, VI + 0x04, v.origin); // VI_ORIGIN (+0x04)
-    CpuBus::write_u32(&mut bus, VI + 0x08, v.width); // VI_WIDTH  (+0x08)
-    CpuBus::write_u32(&mut bus, VI + 0x18, v.v_sync); // VI_V_TOTAL(+0x18)
-    CpuBus::write_u32(&mut bus, VI + 0x24, v.h_video); // VI_H_VIDEO(+0x24)
-    CpuBus::write_u32(&mut bus, VI + 0x28, v.v_video); // VI_V_VIDEO(+0x28)
-    CpuBus::write_u32(&mut bus, VI + 0x30, v.x_scale); // VI_X_SCALE(+0x30)
-    CpuBus::write_u32(&mut bus, VI + 0x34, v.y_scale); // VI_Y_SCALE(+0x34)
-
-    let mut frame = vec![0u8; (v.out_w * v.out_h * 4) as usize];
-    let got_dims = bus.scanout_scaled(&mut frame);
-    assert_eq!(
-        got_dims,
-        (v.out_w, v.out_h),
-        "{name}: scan-out geometry differs from the golden"
-    );
-
-    for y in 0..v.out_h {
-        for x in 0..v.out_w {
-            let i = ((y * v.out_w + x) * 4) as usize;
-            let got = &frame[i..i + 3];
-            let want = &v.golden[i..i + 3];
-            assert!(
-                got == want,
-                "{name}: RGB differs at pixel ({x},{y}): got {got:02X?}, golden {want:02X?}"
-            );
+/// Assert `RustyN64`'s VI scan-out reproduces the Angrylion golden for `name`.
+///
+/// The vector's bytes come from `conformance::VI_VECTORS`, the single source of
+/// truth shared with the accuracy battery — so a vector can never be exercised
+/// here while being invisible to the battery, and a name typo fails loudly.
+fn assert_matches(name: &str) {
+    match vi_first_mismatch(vi_vector_bytes(name)) {
+        None => (),
+        Some(ViMismatch::Geometry { got, golden }) => panic!(
+            "{name}: scan-out geometry differs from the golden: got {got:?}, golden {golden:?}"
+        ),
+        Some(ViMismatch::Pixel { x, y, got, golden }) => {
+            panic!("{name}: RGB differs at pixel ({x},{y}): got {got:02X?}, golden {golden:02X?}")
         }
     }
 }
@@ -155,10 +42,7 @@ fn assert_matches(name: &str, bytes: &[u8]) {
 /// `(x, y)` in separate channels, so any mis-addressed sample lands on a wrong colour.
 #[test]
 fn vi_scale_1x_16_matches_angrylion() {
-    assert_matches(
-        "vi_scale_1x_16",
-        include_bytes!("vectors/vi_scale_1x_16.vivec"),
-    );
+    assert_matches("vi_scale_1x_16");
 }
 
 /// **2× downscale — the 2.10 accumulator steps two source pixels per output pixel.**
@@ -166,10 +50,7 @@ fn vi_scale_1x_16_matches_angrylion() {
 /// pins the accumulator's integer addressing under a real scale factor.
 #[test]
 fn vi_scale_down2x_16_matches_angrylion() {
-    assert_matches(
-        "vi_scale_down2x_16",
-        include_bytes!("vectors/vi_scale_down2x_16.vivec"),
-    );
+    assert_matches("vi_scale_down2x_16");
 }
 
 /// **The 5-bit bilinear lerp (slice 2).** `aa_mode = RESAMP_ONLY` (`VI_STATUS =
@@ -180,10 +61,7 @@ fn vi_scale_down2x_16_matches_angrylion() {
 /// `a + ((b-a)*frac + 16) >> 5` against Angrylion.
 #[test]
 fn vi_scale_bilinear_16_matches_angrylion() {
-    assert_matches(
-        "vi_scale_bilinear_16",
-        include_bytes!("vectors/vi_scale_bilinear_16.vivec"),
-    );
+    assert_matches("vi_scale_bilinear_16");
 }
 
 /// **The bilinear lerp's `+16 >> 5` rounding.** A non-power-of-two scale (`x_add =
@@ -192,10 +70,7 @@ fn vi_scale_bilinear_16_matches_angrylion() {
 /// are all multiples of 32, hiding it. Dropping the `+16` fails this vector.
 #[test]
 fn vi_scale_bilinear_odd_16_matches_angrylion() {
-    assert_matches(
-        "vi_scale_bilinear_odd_16",
-        include_bytes!("vectors/vi_scale_bilinear_odd_16.vivec"),
-    );
+    assert_matches("vi_scale_bilinear_odd_16");
 }
 
 /// **The gamma curve (slice 3).** `gamma_enable` set, `gamma_dither` clear
@@ -204,10 +79,7 @@ fn vi_scale_bilinear_odd_16_matches_angrylion() {
 /// the raw sample — non-vacuous. Pins `vi_gamma`/`vi_integer_sqrt` against Angrylion.
 #[test]
 fn vi_gamma_1x_16_matches_angrylion() {
-    assert_matches(
-        "vi_gamma_1x_16",
-        include_bytes!("vectors/vi_gamma_1x_16.vivec"),
-    );
+    assert_matches("vi_gamma_1x_16");
 }
 
 /// **The PAL active-span geometry (R-6, partial).** `v_sync = 625` (> 550) selects
@@ -218,10 +90,7 @@ fn vi_gamma_1x_16_matches_angrylion() {
 /// / interlace half of R-6 is still deferred.
 #[test]
 fn vi_pal_geometry_16_matches_angrylion() {
-    assert_matches(
-        "vi_pal_geometry_16",
-        include_bytes!("vectors/vi_pal_geometry_16.vivec"),
-    );
+    assert_matches("vi_pal_geometry_16");
 }
 
 /// **32-bit RGBA8888 source with the bilinear resample (slice 4b).** `type = 3`,
@@ -230,10 +99,7 @@ fn vi_pal_geometry_16_matches_angrylion() {
 /// as the 16-bit bilinear — the source alpha carries coverage, not shown.
 #[test]
 fn vi_scale_bilinear_32_matches_angrylion() {
-    assert_matches(
-        "vi_scale_bilinear_32",
-        include_bytes!("vectors/vi_scale_bilinear_32.vivec"),
-    );
+    assert_matches("vi_scale_bilinear_32");
 }
 
 /// **The de-dither restore filter (slice 4c).** `aa_mode = 0` (reads real coverage),
@@ -244,10 +110,7 @@ fn vi_scale_bilinear_32_matches_angrylion() {
 /// (e.g. output col 0 = `0x1b`, not the raw `0x20`, because the row-0 top taps read 0).
 #[test]
 fn vi_dedither_32_matches_angrylion() {
-    assert_matches(
-        "vi_dedither_32",
-        include_bytes!("vectors/vi_dedither_32.vivec"),
-    );
+    assert_matches("vi_dedither_32");
 }
 
 /// **The AA edge filter (slice 4d).** `aa_mode = 0`, no dither/divot/gamma
@@ -260,10 +123,7 @@ fn vi_dedither_32_matches_angrylion() {
 /// just the top boundary — a raw-fetch mutation fails everywhere. 1:1 scale so no lerp.
 #[test]
 fn vi_aa_edge_32_matches_angrylion() {
-    assert_matches(
-        "vi_aa_edge_32",
-        include_bytes!("vectors/vi_aa_edge_32.vivec"),
-    );
+    assert_matches("vi_aa_edge_32");
 }
 
 /// **The divot median filter (slice 4e).** `divot_enable` (bit 4), `aa_mode = 0`
@@ -274,7 +134,7 @@ fn vi_aa_edge_32_matches_angrylion() {
 /// result at those pixels (the median ≠ the AA blend). 1:1 scale so no lerp.
 #[test]
 fn vi_divot_32_matches_angrylion() {
-    assert_matches("vi_divot_32", include_bytes!("vectors/vi_divot_32.vivec"));
+    assert_matches("vi_divot_32");
 }
 
 /// **The 16-bit de-dither restore filter (slice 4f).** `type = 2` (RGBA5551),
@@ -285,10 +145,7 @@ fn vi_divot_32_matches_angrylion() {
 /// pins the 16-bit coverage read and the 5-bit→8-bit unpack against Angrylion.
 #[test]
 fn vi_dedither_16_matches_angrylion() {
-    assert_matches(
-        "vi_dedither_16",
-        include_bytes!("vectors/vi_dedither_16.vivec"),
-    );
+    assert_matches("vi_dedither_16");
 }
 
 /// **The 16-bit AA edge filter (slice 4f).** `type = 2`, `aa_mode = 0` (`VI_STATUS =
@@ -298,10 +155,7 @@ fn vi_dedither_16_matches_angrylion() {
 /// path. Confirms coverage is read from the hidden plane for the AA-edge branch.
 #[test]
 fn vi_aa_edge_16_matches_angrylion() {
-    assert_matches(
-        "vi_aa_edge_16",
-        include_bytes!("vectors/vi_aa_edge_16.vivec"),
-    );
+    assert_matches("vi_aa_edge_16");
 }
 
 /// **The 16-bit divot median filter (slice 4f).** `divot_enable` (bit 4), `type = 2`
@@ -312,5 +166,5 @@ fn vi_aa_edge_16_matches_angrylion() {
 /// coverage. Deleting the early-return computes the median and fails the vector.
 #[test]
 fn vi_divot_16_matches_angrylion() {
-    assert_matches("vi_divot_16", include_bytes!("vectors/vi_divot_16.vivec"));
+    assert_matches("vi_divot_16");
 }

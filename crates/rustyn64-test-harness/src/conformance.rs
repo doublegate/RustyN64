@@ -435,3 +435,278 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The `.vivec` VI scan-out vectors — the second oracle suite.
+// ---------------------------------------------------------------------------
+
+/// A parsed `.vivec` VI scan-out vector (15 big-endian `u32` of header, then the
+/// source framebuffer, an optional hidden-bits plane, and the golden output).
+#[derive(Debug)]
+pub struct ViVector {
+    /// `VI_CTRL`.
+    pub ctrl: u32,
+    /// `VI_ORIGIN` — where the source framebuffer sits in `RDRAM`.
+    pub origin: u32,
+    /// `VI_WIDTH`.
+    pub width: u32,
+    /// `VI_X_SCALE`.
+    pub x_scale: u32,
+    /// `VI_Y_SCALE`.
+    pub y_scale: u32,
+    /// `VI_H_VIDEO`.
+    pub h_video: u32,
+    /// `VI_V_VIDEO`.
+    pub v_video: u32,
+    /// `VI_V_TOTAL`.
+    pub v_sync: u32,
+    /// Golden output width.
+    pub out_w: u32,
+    /// Golden output height.
+    pub out_h: u32,
+    /// Source framebuffer bytes (logical pixels, big-endian — `RustyN64`'s `RDRAM`
+    /// order, so they are placed directly at `origin`).
+    pub src: Vec<u8>,
+    /// The 9th-bit hidden-coverage plane (format version 2 only): one byte per
+    /// source pixel, low 2 bits meaningful. `None` for version 1.
+    pub hidden: Option<Vec<u8>>,
+    /// Golden output, `out_w * out_h` RGBA8 pixels — the oracle's expected frame.
+    pub golden: Vec<u8>,
+}
+
+/// Parse a `.vivec` container.
+///
+/// # Panics
+///
+/// Panics on a bad magic, an unsupported version, an out-of-range `src_bpp`, or a
+/// payload shorter than the header declares.
+#[must_use]
+pub fn parse_vi(bytes: &[u8]) -> ViVector {
+    let be_u32 =
+        |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    assert!(bytes.len() >= 15 * 4, "truncated .vivec: header incomplete");
+    assert_eq!(be_u32(0), 0x5649_5643, "bad .vivec magic");
+    let version = be_u32(4);
+    assert!(version == 1 || version == 2, "unsupported .vivec version");
+    let h = |i: usize| be_u32(i * 4);
+    let (src_w, src_h) = (h(10), h(11));
+    let src_bpp = h(12);
+    assert!(src_bpp == 2 || src_bpp == 4, "src_bpp must be 2 or 4");
+    let (out_w, out_h) = (h(13), h(14));
+    let mut off = 15 * 4;
+    // Widen before multiplying so an implausible header cannot wrap the length.
+    let src_len = (src_w as usize) * (src_h as usize) * (src_bpp as usize);
+    let hidden_len = if version == 2 {
+        (src_w as usize) * (src_h as usize)
+    } else {
+        0
+    };
+    let golden_len = (out_w as usize) * (out_h as usize) * 4;
+    assert!(
+        bytes.len() >= off + src_len + hidden_len + golden_len,
+        "truncated .vivec: header declares more payload than the file holds"
+    );
+    let src = bytes[off..off + src_len].to_vec();
+    off += src_len;
+    let hidden = (version == 2).then(|| {
+        let plane = bytes[off..off + hidden_len].to_vec();
+        off += hidden_len;
+        plane
+    });
+    let golden = bytes[off..off + golden_len].to_vec();
+    ViVector {
+        ctrl: h(2),
+        origin: h(3),
+        width: h(4),
+        x_scale: h(5),
+        y_scale: h(6),
+        h_video: h(7),
+        v_video: h(8),
+        v_sync: h(9),
+        out_w,
+        out_h,
+        src,
+        hidden,
+        golden,
+    }
+}
+
+/// Scan `v` out through `RustyN64`'s VI and return `(dims, rgba_frame)`.
+///
+/// Places the source framebuffer big-endian at `origin`, packs the optional
+/// hidden-coverage plane into the bus's hidden-bits store at the halfword indices
+/// the VI reads, programs the VI registers through the CPU MMIO path, and runs
+/// [`Bus::scanout_scaled`].
+///
+/// # Panics
+///
+/// Panics if the source framebuffer does not fit in `RDRAM`.
+#[must_use]
+pub fn replay_vi(v: &ViVector) -> ((u32, u32), Vec<u8>) {
+    use rustyn64_core::cpu::Bus as CpuBus;
+    const VI: u32 = 0x0440_0000; // VI register block base
+
+    let mut bus = Bus::new();
+    let base = v.origin as usize;
+    assert!(
+        base.checked_add(v.src.len())
+            .is_some_and(|end| end <= bus.rdram.len()),
+        "source framebuffer exceeds RDRAM"
+    );
+    bus.rdram[base..base + v.src.len()].copy_from_slice(&v.src);
+
+    // Source pixel (x, y) is the contiguous halfword `(origin >> 1) + y*src_w + x`;
+    // the store packs 2 bits per halfword, 4 halfwords to a byte.
+    if let Some(hidden) = &v.hidden {
+        let mut plane = vec![0u8; bus.rdram.len() / 8];
+        let hw0 = base >> 1; // origin is halfword-aligned
+        for (i, &hv) in hidden.iter().enumerate() {
+            let hw = hw0 + i;
+            let shift = (hw & 3) * 2;
+            plane[hw >> 2] |= (hv & 0x3) << shift;
+        }
+        bus.rdram_hidden = Some(plane.into_boxed_slice());
+    }
+
+    CpuBus::write_u32(&mut bus, VI, v.ctrl); // VI_CTRL    (+0x00)
+    CpuBus::write_u32(&mut bus, VI + 0x04, v.origin); // VI_ORIGIN  (+0x04)
+    CpuBus::write_u32(&mut bus, VI + 0x08, v.width); // VI_WIDTH   (+0x08)
+    CpuBus::write_u32(&mut bus, VI + 0x18, v.v_sync); // VI_V_TOTAL (+0x18)
+    CpuBus::write_u32(&mut bus, VI + 0x24, v.h_video); // VI_H_VIDEO (+0x24)
+    CpuBus::write_u32(&mut bus, VI + 0x28, v.v_video); // VI_V_VIDEO (+0x28)
+    CpuBus::write_u32(&mut bus, VI + 0x30, v.x_scale); // VI_X_SCALE (+0x30)
+    CpuBus::write_u32(&mut bus, VI + 0x34, v.y_scale); // VI_Y_SCALE (+0x34)
+
+    let mut frame = vec![0u8; (v.out_w as usize) * (v.out_h as usize) * 4];
+    let dims = bus.scanout_scaled(&mut frame);
+    (dims, frame)
+}
+
+/// Where a VI scan-out diverged from the Angrylion golden.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViMismatch {
+    /// The scan-out geometry itself differed.
+    Geometry {
+        /// The dimensions `RustyN64` produced.
+        got: (u32, u32),
+        /// The dimensions the oracle produced.
+        golden: (u32, u32),
+    },
+    /// An RGB pixel differed.
+    Pixel {
+        /// Column of the differing pixel.
+        x: u32,
+        /// Row of the differing pixel.
+        y: u32,
+        /// The RGB bytes `RustyN64` produced.
+        got: Vec<u8>,
+        /// The RGB bytes the oracle produced.
+        golden: Vec<u8>,
+    },
+}
+
+/// Scan a `.vivec` out and report the first divergence from the Angrylion golden,
+/// or `None` on a match. Only RGB is compared (the alpha byte carries coverage).
+///
+/// # Panics
+///
+/// Panics if `bytes` is not a well-formed `.vivec` (see [`parse_vi`]).
+#[must_use]
+pub fn vi_first_mismatch(bytes: &[u8]) -> Option<ViMismatch> {
+    let v = parse_vi(bytes);
+    let (dims, frame) = replay_vi(&v);
+    if dims != (v.out_w, v.out_h) {
+        return Some(ViMismatch::Geometry {
+            got: dims,
+            golden: (v.out_w, v.out_h),
+        });
+    }
+    for y in 0..v.out_h {
+        for x in 0..v.out_w {
+            let i = ((y * v.out_w + x) * 4) as usize;
+            if frame[i..i + 3] != v.golden[i..i + 3] {
+                return Some(ViMismatch::Pixel {
+                    x,
+                    y,
+                    got: frame[i..i + 3].to_vec(),
+                    golden: v.golden[i..i + 3].to_vec(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Every committed VI scan-out conformance vector, as `(name, bytes)`.
+///
+/// The counterpart to [`RDP_VECTORS`] for the VI pipeline; the [`crate::accuracy`]
+/// battery scores both.
+pub const VI_VECTORS: &[(&str, &[u8])] = &[
+    (
+        "vi_scale_1x_16",
+        include_bytes!("../tests/vectors/vi_scale_1x_16.vivec"),
+    ),
+    (
+        "vi_scale_down2x_16",
+        include_bytes!("../tests/vectors/vi_scale_down2x_16.vivec"),
+    ),
+    (
+        "vi_scale_bilinear_16",
+        include_bytes!("../tests/vectors/vi_scale_bilinear_16.vivec"),
+    ),
+    (
+        "vi_scale_bilinear_odd_16",
+        include_bytes!("../tests/vectors/vi_scale_bilinear_odd_16.vivec"),
+    ),
+    (
+        "vi_gamma_1x_16",
+        include_bytes!("../tests/vectors/vi_gamma_1x_16.vivec"),
+    ),
+    (
+        "vi_pal_geometry_16",
+        include_bytes!("../tests/vectors/vi_pal_geometry_16.vivec"),
+    ),
+    (
+        "vi_scale_bilinear_32",
+        include_bytes!("../tests/vectors/vi_scale_bilinear_32.vivec"),
+    ),
+    (
+        "vi_dedither_32",
+        include_bytes!("../tests/vectors/vi_dedither_32.vivec"),
+    ),
+    (
+        "vi_aa_edge_32",
+        include_bytes!("../tests/vectors/vi_aa_edge_32.vivec"),
+    ),
+    (
+        "vi_divot_32",
+        include_bytes!("../tests/vectors/vi_divot_32.vivec"),
+    ),
+    (
+        "vi_dedither_16",
+        include_bytes!("../tests/vectors/vi_dedither_16.vivec"),
+    ),
+    (
+        "vi_aa_edge_16",
+        include_bytes!("../tests/vectors/vi_aa_edge_16.vivec"),
+    ),
+    (
+        "vi_divot_16",
+        include_bytes!("../tests/vectors/vi_divot_16.vivec"),
+    ),
+];
+
+/// Look up a committed VI vector's bytes by name.
+///
+/// # Panics
+///
+/// Panics if `name` is not in [`VI_VECTORS`] — a typo must fail loudly rather than
+/// silently skip a vector.
+#[must_use]
+pub fn vi_vector_bytes(name: &str) -> &'static [u8] {
+    VI_VECTORS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("no committed VI conformance vector named {name}"))
+        .1
+}

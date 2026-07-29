@@ -8,8 +8,8 @@
 //! 2. [`runner`] — [`run_until_complete`], which steps a [`System`] until a
 //!    completion sentinel (the n64-systemtest result protocol).
 //! 3. [`accuracy`] — a probe scorer over a battery of named probes, whose
-//!    default battery scores every committed Angrylion RDP conformance vector
-//!    ([`conformance`]) — expected values are the oracle's, never our own.
+//!    default battery scores every committed Angrylion conformance vector — RDP
+//!    and VI ([`conformance`]) — expected values are the oracle's, never our own.
 //! 4. [`frame`] — a `.snap` / screenshot frame-hash comparator for the visual
 //!    golden corpus (the hash is real; the corpus loader is a frontend job).
 //!

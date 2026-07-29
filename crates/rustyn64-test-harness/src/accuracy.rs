@@ -9,11 +9,12 @@
 //!
 //! **Every probe's expected value comes from an external oracle, never from
 //! `RustyN64`'s own output.** The default battery
-//! ([`AccuracyScorer::default_battery`]) scores each committed Angrylion RDP
-//! conformance vector ([`crate::conformance::RDP_VECTORS`]): the expected
-//! framebuffer in each `.rvec` was rendered by Angrylion, so a probe passes only
-//! when `RustyN64` reproduces the oracle byte-for-byte. The battery grows as further
-//! oracle-backed suites come online.
+//! ([`AccuracyScorer::default_battery`]) scores every committed Angrylion
+//! conformance vector — the RDP rasteriser set ([`crate::conformance::RDP_VECTORS`])
+//! and the VI scan-out set ([`crate::conformance::VI_VECTORS`]): the expected output
+//! in each vector was rendered by Angrylion, so a probe passes only when `RustyN64`
+//! reproduces the oracle byte-for-byte. The battery grows as further oracle-backed
+//! suites come online.
 //!
 //! See `docs/testing-strategy.md` §accuracy battery.
 
@@ -102,23 +103,27 @@ impl AccuracyScorer {
         }
     }
 
-    /// The default probe battery: every committed Angrylion RDP conformance
-    /// vector, replayed through `RustyN64`'s RDP and scored against the oracle's
-    /// golden framebuffer.
+    /// The default probe battery: every committed Angrylion conformance vector —
+    /// both the **RDP** rasteriser set and the **VI** scan-out set — replayed
+    /// through `RustyN64` and scored against the oracle's golden output.
     ///
-    /// Each probe is named `rdp-conformance/<vector>`. A probe passes only on a
-    /// byte-for-byte match with Angrylion's output, so the score is an
-    /// externally-defined measurement rather than a self-assessment.
+    /// Probes are named `rdp-conformance/<vector>` and `vi-conformance/<vector>`.
+    /// A probe passes only on a byte-for-byte match with Angrylion's output, so
+    /// the score is an externally-defined measurement rather than a
+    /// self-assessment.
     ///
     /// This is the battery `docs/STATUS.md` reports. It grows as further
-    /// oracle-backed suites (the VI `.vivec` set, the n64-systemtest categories)
-    /// are wired in.
+    /// oracle-backed suites (the n64-systemtest categories) are wired in.
     #[must_use]
     pub fn default_battery() -> Self {
         let mut scorer = Self::new();
         for (name, bytes) in crate::conformance::RDP_VECTORS {
             let passed = crate::conformance::first_mismatch(bytes).is_none();
             scorer.record(format!("rdp-conformance/{name}"), passed);
+        }
+        for (name, bytes) in crate::conformance::VI_VECTORS {
+            let passed = crate::conformance::vi_first_mismatch(bytes).is_none();
+            scorer.record(format!("vi-conformance/{name}"), passed);
         }
         scorer
     }
@@ -148,17 +153,25 @@ mod tests {
         let report = AccuracyScorer::default_battery().finish();
         assert_eq!(
             report.total(),
-            crate::conformance::RDP_VECTORS.len(),
-            "one probe per committed vector"
+            crate::conformance::RDP_VECTORS.len() + crate::conformance::VI_VECTORS.len(),
+            "one probe per committed vector, across both oracle suites"
         );
-        assert!(report.total() >= 35, "battery unexpectedly small");
-        assert!(
-            report
-                .probes
-                .iter()
-                .all(|p| p.name.starts_with("rdp-conformance/")),
-            "probes are named for their oracle suite"
-        );
+        assert!(report.total() >= 48, "battery unexpectedly small");
+        // Both suites must actually contribute — a battery that silently lost one
+        // would still look green while measuring half of what it claims.
+        let rdp = report
+            .probes
+            .iter()
+            .filter(|p| p.name.starts_with("rdp-conformance/"))
+            .count();
+        let vi = report
+            .probes
+            .iter()
+            .filter(|p| p.name.starts_with("vi-conformance/"))
+            .count();
+        assert_eq!(rdp, crate::conformance::RDP_VECTORS.len(), "RDP suite");
+        assert_eq!(vi, crate::conformance::VI_VECTORS.len(), "VI suite");
+        assert_eq!(rdp + vi, report.total(), "every probe names its suite");
     }
 
     /// **The battery is green against the Angrylion oracle.** This is the accuracy
