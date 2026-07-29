@@ -8,7 +8,7 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
-### Corrected — "lit pixels" is not evidence of rendering (ledger R-18)
+### Fixed — "lit pixels" is not evidence of rendering (ledger R-18)
 
 - **No title produces a picture yet, and earlier entries here implied otherwise.**
   The lit-pixel count reports non-black scanned-out pixels, and *uninitialised
