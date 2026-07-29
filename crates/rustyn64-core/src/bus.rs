@@ -581,7 +581,11 @@ impl Bus {
         }
     }
 
-    /// Base of the RI (RDRAM controller) register block (`0x0470_0000`).
+    /// Base of the RI (RDRAM controller) register block.
+    ///
+    /// `0x0470_0000`, holding the eight registers N64brew *RDRAM Interface*
+    /// §Registers enumerates: `RI_MODE`, `RI_CONFIG`, `RI_CURRENT_LOAD`,
+    /// `RI_SELECT`, `RI_REFRESH`, `RI_LATENCY`, `RI_ERROR`, `RI_BANK_STATUS`.
     pub const RI_BASE: u32 = 0x0470_0000;
 
     /// Is this address in the RI register block? Eight registers span
@@ -1486,8 +1490,13 @@ impl CpuBus for Bus {
             }
             return self.cart.pi_read(Self::pi_bus_byte(addr));
         }
-        // TODO(T-CORE-01): decode the remaining RCP register windows
-        // (SP/DP/VI/AI/SI/RI/MI) and the PIF ROM/RAM.
+        // TODO(T-CORE-01): decode the remaining RCP register windows.
+        //
+        // SP, DP, VI, AI, SI, RI, MI and the PIF ROM/RAM are all decoded above —
+        // this comment listed every one of them as outstanding long after they
+        // landed. What is genuinely still undecoded is the **RDRAM device
+        // register** block (`0x03F0_0000`), the per-chip Rambus registers, which
+        // is distinct from the RI controller block.
         self.cart.pi_read(addr)
     }
 
@@ -1616,7 +1625,11 @@ impl CpuBus for Bus {
             }
             return;
         }
-        // TODO(T-CORE-01): decode + dispatch the remaining RCP register windows.
+        // TODO(T-CORE-01): decode + dispatch the remaining RCP register windows —
+        // specifically the RDRAM device registers (`0x03F0_0000`). Note this is
+        // the **byte**-write path: RCP register blocks are reached through
+        // `write_sized`, which funnels to `write_u32`, so their absence here is by
+        // design rather than an omission.
         self.cart.pi_write(addr, val);
     }
 

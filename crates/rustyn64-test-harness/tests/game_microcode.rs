@@ -21,7 +21,7 @@
 //! **Read the halt/PC state through `Rsp::halted()` / `Rsp::pc()`, never through
 //! any same-named field.** The struct carries vestigial `halted`/`pc` fields that
 //! are never written (kept only so the save-state layout is unchanged, and now
-//! private). Sampling them reports "halted forever at PC 0" for a *running* RSP,
+//! `#[deprecated]`). Sampling them reports "halted forever at PC 0" for a *running* RSP,
 //! which is exactly the wrong conclusion this test exists to prevent.
 //!
 //! ROMs are **never committed** (copyright); this reads them at runtime and skips
@@ -108,9 +108,20 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
     /// pinning a particular microcode's length.
     const MIN_DISTINCT_PCS: usize = 32;
 
+    /// ROMs sampled per save-type folder. A cap, not a filter: each title costs
+    /// ~7 s of emulated boot, so the full 66-title corpus would take ~8 minutes.
+    /// Three per folder is 15 titles across every save type, which is ample for a
+    /// claim that is about the RSP rather than about breadth of coverage — the
+    /// corpus-wide sweep is `T-71-002`, a separate ticket.
+    const ROMS_PER_FOLDER: usize = 3;
+
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/roms/external/commercial");
     let mut staged = 0usize;
     let mut witnesses: Vec<String> = Vec::new();
+    // Staged ROMs that failed to boot at all. Tracked and asserted on, because a
+    // title regressing from "boots" to "does not boot" would otherwise vanish
+    // silently as long as some *other* title still witnessed the claim.
+    let mut boot_failures: Vec<String> = Vec::new();
 
     for folder in [
         "eeprom-4k",
@@ -129,11 +140,12 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
             .collect();
         // Sorted so the reported set is stable across runs and filesystems.
         roms.sort();
-        for rom_path in roms.into_iter().take(3) {
+        for rom_path in roms.into_iter().take(ROMS_PER_FOLDER) {
             staged += 1;
             let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
             let Some(a) = watch_rsp(&rom_path, 90) else {
-                eprintln!("[{folder}] {name}: could not boot — skipped");
+                eprintln!("[{folder}] {name}: FAILED TO BOOT");
+                boot_failures.push(format!("[{folder}] {name}"));
                 continue;
             };
             eprintln!(
@@ -153,6 +165,14 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
         eprintln!("no commercial ROMs staged — T-71-003 witness skipped (local-only)");
         return;
     }
+    // A staged ROM that cannot boot is a regression, not a skip. R-23 (CIC-6105)
+    // titles still *boot* under HLE far enough to be measured here — they fail
+    // later — so this does not need a carve-out for them.
+    assert!(
+        boot_failures.is_empty(),
+        "staged ROMs failed to boot: {}",
+        boot_failures.join(", ")
+    );
     assert!(
         !witnesses.is_empty(),
         "no staged title executed its own microcode on the RSP: none reached \
