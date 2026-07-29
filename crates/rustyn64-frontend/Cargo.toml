@@ -77,6 +77,7 @@ cpal = "0.18"
 gilrs = "0.11"
 rfd = "0.17"
 directories = "6"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2", "deflate-flate2-zlib-rs"] }
 
 # wasm-only: the browser entry point. wasm-bindgen is pinned to EXACTLY the
 # version `web/Trunk.toml` installs (0.2.126) — a mismatch fails `trunk build`

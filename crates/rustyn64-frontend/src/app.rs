@@ -110,7 +110,9 @@ impl App {
 
     /// Read a ROM file and hand it to the core.
     fn load_rom(&self, path: &Path) -> Result<(), AppError> {
-        let raw = std::fs::read(path).map_err(|e| AppError::Rom(e.to_string()))?;
+        // Reads a plain image or unwraps a `.zip` — ROM sets ship one-ROM-per-zip,
+        // so requiring a manual unpack would be friction with no upside.
+        let raw = crate::romfile::read_rom(path).map_err(|e| AppError::Rom(e.to_string()))?;
         if let Ok(mut core) = self.emu.lock() {
             core.load_rom(&raw)
                 .map_err(|e| AppError::Rom(format!("{e:?}")))?;
@@ -164,7 +166,7 @@ impl App {
             match action {
                 MenuAction::OpenRom => {
                     if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("N64 ROM", &["z64", "n64", "v64"])
+                        .add_filter("N64 ROM", &["z64", "n64", "v64", "zip"])
                         .pick_file()
                         && let Err(e) = self.load_rom(&path)
                     {

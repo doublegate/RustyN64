@@ -29,6 +29,33 @@ The first 4 bytes encode both the PI bus config and the byte order
 `normalize_to_big_endian(raw, format)` produces the canonical image. **File
 extension is unreliable** — always sniff (`ref-docs/research-report.md` §6).
 
+## Zip containers (host-side, `rustyn64-frontend::romfile`)
+
+ROM sets are distributed as one `.z64` per `.zip`, so the frontend unwraps the
+archive before any of the above runs. This is a **host filesystem** concern, not
+an emulation one: it lives in `crates/rustyn64-frontend/src/romfile.rs`, is
+native-only (the wasm build receives bytes from the browser file API), and the
+`#![no_std]` chip crates are untouched by it.
+
+`read_rom(path)` returns the ROM bytes from either a bare image or a zip:
+
+- **The container is sniffed by magic (`PK\x03\x04`), not by extension** — the
+  same rule as the byte orders above, and for the same reason. A zip named
+  `game.z64` is unwrapped; a raw ROM named `game.zip` is read verbatim.
+- Exactly one member with a `.z64`/`.n64`/`.v64` extension (matched
+  case-insensitively) is extracted. **Zero is an error and more than one is an
+  error naming the candidates** — picking "the first" or "the largest" would
+  silently boot a game the user did not choose.
+- Byte order is *not* resolved here. The extracted bytes go through
+  `RomFormat::detect` exactly as a bare file would, so a `.v64` inside a zip
+  normalizes identically.
+
+The archive is untrusted input (module 60): declared sizes are checked against
+`MAX_ROM_BYTES` (64 MiB — the cartridge domain-1 address space, so no real
+cartridge exceeds it) *before* allocating, the decompressed read is independently
+hard-capped so a lying header cannot exhaust memory, and nothing is written to
+disk — so zip-slip path traversal cannot arise.
+
 ## Header layout (offsets, big-endian / `.z64`)
 
 | Offset | Size | Field |

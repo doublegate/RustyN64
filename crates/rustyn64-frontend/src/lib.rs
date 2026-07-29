@@ -65,6 +65,10 @@ pub mod emu_thread;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gfx;
 pub mod input;
+// Host filesystem ROM reading (plain or zipped). Native-only: the wasm build
+// receives ROM bytes from the browser file API, never from a path.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod romfile;
 pub mod savestate;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ui_shell;

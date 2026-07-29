@@ -35,7 +35,7 @@ fn main() -> ExitCode {
             "-h" | "--help" => {
                 println!(
                     "RustyN64 v{} — a cycle-accurate N64 emulator.\n\n\
-                     Usage: rustyn64 [ROM.z64|.n64|.v64]\n\n\
+                     Usage: rustyn64 [ROM.z64|.n64|.v64|.zip]\n\n\
                      Launch bare and use File -> Open ROM, or pass a ROM path.\n\
                      P1 keys: arrows = analog stick, IJKL = D-pad, X = A, Z = B,\n\
                      Space = Z, Enter = Start, TFGH = C-buttons, Q/E = L/R.",
