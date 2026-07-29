@@ -27,10 +27,9 @@ use std::path::Path;
 use rustyn64_core::System;
 use rustyn64_test_harness::rom;
 
-/// Boot `path` and run it for `frames` ~60 Hz frames, returning the retired
-/// instruction count and the number of non-black scanned-out pixels on the final
-/// frame (0 = never produced video).
-fn boot_and_run(path: &Path, frames: u64) -> Option<(u64, usize)> {
+/// Boot `path` and run it for `frames` ~60 Hz frames, returning what the run
+/// observed (see [`BootResult`]) — or `None` if the ROM could not be read or booted.
+fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
     const TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
 
     let image = std::fs::read(path).ok()?;
@@ -49,7 +48,45 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<(u64, usize)> {
         .take((w * h) as usize)
         .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
         .count();
-    Some((sys.cpu.retired, lit))
+    // How much of RDRAM the boot chain actually populated, and where the CPU
+    // ended up. Both are needed because a *huge* retired count proves nothing on
+    // its own: a machine sledding through zeroed RDRAM retires hundreds of
+    // millions of NOPs and looks identical to a booted game by that measure.
+    let rdram_nonzero = sys.bus.rdram.iter().filter(|b| **b != 0).count();
+    let pc = (sys.cpu.pc & 0xFFFF_FFFF) as u32;
+    Some(BootResult {
+        retired: sys.cpu.retired,
+        lit,
+        rdram_nonzero,
+        pc,
+    })
+}
+
+/// Is this ROM's bootcode CIC-6105? Read from the cartridge header the same way
+/// the boot does, so the classification cannot drift from what actually runs.
+fn is_cic_6105(path: &Path) -> bool {
+    // Read only the 0x1000-byte boot header, not the whole 8-64 MiB image:
+    // `Cart::load` resolves the CIC from the header + IPL3, both of which live
+    // inside it, and `boot_and_run` reads the full image separately anyway.
+    use std::io::Read as _;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 0x1000];
+    if f.read_exact(&mut header).is_err() {
+        return false;
+    }
+    rustyn64_core::cart::Cart::load(&header)
+        .is_ok_and(|c| c.header().cic == rustyn64_core::cart::Cic::Cic6105)
+}
+
+/// What [`boot_and_run`] observed. Named fields rather than a tuple because the
+/// assertions below distinguish "executed a lot" from "executed the *game*".
+struct BootResult {
+    retired: u64,
+    lit: usize,
+    rdram_nonzero: usize,
+    pc: u32,
 }
 
 /// **A commercial ROM boots and executes** (local capstone). Runs the first
@@ -63,6 +100,9 @@ fn a_commercial_rom_boots_and_executes() {
     /// A booted retail ROM retires far more than this within a few frames; a
     /// stalled or mis-booted machine retires near zero.
     const MIN_RETIRED: u64 = 1_000_000;
+    /// A booted title has ~0.8-1.2 MiB of game code and data in RDRAM (IPL3 copies
+    /// 1 MiB); a machine that faulted out of IPL3 leaves it entirely zero.
+    const MIN_RDRAM_NONZERO: usize = 256 * 1024;
 
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/roms/external/commercial");
     let mut any = false;
@@ -86,13 +126,51 @@ fn a_commercial_rom_boots_and_executes() {
         };
         any = true;
         let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
+        // **CIC-6105 is a documented HLE scope limit, not a silent skip.** Its
+        // IPL3 is a different program: it opens with a self-descrambling XOR loop
+        // (`LW t0, -0xFF0(t1)` / `LW t2, 0x44(t3)` / `XOR` / `SW`) over registers
+        // that only the real IPL2 leaves set. `hle_boot` seeds `sp` and `s3`-`s7`
+        // but not `t1`/`t3`, so the first load faults and the machine sleds
+        // (ledger R-23). The real-PIF capstone below boots these titles correctly,
+        // which is why this is scoped rather than fixed here.
+        if is_cic_6105(&rom_path) {
+            eprintln!(
+                "[{folder}] {name}: SKIPPED — CIC-6105 IPL3 is not HLE-bootable \
+                 (ledger R-23); the real-PIF capstone covers it"
+            );
+            continue;
+        }
         match boot_and_run(&rom_path, 120) {
-            Some((retired, lit)) => {
-                eprintln!("[{folder}] {name}: retired={retired}, lit pixels={lit}");
+            Some(r) => {
+                eprintln!(
+                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, lit pixels={}",
+                    r.retired, r.pc, r.rdram_nonzero, r.lit
+                );
                 assert!(
-                    retired >= MIN_RETIRED,
-                    "[{folder}] {name} retired only {retired} instructions \
+                    r.retired >= MIN_RETIRED,
+                    "[{folder}] {name} retired only {} instructions \
                      (< {MIN_RETIRED}) — it did not boot and execute",
+                    r.retired,
+                );
+                // **IPL3 loaded the game.** Retired count alone cannot show this:
+                // for a long time every title took a TLB-refill exception out of
+                // IPL3's prologue and executed a NOP sled through *empty* RDRAM,
+                // retiring ~180 million instructions while loading nothing at all
+                // (ledger R-18). A populated RDRAM is what separates the two.
+                assert!(
+                    r.rdram_nonzero >= MIN_RDRAM_NONZERO,
+                    "[{folder}] {name} left only {} non-zero RDRAM bytes \
+                     (< {MIN_RDRAM_NONZERO}) — IPL3 never copied the game in",
+                    r.rdram_nonzero,
+                );
+                // **And the CPU is running that game code**, in cached RDRAM
+                // (KSEG0 below the installed 8 MiB) — not still in IPL3's DMEM, and
+                // not sledding past the end of memory.
+                assert!(
+                    (0x8000_0000..0x8080_0000).contains(&r.pc),
+                    "[{folder}] {name} ended at pc={:#010x}, outside cached RDRAM \
+                     — it is not executing the game",
+                    r.pc,
                 );
             }
             None => panic!("[{folder}] could not read/boot {}", rom_path.display()),

@@ -8,6 +8,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Fixed — retail games now boot into their own code (ledger R-18)
+
+- **`hle_boot` never seeded the stack pointer.** IPL1 sets `sp = 0xA4001FF0`
+  before handing off (N64brew *IPL2* §IPL1, `0xBFC000D0`), and `hle_boot` skips
+  IPL1/IPL2 without standing in for it. With `sp = 0`, IPL3's opening
+  `ADDIU sp, sp, -24` / `SW s3, 0(sp)` prologue stored to `0xFFFF_FFE8` — KSEG3,
+  TLB-mapped with no entries — took a TLB-refill exception to `0x8000_0000` in
+  empty RDRAM, and executed a **NOP sled to the end of memory**. Every retail
+  title did this.
+- It hid behind the capstone's own metric: a sledding machine still retires ~180
+  million instructions, so "boots and executes" passed. The tell was that
+  `retired` was **identical across four different games** — the "same value
+  whatever the input" signature — found by tracing the instruction stream rather
+  than inspecting state.
+- **The RI register block (`0x0470_0000`) is now decoded** as storage, so IPL3's
+  opening `RI_SELECT` read is coherent instead of always reading 0.
+- Result: titles boot into their own code. Super Mario 64 reaches `pc=0x80246ddc`
+  with 928 KiB of RDRAM populated; Star Fox 64 submits **122** RDP commands,
+  World Driver Championship **45**; Star Wars Rogue Squadron scans out **68,527
+  lit pixels**. Every title uploads its graphics microcode into IMEM.
+- The local capstone now asserts what was silently false — that RDRAM is
+  populated and the PC is inside cached RDRAM — instead of only counting retired
+  instructions.
+- **Still open (R-18):** no title starts the RSP, so those RDP commands come from
+  the CPU driving the DPC directly, not from microcode. **New R-23:** CIC-6105
+  titles still need `real_pif_boot`; their IPL3 self-descrambles using registers
+  only the real IPL2 leaves set. The capstone detects and reports them rather
+  than passing quietly. n64-systemtest is unchanged at 90.
+
 ### Fixed — `Fill Rectangle` respects the cycle type (ledger R-21)
 
 - **A non-FILL `Fill Rectangle` now goes through the combiner.** It previously
