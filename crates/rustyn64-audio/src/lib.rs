@@ -297,8 +297,12 @@ impl Audio {
         // COUNT ticks down at the VI clock, from DACRATE/2 to 0, reloading; WC
         // (LRCK) toggles at DACRATE/2, out of phase by half a period. Both are
         // gated by BITRATE != 0. Derived from `last_tick`; see ledger.
-        if self.bit_rate != 0 && self.dac_rate != 0 {
-            // Both readbacks are phases of the same video-clock tick count.
+        // Gated on `AI_BITRATE` ALONE: the wiki says the counter "always ticks
+        // unless `AI_BITRATE` is 0" and that a `BITRATE` of 0 "stops the clock" —
+        // neither is said to depend on `AI_DACRATE`. `COUNT`/`WC` additionally need
+        // a DAC rate to have a range at all, which their own guard below supplies.
+        if self.bit_rate != 0 {
+            // All three readbacks are phases of the same video-clock tick count.
             let vi_ticks = self.last_tick.saturating_mul(u64::from(self.video_clock)) / MASTER_HZ;
             let half = u64::from(self.dac_rate) / 2;
             if half != 0 {
@@ -318,13 +322,14 @@ impl Audio {
             // clock, divided by two, divided by one more than this number"
             // (wiki §AI_BITRATE), so one half-period is `BITRATE + 1` video
             // clocks and the line toggles once per half-period. A `BITRATE` of 0
-            // stops the clock, which the enclosing gate already excludes.
+            // stops the clock, which the enclosing gate excludes — and note that
+            // gate is BITRATE-only, so BCLK keeps running with no DAC rate set.
             //
             // The wiki itself hedges this ("believed", "probably") because the
             // CPU "cannot reliably sample it rapidly enough even when BITRATE is
             // set to 15" — so it is un-observable by software in practice and
             // stays ungated (ledger R-16), like `COUNT`/`WC`.
-            let half_periods = vi_ticks / u64::from(u32::from(self.bit_rate) + 1);
+            let half_periods = vi_ticks / (u64::from(self.bit_rate) + 1);
             if half_periods & 1 != 0 {
                 s |= 1 << 16; // BC
             }
@@ -713,9 +718,9 @@ mod tests {
         // Expected from the documented relation alone: video clocks elapsed over
         // the span, divided by the half-period of `BITRATE + 1` video clocks.
         let vi_ticks = span_master_ticks * u64::from(VIDEO_CLOCK_NTSC) / MASTER_HZ;
-        let expected = (vi_ticks / u64::from(BITRATE + 1)) as usize;
+        let expected = vi_ticks / u64::from(BITRATE + 1);
         assert_eq!(
-            transitions,
+            transitions as u64,
             expected,
             "BC must toggle once per {} video clocks",
             BITRATE + 1
@@ -723,6 +728,34 @@ mod tests {
         assert!(
             transitions > 100,
             "the span must actually exercise the clock"
+        );
+    }
+
+    /// **The bit clock does not depend on the DAC rate.** The wiki gates the
+    /// counter on `AI_BITRATE` alone ("It always ticks unless `AI_BITRATE` is 0")
+    /// and never on `AI_DACRATE`, so BCLK must keep toggling with no DAC rate
+    /// programmed — even though `COUNT`/`WC`, which need a range, report nothing.
+    #[test]
+    fn the_bit_clock_runs_without_a_dac_rate() {
+        let mut ai = Audio::new();
+        ai.write_reg(5, 15); // AI_BITRATE only — no AI_DACRATE
+        let mut bus = TestBus::new(0x1000);
+        let mut seen_high = false;
+        let mut seen_low = false;
+        for now in 1..=5_000u64 {
+            ai.tick(now, &mut bus);
+            let st = ai.status();
+            if st & (1 << 16) != 0 {
+                seen_high = true;
+            } else {
+                seen_low = true;
+            }
+            // COUNT has no range without a DAC rate, so it must stay clear.
+            assert_eq!(st & (0x3FFF << 1), 0, "COUNT needs a DAC rate");
+        }
+        assert!(
+            seen_high && seen_low,
+            "BCLK must toggle with no DAC rate programmed"
         );
     }
 
