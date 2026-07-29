@@ -64,6 +64,11 @@ const fn apply_cartridge_region(system: &mut System) {
     system.bus.audio.set_region(region);
 }
 
+/// The MIPS general-purpose register index of the stack pointer (`$29`/`$sp`).
+/// Named so the seed below reads as intent rather than as a magic index, matching
+/// how the COP0 writes use `reg::STATUS` / `reg::CONFIG`.
+const GPR_SP: u8 = 29;
+
 /// **HLE-boot a retail ROM.**
 ///
 /// Seed the state IPL3 expects, copy the cart's *real* IPL3 (ROM `0x40..0x1000`)
@@ -119,7 +124,7 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     // (KSEG3 — TLB-mapped, no entries), and the resulting TLB-refill exception
     // vectors to `0x8000_0000` in empty RDRAM. Every retail title then executed a
     // NOP sled to the end of memory instead of booting (ledger R-18).
-    system.cpu.regs.write(29, 0xFFFF_FFFF_A400_1FF0);
+    system.cpu.regs.write(GPR_SP, 0xFFFF_FFFF_A400_1FF0);
 
     // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
     // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.

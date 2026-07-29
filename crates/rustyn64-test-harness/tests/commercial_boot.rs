@@ -65,10 +65,18 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
 /// Is this ROM's bootcode CIC-6105? Read from the cartridge header the same way
 /// the boot does, so the classification cannot drift from what actually runs.
 fn is_cic_6105(path: &Path) -> bool {
-    let Ok(image) = std::fs::read(path) else {
+    // Read only the 0x1000-byte boot header, not the whole 8-64 MiB image:
+    // `Cart::load` resolves the CIC from the header + IPL3, both of which live
+    // inside it, and `boot_and_run` reads the full image separately anyway.
+    use std::io::Read as _;
+    let Ok(mut f) = std::fs::File::open(path) else {
         return false;
     };
-    rustyn64_core::cart::Cart::load(&image)
+    let mut header = [0u8; 0x1000];
+    if f.read_exact(&mut header).is_err() {
+        return false;
+    }
+    rustyn64_core::cart::Cart::load(&header)
         .is_ok_and(|c| c.header().cic == rustyn64_core::cart::Cic::Cic6105)
 }
 

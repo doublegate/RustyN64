@@ -2564,6 +2564,39 @@ mod pi_tests {
         }
     }
 
+    /// **A narrow store to an RI register takes the size-blind RCP path**, like
+    /// every other RCP block — it is NOT dropped, and it does not need a
+    /// per-block arm in [`Bus::write_u8`].
+    ///
+    /// Pinned because "sub-word writes to RI fall through or are silently
+    /// dropped" is a reasonable-sounding worry that is wrong here, and only a test
+    /// settles it. Narrow CPU stores reach the bus through `write_sized`, which
+    /// funnels them to `write_u32(addr & !3, word)` after shifting the register
+    /// into its byte lane — the RCP latches the whole word and ignores the access
+    /// size (N64brew *Memory map* §Physical Memory Map accesses). So a byte store
+    /// of `0x12` at `RI_SELECT + 3` must leave `0x0000_0012`, not `0x12` merged
+    /// into a previous value and not nothing at all.
+    #[test]
+    fn a_narrow_store_to_ri_latches_the_whole_word() {
+        let mut bus = Bus::new();
+        CpuBus::write_u32(&mut bus, 0x0470_000C, 0xFFFF_FFFF);
+        // Byte lane 3 (the low byte of the word).
+        bus.write_sized(0x0470_000F, 1, 0x12);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, 0x0470_000C),
+            0x0000_0012,
+            "the RCP latches the whole shifted word, zeroing the untouched bytes"
+        );
+        // ... and a halfword store into the upper lane behaves the same way.
+        CpuBus::write_u32(&mut bus, 0x0470_000C, 0xFFFF_FFFF);
+        bus.write_sized(0x0470_000C, 2, 0xABCD);
+        assert_eq!(
+            CpuBus::read_u32(&mut bus, 0x0470_000C),
+            0xABCD_0000,
+            "a halfword store shifts into its lane and zero-fills the rest"
+        );
+    }
+
     /// **`RI_SELECT` specifically reads back**, since it is the one RI register a
     /// real boot depends on: IPL3 branches on it. Asserted separately from the
     /// round-trip above so the intent survives if that test is ever narrowed.
