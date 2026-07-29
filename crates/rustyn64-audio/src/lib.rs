@@ -76,6 +76,48 @@ impl Region {
             Self::Pal => VIDEO_CLOCK_PAL,
         }
     }
+
+    /// The region a cartridge's **destination code** (ROM header byte `0x3E`, the
+    /// last character of the 4-byte game code) implies.
+    ///
+    /// The destination characters are the N64brew Wiki *ROM Header* §Standard
+    /// header table (read from `n64brew_wiki/html/ROM Header.xhtml` — the markdown
+    /// mirror renders that table as a bare `[TABLE]` placeholder):
+    ///
+    /// `A` All · `B` Brazil · `C` China · `D` Germany · `E` North America ·
+    /// `F` France · `G` Gateway 64 (NTSC) · `H` Netherlands · `I` Italy ·
+    /// `J` Japan · `K` Korea · `L` Gateway 64 (PAL) · `N` Canada · `P` Europe ·
+    /// `S` Spain · `U` Australia · `W` Scandinavia · `X`/`Y`/`Z` Europe
+    ///
+    /// **Provenance, and its limit.** That table gives *destinations*, **not TV
+    /// standards** — only `G`/`L` are labelled NTSC/PAL by the wiki itself. The
+    /// 50/60 Hz classification of the remaining countries is the **broadcast
+    /// standard for each territory**, not a hardware-documented N64 fact, and
+    /// there is **no oracle** for it (no test ROM checks region detection). It is
+    /// therefore modelled and ledgered as documented-but-ungated rather than
+    /// presented as measured — see `docs/accuracy-ledger.md` (T-71-005).
+    ///
+    /// Three cases are decided explicitly rather than guessed:
+    /// - **`B` Brazil → NTSC.** Brazil broadcast PAL-**M**, which is a *60 Hz*
+    ///   standard; for the AI divisor it behaves as NTSC, not as 50 Hz PAL.
+    /// - **`C` China → NTSC.** A PAL territory, but with no known retail N64; the
+    ///   default is kept rather than inventing a 50 Hz cartridge that never shipped.
+    /// - **`A` "All" → NTSC.** Names no single region, so it takes the default.
+    ///
+    /// Any unrecognised byte also returns [`Region::Ntsc`], so an unknown or
+    /// homebrew code is behaviour-preserving rather than silently retuning audio.
+    #[must_use]
+    pub const fn from_destination_code(code: u8) -> Self {
+        match code {
+            // Europe and the 50 Hz territories.
+            b'D' | b'F' | b'H' | b'I' | b'L' | b'P' | b'S' | b'U' | b'W' | b'X' | b'Y' | b'Z' => {
+                Self::Pal
+            }
+            // North America, Japan, Korea, Canada, Gateway-NTSC, Brazil (PAL-M is
+            // 60 Hz), China (no retail N64), and "All" — plus every unknown byte.
+            _ => Self::Ntsc,
+        }
+    }
 }
 
 /// The narrow bus the AI sees (`RustyNES`'s `ApuBus` analog): fetch a DMA sample
@@ -495,6 +537,79 @@ mod tests {
         ai.write_reg(4, 1103);
         assert_eq!(ai.sample_rate(), VIDEO_CLOCK_NTSC / 1104);
         ai.set_region(Region::Pal);
+        assert_eq!(ai.sample_rate(), VIDEO_CLOCK_PAL / 1104);
+    }
+
+    /// **The destination code selects the region (T-71-005).** The characters are
+    /// the N64brew ROM-header table; the three judgement calls are pinned here so
+    /// a later reader sees them as decisions rather than accidents.
+    #[test]
+    fn destination_code_selects_the_region() {
+        use Region::{Ntsc, Pal};
+        // The 50 Hz territories.
+        for c in [
+            b'D', b'F', b'H', b'I', b'L', b'P', b'S', b'U', b'W', b'X', b'Y', b'Z',
+        ] {
+            assert_eq!(
+                Region::from_destination_code(c),
+                Pal,
+                "{} should be PAL",
+                c as char
+            );
+        }
+        // The 60 Hz territories.
+        for c in [b'E', b'J', b'K', b'N', b'G'] {
+            assert_eq!(
+                Region::from_destination_code(c),
+                Ntsc,
+                "{} should be NTSC",
+                c as char
+            );
+        }
+        // The three explicit decisions (see `from_destination_code`): Brazil is
+        // PAL-M, a 60 Hz standard; China has no known retail N64; "All" names no
+        // single region.
+        assert_eq!(
+            Region::from_destination_code(b'B'),
+            Ntsc,
+            "Brazil is PAL-M/60Hz"
+        );
+        assert_eq!(
+            Region::from_destination_code(b'C'),
+            Ntsc,
+            "China: no retail N64"
+        );
+        assert_eq!(
+            Region::from_destination_code(b'A'),
+            Ntsc,
+            "\"All\" takes the default"
+        );
+        // An unknown/homebrew byte must be behaviour-preserving, not retune audio.
+        assert_eq!(
+            Region::from_destination_code(0),
+            Ntsc,
+            "unknown code keeps NTSC"
+        );
+        assert_eq!(
+            Region::from_destination_code(b'?'),
+            Ntsc,
+            "unknown code keeps NTSC"
+        );
+    }
+
+    /// **The selected region actually changes the sample rate.** Guards against a
+    /// mapping that is correct but never reaches the DAC divisor.
+    #[test]
+    fn a_pal_destination_code_retunes_the_dac() {
+        let mut ai = Audio::new();
+        ai.write_reg(4, 1103); // AI_DACRATE: rate = clock / (dacrate + 1)
+        let ntsc = ai.sample_rate();
+        ai.set_region(Region::from_destination_code(b'P')); // Europe
+        assert_ne!(
+            ai.sample_rate(),
+            ntsc,
+            "a PAL cartridge must retune the DAC"
+        );
         assert_eq!(ai.sample_rate(), VIDEO_CLOCK_PAL / 1104);
     }
 
