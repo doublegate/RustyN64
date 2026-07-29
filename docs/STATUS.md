@@ -116,8 +116,8 @@ not the same as a wired gate.
   accuracy scorer, and the frame comparator — all present. The golden source
   exists (the CPU golden-log 0-diff vs ares is met); the **probe battery is now
   real** (`AccuracyScorer::default_battery`) — it scores every committed Angrylion
-  RDP conformance vector, so its expected values are the oracle's, never our own
-  output.
+  conformance vector, RDP and VI, so its expected values are the oracle's, never
+  our own output.
 - The chip stack is `#![no_std]` + `alloc` and cross-compiles to
   `thumbv7em-none-eabihf`; only the frontend carries `std` + `unsafe`.
 
@@ -212,7 +212,7 @@ prompted the change.
 | AI audio DMA double-buffer | **done** — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug (Sprint 1); the real mixer microcode produces PCM on the RSP (Sprint 2); the frontend drain + resampler landed in Phase 6 | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | **done** (v0.6.0) — PI/SI DMA, the CIC handshake, all four save backends incl. the FlashRAM command machine, and both HLE and real-PIF boot | Phase 5 |
 | Frontend egui shell | **done** (v0.7.0) — presents the real machine (VI scan-out, AI drain, SI input) with save-states / rewind / run-ahead; a wasm browser demo | Phase 6 |
-| Accuracy battery / breadth / reach | **battery wired** — it scores the 35 committed Angrylion RDP vectors (100%); the commercial-corpus breadth and the reach features are Phases 7–8 | Phases 7–8 |
+| Accuracy battery / breadth / reach | **battery wired** — it scores the 48 committed Angrylion vectors, RDP + VI (100%); the commercial-corpus breadth and the reach features are Phases 7–8 | Phases 7–8 |
 
 ## Chip → crate map
 
@@ -254,7 +254,7 @@ entropy, threads and unordered collections anywhere in the core.
 | n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. **90** assertions still fail suite-wide, down from 413 (and from 93 before the Phase 5 cart/PIF/SI work); **none are RSP-prefixed** (the RSP category is Phase 2's criterion and is now 0), leaving the RDP rasterizer (Phase 3), the MI's RDRAM repeat mode, and the remaining cart/PIF corners |
 | n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** across 917 tests started — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
-| Accuracy battery (`AccuracyScorer::default_battery`) | **yes** — 35 probes, one per committed Angrylion RDP conformance vector (expected values are the oracle's, never our own output) | **100% (35/35)** — asserted by `default_battery_matches_the_oracle`; an empty battery now scores 0%, not a vacuous 100% |
+| Accuracy battery (`AccuracyScorer::default_battery`) | **yes** — 48 probes across two oracle suites: 35 Angrylion RDP rasteriser vectors + 13 Angrylion VI scan-out vectors (expected values are the oracle's, never our own output; RDP probes are byte-for-byte, VI probes are RGB-only since the 4th byte is coverage) | **100% (48/48)** — asserted by `default_battery_matches_the_oracle`; both suites are asserted to contribute, and an empty battery now scores 0%, not a vacuous 100% |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | **first frame MET** (T-31-005) — a synthetic RDP FILL list rendered through the full command-decode → FILL → VI scan-out path is pinned byte-exact against a committed golden hash (`--test golden_frame`). Real-ROM krom/240p goldens await cartridge boot (Phase 5) |
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
