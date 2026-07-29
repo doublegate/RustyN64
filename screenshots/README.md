@@ -72,11 +72,15 @@ Recorded here because the *rejected* captures localise real bugs:
 
 - **Mirrored text.** GoldenEye 007's "Nintendo" logo and WCW vs. nWo's
   "WCW World Championship Wrestling" banner both render **left-right flipped**.
-  Two independent titles showing the same flip points at the texture S-axis
-  mirror path, not at either game. It is **tile-specific rather than global**:
-  WCW/nWo Revenge — same publisher — renders its THQ logo correctly oriented,
-  and that frame is committed above. So the defect is in how a particular tile's
-  `mirror_s` is resolved, not in every textured quad.
+  It is **per-draw, not global**: WCW/nWo Revenge — same publisher — renders its
+  THQ logo correctly oriented, and that frame is committed above.
+
+  The obvious suspect has been **ruled out by the oracle**. The
+  `tex_tri_mirror_s_16` conformance vector renders a tile with `mirror_s` set
+  and RustyN64 matches Angrylion **byte-for-byte**, mutation-checked. So the
+  texture S-axis mirror path is correct and the cause is elsewhere — the live
+  candidates are a **negative `DsDx`** (texture coordinates stepping backwards)
+  and the **triangle edge/winding** path. See ledger R-18.
 - **Garbled colour blocks** (Blast Corps) and a **glitchy textured plane**
   (Turok) — both issue large command counts, so the failure is downstream of
   submission.
