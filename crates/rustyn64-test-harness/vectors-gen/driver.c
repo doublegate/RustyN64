@@ -1208,6 +1208,38 @@ static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
 };
 
+// V38 (probe): does `Load Block`'s texel count include `lower_right.s`?
+//
+// §0x33 says "`lower_right.s - upper_left.s` determines the number of texels to
+// load" — no `+1` — while `Load Tile` is inclusive and `load_block` currently
+// computes `shi - slo + 1`. Prose will not settle it; a minimal vector will.
+//
+// Deliberately the smallest possible: uls=0, lrs=1, so the load moves either ONE
+// texel (exclusive) or TWO (inclusive), and a single line so neither the odd-line
+// swap nor any multi-line layout can confound it — the two failed attempts before
+// this one both foundered on layout, so this probe removes layout entirely.
+//
+// Two distinct non-zero texels sit at 0x3000. The render tile reads texels 0 and 1.
+// If Angrylion's column 1 is the SECOND texel the count is inclusive; if it is
+// unwritten TMEM the count is exclusive.
+static const uint16_t TEX_BLOCK_COUNT_TEXELS[2] = {0xF801u, 0x07C1u}; // red, green
+static const uint32_t V38_LOAD_BLOCK_COUNT_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0, persp off
+    0x3C000000u, 0x00000041u, // Set Combine: pure TEXEL0 passthrough
+    0x3D100001u, 0x00003000u, // Set Texture Image: 16-bit, width 2, addr 0x3000
+    0x35100200u, 0x07000000u, // Set Tile 7 (LOAD): 16-bit, line 1 word, tmem 0
+    0x33000000u, 0x07001000u, // Load Block 7: uls=0 ult=0 lrs=1 dxt=0x000
+    0x35100200u, 0x00000010u, // Set Tile 0 (RENDER): 16-bit, line 1, tmem 0, mask_s=1
+    0x32000000u, 0x00004000u, // Set Tile Size 0: uls0 ult0 lrs1 lrt0 (2 texels)
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00000000u, 0x00000000u, // XH = 0.0
+    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
+};
+
 // V36: FILL RECTANGLE in **2-CYCLE** mode (ledger R-21). V35 pins 1-cycle, but the
 // cycle-type gate covers 1- AND 2-cycle, and 2-cycle takes a distinct path:
 // `combine()` evaluates cycle 0 first and feeds its output to cycle 1 as the
@@ -1950,6 +1982,11 @@ int main(int argc, char **argv) {
                   sizeof(V37_TEX_TRI_CI4_TLUT_16) / 4, V37_TEX_TRI_CI4_TLUT_16,
                   0x3000, 12, TEX_CI4_TLUT};
     if (emit_vector(&v37, out_dir)) return 1;
+
+    Vector v38 = {"load_block_count_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V38_LOAD_BLOCK_COUNT_16) / 4, V38_LOAD_BLOCK_COUNT_16,
+                  0x3000, sizeof(TEX_BLOCK_COUNT_TEXELS) / sizeof(uint16_t), TEX_BLOCK_COUNT_TEXELS};
+    if (emit_vector(&v38, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
