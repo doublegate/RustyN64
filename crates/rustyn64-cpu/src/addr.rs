@@ -837,6 +837,10 @@ mod tests {
             wide: false,
             erl: false,
         };
-        assert!(matches!(segment(v, narrow), Segment::Direct { .. }));
+        assert!(
+            matches!(segment(v, narrow), Segment::Direct { .. }),
+            "KSEG0 must also stay direct with KX=0, got {:?}",
+            segment(v, narrow)
+        );
     }
 }
