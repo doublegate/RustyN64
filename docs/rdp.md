@@ -199,9 +199,18 @@ is N64brew *…/Commands* §0x3F/0x37/0x2D/0x36 and *…/Pipeline* §Fill Pipeli
   lower-right is **exclusive**. A **4-bit** color image is not a valid FILL target
   (it crashes the real RDP), so the fill is skipped.
 
-Scope limits, honestly: `Fill Rectangle` implements the **FILL-mode** path only —
-the cycle-type gate arrives with `Set Other Modes`, so a 1-/2-cycle rectangle
-(which routes through the blender, not the fill register) is not yet distinguished.
+**The fill register is read only in FILL and COPY mode.** In 1-/2-cycle mode a
+rectangle is an ordinary primitive and goes through the **combiner** (then
+alpha-compare and dither, exactly as the triangle path does); it carries no shade
+or texture block, so the combiner sees only its register inputs (prim/env/…) and
+the fill register is never consulted. Oracle-confirmed (**R-21**): vector
+`fill_rect_1cycle_16` renders a 1-cycle rectangle whose prim colour and fill
+register are deliberately different, and Angrylion produces the **prim** colour.
+
+Scope limits, honestly: the same question is **still open for a flat
+`Fill Triangle`** (0x08 with no shade/texture block), which selects the combiner on
+`shade.is_some() || tex.is_some()` rather than on the cycle type and so still takes
+the fill register unconditionally. No vector exercises it yet (**R-21**).
 The **integer-coordinate** edge rules — the rectangle's inclusive lower-right +
 `yl | 3` (**R-3**) and the scissor's asymmetric inclusive-X / exclusive-Y clip with
 the `allover` guard (**R-15**) — are **oracle-validated** against Angrylion by the

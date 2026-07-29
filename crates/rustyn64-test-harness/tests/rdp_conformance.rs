@@ -57,6 +57,19 @@ fn fill_rect_16_matches_angrylion() {
     assert_matches("fill_rect_16");
 }
 
+/// **A `Fill Rectangle` in 1-CYCLE mode goes through the COMBINER (R-21).**
+///
+/// In FILL mode the rectangle writes the `SET_FILL_COLOR` register; in 1-/2-cycle
+/// mode the hardware rasterises it like any other primitive. This vector
+/// distinguishes them: the combine emits the prim colour `0x224466` while the fill
+/// register holds a clearly different green. Angrylion renders the prim colour
+/// (`0x2219`), so a renderer that ignores the cycle type and writes the fill
+/// register produces green and fails.
+#[test]
+fn fill_rect_1cycle_16_matches_angrylion() {
+    assert_matches("fill_rect_1cycle_16");
+}
+
 /// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
 ///
 /// This left-major triangle (a vertical left edge at x=2, the hypotenuse widening

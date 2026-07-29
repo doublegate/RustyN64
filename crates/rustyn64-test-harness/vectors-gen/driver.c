@@ -1133,6 +1133,24 @@ static const uint32_t V34_TEX_TRI_MIP_TILE_16[] = {
     TEX_BLOCK_DY(0, 0, 1, 48, 0, 0, 0, 0, 0, 112, 0, 0),
 };
 
+// V35: FILL RECTANGLE in **1-CYCLE** mode (ledger R-21). `Fill Rectangle` (0x36)
+// writes the SET_FILL_COLOR register in FILL mode, but in 1-/2-cycle mode the
+// hardware rasterises it like any other primitive — through the COMBINER. This
+// vector distinguishes the two: the combine emits the PRIM colour (0x224466) while
+// SET_FILL_COLOR is set to a clearly different green (0x07C1). Whichever colour the
+// oracle renders tells us which path the hardware takes; RustyN64 currently ignores
+// the cycle type and always writes the fill register, so if the golden is the prim
+// colour this vector fails until R-21 is fixed.
+static const uint32_t V35_FILL_RECT_1CYCLE_16[] = {
+    0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-CYCLE (bits 21:20 = 0), dither off
+    0x3A000000u, 0x224466FFu, // Set Prim Color: R=0x22 G=0x44 B=0x66 A=0xFF
+    0x3C000000u, 0x000000C3u, // Set Combine: cyc1 rgb_d=prim(3), a_d=prim(3) — as V19
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green — DIFFERENT from the prim colour
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
+};
+
 // ---- Seeded fuzz generator (SplitMix64) ----
 //
 // A reproducible pseudo-random corpus: the seed and this generator's source fully
@@ -1830,6 +1848,11 @@ int main(int argc, char **argv) {
                   sizeof(V34_TEX_TRI_MIP_TILE_16) / 4, V34_TEX_TRI_MIP_TILE_16,
                   0x3000, 3, TEX_MIP3};
     if (emit_vector(&v34, out_dir)) return 1;
+
+    Vector v35 = {"fill_rect_1cycle_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V35_FILL_RECT_1CYCLE_16) / 4, V35_FILL_RECT_1CYCLE_16,
+                  0, 0, NULL};
+    if (emit_vector(&v35, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
