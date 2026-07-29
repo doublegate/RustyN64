@@ -55,6 +55,9 @@ pub const fn cic_seed(cic: crate::cart::Cic) -> u32 {
 ///
 /// The classification and its provenance limits live on
 /// [`rustyn64_audio::Region::from_destination_code`].
+///
+/// `const` is not decorative: the workspace runs clippy's `missing_const_for_fn`
+/// under `-D warnings`, which rejects this function without it.
 const fn apply_cartridge_region(system: &mut System) {
     let code = system.bus.cart.header().game_code[3];
     let region = rustyn64_audio::Region::from_destination_code(code);
