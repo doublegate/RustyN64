@@ -34,8 +34,17 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   texel and a black frame means the **texel fetch resolves to 0**. The tiles are
   `fmt=2, size=0` = **CI4** (colour-indexed via TLUT); both TMEM halves are
   populated (1,508/2,048 texture bytes, 760/2,048 TLUT bytes) and TLUT entry 0
-  reads `0x0000`. So the gap is the **CI4 + TLUT texel path** — one code path,
-  directly testable with a CI4 `.rvec` vector against Angrylion.
+  reads `0x0000`. That probe has now been run and **eliminates the CI4 decoder**:
+  replaying a CI4-with-TLUT vector, RustyN64 resolves the full palette correctly
+  (`f801 07c1 003f ffff ffc1 07ff` — red, green, blue, white, yellow, cyan). The
+  vector was deliberately **not committed**, because Angrylion rendered mostly
+  `0x0001` from the same command list — the authored `Load Tlut` encoding is
+  wrong, and committing it would pin an authoring error as the spec.
+- **New defect found along the way:** `Other Modes.en_tlut` (command bit 47) is
+  **not decoded at all**. Our TLUT lookup is driven purely by the tile's *format*
+  field, so a CI tile with `en_tlut` clear still gets a palette lookup and a
+  non-CI tile with it set does not — wrong in both directions, independent of
+  R-18.
 
 ### Fixed — CIC-6105 titles boot under HLE (ledger R-23 RESOLVED)
 
