@@ -4,6 +4,31 @@ Frames captured from RustyN64. **ROMs are never committed** (see `.gitignore` an
 `no-commercial-roms` CI job) — only the rendered output is, which the
 `commercial-roms` policy in `CLAUDE.md` explicitly permits.
 
+## `super-mario-64-title.png`
+
+**Super Mario 64's title screen** (ledger R-18), 2026-07-29 — a commercial N64
+game rendering its own title screen through the full LLE path.
+
+- **Title:** Super Mario 64 (USA), EEPROM 4k, from the local gitignored corpus.
+- **Path:** retail HLE boot -> the game's own code -> its graphics microcode on
+  the LLE RSP -> DPC seam -> LLE RDP -> `Bus::scanout_scaled`. Nothing above the
+  cartridge boundary is HLE'd.
+- **Captured at:** frame 360 of a 600-frame run; **125,278 RDP commands** issued
+  by that point, 138,474 of 148,125 pixels lit.
+- **What unblocked it:** SM64 was previously halted in its own assert path
+  (`B -1` at `0x80246DD8`) because the PIF answered as a connected controller on
+  **all four** joybus channels, so `osContInit` reported four pads on a one-pad
+  console. Fixing the "no device" RX flag let it past the assert. See R-18.
+
+## `banjo-kazooie-first-3d-scene.png`
+
+Banjo-Kazooie rendering real 3D geometry after the same fix (133,625 RDP
+commands, up from **zero**). **Kept deliberately as a known-imperfect frame:**
+the geometry, textures and depth ordering are right, but the colours carry a
+heavy blue/yellow cast — an open combiner/texel-format issue. It is committed as
+evidence of *what currently happens*, not as a correctness target; do not treat
+it as a golden.
+
 ## `paper-mario-first-commercial-frame.png`
 
 **The first rendered frame from a commercial cartridge** (ledger R-18), 2026-07-29.

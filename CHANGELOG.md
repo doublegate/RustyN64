@@ -8,6 +8,30 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — Super Mario 64 renders its title screen (R-18 capstone)
+
+- `screenshots/super-mario-64-title.png` — Mario's head, textured cap, over the
+  tiled *SUPER MARIO 64* background. **125,278 RDP commands**, 138,474/148,125
+  pixels lit at 625x237, through the full LLE path.
+- Banjo-Kazooie also renders real 3D geometry (**0 → 133,625** commands),
+  committed as a known-imperfect frame: geometry and textures right, colours
+  carry a blue/yellow cast (open combiner/texel-format issue).
+
+### Fixed — the PIF answered as a controller on every joybus channel (R-18)
+
+- Empty ports never set the RX byte's **"no device" flag** (bit 7,
+  `PIF-NUS.md` §*RX byte: special flags*), so `osContInit` reported **four**
+  controllers on a one-pad console. **Super Mario 64 halted in its own assert
+  path because of this** — a `B -1` at `0x80246DD8` guarded by a byte that is
+  never written.
+- A second, pre-existing defect: `mark_no_device` wrote the flag to `resp - 1`,
+  which is the **last TX data byte**, never the RX byte at `i + 1`. It had never
+  once landed where software reads it, while a comment claimed otherwise.
+- Both mutation-checked. The second test exists only because the first mutation
+  **passed** — nothing exercised `mark_no_device` until a test was written for a
+  connected channel given an unsupported command.
+- Oracle unchanged: n64-systemtest Phase 1 `Failed: 0`, suite-wide 90.
+
 ### Fixed — an interrupt across an `ERET` was charged to the `ERET` (R-18)
 
 - `ERET` resolves in **EX**, clearing `Status.EXL` and pointing `next_pc` at

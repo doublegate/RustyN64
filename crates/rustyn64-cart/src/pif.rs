@@ -57,6 +57,23 @@ pub struct Pif {
     ram: [u8; PIF_RAM_LEN],
     /// Whether each controller port reports a Controller Pak present.
     pak_present: [bool; 4],
+    /// Whether a device is plugged into each joybus channel.
+    ///
+    /// An empty channel does **not** simply stay silent: the PIF sets the RX
+    /// byte's **"no device" flag (bit 7, mask `0x80`)** so software can tell an
+    /// empty port from a connected one (`n64brew_wiki/markdown/PIF-NUS.md`
+    /// §*RX byte: special flags* — *"This bit is set if the handshake failed
+    /// because no device appears to be connected to the joybus channel."*).
+    ///
+    /// Without it every port answers as a connected controller, and
+    /// `osContInit` reports **four** controllers on a console with one plugged
+    /// in — which is not a cosmetic difference, since games size and index
+    /// their controller tables from that count.
+    ///
+    /// Defaults to controller 1 present and 2-4 empty, the ordinary single-pad
+    /// setup. Channel 4 is the cartridge/EEPROM channel and is handled by the
+    /// save device, not here.
+    connected: [bool; 4],
     /// The boot ROM (IPL1/IPL2), present only on the real-PIF boot path. `None`
     /// under HLE (the default), where boot skips IPL1/IPL2 entirely — so the
     /// default machine allocates nothing here and the PIF-ROM window reads back 0.
@@ -87,6 +104,8 @@ impl Pif {
         Self {
             ram: [0; PIF_RAM_LEN],
             pak_present: [false; 4],
+            // One controller in port 1, the ordinary console setup.
+            connected: [true, false, false, false],
             boot_rom: None,
             boot_checksum: None,
             boot_acquired: None,
@@ -251,7 +270,25 @@ impl Pif {
                     if resp + rx_len > PIF_RAM_LEN {
                         break; // malformed frame — do not run past the RAM
                     }
-                    self.run_channel(channel, cmd, tx_len, resp, rx_len, controllers, save);
+                    // An empty controller channel does not answer: the PIF sets
+                    // the RX byte's "no device" flag (bit 7) and leaves the reply
+                    // region untouched (`PIF-NUS.md` §RX byte: special flags).
+                    // Channel 4 is the cartridge/EEPROM channel, whose presence
+                    // the save device decides, so it is never gated here.
+                    if channel < 4 && !self.connected[channel] {
+                        self.ram[i + 1] |= RX_NO_DEVICE;
+                    } else {
+                        self.run_channel(
+                            channel,
+                            i + 1,
+                            cmd,
+                            tx_len,
+                            resp,
+                            rx_len,
+                            controllers,
+                            save,
+                        );
+                    }
                     i = resp + rx_len;
                     channel += 1;
                 }
@@ -269,6 +306,7 @@ impl Pif {
     fn run_channel(
         &mut self,
         channel: usize,
+        rx_byte: usize,
         cmd: usize,
         tx_len: usize,
         resp: usize,
@@ -340,7 +378,7 @@ impl Pif {
                         self.ram[resp + 2] = 0x00;
                     }
                 } else {
-                    self.mark_no_device(resp, rx_len);
+                    self.mark_no_device(rx_byte);
                 }
             }
             (4, 0x04) if tx_len >= 2 && matches!(save, SaveDevice::Eeprom(_)) => {
@@ -358,15 +396,22 @@ impl Pif {
                 }
             }
             // No device / unsupported command on this channel.
-            _ => self.mark_no_device(resp, rx_len),
+            _ => self.mark_no_device(rx_byte),
         }
     }
 
     /// Flag a channel's reply as "no device" (RX byte bit 7 set).
-    fn mark_no_device(&mut self, resp: usize, rx_len: usize) {
-        // The RX-length byte sits just before the reply region (`resp - 1`).
-        if resp >= 1 && rx_len > 0 {
-            self.ram[resp - 1] |= RX_NO_DEVICE;
+    ///
+    /// The RX byte is the **second** byte of the handshake, at `i + 1` in the
+    /// frame — *not* `resp - 1`. A block is laid out `TX RX tt[tx_len]
+    /// rr[rx_len]` with `resp = i + 2 + tx_len`, so `resp - 1` is the **last TX
+    /// data byte**. This previously wrote there, and since [`Pif::run_channel`]
+    /// returns early on `tx_len == 0` the two offsets could never coincide — so
+    /// the flag was never once set on the byte software reads, while a comment
+    /// asserted the opposite. Nothing failed, because nothing tested it.
+    fn mark_no_device(&mut self, rx_byte: usize) {
+        if rx_byte < PIF_RAM_LEN {
+            self.ram[rx_byte] |= RX_NO_DEVICE;
         }
     }
 }
@@ -407,6 +452,103 @@ mod tests {
         let resp = i + 2 + tx.len();
         pif.ram[CMD_BYTE] = 0x01;
         resp
+    }
+
+    /// **An empty controller port reports "no device" — on the RX byte.**
+    ///
+    /// Two separate defects meet here, so both halves are asserted:
+    ///
+    /// 1. Empty ports used to answer as a connected controller, so `osContInit`
+    ///    saw **four** pads on a one-pad console.
+    /// 2. [`Pif::mark_no_device`] wrote the flag to `resp - 1`, which for any
+    ///    `tx_len >= 1` (and `run_channel` returns early on 0, so always) is the
+    ///    **last TX data byte** — never the RX byte software reads.
+    ///
+    /// The offset assertion is the load-bearing one: writing `0x80` *somewhere*
+    /// satisfies a test that only checks "the reply is not a controller".
+    #[test]
+    fn an_empty_port_flags_no_device_on_the_rx_byte() {
+        let mut pif = Pif::new();
+        let mut save = SaveDevice::new(SaveType::None);
+        // Channel 0 is populated by default; channel 1 is not.
+        let resp = frame(&mut pif, 1, &[0x00], 3);
+        let rx_byte = resp - 1 - 1; // TX RX tt[1] -> RX sits two before `resp`
+        let tx_data_byte = resp - 1;
+        let before = pif.ram[tx_data_byte];
+        pif.execute(&[0; 4], &mut save);
+
+        assert_ne!(
+            pif.ram[rx_byte] & RX_NO_DEVICE,
+            0,
+            "the RX byte at {rx_byte} must carry the no-device flag"
+        );
+        assert_eq!(
+            pif.ram[tx_data_byte], before,
+            "the last TX data byte must be untouched -- writing the flag there \
+             is the offset bug this pins"
+        );
+        assert_eq!(
+            pif.ram[resp], 0,
+            "an absent device writes no reply, so the identifier stays zero"
+        );
+    }
+
+    /// **[`Pif::mark_no_device`] writes the RX byte, not the last TX byte.**
+    ///
+    /// Reached through a *connected* channel given an **unsupported command**,
+    /// which is the only route to `mark_no_device` — the empty-port guard in
+    /// [`Pif::execute`] short-circuits before `run_channel` and so cannot
+    /// exercise it. The first version of this pair missed exactly that: a
+    /// mutation reverting the offset to `resp - 1` still passed, because no test
+    /// took this path at all.
+    ///
+    /// A two-byte TX is used deliberately so `resp - 1` and the RX byte are two
+    /// apart; with a one-byte TX they are adjacent and an off-by-one is
+    /// indistinguishable from a correct write.
+    #[test]
+    fn mark_no_device_flags_the_rx_byte_not_the_tx_payload() {
+        let mut pif = Pif::new();
+        let mut save = SaveDevice::new(SaveType::None);
+        // Channel 0 IS connected; command 0x99 is not one we model.
+        let resp = frame(&mut pif, 0, &[0x99, 0x5A], 3);
+        let rx_byte = resp - 2 - 1; // TX RX tt[2] -> RX is three before `resp`
+        let last_tx = resp - 1;
+        assert_eq!(pif.ram[last_tx], 0x5A, "the TX payload starts intact");
+
+        pif.execute(&[0; 4], &mut save);
+
+        assert_ne!(
+            pif.ram[rx_byte] & RX_NO_DEVICE,
+            0,
+            "the no-device flag belongs on the RX byte at {rx_byte}"
+        );
+        assert_eq!(
+            pif.ram[last_tx], 0x5A,
+            "the last TX data byte must be untouched -- `resp - 1` points HERE, \
+             which is where the flag used to land"
+        );
+    }
+
+    /// The populated port still answers normally — the guard must not silence
+    /// every channel, which is the obvious way to make the test above pass.
+    #[test]
+    fn a_populated_port_still_answers_and_is_not_flagged() {
+        let mut pif = Pif::new();
+        let mut save = SaveDevice::new(SaveType::None);
+        let resp = frame(&mut pif, 0, &[0x00], 3);
+        let rx_byte = resp - 1 - 1;
+        pif.execute(&[0; 4], &mut save);
+
+        assert_eq!(
+            pif.ram[rx_byte] & RX_NO_DEVICE,
+            0,
+            "a connected port must NOT be flagged"
+        );
+        assert_eq!(
+            [pif.ram[resp], pif.ram[resp + 1]],
+            ID_CONTROLLER,
+            "a connected port replies with the controller identifier"
+        );
     }
 
     #[test]
