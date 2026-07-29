@@ -28,8 +28,14 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   Z-buffered `TRIANGLE`s**, 1,630 `TEXTURE_RECTANGLE`, 4,374 `LOAD_BLOCK`, 7,705
   `SET_TILE` and 1,589 `SET_COMBINE`, of 74,508 commands. Geometry and textures reach the RDP and the
   frame still ends as the clear colour: **the RDP rasterises real geometry to
-  black**. First suspects — the Z path, texture fetch, and the combiner — each
-  testable against the existing Angrylion vector harness.
+  black**. Narrowed further by inspecting the RDP state: the **Z path is
+  refuted** (`z_compare_en=false`), and the combiner decodes to
+  `(0 - 0) x 0 + TEXEL0` — a pure texture pass-through, so the pixel colour *is* the
+  texel and a black frame means the **texel fetch resolves to 0**. The tiles are
+  `fmt=2, size=0` = **CI4** (colour-indexed via TLUT); both TMEM halves are
+  populated (1,508/2,048 texture bytes, 760/2,048 TLUT bytes) and TLUT entry 0
+  reads `0x0000`. So the gap is the **CI4 + TLUT texel path** — one code path,
+  directly testable with a CI4 `.rvec` vector against Angrylion.
 
 ### Fixed — CIC-6105 titles boot under HLE (ledger R-23 RESOLVED)
 
