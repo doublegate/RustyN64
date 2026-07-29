@@ -8,6 +8,28 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Fixed — `Fill Rectangle` respects the cycle type (ledger R-21)
+
+- **A non-FILL `Fill Rectangle` now goes through the combiner.** It previously
+  wrote the `Set Fill Color` register whatever the cycle type. Only FILL and COPY
+  do that on hardware; in 1-/2-cycle mode the rectangle is an ordinary primitive.
+- Established against the Angrylion oracle, not guessed: new vector
+  `fill_rect_1cycle_16` gives the rectangle a prim colour and a *deliberately
+  different* fill register, and the golden is the **prim** colour in all 64
+  pixels. Mutation-checked — reverting the guard reproduces the fill register
+  against the golden, and only that vector regresses.
+- **Six existing tests were passing on this bug.** The five `fill_rectangle_*`
+  unit tests and the `golden_frame` end-to-end test were named for FILL-mode
+  behaviour but never selected FILL mode; they now emit a `Set Other Modes` with
+  `cycle_type = FILL` and test what their names claim.
+- A second vector `fill_rect_2cycle_16` pins the **2-cycle** branch, which the
+  1-cycle vector cannot reach: there `combine()` runs cycle 0 first and feeds its
+  output to cycle 1 as `COMBINED`. Its combine makes each candidate outcome a
+  different colour, so the result is diagnostic rather than merely pass/fail.
+- Still open in R-21: the same question for a *flat* `Fill Triangle` (0x08), which
+  selects the combiner on the presence of a shade/texture block rather than on the
+  cycle type. No vector exercises it yet.
+
 ### Added — the real microcode's command list now RASTERISES end to end (ADR 0002)
 
 - **microcode → RDP → framebuffer, closed.** Every earlier microcode test stopped

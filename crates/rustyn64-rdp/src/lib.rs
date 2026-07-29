@@ -79,9 +79,27 @@ pub const DPC_ADDR_MASK: u32 = 0x00FF_FFF8;
 /// `tick` is one GCLK.
 pub const SYNC_LOAD_GCLK: u32 = 25;
 
-/// `Set Other Modes.cycle_type` value for **2-cycle** mode (`0` = 1-cycle,
-/// `1` = 2-cycle, `2` = copy, `3` = fill).
+// `Set Other Modes.cycle_type` (command bits 53:52 = word-0 bits 21:20).
+// Provenance: N64brew *Reality Display Processor/Commands* §0x2F – Set Other
+// Modes, the `bit 53:52` row — *"cycle_type[1:0]: Determines pipeline mode.
+// Either 1-Cycle (0), 2-Cycle (1), COPY (2), FILL (3)"*. Which of these read the
+// fill register rather than the combiner is ledger **R-21**.
+
+/// `Set Other Modes.cycle_type` value for **1-cycle** mode — the default
+/// pipeline: one combiner pass per pixel.
+pub const CYCLE_TYPE_1CYCLE: u8 = 0;
+
+/// `Set Other Modes.cycle_type` value for **2-cycle** mode — two combiner passes
+/// per pixel, so a second texel and the LOD fraction become available.
 pub const CYCLE_TYPE_2CYCLE: u8 = 1;
+
+/// `Set Other Modes.cycle_type` value for **copy** mode — a raw texel blit that
+/// bypasses the combiner and blender entirely.
+pub const CYCLE_TYPE_COPY: u8 = 2;
+
+/// `Set Other Modes.cycle_type` value for **fill** mode — the `Set Fill Color`
+/// register is repeated verbatim to memory, bypassing the combiner and blender.
+pub const CYCLE_TYPE_FILL: u8 = 3;
 
 /// `Sync Pipe` (0x27) pipeline stall, in GCLK cycles.
 ///
@@ -1810,12 +1828,10 @@ impl Rdp {
     /// N GCLK; exact per-command base timing is deferred to the command-timing
     /// model.
     ///
-    /// The FILL-pipeline arms take the command's two 32-bit halves (`hi` =
-    /// RDRAM bits 63:32, `lo` = 31:0). `Fill Rectangle` writes the fill colour
-    /// into the color image, clipped to the scissor — the FILL-mode path (the
-    /// cycle-type gate arrives with `Set Other Modes`, so `Fill Rectangle` is a
-    /// solid FILL fill for now; 1-/2-cycle rectangles route through the blender,
-    /// not this code).
+    /// The rectangle arms take the command's two 32-bit halves (`hi` = RDRAM bits
+    /// 63:32, `lo` = 31:0). `Fill Rectangle` covers the rectangle ∩ scissor; what
+    /// it writes depends on `Set Other Modes.cycle_type` — the fill register in
+    /// FILL/COPY, the combiner output in 1-/2-cycle (ledger R-21).
     fn dispatch<B: VideoBus>(&mut self, opcode: u8, hi: u32, lo: u32, cmd_base: u32, bus: &mut B) {
         match opcode {
             OP_SYNC_LOAD => self.stall = SYNC_LOAD_GCLK,
@@ -1929,8 +1945,14 @@ impl Rdp {
         }
     }
 
-    /// Render a `Fill Rectangle` in FILL mode: write the 32-bit fill colour into
-    /// the color image over the rectangle, clipped to the scissor.
+    /// Render a `Fill Rectangle` (0x36) over the rectangle ∩ scissor.
+    ///
+    /// **What is written depends on `Set Other Modes.cycle_type`** (ledger R-21).
+    /// FILL and COPY repeat the `Set Fill Color` register verbatim; 1-/2-cycle
+    /// treat the rectangle as an ordinary primitive and take the **combiner**
+    /// output, then alpha-compare and dither, exactly as the triangle path does.
+    /// A rectangle carries no shade or texture block, so the combiner sees only
+    /// its register inputs and the result is constant across the whole rectangle.
     ///
     /// FILL mode "repeats the 32-bit value verbatim out to memory", which
     /// resolves per pixel by size (N64brew *…/Commands* §Set Fill Color):
@@ -2001,10 +2023,49 @@ impl Rdp {
             return;
         }
         let stride = u32::from(self.color_image_width) * bpp;
+        // **Only FILL and COPY take the fill register.** In 1-/2-cycle mode a
+        // rectangle is an ordinary primitive and goes through the combiner; it
+        // carries no shade or texture, so the combiner sees only its register
+        // inputs (prim/env/…) and the fill register is never consulted. Confirmed
+        // against the Angrylion oracle (ledger R-21, vector `fill_rect_1cycle_16`):
+        // a 1-cycle rectangle with a green fill register and a *distinct* prim
+        // colour renders the **prim** colour in all 64 pixels.
+        if matches!(
+            self.other_modes.cycle_type,
+            CYCLE_TYPE_COPY | CYCLE_TYPE_FILL
+        ) {
+            for y in y0..y1 {
+                let row = self.color_image.wrapping_add(y * stride);
+                for x in x0..x1 {
+                    self.fill_pixel(row, x, bpp, bus);
+                }
+            }
+            return;
+        }
+
+        // 1-/2-cycle: the combiner output is **loop-invariant**. A rectangle has
+        // no shade or texture block, so `combined_color` reads only the prim/env/
+        // key/convert registers and the interpolation origin
+        // (`major_x`/`line`/`y_base`/`x`) is unused — hence the zeros. Evaluating
+        // it once per rectangle rather than once per pixel is not a speculative
+        // optimisation but a statement of that invariance: if this ever needs to
+        // move back inside the loop, something has started varying per pixel and
+        // the change deserves the scrutiny.
+        let (base, _shade_alpha) = self.combined_color(None, None, 0, 0, 0, 0, 0);
+        // Alpha-compare gates the write exactly as on the triangle path — and on
+        // an invariant alpha it either passes for every pixel or for none, so the
+        // whole rectangle is rejected here rather than per pixel.
+        if !self.alpha_compare_passes(base[3]) {
+            return;
+        }
         for y in y0..y1 {
             let row = self.color_image.wrapping_add(y * stride);
             for x in x0..x1 {
-                self.fill_pixel(row, x, bpp, bus);
+                // Dither is the one genuinely per-pixel step, so it works on a
+                // copy and must not mutate the shared `base`.
+                let mut color = base;
+                self.dither_pixel(&mut color, x, y);
+                Self::write_pixel(row, x, bpp, color, bus);
             }
         }
     }
@@ -4090,6 +4151,16 @@ mod tests {
         let lo = (ulx << 14) | (uly << 2);
         (hi, lo)
     }
+    /// `Set Other Modes` selecting **FILL** cycle type (`cycle_type` is command
+    /// bits 53:52 = word-0 bits 21:20). Required by every fill-register test: in
+    /// 1-/2-cycle mode a rectangle goes through the combiner instead and never
+    /// reads the fill register at all (ledger R-21).
+    fn set_cycle_fill() -> (u32, u32) {
+        (
+            (u32::from(OP_SET_OTHER_MODES) << 24) | (u32::from(CYCLE_TYPE_FILL) << 20),
+            0,
+        )
+    }
 
     /// Run a command list through the FIFO (color image at RDRAM 0, commands at
     /// `CMD_BASE`) and return the RDP plus the memory the fill wrote into.
@@ -4161,6 +4232,7 @@ mod tests {
     #[test]
     fn fill_rectangle_32bpp_writes_the_colour_verbatim() {
         let (_, bus) = run_commands(&[
+            set_cycle_fill(),
             set_color_image(0, 3, 4, 0), // 32-bit, width 4, base 0
             set_fill_color(0xAABB_CCDD),
             set_scissor(0, 0, 4, 2),
@@ -4179,6 +4251,7 @@ mod tests {
     #[test]
     fn fill_rectangle_16bpp_alternates_halves() {
         let (_, bus) = run_commands(&[
+            set_cycle_fill(),
             set_color_image(0, 2, 4, 0), // 16-bit, width 4
             set_fill_color(0xAABB_CCDD),
             set_scissor(0, 0, 4, 1),
@@ -4196,6 +4269,7 @@ mod tests {
     #[test]
     fn fill_rectangle_8bpp_cycles_four_bytes() {
         let (_, bus) = run_commands(&[
+            set_cycle_fill(),
             set_color_image(4, 1, 4, 0), // 8-bit (I8), width 4
             set_fill_color(0xAABB_CCDD),
             set_scissor(0, 0, 4, 1),
@@ -4216,6 +4290,7 @@ mod tests {
     fn fill_rectangle_is_clipped_to_the_scissor() {
         // 32-bit, width 8. Scissor keeps x in [2,6] (inclusive), y in [1,3) (excl).
         let (_, bus) = run_commands(&[
+            set_cycle_fill(),
             set_color_image(0, 3, 8, 0),
             set_fill_color(0x1122_3344),
             set_scissor(2, 1, 6, 3),
@@ -4253,6 +4328,7 @@ mod tests {
     #[test]
     fn fill_rectangle_lower_right_edge_is_inclusive() {
         let (_, bus) = run_commands(&[
+            set_cycle_fill(),
             set_color_image(0, 3, 8, 0), // 32-bit, width 8
             set_fill_color(0x1122_3344),
             set_scissor(0, 0, 8, 8), // larger than the rect: does not clip it

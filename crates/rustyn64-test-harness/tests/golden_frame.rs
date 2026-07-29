@@ -36,27 +36,34 @@ fn write_cmd(bus: &mut Bus, addr: u32, hi: u32, lo: u32) {
 fn render_fill_frame() -> Vec<u8> {
     let mut bus = Bus::new();
 
-    // A four-command FILL list: Set Color Image (32-bit, width 4, base FB_ADDR),
-    // Set Fill Color (0xAABBCCDD), Set Scissor (0,0)-(4,2), Fill Rectangle
-    // (0,0)-(4,2). Coordinates are u10.2, so a 4-pixel span is 16 and 2 is 8.
-    write_cmd(&mut bus, CMD_ADDR, 0x3F18_0003, FB_ADDR); // Set Color Image
-    write_cmd(&mut bus, CMD_ADDR + 8, 0x3700_0000, 0xAABB_CCDD); // Set Fill Color
-    write_cmd(&mut bus, CMD_ADDR + 16, 0x2D00_0000, 0x0001_0008); // Set Scissor
-    write_cmd(&mut bus, CMD_ADDR + 24, 0x3601_0008, 0x0000_0000); // Fill Rectangle
+    // A five-command FILL list: Set Other Modes (cycle_type = FILL), Set Color
+    // Image (32-bit, width 4, base FB_ADDR), Set Fill Color (0xAABBCCDD), Set
+    // Scissor (0,0)-(4,2), Fill Rectangle (0,0)-(4,2). Coordinates are u10.2, so a
+    // 4-pixel span is 16 and 2 is 8.
+    //
+    // The Set Other Modes is **load-bearing, not boilerplate**: `cycle_type` is
+    // command bits 53:52 = word-0 bits 21:20, and only FILL/COPY read the fill
+    // register. In the default 1-cycle mode this rectangle would go through the
+    // combiner and scan out black (ledger R-21).
+    write_cmd(&mut bus, CMD_ADDR, 0x2F30_0000, 0x0000_0000); // Set Other Modes: FILL
+    write_cmd(&mut bus, CMD_ADDR + 8, 0x3F18_0003, FB_ADDR); // Set Color Image
+    write_cmd(&mut bus, CMD_ADDR + 16, 0x3700_0000, 0xAABB_CCDD); // Set Fill Color
+    write_cmd(&mut bus, CMD_ADDR + 24, 0x2D00_0000, 0x0001_0008); // Set Scissor
+    write_cmd(&mut bus, CMD_ADDR + 32, 0x3601_0008, 0x0000_0000); // Fill Rectangle
 
     // Point the DP FIFO at the list and drain it (one command per tick).
     bus.rdp.dpc_write(0, CMD_ADDR); // DPC_START
-    bus.rdp.dpc_write(1, CMD_ADDR + 32); // DPC_END (4 words)
+    bus.rdp.dpc_write(1, CMD_ADDR + 40); // DPC_END (5 words)
     for _ in 0..16 {
         bus.rdp_tick();
     }
 
-    // All four commands must have retired within the tick budget. Asserting the
+    // All five commands must have retired within the tick budget. Asserting the
     // exact retired count makes a timing regression that leaves the FIFO mid-list
     // a hard, deterministic failure here rather than a silently truncated frame.
     assert_eq!(
-        bus.rdp.commands_processed, 4,
-        "the four-command FILL list drained within the tick budget"
+        bus.rdp.commands_processed, 5,
+        "the five-command FILL list drained within the tick budget"
     );
 
     // Configure the VI for a 32-bit, 4-wide, 2-line scan-out of FB_ADDR, through
