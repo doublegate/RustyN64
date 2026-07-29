@@ -213,7 +213,7 @@ prompted the change.
 | AI audio DMA double-buffer | **done** — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug (Sprint 1); the real mixer microcode produces PCM on the RSP (Sprint 2); the frontend drain + resampler landed in Phase 6 | Phase 4 |
 | PI/SI DMA, PIF/CIC boot, FlashRAM machine, saves | **done** (v0.6.0) — PI/SI DMA, the CIC handshake, all four save backends incl. the FlashRAM command machine, and both HLE and real-PIF boot | Phase 5 |
 | Frontend egui shell | **done** (v0.7.0) — presents the real machine (VI scan-out, AI drain, SI input) with save-states / rewind / run-ahead; a wasm browser demo | Phase 6 |
-| Accuracy battery / breadth / reach | **battery wired** — it scores the 53 committed Angrylion vectors, RDP + VI (100%); the commercial-corpus breadth and the reach features are Phases 7–8 | Phases 7–8 |
+| Accuracy battery / breadth / reach | **battery wired** — it scores the 54 committed Angrylion vectors, RDP + VI (100%); the commercial-corpus breadth and the reach features are Phases 7–8 | Phases 7–8 |
 
 ## Chip → crate map
 
@@ -262,8 +262,11 @@ The distinction matters: "oracle available" means the ROM is on disk; it says
 nothing about whether the emulator can execute it. Both must be true before a
 gate reports a real number — true today for `basic.z64`, n64-systemtest, the
 golden log, the synthetic `golden_frame`, and the **first real-ROM visual golden**
-(`real_rom_frame.rs`, a homebrew ROM that CPU-renders a frame through the VI); not
-yet for an RDP-driven real-ROM frame or the accuracy battery.
+(`real_rom_frame.rs`, a homebrew ROM that CPU-renders a frame through the VI), the
+**accuracy battery** (54 probes, 100%), and — since 2026-07-29 — an **RDP-driven
+commercial-ROM frame**: Super Mario 64 renders its title screen through the full
+LLE path (`screenshots/super-mario-64-title.png`, 125,278 RDP commands). The last
+two were listed here as *not yet* true; both now are.
 
 See `docs/testing-strategy.md` for the oracle and the five test layers.
 
