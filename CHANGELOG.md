@@ -8,6 +8,34 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — the first rendered frame from a commercial cartridge (R-18)
+
+- **Paper Mario renders real geometry through the full LLE path** — retail HLE
+  boot, the game's own code, its graphics microcode on the LLE RSP, the DPC seam,
+  the LLE RDP, and `Bus::scanout_scaled`. Committed as
+  `screenshots/paper-mario-first-commercial-frame.png`.
+- **87 distinct RGBA5551 values** in the colour image, and the frame is fully
+  lit on both scan-out paths — **75,840 / 75,840** at 320x237 through the 1:1
+  `Bus::scanout`, **148,125 / 148,125** at 625x237 through the presented
+  `Bus::scanout_scaled`. Held stably from frame 120 through 270 of a 300-frame
+  run.
+- This falsifies R-18's headline claim. The earlier conclusion that "the RDP
+  rasterises real geometry to black" was **title-specific, not a pipeline
+  defect** — the remaining gap is per-title coverage (Ocarina 27,651 commands but
+  98% black clear; World Driver Championship 45 commands and one distinct value;
+  Super Mario 64 and Banjo-Tooie zero commands).
+- Evidence standard held: on the same run Ocarina scored 62,963 lit pixels and,
+  rendered and viewed, is **pure noise**. Pixel count alone cannot tell the two
+  apart, so `screenshots/README.md` requires looking at the image.
+
+### Fixed — the capstone measured a buffer no user sees
+
+- `commercial_boot` counted lit pixels through the superseded 1:1 `Bus::scanout`
+  rather than `Bus::scanout_scaled`, the path the frontend actually presents, so
+  every number it reported was off by the real `VI_X_SCALE` upscale (~2x).
+- `Bus::scanout_scaled`'s rustdoc still claimed it was "not yet wired into the
+  frontend" — false since #158, which wired it.
+
 ### Fixed — the TLUT lookup is gated on `tlut_en`, not the tile format (R-18)
 
 - **`Set Other Modes.tlut_en` (bit 47) was not decoded at all**, so the palette
