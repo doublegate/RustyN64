@@ -1123,9 +1123,18 @@ pub struct OtherModes {
     /// color values."*
     ///
     /// This is the flag that decides whether a palette lookup happens — **not**
-    /// the tile's format field. Keying off the format alone is wrong in both
-    /// directions: a CI tile with `tlut_en` clear would still be palette-mapped,
-    /// and a non-CI tile with it set would not be.
+    /// the tile's format field. Keying off the format alone is wrong in two
+    /// directions, and **only one of them is fixed**:
+    ///
+    /// - **Implemented:** a CI tile with `tlut_en` clear is no longer
+    ///   palette-mapped. Pinned by `ci4_tlut_disabled_16`, whose golden is all
+    ///   black where the `tlut_en`-set twin renders the full palette.
+    /// - **Deferred:** a **non-CI** tile with `tlut_en` set is still not
+    ///   palette-mapped, though hardware would sample it through the TLUT. No
+    ///   vector covers that case, and the RGBA/IA/I formats index the palette
+    ///   differently enough that implementing it from the prose alone would be
+    ///   inventing behaviour. It stays wrong-but-honest until a vector defines it,
+    ///   the same posture as `tlut_type`'s IA16 palettes below.
     pub tlut_en: bool,
     /// TLUT texel format (bit 46): `false` = RGBA16, `true` = IA16
     /// (N64brew *…/Commands* §0x2F). Decoded so it is available and so the flag
