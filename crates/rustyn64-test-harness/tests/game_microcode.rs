@@ -64,8 +64,14 @@ const SAMPLE_TICKS: u64 = 24;
 struct RspActivity {
     /// Samples taken while `SP_STATUS.halt` was clear.
     running_samples: u64,
-    /// Distinct IMEM addresses the RSP's PC visited — the evidence of execution.
+    /// Distinct IMEM addresses the RSP's PC visited.
     distinct_pcs: usize,
+    /// Of those, how many held a **non-zero instruction word**. Distinct PCs
+    /// alone are not evidence: an unhalted RSP walking zero-filled IMEM executes
+    /// NOPs and marches through hundreds of addresses, which looks identical to
+    /// real microcode by that measure. This is the same NOP-sled trap that hid
+    /// R-18 on the CPU side.
+    distinct_nonzero_pcs: usize,
     /// Non-zero bytes in IMEM at the end (microcode was uploaded).
     imem_nonzero: usize,
     /// RDP commands retired through the DPC seam.
@@ -80,6 +86,7 @@ fn watch_rsp(path: &Path, frames: u64) -> Option<RspActivity> {
 
     let mut running_samples = 0u64;
     let mut pcs: HashSet<u32> = HashSet::new();
+    let mut nonzero_pcs: HashSet<u32> = HashSet::new();
     for _ in 0..frames {
         let target = sys.master_ticks().saturating_add(TICKS_PER_FRAME);
         while sys.master_ticks() < target {
@@ -88,13 +95,28 @@ fn watch_rsp(path: &Path, frames: u64) -> Option<RspActivity> {
             // `SP_STATUS`. See the module docs on why the fields must not be used.
             if !sys.bus.rsp.halted() {
                 running_samples += 1;
-                pcs.insert(sys.bus.rsp.pc());
+                let pc = sys.bus.rsp.pc();
+                pcs.insert(pc);
+                // Fetch the word the RSP is actually about to execute. IMEM is
+                // 4 KiB and the PC is a 12-bit offset, so this cannot go out of
+                // range; a zero word is `NOP`, i.e. unwritten IMEM.
+                let off = (pc & 0xFFC) as usize;
+                let word = u32::from_be_bytes([
+                    sys.bus.rsp.imem[off],
+                    sys.bus.rsp.imem[off + 1],
+                    sys.bus.rsp.imem[off + 2],
+                    sys.bus.rsp.imem[off + 3],
+                ]);
+                if word != 0 {
+                    nonzero_pcs.insert(pc);
+                }
             }
         }
     }
     Some(RspActivity {
         running_samples,
         distinct_pcs: pcs.len(),
+        distinct_nonzero_pcs: nonzero_pcs.len(),
         imem_nonzero: sys.bus.rsp.imem.iter().filter(|b| **b != 0).count(),
         dpc_commands: sys.bus.rdp.commands_processed,
     })
@@ -163,11 +185,18 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
         let Ok(entries) = std::fs::read_dir(base.join(folder)) else {
             continue;
         };
-        let mut roms: Vec<_> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "z64"))
-            .collect();
+        // Directory-entry failures are REPORTED, not flattened away. `.flatten()`
+        // silently drops `Err` entries, so a corpus could shrink — or vanish —
+        // while the run still looked complete.
+        let mut roms: Vec<std::path::PathBuf> = Vec::new();
+        for entry in entries {
+            let entry = entry
+                .unwrap_or_else(|e| panic!("[{folder}] failed to read a directory entry: {e}"));
+            let p = entry.path();
+            if p.extension().is_some_and(|x| x == "z64") {
+                roms.push(p);
+            }
+        }
         // Sorted so the reported set is stable across runs and filesystems.
         roms.sort();
         for rom_path in roms.into_iter().take(ROMS_PER_FOLDER) {
@@ -179,13 +208,20 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
                 continue;
             };
             eprintln!(
-                "[{folder}] {name}: rsp_running={}, distinct_rsp_pcs={}, imem_nonzero={}, dpc_cmds={}",
-                a.running_samples, a.distinct_pcs, a.imem_nonzero, a.dpc_commands
+                "[{folder}] {name}: rsp_running={}, distinct_rsp_pcs={} ({} executing non-zero words), imem_nonzero={}, dpc_cmds={}",
+                a.running_samples,
+                a.distinct_pcs,
+                a.distinct_nonzero_pcs,
+                a.imem_nonzero,
+                a.dpc_commands
             );
-            if a.imem_nonzero > 0 && a.running_samples > 0 && a.distinct_pcs >= MIN_DISTINCT_PCS {
+            // The threshold applies to PCs holding a REAL instruction, not to
+            // visited addresses. An RSP sledding through zero-filled IMEM visits
+            // plenty of the latter and none of the former.
+            if a.running_samples > 0 && a.distinct_nonzero_pcs >= MIN_DISTINCT_PCS {
                 witnesses.push(format!(
-                    "{name} ({} distinct RSP PCs, {} RDP commands)",
-                    a.distinct_pcs, a.dpc_commands
+                    "{name} ({} distinct RSP PCs executing real instructions, {} RDP commands)",
+                    a.distinct_nonzero_pcs, a.dpc_commands
                 ));
             }
         }

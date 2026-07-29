@@ -257,9 +257,26 @@ mod tests {
     /// `SP_STATUS` powered up running.
     #[test]
     fn constructs_halted() {
-        let rsp = Rsp::new();
+        let mut rsp = Rsp::new();
         assert!(rsp.halted(), "SP_STATUS.halt must be set at power-on");
         assert_eq!(rsp.pc(), 0, "and the PC starts at 0");
+
+        // Power-on values alone cannot distinguish the accessors from the
+        // vestigial fields: BOTH representations start `halted = true, pc = 0`,
+        // so the assertions above would still pass if either accessor regressed
+        // to reading the dead field. Mutate the SP registers and require the
+        // accessors to follow — which the fields, never being written, cannot do.
+        rsp.sp.write(sp::reg::STATUS, 1); // CLR_HALT
+        rsp.sp.set_pc(0x123);
+        assert!(
+            !rsp.halted(),
+            "halted() must track SP_STATUS, not the vestigial field"
+        );
+        assert_eq!(
+            rsp.pc(),
+            0x120,
+            "pc() must track SP_PC (word-aligned), not the vestigial field"
+        );
     }
 
     /// A halted RSP fetches nothing and asks nothing of the machine.

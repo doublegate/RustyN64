@@ -46,17 +46,20 @@ impl Rsp {
     pub fn halted(&self) -> bool;                    // SP_STATUS.halt
     pub fn mem_read(&self, off: u32) -> u8;          // CPU-side DMEM/IMEM view
     pub fn mem_write(&mut self, off: u32, val: u8);
-    pub fn tick<B: RspBus>(&mut self, bus: &mut B); // no-op while halted
+    pub fn tick(&mut self) -> su::StepResult;        // no-op while halted
 }
 ```
 
 **Read the PC and halt state through `Rsp::pc()` / `Rsp::halted()`, never through
-the same-named fields.** The authoritative state lives in `SP_STATUS`
-(`sp.pc()` / `sp.halted()`) — which is what `su_step` itself gates on — and the
+the same-named fields.** The authoritative state lives in the SP register file:
+`Rsp::pc()` reads **`SP_PC`** via `SpRegs::pc()`, and `Rsp::halted()` reads
+**`SP_STATUS.HALT`** via `SpRegs::halted()` — the flag `su_step` itself gates on.
+The
 struct fields of those names are **never written**. They are retained solely
 because removing them changes the save-state layout (ADR 0005 reserves that for
-an announced release), and are `#[deprecated]` so any read is a hard error under
-the workspace's warnings-as-errors.
+an announced release). They remain **`pub` but `#[deprecated]`** — not private,
+since privatising them would itself be a breaking API change — so any read is a
+hard error under the workspace's warnings-as-errors.
 
 This is not a stylistic preference. Sampling the fields reports *"halted forever
 at PC 0"* for a **running** RSP, and doing so produced two confident wrong
