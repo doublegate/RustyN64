@@ -1117,6 +1117,31 @@ pub struct OtherModes {
     /// Detail-texture enable (bit 50): keeps the LOD fraction live when
     /// magnifying (R-13).
     pub detail_tex_en: bool,
+    /// **TLUT enable** (bit 47). N64brew *…/Commands* §0x2F: *"`tlut_en`: Enables
+    /// Texture Look-Up Table (TLUT) sampling. Texels are first fetched from low
+    /// TMEM that are then used to index a palette in high TMEM to find the final
+    /// color values."*
+    ///
+    /// This is the flag that decides whether a palette lookup happens — **not**
+    /// the tile's format field. Keying off the format alone is wrong in two
+    /// directions, and **only one of them is fixed**:
+    ///
+    /// - **Implemented:** a CI tile with `tlut_en` clear is no longer
+    ///   palette-mapped. Pinned by `ci4_tlut_disabled_16`, whose golden is all
+    ///   black where the `tlut_en`-set twin renders the full palette.
+    /// - **Deferred:** a **non-CI** tile with `tlut_en` set is still not
+    ///   palette-mapped, though hardware would sample it through the TLUT. No
+    ///   vector covers that case, and the RGBA/IA/I formats index the palette
+    ///   differently enough that implementing it from the prose alone would be
+    ///   inventing behaviour. It stays wrong-but-honest until a vector defines it,
+    ///   the same posture as `tlut_type`'s IA16 palettes below.
+    pub tlut_en: bool,
+    /// TLUT texel format (bit 46): `false` = RGBA16, `true` = IA16
+    /// (N64brew *…/Commands* §0x2F). Decoded so it is available and so the flag
+    /// is not silently ignored; **IA16 palettes are still deferred** — the lookup
+    /// assumes RGBA16, and implementing IA16 without a vector would be inventing
+    /// behaviour rather than emulating it.
+    pub tlut_type: bool,
     /// Mid-texel filter (bit 44, R-13): when set and the bilinear sample lands
     /// exactly on the texel centre (`sfrac == tfrac == 0x10`), the four neighbours
     /// are averaged instead of the 3-point triangle pick (Angrylion `tex.c`, the
@@ -3159,6 +3184,8 @@ impl Rdp {
             persp_tex_en: (hi >> 19) & 1 != 0,        // command bit 51
             aa_enable: (lo >> 3) & 1 != 0,            // command bit 3
             rgb_dither_mode: ((hi >> 6) & 0x3) as u8, // command bits 39:38
+            tlut_en: (hi >> 15) & 1 != 0,             // command bit 47
+            tlut_type: (hi >> 14) & 1 != 0,           // command bit 46
             sample_type: (hi >> 13) & 1 != 0,         // command bit 45
             mid_texel: (hi >> 12) & 1 != 0,           // command bit 44
             detail_tex_en: (hi >> 18) & 1 != 0,       // command bit 50
@@ -3684,6 +3711,19 @@ impl Rdp {
                 let v = widen4(u32::from(self.nibble_at((off4 ^ swap) as usize, s)));
                 [v, v, v, v]
             }
+            // The colour-index formats resolve through the palette **only when
+            // `Set Other Modes.tlut_en` is set** (bit 47) — the format field alone
+            // does not enable it (N64brew *…/Commands* §0x2F). With the flag clear
+            // the oracle renders a CI tile entirely black, which
+            // `ci4_tlut_disabled_16` pins: it is byte-identical to
+            // `tex_tri_ci4_tlut_16` apart from that one bit, and the two goldens are
+            // the full palette versus all black.
+            //
+            // Zero is what the oracle produces, not a mechanism claim: what the
+            // hardware *does* with un-TLUT'd index data is not documented in §0x2F,
+            // so this reproduces the observed result rather than inventing a
+            // reinterpretation of the index bits.
+            (2, _) if !self.other_modes.tlut_en => [0, 0, 0, 0],
             (2, 1) => {
                 // CI8: 8-bit index into the TLUT.
                 let ci = self.tmem_byte(((off8 & 0x7FF) ^ swap) as usize);
@@ -4949,10 +4989,16 @@ mod tests {
     /// **`fetch_texel` resolves CI8 and CI4 through the TLUT.** A CI index selects
     /// a quadrupled RGBA16 entry in the high TMEM half; CI4 folds in the tile
     /// palette as the high nibble.
+    ///
+    /// `tlut_en` must be set: the lookup is gated on `Set Other Modes` bit 47, not
+    /// on the tile format (N64brew *…/Commands* §0x2F). This test previously left
+    /// it clear and passed only because the gate did not exist — it was asserting
+    /// the palette path while describing a machine that had not asked for it.
     #[test]
     fn fetch_texel_ci_through_the_tlut() {
         // CI8: index 5 -> TLUT entry at 0x800 + 5*8 = 0x828 = 0xF801 (red).
         let mut rdp = Rdp::new();
+        rdp.other_modes.tlut_en = true;
         rdp.tmem_write(0, 5); // the index texel
         rdp.tmem_write(0x828, 0xF8);
         rdp.tmem_write(0x829, 0x01);
@@ -4965,6 +5011,7 @@ mod tests {
         // CI4: nibble 5 (high, even s) + palette 3 -> index 0x35 -> entry at
         // 0x800 + 0x35*8 = 0x9A8 = 0x07C1 (green).
         let mut c = Rdp::new();
+        c.other_modes.tlut_en = true;
         c.tmem_write(0, 0x50); // high nibble 5
         c.tmem_write(0x9A8, 0x07);
         c.tmem_write(0x9A9, 0xC1);
@@ -5925,6 +5972,22 @@ mod tests {
         assert!(om.aa_enable);
         assert!(om.alpha_compare_en);
         assert_eq!(om.rgb_dither_mode, 1);
+
+        // **`tlut_en` (bit 47) and `tlut_type` (bit 46) decode independently.**
+        // They are ADJACENT bits, so a swapped extraction is the likely error and
+        // would pass any test that sets both or neither. Assert each with the other
+        // clear, in both polarities, so a swap fails and so does dropping either.
+        let om = |hi: u32| {
+            let mut r = Rdp::new();
+            r.set_other_modes(hi, 0);
+            r.other_modes
+        };
+        let a = om(1 << 15); // tlut_en only
+        assert!(a.tlut_en, "bit 47 must set tlut_en");
+        assert!(!a.tlut_type, "bit 47 must NOT set tlut_type");
+        let b = om(1 << 14); // tlut_type only
+        assert!(!b.tlut_en, "bit 46 must NOT set tlut_en");
+        assert!(b.tlut_type, "bit 46 must set tlut_type");
     }
 
     /// **The magic-matrix RGB dither matches Angrylion's `rgb_dither` cell-for-cell.**

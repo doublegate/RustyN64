@@ -402,6 +402,10 @@ pub const RDP_VECTORS: &[(&str, &[u8])] = &[
         "load_block_count_16",
         include_bytes!("../tests/vectors/load_block_count_16.rvec"),
     ),
+    (
+        "ci4_tlut_disabled_16",
+        include_bytes!("../tests/vectors/ci4_tlut_disabled_16.rvec"),
+    ),
 ];
 
 /// Look up a committed vector's bytes by name.

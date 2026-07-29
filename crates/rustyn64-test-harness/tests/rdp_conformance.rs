@@ -125,6 +125,22 @@ fn load_block_count_16_matches_angrylion() {
     assert_matches("load_block_count_16");
 }
 
+/// **A CI tile with `tlut_en` CLEAR gets no palette lookup (R-18).**
+///
+/// Byte-identical to `tex_tri_ci4_tlut_16` except for `Set Other Modes` bit 47,
+/// so any difference is attributable to that one bit. N64brew *…/Commands* §0x2F
+/// makes `tlut_en` — not the tile's format field — the flag that enables the
+/// lookup, and the oracle agrees emphatically: with the flag set the eight
+/// columns render the full palette; with it clear they render **all black**.
+///
+/// This matters because keying the lookup off the format alone is wrong in *both*
+/// directions — it palette-maps a CI tile that asked not to be, and fails to
+/// palette-map a non-CI tile that asked to be.
+#[test]
+fn ci4_tlut_disabled_16_matches_angrylion() {
+    assert_matches("ci4_tlut_disabled_16");
+}
+
 /// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
 ///
 /// This left-major triangle (a vertical left edge at x=2, the hypotenuse widening

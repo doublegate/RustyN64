@@ -1178,6 +1178,45 @@ static const uint16_t TEX_CI4_TLUT[12] = {
     0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, // 0x3008: TLUT 0-3  red, green, blue, white
     0xFFC1u, 0x07FFu, 0xF83Fu, 0x8421u, //         TLUT 4-7  yellow, cyan, magenta, grey
 };
+// V39 (probe): the SAME CI4 tile as V37 but with **`tlut_en` CLEAR**.
+//
+// N64brew §0x2F makes `tlut_en` (bit 47) the flag that enables the palette
+// lookup — not the tile's format field. RustyN64 keyed the lookup off the format
+// alone, which is wrong in both directions. This vector asks the oracle what a CI
+// tile does when the flag is clear, rather than guessing at it: everything else is
+// byte-identical to V37, so any difference in the golden is attributable to the
+// one bit.
+static const uint32_t V39_CI4_TLUT_DISABLED_16[] = {
+    // Set Other Modes: 1-cycle, bi_lerp0, persp off, **tlut_en** (bit 47 = word-0
+    // bit 15; N64brew §0x2F "tlut_en: Enables Texture Look-Up Table (TLUT) sampling").
+    0x2F0008F0u, 0x00000000u, // tlut_en CLEAR (bit 47 = word-0 bit 15)
+    0x3C000000u, 0x00000041u, // Set Combine: rgb_d=1 / a_d=1 — pure TEXEL0 passthrough
+    // --- palette -> TMEM high ---
+    0x3D100003u, 0x00003008u, // Set Texture Image: **16-bit**, width 4, addr 0x3008
+    0x35400100u, 0x07000000u, // Set Tile 7 (TLUT): fmt CI(2), size 0 (4-bit), tmem word 0x100
+    0x30000000u, 0x0701C000u, // Load Tlut 7: uls=0 ult=0 lrs=0x1C (8 entries) lrt=0
+    // --- CI4 texel bytes -> TMEM low ---
+    0x3D080003u, 0x00003000u, // Set Texture Image: 8-bit, width 4, addr 0x3000
+    0x35080200u, 0x06000000u, // Set Tile 6 (LOAD): 8-bit, line 1, tmem 0
+    0x32000000u, 0x0600C000u, // Set Tile Size 6: uls0 ult0 lrs3 lrt0 (4 bytes)
+    0x34000000u, 0x0600C000u, // Load Tile 6
+    // --- render tile: format CI(2), size 0 (4-bit), palette 0 ---
+    0x35400200u, 0x00000030u, // Set Tile 0 (RENDER): fmt CI, 4-bit, line 1, mask_s=3
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: uls0 ult0 lrs7 lrt0 (8 CI4 texels)
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00000000u, 0x00000000u, // XH = 0.0 — geometry identical to V37
+    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0
+    // The geometry spans all eight columns, as V37's does — but do NOT read that as
+    // eight-entry coverage here. With `tlut_en` clear every column renders black
+    // whatever its index, so this vector proves the **gate**, not per-index palette
+    // resolution. V37 is what proves the resolution; this one proves the flag
+    // suppresses it. Identical geometry is the point: it makes the two goldens
+    // differ by exactly one bit of input.
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
+};
 static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
     // Set Other Modes: 1-cycle, bi_lerp0, persp off, **tlut_en** (bit 47 = word-0
     // bit 15; N64brew §0x2F "tlut_en: Enables Texture Look-Up Table (TLUT) sampling").
@@ -1987,6 +2026,11 @@ int main(int argc, char **argv) {
                   sizeof(V38_LOAD_BLOCK_COUNT_16) / 4, V38_LOAD_BLOCK_COUNT_16,
                   0x3000, sizeof(TEX_BLOCK_COUNT_TEXELS) / sizeof(uint16_t), TEX_BLOCK_COUNT_TEXELS};
     if (emit_vector(&v38, out_dir)) return 1;
+
+    Vector v39 = {"ci4_tlut_disabled_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V39_CI4_TLUT_DISABLED_16) / 4, V39_CI4_TLUT_DISABLED_16,
+                  0x3000, sizeof(TEX_CI4_TLUT) / sizeof(uint16_t), TEX_CI4_TLUT};
+    if (emit_vector(&v39, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 

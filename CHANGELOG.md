@@ -8,6 +8,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Fixed — the TLUT lookup is gated on `tlut_en`, not the tile format (R-18)
+
+- **`Set Other Modes.tlut_en` (bit 47) was not decoded at all**, so the palette
+  lookup keyed off the tile's *format* field. That is wrong in both directions: a
+  CI tile with `tlut_en` clear was still palette-mapped, and a non-CI tile with it
+  set was not.
+- The oracle settled the `tlut_en = 0` behaviour instead of it being guessed:
+  `ci4_tlut_disabled_16` is byte-identical to `tex_tri_ci4_tlut_16` apart from
+  that one bit, and the goldens are **the full palette versus all black**.
+- `tlut_en` and `tlut_type` (bit 46) are now decoded and the lookup is gated.
+  IA16 palettes remain **deferred** — the flag is decoded so it is no longer
+  silently ignored, but the lookup still assumes RGBA16 and implementing IA16
+  without a vector would be inventing behaviour.
+- Battery is now **53 probes** (40 RDP + 13 VI); mutation-checked by removing the
+  gate.
+
 ### Added — first `Load Block` oracle coverage; its count is inclusive (R-18)
 
 - **`Load Block` (0x33) had zero vector coverage** — every texture vector loaded

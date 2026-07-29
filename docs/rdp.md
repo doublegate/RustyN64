@@ -354,6 +354,18 @@ matched to the ParaLLEl-RDP read layout (`texture.h`, MIT).
   RGBA32 (from the split TMEM: R,G low half, B,A high half), IA16/IA8/IA4, I8/I4 (alpha =
   intensity), and CI8/CI4 through the TLUT (CI4 folds `tile.palette` in as the high nibble
   of the index). The 4-bit formats select the high nibble for even `s`, the low for odd.
+- **The palette lookup is gated on `Set Other Modes.tlut_en` (bit 47), not on the tile's
+  format** (N64brew *…/Commands* §0x2F). A CI tile with `tlut_en` clear is **not**
+  palette-mapped and renders black — pinned by `ci4_tlut_disabled_16`, which is
+  byte-identical to `tex_tri_ci4_tlut_16` apart from that one bit and whose golden is all
+  black where the other renders the full palette.
+
+  Two limits are recorded rather than implied away. A **non-CI** tile with `tlut_en` **set**
+  is still not palette-mapped, though hardware would sample it through the TLUT: no vector
+  covers it and the RGBA/IA/I formats index the palette differently enough that deriving it
+  from prose would be invention. And `tlut_type` (bit 46) is decoded but **IA16 palettes are
+  deferred** — the lookup assumes RGBA16. Both stay wrong-but-known until a vector defines
+  them.
 
 **The read convention matches the loads.** TMEM is a natural big-endian byte array, so the
 sampler applies only the odd-row 32-bit-word swap `^= (t & 1) << 2` — the endian twiddles
