@@ -18,6 +18,14 @@ Frames captured from RustyN64. **ROMs are never committed** (see `.gitignore` an
   so the 320-wide framebuffer upscales to 640, less the 8/7-pixel
   `minhpass`/`maxhpass` crop. A PAL title scans out taller (576 lines); these
   dimensions are this capture's, not a fixed expectation.
+
+  *Provenance for those constants* — none of them are asserted here. The 2.10
+  fixed-point step semantics of `VI_X_SCALE`/`VI_Y_SCALE` are N64brew *Video
+  Interface* §VI_X_SCALE, §VI_Y_SCALE; the horizontal overscan and the 8/7-pixel
+  `minhpass`/`maxhpass` crop are the Angrylion VI pipeline geometry that ledger
+  **R-5** implements and validates RGB byte-for-byte through the `.vivec`
+  conformance vectors (13 VI probes in the accuracy battery). See
+  `docs/accuracy-ledger.md` §R-5 and `Bus::scanout_scaled`'s rustdoc.
 - **Two denominators, kept apart on purpose.** The same frame measures
   **75,840 / 75,840** through the unscaled 1:1 `Bus::scanout` (320x237) and
   **148,125 / 148,125** through `Bus::scanout_scaled` (625x237). Both are "fully
