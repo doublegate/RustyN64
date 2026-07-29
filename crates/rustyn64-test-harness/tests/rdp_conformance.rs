@@ -22,158 +22,39 @@
     reason = "vector geometry and command lengths are small, well within u32"
 )]
 
-use rustyn64_core::Bus;
+use rustyn64_test_harness::conformance::{first_mismatch, parse, replay, vector_bytes};
 
-/// A parsed `.rvec` conformance vector.
-struct Vector<'a> {
-    fb_addr: u32,
-    width: u32,
-    height: u32,
-    bpp: u32,
-    cmd_addr: u32,
-    /// Optional RDRAM preload (a texture a `Load Tile` reads), written before the
-    /// command list runs. `(addr, bytes)`; empty when the vector carries none.
-    preload_addr: u32,
-    preload: &'a [u8],
-    cmds: &'a [u8],
-    golden_fb: &'a [u8],
+/// Assert RustyN64 reproduces the Angrylion golden framebuffer for `name`.
+///
+/// The vector's bytes come from `conformance::RDP_VECTORS`, the single source of
+/// truth shared with the accuracy battery — so a vector can never be exercised
+/// here while being invisible to the battery (or vice versa), and a name typo
+/// fails loudly instead of silently skipping.
+fn assert_matches(name: &str) {
+    assert_matches_bytes(name, vector_bytes(name));
 }
 
-/// Parse the `.rvec` container. The big-endian header is `"RVEC"`, a version, then
-/// `fb_addr`, `width`, `height`, `bpp`, `cmd_addr`, `cmd_len`, `fb_len` — **v1** (9
-/// words) stops there; **v2** (11 words) adds `preload_addr`, `preload_len`. The
-/// body is the preload bytes (v2 only), then the command bytes, then the golden
-/// framebuffer bytes.
-fn parse(bytes: &[u8]) -> Vector<'_> {
-    assert!(
-        bytes.len() >= 36,
-        "truncated .rvec: shorter than the header"
-    );
-    let u32_at =
-        |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
-    assert_eq!(u32_at(0), 0x5256_4543, "bad magic (expected RVEC)");
-    let version = u32_at(4);
-    assert!(
-        version == 1 || version == 2,
-        "unexpected vector version {version}"
-    );
-    let fb_addr = u32_at(8);
-    let width = u32_at(12);
-    let height = u32_at(16);
-    let bpp = u32_at(20);
-    let cmd_addr = u32_at(24);
-    let cmd_len = u32_at(28) as usize;
-    let fb_len = u32_at(32) as usize;
-    // v2 carries a preload region (addr + len) in two extra header words.
-    let (hdr, preload_addr, preload_len) = if version == 2 {
-        assert!(bytes.len() >= 44, "truncated .rvec: v2 header incomplete");
-        (44usize, u32_at(36), u32_at(40) as usize)
-    } else {
-        (36usize, 0u32, 0usize)
+/// As [`assert_matches`], for a vector loaded at run time (the fuzz corpus, which
+/// is read from disk rather than compiled into the binary). Reports the first
+/// differing pixel on failure.
+fn assert_matches_bytes(name: &str, bytes: &[u8]) {
+    let Some(m) = first_mismatch(bytes) else {
+        return;
     };
     assert!(
-        bpp == 2 || bpp == 4,
-        "unsupported bpp {bpp} (expected 2 or 4)"
+        !m.got.is_empty(),
+        "{name}: framebuffer length differs from the golden"
     );
-    assert_eq!(
-        cmd_len % 4,
-        0,
-        "command length is not a whole number of words"
+    panic!(
+        "{name}: framebuffer differs from the Angrylion golden at pixel \
+         ({},{}): got {:02X?}, golden {:02X?}",
+        m.x, m.y, m.got, m.golden,
     );
-    // Checked so an implausible header can't silently wrap the pixel count.
-    let expected_fb = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(bpp as usize))
-        .expect("framebuffer dimensions overflow");
-    assert_eq!(fb_len, expected_fb, "fb_len mismatch");
-    let total = hdr
-        .checked_add(preload_len)
-        .and_then(|n| n.checked_add(cmd_len))
-        .and_then(|n| n.checked_add(fb_len))
-        .expect("payload sizes overflow");
-    assert!(
-        bytes.len() >= total,
-        "truncated .rvec: header declares more payload than the file holds"
-    );
-    let preload = &bytes[hdr..hdr + preload_len];
-    let cmd_start = hdr + preload_len;
-    Vector {
-        fb_addr,
-        width,
-        height,
-        bpp,
-        cmd_addr,
-        preload_addr,
-        preload,
-        cmds: &bytes[cmd_start..cmd_start + cmd_len],
-        golden_fb: &bytes[cmd_start + cmd_len..cmd_start + cmd_len + fb_len],
-    }
-}
-
-/// Replay `v`'s command stream through RustyN64's RDP and return the rendered
-/// framebuffer region (raw RDRAM bytes), which is directly comparable to the
-/// golden bytes (both are row-major big-endian logical pixel values).
-fn replay(v: &Vector<'_>) -> Vec<u8> {
-    let mut bus = Bus::new();
-    // Load the command list into RDRAM verbatim (big-endian words, as generated).
-    let base = v.cmd_addr as usize;
-    let fb = v.fb_addr as usize;
-    let fb_len = (v.width * v.height * v.bpp) as usize;
-    let pre = v.preload_addr as usize;
-    assert!(
-        base + v.cmds.len() <= bus.rdram.len()
-            && fb + fb_len <= bus.rdram.len()
-            && pre + v.preload.len() <= bus.rdram.len(),
-        "vector addresses exceed RDRAM ({} bytes)",
-        bus.rdram.len()
-    );
-    // Place the optional texture preload (big-endian, RustyN64's RDRAM layout) so a
-    // Load Tile in the command list reads it, exactly as the generator placed it in
-    // Angrylion's RDRAM before rendering the golden.
-    bus.rdram[pre..pre + v.preload.len()].copy_from_slice(v.preload);
-    bus.rdram[base..base + v.cmds.len()].copy_from_slice(v.cmds);
-
-    // Point the DP FIFO at the list and drain it (one command per tick).
-    bus.rdp.dpc_write(0, v.cmd_addr); // DPC_START
-    bus.rdp.dpc_write(1, v.cmd_addr + v.cmds.len() as u32); // DPC_END
-    let n_words = v.cmds.len() / 4;
-    // A generous budget: multi-word triangle commands still retire in a handful
-    // of ticks, so twice the word count cannot leave the FIFO mid-list.
-    for _ in 0..(n_words * 2 + 16) {
-        bus.rdp_tick();
-    }
-
-    bus.rdram[fb..fb + fb_len].to_vec()
-}
-
-/// Assert RustyN64 reproduces the Angrylion golden framebuffer for `name`,
-/// reporting the first differing pixel on failure.
-fn assert_matches(name: &str, bytes: &[u8]) {
-    let v = parse(bytes);
-    let got = replay(&v);
-    if got == v.golden_fb {
-        return;
-    }
-    // Locate the first mismatching pixel for a legible failure.
-    let bpp = v.bpp as usize;
-    for i in (0..got.len()).step_by(bpp) {
-        if got[i..i + bpp] != v.golden_fb[i..i + bpp] {
-            let px = i / bpp;
-            let (x, y) = (px as u32 % v.width, px as u32 / v.width);
-            panic!(
-                "{name}: framebuffer differs from the Angrylion golden at pixel \
-                 ({x},{y}): got {:02X?}, golden {:02X?}",
-                &got[i..i + bpp],
-                &v.golden_fb[i..i + bpp],
-            );
-        }
-    }
-    panic!("{name}: framebuffer length differs from the golden");
 }
 
 #[test]
 fn fill_rect_16_matches_angrylion() {
-    assert_matches("fill_rect_16", include_bytes!("vectors/fill_rect_16.rvec"));
+    assert_matches("fill_rect_16");
 }
 
 /// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
@@ -187,17 +68,14 @@ fn fill_rect_16_matches_angrylion() {
 /// pre-shifted `>> 2` at decode); this vector now guards against a regression.
 #[test]
 fn fill_tri_16_matches_angrylion() {
-    assert_matches("fill_tri_16", include_bytes!("vectors/fill_tri_16.rvec"));
+    assert_matches("fill_tri_16");
 }
 
 /// A wider flat triangle (`DxMDy = 1.0` px/row) — a real multi-column staircase,
 /// exercising the edge-walk across columns.
 #[test]
 fn fill_tri_wide_16_matches_angrylion() {
-    assert_matches(
-        "fill_tri_wide_16",
-        include_bytes!("vectors/fill_tri_wide_16.rvec"),
-    );
+    assert_matches("fill_tri_wide_16");
 }
 
 /// A right-major triangle with a **negative** minor-edge slope (`DxMDy = -1.0`),
@@ -205,10 +83,7 @@ fn fill_tri_wide_16_matches_angrylion() {
 /// (rounds toward −∞) on the R-14 fix.
 #[test]
 fn fill_tri_neg_16_matches_angrylion() {
-    assert_matches(
-        "fill_tri_neg_16",
-        include_bytes!("vectors/fill_tri_neg_16.rvec"),
-    );
+    assert_matches("fill_tri_neg_16");
 }
 
 /// A **FILL-mode** triangle with fractional edges (left 2.5, right 6.5). FILL mode
@@ -219,10 +94,7 @@ fn fill_tri_neg_16_matches_angrylion() {
 /// in 1-/2-cycle mode; see the coverage rewrite.)
 #[test]
 fn fill_tri_frac_16_matches_angrylion() {
-    assert_matches(
-        "fill_tri_frac_16",
-        include_bytes!("vectors/fill_tri_frac_16.rvec"),
-    );
+    assert_matches("fill_tri_frac_16");
 }
 
 /// A **1-cycle-mode** shaded triangle with a fractional left edge (2.5) and right
@@ -233,10 +105,7 @@ fn fill_tri_frac_16_matches_angrylion() {
 /// sub-pixel coverage path (inclusion + coverage write-back).
 #[test]
 fn shade_tri_frac_16_matches_angrylion() {
-    assert_matches(
-        "shade_tri_frac_16",
-        include_bytes!("vectors/shade_tri_frac_16.rvec"),
-    );
+    assert_matches("shade_tri_frac_16");
 }
 
 /// The same 1-cycle fractional triangle with a **z-suffix** (`z_update` on): the
@@ -244,10 +113,7 @@ fn shade_tri_frac_16_matches_angrylion() {
 /// column 2 is excluded and column 6 partial. Guards `depth_span`'s coverage wiring.
 #[test]
 fn shade_depth_tri_frac_16_matches_angrylion() {
-    assert_matches(
-        "shade_depth_tri_frac_16",
-        include_bytes!("vectors/shade_depth_tri_frac_16.rvec"),
-    );
+    assert_matches("shade_depth_tri_frac_16");
 }
 
 /// A 1-cycle shaded triangle into a **32-bit RGBA8888** colour image (dither off).
@@ -255,7 +121,7 @@ fn shade_depth_tri_frac_16_matches_angrylion() {
 /// `0x112233` plus the coverage alpha `0xE0`.
 #[test]
 fn shade_tri_32_matches_angrylion() {
-    assert_matches("shade_tri_32", include_bytes!("vectors/shade_tri_32.rvec"));
+    assert_matches("shade_tri_32");
 }
 
 /// A 1-cycle shaded triangle into a **32-bit RGBA8888** colour image with the RDP's
@@ -267,10 +133,7 @@ fn shade_tri_32_matches_angrylion() {
 /// the Angrylion `rgb_dither` reference.
 #[test]
 fn dither_tri_32_matches_angrylion() {
-    assert_matches(
-        "dither_tri_32",
-        include_bytes!("vectors/dither_tri_32.rvec"),
-    );
+    assert_matches("dither_tri_32");
 }
 
 /// A 1-cycle **Gouraud-gradient** shaded triangle into a 32-bit image (dither off).
@@ -280,10 +143,7 @@ fn dither_tri_32_matches_angrylion() {
 /// Validates `interpolate_shade` (base + dx + de, i16 snap) against Angrylion.
 #[test]
 fn shade_grad_tri_32_matches_angrylion() {
-    assert_matches(
-        "shade_grad_tri_32",
-        include_bytes!("vectors/shade_grad_tri_32.rvec"),
-    );
+    assert_matches("shade_grad_tri_32");
 }
 
 /// A 1-cycle **textured** triangle (16-bit RGBA5551) — the first vector to validate
@@ -302,7 +162,7 @@ fn shade_grad_tri_32_matches_angrylion() {
 /// passes.
 #[test]
 fn tex_tri_16_matches_angrylion() {
-    assert_matches("tex_tri_16", include_bytes!("vectors/tex_tri_16.rvec"));
+    assert_matches("tex_tri_16");
 }
 
 /// **Primitive base-tile threading (R-13).** The 8-colour ramp is loaded into tile 3
@@ -312,10 +172,7 @@ fn tex_tri_16_matches_angrylion() {
 /// the unloaded low TMEM and renders black. Guards `combined_color`'s tile selection.
 #[test]
 fn tex_tri_base_tile_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_base_tile_16",
-        include_bytes!("vectors/tex_tri_base_tile_16.rvec"),
-    );
+    assert_matches("tex_tri_base_tile_16");
 }
 
 /// A textured triangle with a **constant** texture coordinate (`dsdx = 0`, `S = 0`),
@@ -325,10 +182,7 @@ fn tex_tri_base_tile_16_matches_angrylion() {
 /// the minimal proof that the `bi_lerp0 = 1` fix makes the RGBA texel path render.
 #[test]
 fn tex_tri_fixed_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_fixed_16",
-        include_bytes!("vectors/tex_tri_fixed_16.rvec"),
-    );
+    assert_matches("tex_tri_fixed_16");
 }
 
 /// A **4-bit (I4) textured triangle** — the hardware-canonical 4-bit texture path.
@@ -341,10 +195,7 @@ fn tex_tri_fixed_16_matches_angrylion() {
 /// reproduce Angrylion byte-for-byte (no new "4-bit load" code, matching hardware).
 #[test]
 fn tex_tri_i4_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_i4_16",
-        include_bytes!("vectors/tex_tri_i4_16.rvec"),
-    );
+    assert_matches("tex_tri_i4_16");
 }
 
 /// **Tile-coordinate CLAMP for a point-sampled textured triangle (R-13).** A 4-texel
@@ -356,10 +207,7 @@ fn tex_tri_i4_16_matches_angrylion() {
 /// read unrelated texels here.
 #[test]
 fn tex_tri_clamp_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_clamp_16",
-        include_bytes!("vectors/tex_tri_clamp_16.rvec"),
-    );
+    assert_matches("tex_tri_clamp_16");
 }
 
 /// **Tile-coordinate WRAP for a point-sampled textured triangle (R-13).** As
@@ -369,10 +217,7 @@ fn tex_tri_clamp_16_matches_angrylion() {
 /// `sample_coord` transform against Angrylion.
 #[test]
 fn tex_tri_wrap_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_wrap_16",
-        include_bytes!("vectors/tex_tri_wrap_16.rvec"),
-    );
+    assert_matches("tex_tri_wrap_16");
 }
 
 /// **The N64 3-point BILINEAR filter (`sample_type = 1`, R-13).** An 8×8 gradient
@@ -383,10 +228,7 @@ fn tex_tri_wrap_16_matches_angrylion() {
 /// upper-right (`sfrac+tfrac >= 0x20`) branches of `bilinear_3point`.
 #[test]
 fn tex_tri_bilinear_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_bilinear_16",
-        include_bytes!("vectors/tex_tri_bilinear_16.rvec"),
-    );
+    assert_matches("tex_tri_bilinear_16");
 }
 
 /// **The mid-texel filter (Set Other Modes bit 44, R-13).** The same bilinear setup as
@@ -397,10 +239,7 @@ fn tex_tri_bilinear_16_matches_angrylion() {
 /// pick (checkerboard extremes) never produces; a renderer ignoring bit 44 mismatches it.
 #[test]
 fn tex_tri_mid_texel_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_mid_texel_16",
-        include_bytes!("vectors/tex_tri_mid_texel_16.rvec"),
-    );
+    assert_matches("tex_tri_mid_texel_16");
 }
 
 /// **The derivative-computed LOD fraction (R-13).** A 2-cycle textured triangle whose
@@ -414,10 +253,7 @@ fn tex_tri_mid_texel_16_matches_angrylion() {
 /// reads zero.
 #[test]
 fn tex_tri_lodfrac_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_lodfrac_16",
-        include_bytes!("vectors/tex_tri_lodfrac_16.rvec"),
-    );
+    assert_matches("tex_tri_lodfrac_16");
 }
 
 /// **LOD-driven mip tile selection (`tex_lod_en`, R-13).** Same LOD setup as
@@ -425,10 +261,7 @@ fn tex_tri_lodfrac_16_matches_angrylion() {
 /// tiles holding distinct colours, so the pixel names which tile the LOD selected.
 #[test]
 fn tex_tri_mip_tile_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_mip_tile_16",
-        include_bytes!("vectors/tex_tri_mip_tile_16.rvec"),
-    );
+    assert_matches("tex_tri_mip_tile_16");
 }
 
 /// **The bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, R-13).** A 2-texel tile
@@ -439,10 +272,7 @@ fn tex_tri_mip_tile_16_matches_angrylion() {
 /// one; pins `mask_coupled`'s `sdiff = -1` seam handling against Angrylion.
 #[test]
 fn tex_tri_bilinear_wrap_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_bilinear_wrap_16",
-        include_bytes!("vectors/tex_tri_bilinear_wrap_16.rvec"),
-    );
+    assert_matches("tex_tri_bilinear_wrap_16");
 }
 
 /// **2-cycle mode with a second texel from `tile+1` (R-13).** Two 1-texel tiles
@@ -452,10 +282,7 @@ fn tex_tri_bilinear_wrap_16_matches_angrylion() {
 /// cycle 1 reading tile 0 (red). Pins the two-tile sample + the `combine` texel swap.
 #[test]
 fn tex_tri_2cycle_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_2cycle_16",
-        include_bytes!("vectors/tex_tri_2cycle_16.rvec"),
-    );
+    assert_matches("tex_tri_2cycle_16");
 }
 
 /// **The `PRIM_LOD_FRAC` combiner input (R-10).** `Set Prim Color` carries
@@ -465,10 +292,7 @@ fn tex_tri_2cycle_16_matches_angrylion() {
 /// `Set Prim Color` extracts `prim_lod_frac` and the combiner routes mul-select 14 to it.
 #[test]
 fn tex_tri_primlodfrac_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_primlodfrac_16",
-        include_bytes!("vectors/tex_tri_primlodfrac_16.rvec"),
-    );
+    assert_matches("tex_tri_primlodfrac_16");
 }
 
 /// **The `Set Convert` K4 (rgb sub-B select 7) and K5 (rgb mul select 15) inputs (R-10).**
@@ -478,10 +302,7 @@ fn tex_tri_primlodfrac_16_matches_angrylion() {
 /// and the two combiner selects.
 #[test]
 fn tex_tri_convert_k45_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_convert_k45_16",
-        include_bytes!("vectors/tex_tri_convert_k45_16.rvec"),
-    );
+    assert_matches("tex_tri_convert_k45_16");
 }
 
 /// **A NEGATIVE `Set Convert` K4 (bit 8 set) — the sign-extension proof (R-10).**
@@ -493,10 +314,7 @@ fn tex_tri_convert_k45_16_matches_angrylion() {
 /// bit-8-clear `tex_tri_convert_k45_16` vector cannot reach.
 #[test]
 fn tex_tri_convert_kneg_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_convert_kneg_16",
-        include_bytes!("vectors/tex_tri_convert_kneg_16.rvec"),
-    );
+    assert_matches("tex_tri_convert_kneg_16");
 }
 
 /// **The chroma-key KeyCentre (rgb sub-B select 6) and KeyScale (rgb mul select 6)
@@ -508,10 +326,7 @@ fn tex_tri_convert_kneg_16_matches_angrylion() {
 /// combiner selects end-to-end against Angrylion.
 #[test]
 fn tex_tri_chromakey_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_chromakey_16",
-        include_bytes!("vectors/tex_tri_chromakey_16.rvec"),
-    );
+    assert_matches("tex_tri_chromakey_16");
 }
 
 /// **The chroma-key alpha compare (`key_en`, Set Other Modes bit 40) — R-10.** With
@@ -528,10 +343,7 @@ fn tex_tri_chromakey_16_matches_angrylion() {
 /// itself is additionally unit-tested with hand-computed values).
 #[test]
 fn tex_tri_chromakey_alpha_16_matches_angrylion() {
-    assert_matches(
-        "tex_tri_chromakey_alpha_16",
-        include_bytes!("vectors/tex_tri_chromakey_alpha_16.rvec"),
-    );
+    assert_matches("tex_tri_chromakey_alpha_16");
 }
 
 /// A **COPY-mode Texture Rectangle** (16-bit) — the first texture path validated
@@ -544,10 +356,7 @@ fn tex_tri_chromakey_alpha_16_matches_angrylion() {
 /// against the oracle (RustyN64 previously only round-trip-tested this internally).
 #[test]
 fn tex_rect_copy_16_matches_angrylion() {
-    assert_matches(
-        "tex_rect_copy_16",
-        include_bytes!("vectors/tex_rect_copy_16.rvec"),
-    );
+    assert_matches("tex_rect_copy_16");
 }
 
 /// A COPY-mode Texture Rectangle blitted to an **offset position** — the same 4×2
@@ -556,10 +365,7 @@ fn tex_rect_copy_16_matches_angrylion() {
 /// and the surrounding-pixel/scissor behaviour the origin blit did not.
 #[test]
 fn tex_rect_offset_16_matches_angrylion() {
-    assert_matches(
-        "tex_rect_offset_16",
-        include_bytes!("vectors/tex_rect_offset_16.rvec"),
-    );
+    assert_matches("tex_rect_offset_16");
 }
 
 /// A COPY-mode Texture Rectangle of a full **8×8** texture (64 texels) 1:1-blitted
@@ -568,10 +374,7 @@ fn tex_rect_offset_16_matches_angrylion() {
 /// odd-row TMEM swap across a bigger surface. The texture is an RGBA5551 gradient.
 #[test]
 fn tex_rect_8x8_16_matches_angrylion() {
-    assert_matches(
-        "tex_rect_8x8_16",
-        include_bytes!("vectors/tex_rect_8x8_16.rvec"),
-    );
+    assert_matches("tex_rect_8x8_16");
 }
 
 /// **Alpha-compare** gates the pixel write. A 1-cycle flat-red shaded triangle whose
@@ -581,10 +384,7 @@ fn tex_rect_8x8_16_matches_angrylion() {
 /// alpha columns draw red. Guards the `alpha_compare_en` write gate.
 #[test]
 fn alpha_compare_16_matches_angrylion() {
-    assert_matches(
-        "alpha_compare_16",
-        include_bytes!("vectors/alpha_compare_16.rvec"),
-    );
+    assert_matches("alpha_compare_16");
 }
 
 /// **Alpha-compare on the depth path.** The same shade-alpha ramp + `0x80` threshold
@@ -594,10 +394,7 @@ fn alpha_compare_16_matches_angrylion() {
 /// guards that `depth_span` applies alpha-compare and skips the killed pixels' write.
 #[test]
 fn alpha_compare_z_16_matches_angrylion() {
-    assert_matches(
-        "alpha_compare_z_16",
-        include_bytes!("vectors/alpha_compare_z_16.rvec"),
-    );
+    assert_matches("alpha_compare_z_16");
 }
 
 /// **`cvg_dest = full`** coverage write-back. The same fractional-edge shaded
@@ -607,10 +404,7 @@ fn alpha_compare_z_16_matches_angrylion() {
 /// (`0xf800`). Guards the `cvg_dest = full` write-back path.
 #[test]
 fn cvg_dest_full_16_matches_angrylion() {
-    assert_matches(
-        "cvg_dest_full_16",
-        include_bytes!("vectors/cvg_dest_full_16.rvec"),
-    );
+    assert_matches("cvg_dest_full_16");
 }
 
 /// A 1-cycle 32-bit shaded triangle whose combiner outputs the **primitive** colour
@@ -621,10 +415,7 @@ fn cvg_dest_full_16_matches_angrylion() {
 /// input (`Set Prim Color`) from the shade path. Validates the combiner prim mux.
 #[test]
 fn prim_combiner_32_matches_angrylion() {
-    assert_matches(
-        "prim_combiner_32",
-        include_bytes!("vectors/prim_combiner_32.rvec"),
-    );
+    assert_matches("prim_combiner_32");
 }
 
 /// A **magnified** COPY-mode Texture Rectangle (`DsDx = 2.0`, 0.5 texel/pixel). The
@@ -634,10 +425,7 @@ fn prim_combiner_32_matches_angrylion() {
 /// (not the naive per-pixel `0,0,1,1,2,2,3,3`). Guards the 4-pixels-per-cycle copy.
 #[test]
 fn tex_rect_mag_16_matches_angrylion() {
-    assert_matches(
-        "tex_rect_mag_16",
-        include_bytes!("vectors/tex_rect_mag_16.rvec"),
-    );
+    assert_matches("tex_rect_mag_16");
 }
 
 /// Per-family lower bounds on the committed seeded-fuzz corpus, keyed by filename
@@ -668,7 +456,7 @@ fn fuzz_corpus_matches_angrylion() {
     for path in &names {
         let bytes = std::fs::read(path).expect("read fuzz vector");
         let name = path.file_stem().unwrap().to_string_lossy();
-        assert_matches(&name, &bytes);
+        assert_matches_bytes(&name, &bytes);
     }
     // Each committed family must still be present at (or above) its floor.
     let stems: Vec<String> = names
