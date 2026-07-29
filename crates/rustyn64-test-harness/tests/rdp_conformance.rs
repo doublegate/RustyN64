@@ -84,6 +84,27 @@ fn fill_rect_2cycle_16_matches_angrylion() {
     assert_matches("fill_rect_2cycle_16");
 }
 
+/// **A CI4 texture resolves through the TLUT (R-18).**
+///
+/// The first committed vector to exercise `Load Tlut` at all — the colour-indexed
+/// path had **zero** oracle coverage, and it is the path every Ocarina of Time
+/// triangle renders through (`fmt=2 size=0`, combiner a pure `TEXEL0`
+/// pass-through), so a CI4 fetch resolving to 0 is what would produce R-18's
+/// black frame.
+///
+/// Eight indices `0..7` map to eight distinct, **non-zero** palette entries —
+/// including index 0 — so neither an unloaded TLUT (reads all-zero, renders
+/// black) nor a black index-0 entry can be mistaken for a correct fetch.
+///
+/// The encoding follows N64brew *…/Commands* §0x30 exactly. A first attempt did
+/// not, and Angrylion faithfully rendered the resulting near-empty palette; that
+/// golden was **discarded rather than committed**, because pinning it would have
+/// made an authoring error the spec.
+#[test]
+fn tex_tri_ci4_tlut_16_matches_angrylion() {
+    assert_matches("tex_tri_ci4_tlut_16");
+}
+
 /// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
 ///
 /// This left-major triangle (a vertical left edge at x=2, the hypotenuse widening
