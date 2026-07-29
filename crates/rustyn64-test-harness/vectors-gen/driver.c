@@ -1222,7 +1222,7 @@ static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
 // Two distinct non-zero texels sit at 0x3000. The render tile reads texels 0 and 1.
 // If Angrylion's column 1 is the SECOND texel the count is inclusive; if it is
 // unwritten TMEM the count is exclusive.
-static const uint16_t TEX_BLOCK_COUNT[2] = {0xF801u, 0x07C1u}; // red, green
+static const uint16_t TEX_BLOCK_COUNT_TEXELS[2] = {0xF801u, 0x07C1u}; // red, green
 static const uint32_t V38_LOAD_BLOCK_COUNT_16[] = {
     0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0, persp off
     0x3C000000u, 0x00000041u, // Set Combine: pure TEXEL0 passthrough
@@ -1985,7 +1985,7 @@ int main(int argc, char **argv) {
 
     Vector v38 = {"load_block_count_16", 0x2000, 0x1000, 8, 8, 2,
                   sizeof(V38_LOAD_BLOCK_COUNT_16) / 4, V38_LOAD_BLOCK_COUNT_16,
-                  0x3000, 2, TEX_BLOCK_COUNT};
+                  0x3000, sizeof(TEX_BLOCK_COUNT_TEXELS) / sizeof(uint16_t), TEX_BLOCK_COUNT_TEXELS};
     if (emit_vector(&v38, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
