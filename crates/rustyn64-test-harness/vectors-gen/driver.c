@@ -1199,9 +1199,12 @@ static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
     0x00000000u, 0x00000000u, // XL, DxLDy
-    0x00020000u, 0x00000000u, // XH = 2.0
-    0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
+    0x00000000u, 0x00000000u, // XH = 0.0 — start at column 0 so all EIGHT
+    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0   indices are sampled
     // dx.S = 0x20 advances one texel per pixel, so columns sample indices 0..7.
+    // The edges start at column 0 on purpose: with XH/XM = 2.0 the widest row only
+    // reached six columns, so palette entries 6 and 7 were declared but never
+    // fetched — the vector would have claimed eight distinct entries and proved six.
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
 };
 

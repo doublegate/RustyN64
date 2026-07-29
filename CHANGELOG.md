@@ -44,7 +44,8 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   the `Load Tlut` encoding was verified against N64brew §0x30 (two errors found:
   `lower_right.s` is bits 23:12, and the TLUT tile must be 4-bit, not 16-bit),
   the vector re-authored, and **RustyN64 now matches Angrylion byte-for-byte**.
-  `tex_tri_ci4_tlut_16` is committed (39 RDP vectors) and mutation-checked — the
+  `tex_tri_ci4_tlut_16` is committed (38 RDP vectors, 51 battery probes) and
+  mutation-checked — the
   colour-indexed path finally has oracle coverage it never had.
 - **A separate, independently real defect:** `Set Other Modes.tlut_en` — bit 47,
   N64brew *Reality Display Processor/Commands* §0x2F, with `tlut_type` at bit 46
