@@ -310,13 +310,19 @@ mod tests {
         ] {
             assert_eq!(sys.cpu.regs.read(reg), want, "{name} (r{reg})");
         }
-        // Checksum-derived registers must stay unset.
+        // Checksum-derived registers must stay unset — **every** documented
+        // exclusion, not a sample. `t4`-`t9` is r12-r15 plus r24-r25; listing only
+        // the endpoints would let a seed slip into the middle of the range.
         for (reg, name) in [
             (2u8, "v0"),
             (3, "v1"),
             (4, "a0"),
             (5, "a1"),
             (12, "t4"),
+            (13, "t5"),
+            (14, "t6"),
+            (15, "t7"),
+            (24, "t8"),
             (25, "t9"),
         ] {
             assert_eq!(
