@@ -113,6 +113,25 @@ impl Pif {
         }
     }
 
+    /// Set which joybus controller ports (0-3) have a device plugged in.
+    ///
+    /// Defaults to port 1 only. A frontend offering 2-4 player support sets the
+    /// extra ports here; without it every additional port reports "no device"
+    /// and `osContInit` sees a single pad, which is correct for the default
+    /// machine but wrong for a multiplayer session.
+    ///
+    /// Channel 4 (the cartridge/EEPROM bus) is not a controller port and is not
+    /// addressed by this — its presence follows the installed save device.
+    pub const fn set_controllers_connected(&mut self, connected: [bool; 4]) {
+        self.connected = connected;
+    }
+
+    /// Which controller ports currently report a device.
+    #[must_use]
+    pub const fn controllers_connected(&self) -> [bool; 4] {
+        self.connected
+    }
+
     /// Install the PIF boot ROM (IPL1/IPL2) for the real-PIF boot path. Accepts
     /// the raw dump; only the first [`PIF_ROM_LEN`] bytes (the ROM window) are
     /// kept — a longer dump that also carries the 64-byte RAM tail is truncated.
@@ -276,7 +295,7 @@ impl Pif {
                     // Channel 4 is the cartridge/EEPROM channel, whose presence
                     // the save device decides, so it is never gated here.
                     if channel < 4 && !self.connected[channel] {
-                        self.ram[i + 1] |= RX_NO_DEVICE;
+                        self.mark_no_device(i + 1);
                     } else {
                         self.run_channel(
                             channel,
@@ -468,12 +487,18 @@ mod tests {
     /// satisfies a test that only checks "the reply is not a controller".
     #[test]
     fn an_empty_port_flags_no_device_on_the_rx_byte() {
+        const SKIPS: usize = 1;
+        const TX: [u8; 1] = [0x00];
+
         let mut pif = Pif::new();
         let mut save = SaveDevice::new(SaveType::None);
         // Channel 0 is populated by default; channel 1 is not.
-        let resp = frame(&mut pif, 1, &[0x00], 3);
-        let rx_byte = resp - 1 - 1; // TX RX tt[1] -> RX sits two before `resp`
-        let tx_data_byte = resp - 1;
+        let resp = frame(&mut pif, SKIPS, &TX, 3);
+        // Frame layout is `TX RX tt[tx_len] rr[rx_len]` starting at `SKIPS`, so
+        // the RX byte is the second byte of the block. Derived from the layout
+        // rather than by counting backwards from `resp`.
+        let rx_byte = SKIPS + 1;
+        let tx_data_byte = SKIPS + 2 + TX.len() - 1;
         let before = pif.ram[tx_data_byte];
         pif.execute(&[0; 4], &mut save);
 
@@ -507,12 +532,16 @@ mod tests {
     /// indistinguishable from a correct write.
     #[test]
     fn mark_no_device_flags_the_rx_byte_not_the_tx_payload() {
+        const SKIPS: usize = 0;
+        const TX: [u8; 2] = [0x99, 0x5A];
+
         let mut pif = Pif::new();
         let mut save = SaveDevice::new(SaveType::None);
         // Channel 0 IS connected; command 0x99 is not one we model.
-        let resp = frame(&mut pif, 0, &[0x99, 0x5A], 3);
-        let rx_byte = resp - 2 - 1; // TX RX tt[2] -> RX is three before `resp`
-        let last_tx = resp - 1;
+        let resp = frame(&mut pif, SKIPS, &TX, 3);
+        let rx_byte = SKIPS + 1;
+        let last_tx = SKIPS + 2 + TX.len() - 1;
+        assert_eq!(resp, SKIPS + 2 + TX.len(), "frame layout as documented");
         assert_eq!(pif.ram[last_tx], 0x5A, "the TX payload starts intact");
 
         pif.execute(&[0; 4], &mut save);
@@ -533,10 +562,12 @@ mod tests {
     /// every channel, which is the obvious way to make the test above pass.
     #[test]
     fn a_populated_port_still_answers_and_is_not_flagged() {
+        const SKIPS: usize = 0;
+
         let mut pif = Pif::new();
         let mut save = SaveDevice::new(SaveType::None);
-        let resp = frame(&mut pif, 0, &[0x00], 3);
-        let rx_byte = resp - 1 - 1;
+        let resp = frame(&mut pif, SKIPS, &[0x00], 3);
+        let rx_byte = SKIPS + 1;
         pif.execute(&[0; 4], &mut save);
 
         assert_eq!(
