@@ -199,9 +199,18 @@ is N64brew *…/Commands* §0x3F/0x37/0x2D/0x36 and *…/Pipeline* §Fill Pipeli
   lower-right is **exclusive**. A **4-bit** color image is not a valid FILL target
   (it crashes the real RDP), so the fill is skipped.
 
-Scope limits, honestly: `Fill Rectangle` implements the **FILL-mode** path only —
-the cycle-type gate arrives with `Set Other Modes`, so a 1-/2-cycle rectangle
-(which routes through the blender, not the fill register) is not yet distinguished.
+**The fill register is read only in FILL and COPY mode.** In 1-/2-cycle mode a
+rectangle is an ordinary primitive and goes through the **combiner** (then
+alpha-compare and dither, exactly as the triangle path does); it carries no shade
+or texture block, so the combiner sees only its register inputs (prim/env/…) and
+the fill register is never consulted. Oracle-confirmed (**R-21**): vector
+`fill_rect_1cycle_16` renders a 1-cycle rectangle whose prim colour and fill
+register are deliberately different, and Angrylion produces the **prim** colour.
+
+Scope limits, honestly: the same question is **still open for a flat
+`Fill Triangle`** (0x08 with no shade/texture block), which selects the combiner on
+`shade.is_some() || tex.is_some()` rather than on the cycle type and so still takes
+the fill register unconditionally. No vector exercises it yet (**R-21**).
 The **integer-coordinate** edge rules — the rectangle's inclusive lower-right +
 `yl | 3` (**R-3**) and the scissor's asymmetric inclusive-X / exclusive-Y clip with
 the `allover` guard (**R-15**) — are **oracle-validated** against Angrylion by the
@@ -211,11 +220,16 @@ half-open rectangle off-by-one and the scissor asymmetry (`docs/accuracy-ledger.
 What remains open: **sub-pixel** (fractional-coordinate) rect/scissor edges, which
 the whole-pixel fuzz does not exercise.
 
-**Measured oracle effect:** the n64-systemtest failing-assertion count is
-**unchanged at 93 suite-wide** (917 started), same as `v0.3.0`. The fill pipeline
-flips no assertion on its own: the RDP-category tests verify rendered output,
-which needs VI scan-out (T-31-004) and more of the pipeline before a fill becomes
-observable to the suite. Measured, not assumed.
+**Measured oracle effect (as of `v0.3.0`, when this landed):** the n64-systemtest
+failing-assertion count was **unchanged at 93 suite-wide** (917 started). The fill
+pipeline flips no assertion on its own: the RDP-category tests verify rendered
+output, which needs VI scan-out (T-31-004) and more of the pipeline before a fill
+becomes observable to the suite. Measured, not assumed.
+
+That 93 is a **historical** reading, deliberately kept rather than overwritten —
+it is what this change measured at the time. The suite-wide count has since fallen
+to **90** with the Phase-5 cart/PIF/SI work, and `docs/STATUS.md` is the single
+source of truth for the current number.
 
 ### The texture-state commands (T-32-001)
 
