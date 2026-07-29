@@ -126,6 +126,31 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     // NOP sled to the end of memory instead of booting (ledger R-18).
     system.cpu.regs.write(GPR_SP, 0xFFFF_FFFF_A400_1FF0);
 
+    // **The rest of the IPL2 exit state IPL3 inherits — MEASURED, not invented.**
+    //
+    // Captured at IPL3's entry (`0xA400_0040`) by running the console's real
+    // IPL1/IPL2 out of a PIF ROM dump via [`real_pif_boot`], then keeping only the
+    // registers that are **identical across ROMs of different CIC variants**
+    // (compared Banjo-Tooie / CIC-6105 against Super Mario 64 / CIC-6102).
+    //
+    // The excluded registers are excluded on purpose: `v0`, `v1`, `a0`, `a1` and
+    // `t4`-`t9` differ per ROM because they carry IPL2's running checksum of that
+    // cartridge's IPL3, and `s6` is the CIC seed, already set per-CIC above.
+    // Freezing any of those would be fabricating a value the boot computes.
+    //
+    // `t3 = 0xA400_0000` is the one that matters most: **CIC-6105's IPL3 is a
+    // different program** that opens with a self-descrambling XOR loop reading
+    // `0x44(t3)` — DMEM + 0x40, its own image. With `t3 = 0` that read goes to
+    // low RDRAM and the descramble produces garbage (ledger R-23).
+    system.cpu.regs.write(1, 1); // at
+    system.cpu.regs.write(6, 0xFFFF_FFFF_A400_1F0C); // a2
+    system.cpu.regs.write(7, 0xFFFF_FFFF_A400_1F08); // a3
+    system.cpu.regs.write(8, 0xC0); // t0
+    system.cpu.regs.write(10, 0x40); // t2
+    system.cpu.regs.write(11, 0xFFFF_FFFF_A400_0000); // t3 — DMEM base
+    system.cpu.regs.write(20, 1); // s4
+    system.cpu.regs.write(31, 0xFFFF_FFFF_A400_1550); // ra
+
     // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
     // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.
     system.cpu.regs.write(19, 0);
@@ -249,6 +274,57 @@ mod tests {
             (0xA400_0000..0xA400_2000).contains(&prologue),
             "sp-24 must stay inside SP DMEM/IMEM, got {prologue:#010x}"
         );
+    }
+
+    /// **`hle_boot` seeds the ROM-independent part of the IPL2 exit state**
+    /// (ledger R-23), measured by running the real IPL1/IPL2 from a PIF ROM dump.
+    ///
+    /// `t3` is asserted with its own message because it is the one that decides
+    /// whether CIC-6105 titles boot at all: their IPL3 self-descrambles by reading
+    /// `0x44(t3)` = DMEM + 0x40, its own image. Removing just this register sends
+    /// Banjo-Tooie back to a NOP sled with RDRAM left entirely empty.
+    ///
+    /// The checksum-derived registers are asserted **absent**: `v0`/`v1`/`a0`/`a1`
+    /// and `t4`-`t9` differ per ROM because they carry IPL2's running checksum of
+    /// that cartridge's IPL3, so seeding them would freeze a computed value.
+    #[test]
+    fn hle_boot_seeds_the_rom_independent_ipl2_exit_state() {
+        let mut rom = [0u8; 0x1000];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
+        let mut sys = System::new(0);
+        hle_boot(&mut sys, &rom).expect("boot");
+
+        assert_eq!(
+            sys.cpu.regs.read(11),
+            0xFFFF_FFFF_A400_0000,
+            "t3 must be the DMEM base — CIC-6105's IPL3 descrambles through it"
+        );
+        for (reg, want, name) in [
+            (1u8, 1u64, "at"),
+            (6, 0xFFFF_FFFF_A400_1F0C, "a2"),
+            (7, 0xFFFF_FFFF_A400_1F08, "a3"),
+            (8, 0xC0, "t0"),
+            (10, 0x40, "t2"),
+            (20, 1, "s4"),
+            (31, 0xFFFF_FFFF_A400_1550, "ra"),
+        ] {
+            assert_eq!(sys.cpu.regs.read(reg), want, "{name} (r{reg})");
+        }
+        // Checksum-derived registers must stay unset.
+        for (reg, name) in [
+            (2u8, "v0"),
+            (3, "v1"),
+            (4, "a0"),
+            (5, "a1"),
+            (12, "t4"),
+            (25, "t9"),
+        ] {
+            assert_eq!(
+                sys.cpu.regs.read(reg),
+                0,
+                "{name} (r{reg}) is IPL2's per-ROM checksum state and must NOT be seeded"
+            );
+        }
     }
 
     #[test]

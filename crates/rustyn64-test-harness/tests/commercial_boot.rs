@@ -63,24 +63,6 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
     })
 }
 
-/// Is this ROM's bootcode CIC-6105? Read from the cartridge header the same way
-/// the boot does, so the classification cannot drift from what actually runs.
-fn is_cic_6105(path: &Path) -> bool {
-    // Read only the 0x1000-byte boot header, not the whole 8-64 MiB image:
-    // `Cart::load` resolves the CIC from the header + IPL3, both of which live
-    // inside it, and `boot_and_run` reads the full image separately anyway.
-    use std::io::Read as _;
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut header = [0u8; 0x1000];
-    if f.read_exact(&mut header).is_err() {
-        return false;
-    }
-    rustyn64_core::cart::Cart::load(&header)
-        .is_ok_and(|c| c.header().cic == rustyn64_core::cart::Cic::Cic6105)
-}
-
 /// What [`boot_and_run`] observed. Named fields rather than a tuple because the
 /// assertions below distinguish "executed a lot" from "executed the *game*".
 struct BootResult {
@@ -145,15 +127,10 @@ fn a_commercial_rom_boots_and_executes() {
             continue;
         }
         staged += 1;
-        // Scan **past** skipped ROMs to the first HLE-eligible one, rather than
-        // stopping at the first ROM and giving up if it happens to be CIC-6105.
-        let Some(rom_path) = roms.into_iter().find(|p| !is_cic_6105(p)) else {
-            eprintln!(
-                "[{folder}] every staged ROM is CIC-6105 — no HLE-eligible title \
-                 in this folder (ledger R-23)"
-            );
-            continue;
-        };
+        // Every CIC variant is HLE-bootable since R-23 closed (the IPL2 exit
+        // state is now seeded), so there is no eligibility filter left — the
+        // first ROM in the folder is exercised whatever its CIC.
+        let rom_path = roms.remove(0);
         exercised += 1;
         let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
         match boot_and_run(&rom_path, 120) {
@@ -205,9 +182,8 @@ fn a_commercial_rom_boots_and_executes() {
     // must not report success when its corpus was skipped.
     assert!(
         exercised > 0,
-        "{staged} save-type folder(s) are staged but every ROM in them is \
-         CIC-6105, so no HLE boot was exercised and this capstone asserted \
-         nothing (ledger R-23). Stage a non-6105 title, or close R-23."
+        "{staged} save-type folder(s) are staged but none was exercised, so this \
+         capstone asserted nothing"
     );
     eprintln!("HLE capstone exercised {exercised} of {staged} staged folder(s)");
 }
