@@ -19,8 +19,10 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 - The same defect charges `EPC = 0` when a **fill bubble** sits in DC. Both
   exclusions are load-bearing; neither works alone.
 - `interrupt_has_an_instruction_to_charge` defers the interrupt until a real
-  instruction is in DC. Nothing is lost — `Cause.IP` is a level, re-sampled
-  every cycle, so the interrupt is re-attributed, never dropped.
+  instruction is in DC. Nothing is lost, by two different mechanisms: `IP2`
+  (the RCP line) is re-sampled from the bus every cycle, while `IP7` (the
+  timer) is **latched** until `Compare` is written. The interrupt is
+  re-attributed, never dropped.
 - **Oracle-validated:** n64-systemtest Phase 1 categories stay `Failed: 0` and
   the suite-wide count stays **90**. Mutation-checked.
 - **Effect:** Banjo-Tooie goes from **1 to 80 distinct PCs** and now programs

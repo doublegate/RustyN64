@@ -1292,10 +1292,19 @@ impl Pipeline {
     /// corruption to the refill bubble that follows its redirect (`EPC == 0`);
     /// excluding only bubbles leaves the `ERET` livelock intact.
     ///
-    /// **Deferring loses nothing.** `Cause.IP` is a level, re-sampled from the
-    /// bus every cycle, so a still-asserted interrupt is taken on the next cycle
-    /// that does present a real instruction — which, after an `ERET`, is the
-    /// instruction it returned to. The interrupt is re-attributed, never dropped.
+    /// **Deferring loses nothing, by two different mechanisms** — and the
+    /// distinction matters, because `Cause.IP` is *not* uniformly a bus level:
+    ///
+    /// - **`IP2`** (the RCP line) is re-sampled from `bus.poll_irq()` every
+    ///   cycle, so a still-asserted line is simply seen again next cycle.
+    /// - **`IP7`** (the timer) is **latched** on the `Count`/`Compare` edge and
+    ///   stays set until `Compare` is written (UM §6.4.18) — see the one-way
+    ///   `if` in [`Pipeline::dc_stage`]. It survives deferral because it is
+    ///   sticky, not because it is re-sampled.
+    ///
+    /// Either way the interrupt is taken on the next cycle that presents a real
+    /// instruction — after an `ERET`, the instruction it returned to. It is
+    /// re-attributed, never dropped.
     fn interrupt_has_an_instruction_to_charge(&self) -> bool {
         self.ex_dc.occupied && !matches!(self.ex_dc.cop0, Some(Cop0Access::Eret))
     }
@@ -4711,20 +4720,37 @@ mod tests {
         p.cop0.set_ip(2, true);
         let mut pc = KSEG0_PROG;
 
+        // Witness BOTH events as they happen, because both end-state values this
+        // test cares about are also their own starting values: `EXL` starts set
+        // and `EPC` starts at `TARGET`. Checking either one at the end therefore
+        // proves nothing on its own — a machine that executed nothing at all
+        // satisfies both. (The first version of this test did exactly that, and
+        // it took a review to notice.) So observe the transitions instead:
+        // `EXL` going clear can only be the `ERET` retiring, and an `Interrupt`
+        // abort appearing in a latch can only be the interrupt being taken.
+        let mut eret_retired = false;
+        let mut interrupt_taken = false;
         for _ in 0..12 {
             p.advance(&mut bus, &mut regs, &mut pc);
+            if p.cop0.read(crate::cop0::reg::STATUS) & (1 << 1) == 0 {
+                eret_retired = true;
+            }
+            if [p.dc_wb.abort, p.ex_dc.abort, p.rf_ex.abort, p.ic_rf.abort]
+                .contains(&Some(Exception::Interrupt))
+            {
+                interrupt_taken = true;
+            }
         }
-
-        // Witness that an interrupt was actually taken. Without this the test is
-        // vacuous: if nothing ever fires, `EPC` is simply never written and the
-        // assertions below pass on a machine that did no work at all.
-        let status = p.cop0.read(crate::cop0::reg::STATUS);
-        let cause = p.cop0.read(crate::cop0::reg::CAUSE) as u32;
-        assert_ne!(
-            status & (1 << 1),
-            0,
-            "no interrupt was taken at all (Status={status:#018X}, Cause={cause:#010X}) \
-             -- this test would prove nothing"
+        assert!(
+            eret_retired,
+            "the ERET never cleared EXL, so it never executed -- nothing under \
+             test happened"
+        );
+        assert!(
+            interrupt_taken,
+            "no interrupt was ever taken (Cause={:#010X}) -- this test would \
+             prove nothing",
+            p.cop0.read(crate::cop0::reg::CAUSE) as u32
         );
 
         let epc = p.cop0.read(crate::cop0::reg::EPC);
