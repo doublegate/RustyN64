@@ -69,6 +69,27 @@ const fn apply_cartridge_region(system: &mut System) {
 /// how the COP0 writes use `reg::STATUS` / `reg::CONFIG`.
 const GPR_SP: u8 = 29;
 
+/// `$at` — the first of the ROM-independent IPL2-exit registers `hle_boot`
+/// seeds (ledger R-23). Named, like [`GPR_SP`], so the seeds below read as
+/// intent rather than as a column of bare indices.
+const GPR_AT: u8 = 1;
+/// `$a2` — see [`GPR_AT`].
+const GPR_A2: u8 = 6;
+/// `$a3` — see [`GPR_AT`].
+const GPR_A3: u8 = 7;
+/// `$t0` — see [`GPR_AT`].
+const GPR_T0: u8 = 8;
+/// `$t2` — see [`GPR_AT`].
+const GPR_T2: u8 = 10;
+/// `$t3` — the RSP DMEM base. Called out separately because it is the one
+/// register that decides whether CIC-6105 titles boot at all: their IPL3
+/// self-descrambles by reading `0x44(t3)`, its own image in DMEM.
+const GPR_T3: u8 = 11;
+/// `$s4` — see [`GPR_AT`].
+const GPR_S4: u8 = 20;
+/// `$ra` — see [`GPR_AT`].
+const GPR_RA: u8 = 31;
+
 /// **HLE-boot a retail ROM.**
 ///
 /// Seed the state IPL3 expects, copy the cart's *real* IPL3 (ROM `0x40..0x1000`)
@@ -142,14 +163,14 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     // different program** that opens with a self-descrambling XOR loop reading
     // `0x44(t3)` — DMEM + 0x40, its own image. With `t3 = 0` that read goes to
     // low RDRAM and the descramble produces garbage (ledger R-23).
-    system.cpu.regs.write(1, 1); // at
-    system.cpu.regs.write(6, 0xFFFF_FFFF_A400_1F0C); // a2
-    system.cpu.regs.write(7, 0xFFFF_FFFF_A400_1F08); // a3
-    system.cpu.regs.write(8, 0xC0); // t0
-    system.cpu.regs.write(10, 0x40); // t2
-    system.cpu.regs.write(11, 0xFFFF_FFFF_A400_0000); // t3 — DMEM base
-    system.cpu.regs.write(20, 1); // s4
-    system.cpu.regs.write(31, 0xFFFF_FFFF_A400_1550); // ra
+    system.cpu.regs.write(GPR_AT, 1);
+    system.cpu.regs.write(GPR_A2, 0xFFFF_FFFF_A400_1F0C);
+    system.cpu.regs.write(GPR_A3, 0xFFFF_FFFF_A400_1F08);
+    system.cpu.regs.write(GPR_T0, 0xC0);
+    system.cpu.regs.write(GPR_T2, 0x40);
+    system.cpu.regs.write(GPR_T3, 0xFFFF_FFFF_A400_0000);
+    system.cpu.regs.write(GPR_S4, 1);
+    system.cpu.regs.write(GPR_RA, 0xFFFF_FFFF_A400_1550);
 
     // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
     // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.
