@@ -42,9 +42,22 @@ use rustyn64_test_harness::rom;
 /// One ~60 Hz frame of emulated master ticks.
 const TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
 
-/// How finely the RSP is sampled, in master ticks. The RSP runs in bursts between
-/// CPU work, so a per-frame sample would miss most of them; 24 ticks is 8 RCP
-/// steps, fine enough to catch a burst without dominating the run time.
+/// How finely the RSP is sampled, in master ticks.
+///
+/// **Not a tuned constant, and the measurement does not depend on it.** It is 8
+/// RCP steps — the RCP advances every 3 master ticks (ADR 0006) — chosen for run
+/// time, not to reach a result. Two things make it falsifiable:
+///
+/// 1. **Sampling can only under-count.** It may miss an RSP burst; it can never
+///    invent one. Every figure this test reports is a lower bound, so a witness
+///    is conservative by construction.
+/// 2. **Measured insensitivity.** Re-run at `3` — the finest cadence possible,
+///    one sample per RCP step, 8× finer — the distinct-PC counts move only
+///    marginally (Castlevania 805 → 815, 007 459 → 463, Beetle Adventure Racing
+///    356 → 356, Mega Man 64 229 → 258) and the same four titles witness. The
+///    conclusion is stable across an 8× change in the parameter.
+///
+/// Recorded in `docs/accuracy-ledger.md` R-18.
 const SAMPLE_TICKS: u64 = 24;
 
 /// What a run observed about the RSP.
@@ -101,11 +114,20 @@ fn watch_rsp(path: &Path, frames: u64) -> Option<RspActivity> {
 #[test]
 #[ignore = "local-only: reads the gitignored commercial corpus"]
 fn a_retail_titles_own_microcode_executes_on_the_rsp() {
-    /// An RSP that merely unhalts and stalls visits one or two PCs. A real
-    /// microcode task — even a short one — runs through dozens of instructions.
-    /// Set well above a stall and well below what the observed titles reach
-    /// (148-331), so it distinguishes execution from non-execution rather than
-    /// pinning a particular microcode's length.
+    /// Threshold separating "the RSP executed the game's program" from "it did
+    /// not". **Derived from two measured populations, not picked**, and recorded
+    /// in `docs/accuracy-ledger.md` R-18:
+    ///
+    /// - Titles whose RSP never runs measure **0** distinct PCs (Blast Corps,
+    ///   Bomberman 64, Donkey Kong 64, Jet Force Gemini, Rogue Squadron).
+    /// - Titles whose microcode runs measure **148-815** (World Driver
+    ///   Championship 148 … Castlevania: Legacy of Darkness 815).
+    ///
+    /// The two populations are separated by more than an order of magnitude, so
+    /// any value well inside the gap gives the same verdict; 32 is ~4.6× above a
+    /// stall's 1-2 PCs and ~4.6× below the lowest observed runner. It is a
+    /// discriminator between "ran" and "did not run" — not a claim about how long
+    /// any microcode is.
     const MIN_DISTINCT_PCS: usize = 32;
 
     /// ROMs sampled per save-type folder. A cap, not a filter: each title costs
@@ -114,6 +136,14 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
     /// claim that is about the RSP rather than about breadth of coverage — the
     /// corpus-wide sweep is `T-71-002`, a separate ticket.
     const ROMS_PER_FOLDER: usize = 3;
+
+    /// Frames of emulated time per title (~1.5 s at 60 Hz). **Measured, not
+    /// guessed:** re-run at `180` — double — and the witness set is *identical*
+    /// (the same four titles, with distinct-PC counts unchanged at 229/463/356/805
+    /// and every non-witnessing title still at 0). The titles that fail do so
+    /// because they stall before the RSP seam, not because they are slow, so a
+    /// longer window buys nothing.
+    const FRAMES: u64 = 90;
 
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/roms/external/commercial");
     let mut staged = 0usize;
@@ -143,7 +173,7 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
         for rom_path in roms.into_iter().take(ROMS_PER_FOLDER) {
             staged += 1;
             let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
-            let Some(a) = watch_rsp(&rom_path, 90) else {
+            let Some(a) = watch_rsp(&rom_path, FRAMES) else {
                 eprintln!("[{folder}] {name}: FAILED TO BOOT");
                 boot_failures.push(format!("[{folder}] {name}"));
                 continue;

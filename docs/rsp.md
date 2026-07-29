@@ -35,17 +35,35 @@ pub struct Rsp {
     pub su_regs: [u32; 32],     // scalar GPRs ($zero pinned)
     pub vu_regs: [[u16; 8]; 32],// 32 vector regs, 8 lanes × 16-bit
     pub vu_acc:  [u64; 8],      // 48-bit-per-lane accumulator (low 48 used)
-    pub pc: u16,                // 12-bit IMEM PC
-    pub halted: bool,           // SP_STATUS.halt
+    #[deprecated] pub pc: u16,     // VESTIGIAL - never written; use Rsp::pc()
+    #[deprecated] pub halted: bool,// VESTIGIAL - never written; use Rsp::halted()
     pub dmem: Box<[u8; SP_MEM_SIZE]>,
     pub imem: Box<[u8; SP_MEM_SIZE]>,
+    pub sp: sp::SpRegs,         // SP_STATUS et al - the AUTHORITATIVE pc/halt
 }
 impl Rsp {
+    pub fn pc(&self) -> u32;                         // SP_STATUS's PC
+    pub fn halted(&self) -> bool;                    // SP_STATUS.halt
     pub fn mem_read(&self, off: u32) -> u8;          // CPU-side DMEM/IMEM view
     pub fn mem_write(&mut self, off: u32, val: u8);
     pub fn tick<B: RspBus>(&mut self, bus: &mut B); // no-op while halted
 }
 ```
+
+**Read the PC and halt state through `Rsp::pc()` / `Rsp::halted()`, never through
+the same-named fields.** The authoritative state lives in `SP_STATUS`
+(`sp.pc()` / `sp.halted()`) — which is what `su_step` itself gates on — and the
+struct fields of those names are **never written**. They are retained solely
+because removing them changes the save-state layout (ADR 0005 reserves that for
+an announced release), and are `#[deprecated]` so any read is a hard error under
+the workspace's warnings-as-errors.
+
+This is not a stylistic preference. Sampling the fields reports *"halted forever
+at PC 0"* for a **running** RSP, and doing so produced two confident wrong
+conclusions in one session — first "no retail title starts the RSP", then "its PC
+never advances" — when retail microcode was in fact executing hundreds of
+distinct instructions. An unused *function* is inert; an unused *field*
+**answers**. See ledger R-18 and `docs/engineering-lessons.md` §3.2.
 
 ### The RSP owns DMEM and IMEM
 
