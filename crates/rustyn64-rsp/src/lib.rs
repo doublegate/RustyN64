@@ -59,9 +59,30 @@ pub struct Rsp {
     pub vu_regs: [[u16; 8]; 32],
     /// 48-bit-per-lane VU accumulator (modeled as `[u64; 8]`, low 48 used).
     pub vu_acc: [u64; 8],
-    /// Program counter into IMEM (12-bit).
+    /// **Vestigial.** The authoritative PC lives in [`Self::sp`]
+    /// (`SpRegs::pc()`), which is what `su_step` fetches from; this
+    /// field is never written. Kept only so the save-state layout is unchanged —
+    /// removing it is a format break (ADR 0005), which module 70 reserves for an
+    /// announced major release — and **deprecated** so any read is a loud warning
+    /// (the workspace treats warnings as errors). Use [`Rsp::pc`] instead.
+    ///
+    /// This is not hypothetical tidiness: while it was `pub` it was sampled twice
+    /// in one debugging session and produced two confident, wrong conclusions —
+    /// "the RSP never starts" and "its PC never advances" — when in fact retail
+    /// microcode was executing hundreds of distinct instructions. That is the
+    /// inert-API hazard in `docs/engineering-lessons.md` §3.2 exactly.
+    #[deprecated(
+        since = "0.8.0",
+        note = "never written; read `Rsp::pc()` instead, which returns SP_STATUS's PC"
+    )]
     pub pc: u16,
-    /// Halted (`SP_STATUS.halt`) — the RSP idles until the CPU clears it.
+    /// **Vestigial** — see [`Self::pc`]. The authoritative halt state is
+    /// `sp.halted()` (`SP_STATUS.halt`), which is what gates execution. Use
+    /// [`Rsp::halted`] instead.
+    #[deprecated(
+        since = "0.8.0",
+        note = "never written; read `Rsp::halted()` instead, which returns SP_STATUS.halt"
+    )]
     pub halted: bool,
     /// 4 KiB data memory.
     #[serde(with = "rustyn64_snapshot::boxed_bytes")]
@@ -102,6 +123,10 @@ impl Default for Rsp {
 impl Rsp {
     /// Construct at power-on (halted, zeroed scratch).
     #[must_use]
+    #[expect(
+        deprecated,
+        reason = "the vestigial `pc`/`halted` fields must still be initialised so                   the save-state layout is unchanged; they are never read"
+    )]
     pub fn new() -> Self {
         Self {
             su_regs: [0; 32],
@@ -141,6 +166,28 @@ impl Rsp {
     /// rests on the oracle.
     const fn fold(off: u32) -> usize {
         (off & 0x1FFF) as usize
+    }
+
+    /// The RSP's program counter into IMEM — the value execution actually uses.
+    ///
+    /// Delegates to `SP_STATUS`'s register file rather than the struct field of
+    /// the same name, which is vestigial.
+    ///
+    /// Returns `u32`, not the `u16` the vestigial field used, because that is
+    /// `SpRegs::pc()`'s type and widening here would be a lossless re-narrowing
+    /// for every caller. The value is a 12-bit IMEM offset either way — `su_step`
+    /// masks it with `0xFFC` — so the wider type costs nothing and avoids a cast
+    /// at every call site.
+    #[must_use]
+    pub const fn pc(&self) -> u32 {
+        self.sp.pc()
+    }
+
+    /// Is the RSP halted? This is `SP_STATUS.halt`, the flag that actually gates
+    /// [`Rsp::tick`] — not the vestigial `halted` field.
+    #[must_use]
+    pub const fn halted(&self) -> bool {
+        self.sp.halted()
     }
 
     /// Read a byte of DMEM/IMEM as the CPU sees it.
@@ -201,10 +248,35 @@ pub const fn version() -> &'static str {
 mod tests {
     use super::*;
 
+    /// **The RSP powers up halted** — asserted through [`Rsp::halted`], the
+    /// accessor that reads `SP_STATUS`.
+    ///
+    /// It previously asserted on the `halted` *field*, which is never written and
+    /// is therefore unconditionally `true`. The test passed for a reason that had
+    /// nothing to do with the RSP's actual state, and would have kept passing if
+    /// `SP_STATUS` powered up running.
     #[test]
     fn constructs_halted() {
-        let rsp = Rsp::new();
-        assert!(rsp.halted);
+        let mut rsp = Rsp::new();
+        assert!(rsp.halted(), "SP_STATUS.halt must be set at power-on");
+        assert_eq!(rsp.pc(), 0, "and the PC starts at 0");
+
+        // Power-on values alone cannot distinguish the accessors from the
+        // vestigial fields: BOTH representations start `halted = true, pc = 0`,
+        // so the assertions above would still pass if either accessor regressed
+        // to reading the dead field. Mutate the SP registers and require the
+        // accessors to follow — which the fields, never being written, cannot do.
+        rsp.sp.write(sp::reg::STATUS, 1); // CLR_HALT
+        rsp.sp.set_pc(0x123);
+        assert!(
+            !rsp.halted(),
+            "halted() must track SP_STATUS, not the vestigial field"
+        );
+        assert_eq!(
+            rsp.pc(),
+            0x120,
+            "pc() must track SP_PC (word-aligned), not the vestigial field"
+        );
     }
 
     /// A halted RSP fetches nothing and asks nothing of the machine.

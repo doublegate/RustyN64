@@ -59,6 +59,7 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
         lit,
         rdram_nonzero,
         pc,
+        rdram_len: u32::try_from(sys.bus.rdram.len()).unwrap_or(u32::MAX),
     })
 }
 
@@ -87,6 +88,9 @@ struct BootResult {
     lit: usize,
     rdram_nonzero: usize,
     pc: u32,
+    /// Installed RDRAM length, so the PC bound below is the real mapped size
+    /// rather than a hard-coded 8 MiB that an Expansion Pak build would outgrow.
+    rdram_len: u32,
 }
 
 /// **A commercial ROM boots and executes** (local capstone). Runs the first
@@ -100,12 +104,25 @@ fn a_commercial_rom_boots_and_executes() {
     /// A booted retail ROM retires far more than this within a few frames; a
     /// stalled or mis-booted machine retires near zero.
     const MIN_RETIRED: u64 = 1_000_000;
-    /// A booted title has ~0.8-1.2 MiB of game code and data in RDRAM (IPL3 copies
-    /// 1 MiB); a machine that faulted out of IPL3 leaves it entirely zero.
-    const MIN_RDRAM_NONZERO: usize = 256 * 1024;
+    /// Floor for "IPL3 actually copied the game in", **derived** rather than
+    /// picked: IPL3 copies a documented `IPL3_COPY_BYTES` (1 MiB) from ROM into
+    /// RDRAM (N64brew *IPL2* §IPL3; `rom::IPL3_COPY_BYTES`). A quarter of that is
+    /// far below any real title — the staged corpus measures 787 KiB to 1.23 MiB
+    /// non-zero, recorded in ledger R-18 — and far above the **zero** a machine
+    /// that faulted out of IPL3 leaves. It separates those two states; it is not a
+    /// claim about how much any particular game loads.
+    const MIN_RDRAM_NONZERO: usize = rustyn64_test_harness::rom::IPL3_COPY_BYTES / 4;
 
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/roms/external/commercial");
-    let mut any = false;
+    // `staged` counts ROMs present; `exercised` counts ROMs actually put through
+    // `boot_and_run`. They are separate on purpose. Counting only "a ROM was
+    // found" is what made this test able to report success having asserted
+    // **nothing**: it took the *first* ROM per folder, and if that one was
+    // CIC-6105 it was skipped — which is the real situation for three of the five
+    // save-type folders. The test then passed with two folders' worth of evidence
+    // while looking like five.
+    let mut staged = 0usize;
+    let mut exercised = 0usize;
     for folder in [
         "eeprom-4k",
         "eeprom-16k",
@@ -117,29 +134,28 @@ fn a_commercial_rom_boots_and_executes() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let Some(rom_path) = entries
+        let mut roms: Vec<_> = entries
             .flatten()
             .map(|e| e.path())
-            .find(|p| p.extension().is_some_and(|x| x == "z64"))
-        else {
-            continue;
-        };
-        any = true;
-        let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
-        // **CIC-6105 is a documented HLE scope limit, not a silent skip.** Its
-        // IPL3 is a different program: it opens with a self-descrambling XOR loop
-        // (`LW t0, -0xFF0(t1)` / `LW t2, 0x44(t3)` / `XOR` / `SW`) over registers
-        // that only the real IPL2 leaves set. `hle_boot` seeds `sp` and `s3`-`s7`
-        // but not `t1`/`t3`, so the first load faults and the machine sleds
-        // (ledger R-23). The real-PIF capstone below boots these titles correctly,
-        // which is why this is scoped rather than fixed here.
-        if is_cic_6105(&rom_path) {
-            eprintln!(
-                "[{folder}] {name}: SKIPPED — CIC-6105 IPL3 is not HLE-bootable \
-                 (ledger R-23); the real-PIF capstone covers it"
-            );
+            .filter(|p| p.extension().is_some_and(|x| x == "z64"))
+            .collect();
+        // Sorted for a stable, filesystem-independent choice.
+        roms.sort();
+        if roms.is_empty() {
             continue;
         }
+        staged += 1;
+        // Scan **past** skipped ROMs to the first HLE-eligible one, rather than
+        // stopping at the first ROM and giving up if it happens to be CIC-6105.
+        let Some(rom_path) = roms.into_iter().find(|p| !is_cic_6105(p)) else {
+            eprintln!(
+                "[{folder}] every staged ROM is CIC-6105 — no HLE-eligible title \
+                 in this folder (ledger R-23)"
+            );
+            continue;
+        };
+        exercised += 1;
+        let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
         match boot_and_run(&rom_path, 120) {
             Some(r) => {
                 eprintln!(
@@ -166,19 +182,34 @@ fn a_commercial_rom_boots_and_executes() {
                 // **And the CPU is running that game code**, in cached RDRAM
                 // (KSEG0 below the installed 8 MiB) — not still in IPL3's DMEM, and
                 // not sledding past the end of memory.
+                // KSEG0 spans 512 MiB, but only the installed RDRAM is backed;
+                // a sled through an unmapped KSEG0 address would satisfy a bare
+                // `0x8xxx_xxxx` check, so bound it by the real length.
+                let kseg0_end = 0x8000_0000u32.saturating_add(r.rdram_len);
                 assert!(
-                    (0x8000_0000..0x8080_0000).contains(&r.pc),
-                    "[{folder}] {name} ended at pc={:#010x}, outside cached RDRAM \
-                     — it is not executing the game",
+                    (0x8000_0000..kseg0_end).contains(&r.pc),
+                    "[{folder}] {name} ended at pc={:#010x}, outside the mapped \
+                     cached-RDRAM window 0x8000_0000..{kseg0_end:#010x} — it is \
+                     not executing the game",
                     r.pc,
                 );
             }
             None => panic!("[{folder}] could not read/boot {}", rom_path.display()),
         }
     }
-    if !any {
+    if staged == 0 {
         eprintln!("no commercial ROMs staged — capstone skipped (local-only)");
+        return;
     }
+    // Staged input that exercised nothing is a FAILURE, not a pass. An oracle
+    // must not report success when its corpus was skipped.
+    assert!(
+        exercised > 0,
+        "{staged} save-type folder(s) are staged but every ROM in them is \
+         CIC-6105, so no HLE boot was exercised and this capstone asserted \
+         nothing (ledger R-23). Stage a non-6105 title, or close R-23."
+    );
+    eprintln!("HLE capstone exercised {exercised} of {staged} staged folder(s)");
 }
 
 /// **A commercial ROM boots through the real PIF ROM** (local capstone, faithful
