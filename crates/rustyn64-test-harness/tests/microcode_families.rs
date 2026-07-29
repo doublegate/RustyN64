@@ -82,18 +82,13 @@ fn corpus_root() -> PathBuf {
 }
 
 /// Boot `path`, run it, and report the best frame it produced.
-fn census(path: &Path) -> Option<Census> {
-    let image = std::fs::read(path).ok()?;
+fn census(path: &Path, frame: &mut [u8]) -> Result<Census, String> {
+    let image = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
     let mut sys = System::new(0);
-    rom::hle_boot(&mut sys, &image).ok()?;
+    rom::hle_boot(&mut sys, &image).map_err(|e| format!("boot: {e:?}"))?;
 
     let mut best_lit = 0usize;
     let mut dims = (0u32, 0u32);
-    // Sized for the largest scan-out any supported mode produces, not for the
-    // NTSC case in front of us: `scanout_scaled` returns `(0, 0)` on an
-    // undersized destination, which would arrive here as "renders nothing".
-    // PAL is 576 lines.
-    let mut frame = vec![0u8; 720 * 576 * 4];
     for f in 1..=FRAMES {
         let target = sys
             .master_ticks()
@@ -102,7 +97,7 @@ fn census(path: &Path) -> Option<Census> {
         if !f.is_multiple_of(SAMPLE_EVERY) {
             continue;
         }
-        let (w, h) = sys.bus.scanout_scaled(&mut frame);
+        let (w, h) = sys.bus.scanout_scaled(frame);
         if w == 0 || h == 0 {
             continue;
         }
@@ -116,12 +111,44 @@ fn census(path: &Path) -> Option<Census> {
             dims = (w, h);
         }
     }
-    Some(Census {
-        name: path.file_stem()?.to_string_lossy().into_owned(),
+    Ok(Census {
+        name: path.file_stem().map_or_else(
+            || "<unnamed>".to_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        ),
         commands: sys.bus.rdp.commands_processed,
         dims,
         lit: best_lit,
     })
+}
+
+/// Every `.z64` under `root`, whether it sits in a save-type subfolder or
+/// directly in `root`.
+///
+/// Both levels are walked deliberately: `read_dir` on a *file* fails with
+/// `NotADirectory`, so a subfolder-only walk silently ignores any ROM dropped
+/// at the top level — and "silently ignored" is indistinguishable from "does
+/// not render" in the output.
+fn staged_roms(root: &Path) -> Vec<PathBuf> {
+    fn is_z64(p: &Path) -> bool {
+        p.extension().is_some_and(|x| x == "z64")
+    }
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_z64(&path) {
+            out.push(path);
+        } else if path.is_dir()
+            && let Ok(inner) = std::fs::read_dir(&path)
+        {
+            out.extend(inner.flatten().map(|e| e.path()).filter(|p| is_z64(p)));
+        }
+    }
+    out.sort();
+    out
 }
 
 /// **Commercial titles render through their own graphics microcode** (T-71-003).
@@ -132,26 +159,26 @@ fn census(path: &Path) -> Option<Census> {
 #[ignore = "local-only: reads the gitignored commercial corpus (ADR 0008)"]
 fn commercial_titles_render_through_their_own_microcode() {
     let root = corpus_root();
-    let Ok(folders) = std::fs::read_dir(&root) else {
+    let staged = staged_roms(&root);
+    if staged.is_empty() {
         eprintln!(
-            "SKIPPED (verified nothing): no corpus at {} -- stage ROMs there to \
-             exercise T-71-003. This is NOT a pass.",
+            "SKIPPED (verified nothing): no .z64 staged under {} -- stage ROMs \
+             there to exercise T-71-003. This is NOT a pass.",
             root.display()
         );
         return;
-    };
+    }
 
+    // One buffer for the whole sweep. Sized for the largest scan-out any
+    // supported mode produces, not for the NTSC case in front of us:
+    // `scanout_scaled` returns `(0, 0)` on an undersized destination, which
+    // would arrive here as "renders nothing". PAL is 576 lines.
+    let mut frame = vec![0u8; 720 * 576 * 4];
     let mut rows = Vec::new();
-    for folder in folders.flatten() {
-        let Ok(entries) = std::fs::read_dir(folder.path()) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|x| x != "z64") {
-                continue;
-            }
-            if let Some(row) = census(&path) {
+    let mut failures = Vec::new();
+    for path in &staged {
+        match census(path, &mut frame) {
+            Ok(row) => {
                 eprintln!(
                     "  {:<52} rdp={:<9} {}x{} lit={}{}",
                     row.name,
@@ -163,13 +190,25 @@ fn commercial_titles_render_through_their_own_microcode() {
                 );
                 rows.push(row);
             }
+            Err(why) => {
+                eprintln!("  {:<52} FAILED TO CENSUS: {why}", path.display());
+                failures.push(format!("{}: {why}", path.display()));
+            }
         }
     }
 
-    if rows.is_empty() {
-        eprintln!("SKIPPED (verified nothing): no .z64 staged. This is NOT a pass.");
-        return;
-    }
+    // A staged ROM that could not be read or booted is a FAILURE, not an
+    // absence. Collapsing the two is how "the corpus is missing" and "every ROM
+    // in the corpus is broken" become the same green tick -- an oracle that runs
+    // nothing looks exactly like one that passes. The loud skip above is
+    // reserved for a genuinely empty corpus, which is checked before any boot.
+    assert!(
+        failures.is_empty(),
+        "{} of {} staged ROMs could not be censused:\n  {}",
+        failures.len(),
+        staged.len(),
+        failures.join("\n  ")
+    );
 
     let rendering = rows.iter().filter(|r| r.renders()).count();
     eprintln!(
@@ -182,11 +221,12 @@ fn commercial_titles_render_through_their_own_microcode() {
         .map(|r| r.name.as_str())
         .collect();
     if !silent.is_empty() {
-        eprintln!(
-            "  {} issue ZERO RDP commands: {}",
-            silent.len(),
-            silent.join(", ")
-        );
+        // One per line: joined into a single string this is unreadable on a
+        // corpus where dozens of titles are silent.
+        eprintln!("  {} issue ZERO RDP commands:", silent.len());
+        for name in &silent {
+            eprintln!("      {name}");
+        }
     }
 
     // The criterion: the microcode path works on real titles. Deliberately "at
