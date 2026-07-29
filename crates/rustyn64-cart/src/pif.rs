@@ -520,12 +520,13 @@ mod tests {
 
     /// **[`Pif::mark_no_device`] writes the RX byte, not the last TX byte.**
     ///
-    /// Reached through a *connected* channel given an **unsupported command**,
-    /// which is the only route to `mark_no_device` — the empty-port guard in
-    /// [`Pif::execute`] short-circuits before `run_channel` and so cannot
-    /// exercise it. The first version of this pair missed exactly that: a
-    /// mutation reverting the offset to `resp - 1` still passed, because no test
-    /// took this path at all.
+    /// Reached through a *connected* channel given an **unsupported command**.
+    /// That is not the only route — a missing EEPROM on channel 4 also reaches
+    /// `mark_no_device` — but it is the one this test drives, and before the
+    /// empty-port guard was refactored to delegate, it was the only route any
+    /// test could take: the guard short-circuits before `run_channel`. The first
+    /// version of this pair missed exactly that, and a mutation reverting the
+    /// offset to `resp - 1` **passed**, because no test took this path at all.
     ///
     /// A two-byte TX is used deliberately so `resp - 1` and the RX byte are two
     /// apart; with a one-byte TX they are adjacent and an off-by-one is
@@ -555,6 +556,49 @@ mod tests {
             pif.ram[last_tx], 0x5A,
             "the last TX data byte must be untouched -- `resp - 1` points HERE, \
              which is where the flag used to land"
+        );
+    }
+
+    /// **The configured port mask actually reaches dispatch.**
+    ///
+    /// Without this, [`Pif::set_controllers_connected`] could be a no-op and
+    /// every existing test would still pass — they all run on the default mask.
+    /// Both directions are asserted from one setter call, so a setter that
+    /// wrote a constant could not satisfy it.
+    #[test]
+    fn the_configured_port_mask_reaches_the_joybus_dispatch() {
+        const TX: [u8; 1] = [0x00];
+
+        let mut pif = Pif::new();
+        let mut save = SaveDevice::new(SaveType::None);
+        // Invert the default: port 0 empty, port 1 populated.
+        pif.set_controllers_connected([false, true, false, false]);
+        assert_eq!(pif.controllers_connected(), [false, true, false, false]);
+
+        // Channel 0 — now empty, so flagged and silent.
+        let resp0 = frame(&mut pif, 0, &TX, 3);
+        pif.execute(&[0; 4], &mut save);
+        assert_ne!(
+            pif.ram[1] & RX_NO_DEVICE,
+            0,
+            "port 0 was configured empty and must be flagged"
+        );
+        assert_eq!(pif.ram[resp0], 0, "an empty port writes no identifier");
+
+        // Channel 1 — now populated, so it answers and is not flagged.
+        let mut pif = Pif::new();
+        pif.set_controllers_connected([false, true, false, false]);
+        let resp1 = frame(&mut pif, 1, &TX, 3);
+        pif.execute(&[0; 4], &mut save);
+        assert_eq!(
+            pif.ram[2] & RX_NO_DEVICE,
+            0,
+            "port 1 was configured present and must NOT be flagged"
+        );
+        assert_eq!(
+            [pif.ram[resp1], pif.ram[resp1 + 1]],
+            ID_CONTROLLER,
+            "a configured-present port replies with the controller identifier"
         );
     }
 
