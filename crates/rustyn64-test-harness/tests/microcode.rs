@@ -629,6 +629,26 @@ fn seed_rdpq_overlay(
     sys.bus.rsp.dmem[at..at + 16 * 4].fill(0);
 }
 
+/// Point the RDP at `[start, end)` and drain it, asserting it actually finished.
+///
+/// Drains on the observed condition (`DPC_CURRENT >= DPC_END`) rather than a
+/// fixed tick budget, so a list that stalls fails loudly instead of being scored
+/// from a partly rendered frame.
+fn execute_rdp_list(sys: &mut rustyn64_core::System, start: u32, end: u32) {
+    sys.bus.rdp.dpc_write(0, start); // DPC_START
+    sys.bus.rdp.dpc_write(1, end); // DPC_END
+    let mut ticks = 0;
+    while sys.bus.rdp.dpc_read(2) < end && ticks < 4096 {
+        sys.bus.rdp_tick();
+        ticks += 1;
+    }
+    assert!(
+        sys.bus.rdp.dpc_read(2) >= end,
+        "the RDP must drain the generated list (stalled at {:#x} of {end:#x})",
+        sys.bus.rdp.dpc_read(2)
+    );
+}
+
 /// **The real microcode's command list RASTERISES — the ADR 0002 payoff, end to end.**
 ///
 /// Every earlier microcode test stops at "the microcode emitted the right bytes".
@@ -686,8 +706,8 @@ fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
     // The rspq queue. Command ids are `0xC0 | rdp_opcode` (the rdpq overlay table
     // in `third_party/libdragon-rsp/src/rsp_rdpq.S`).
     let queue: [u32; 13] = [
-        0xEF00_0000,
-        0x3000_0000, // SET_OTHER_MODES: cycle_type = FILL (bits 21:20 = 3)
+        0xEF30_0000,
+        0x0000_0000, // SET_OTHER_MODES: cycle_type = FILL (word0 bits 21:20 = 3)
         0xFF10_0007,
         FB, // SET_COLOR_IMAGE: 16-bit, width-1 = 7, addr = FB
         0xED00_0000,
@@ -740,18 +760,29 @@ fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
         "the microcode must emit exactly 8 RDP commands: 6 queued, plus the SET_SCISSOR that SetOtherModes re-emits and the SET_FILL_COLOR that SetColorImage appends"
     );
 
-    // --- Execute the microcode-generated list on our RDP. ---
-    sys.bus.rdp.dpc_write(0, BUF_BASE); // DPC_START
-    sys.bus.rdp.dpc_write(1, dp_end); // DPC_END
-    let mut ticks = 0;
-    while sys.bus.rdp.dpc_read(2) < dp_end && ticks < 4096 {
-        sys.bus.rdp_tick();
-        ticks += 1;
-    }
-    assert!(
-        sys.bus.rdp.dpc_read(2) >= dp_end,
-        "the RDP must drain the generated list"
+    // The emitted SET_OTHER_MODES must actually carry FILL cycle type. Asserting
+    // the *emitted* command (not just the queued one) is what catches a wrong
+    // SOM packing: `SOM_CYCLE_FILL` is `3 << 52`, i.e. word0 bits 21:20, and a
+    // value placed in word1 instead leaves the cycle type at 0 while every other
+    // assertion in this test still passes.
+    let som0 = u32::from_be_bytes(
+        sys.bus.rdram[BUF_BASE as usize..BUF_BASE as usize + 4]
+            .try_into()
+            .expect("4 bytes"),
     );
+    assert_eq!(
+        som0 >> 24,
+        0xEF,
+        "the first emitted command must be SET_OTHER_MODES (got {som0:#010x})"
+    );
+    assert_eq!(
+        (som0 >> 20) & 0x3,
+        3,
+        "the emitted SET_OTHER_MODES must select FILL cycle type in word0 bits 21:20 (got {som0:#010x})"
+    );
+
+    // --- Execute the microcode-generated list on our RDP. ---
+    execute_rdp_list(&mut sys, BUF_BASE, dp_end);
 
     // --- The picture. FILL mode writes SET_FILL_COLOR over the inclusive span. ---
     for y in 0..H {
