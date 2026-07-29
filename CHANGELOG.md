@@ -16,7 +16,7 @@ entry** in `docs/accuracy-ledger.md`.
 
 The headline is that commercial cartridges render. **Super Mario 64 draws its
 title screen**, and **29 of 66 staged titles** render through their own graphics
-microcode. Both defects that unblocked that were in the **CPU and the PIF** —
+microcode. Both defects that unblocked it were in the **CPU and the PIF** —
 not the RDP, where R-18 had been looking for months.
 
 ### Added — the T-71-003 microcode-family census (the one non-CI gate)
