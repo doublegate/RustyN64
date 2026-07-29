@@ -225,10 +225,8 @@ pub struct Cpu {
     // flag as `in_delay_slot` riding in the inter-stage latch rather than a global
     // CPU flag.
     //
-    // This carried a `TODO(T-CPU-01)` listing those five as unimplemented long
-    // after all five shipped — a false-incompleteness marker of exactly the kind
-    // the Stage-A comment sweep existed to remove, and one it missed. Nothing
-    // fails when a stale TODO survives, which is why it survived.
+    // Stated positively because this previously read as a `TODO` listing all five
+    // as unimplemented, long after they shipped.
 }
 
 impl Default for Cpu {
