@@ -253,6 +253,30 @@ mod tests {
         );
     }
 
+    /// **The real-PIF boot path selects the region too.** `apply_cartridge_region`
+    /// has two call sites; the HLE test above covers only one, so a regression in
+    /// the `real_pif_boot` call would go undetected. Same assertion, other path.
+    #[test]
+    fn the_real_pif_boot_path_also_selects_the_region() {
+        let rate_for = |dest: u8| {
+            let mut rom = [0u8; 0x1000];
+            rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]); // .z64 magic
+            rom[0x3E] = dest;
+            // A blank PIF ROM of the right size: this test asserts the region
+            // selection, not the IPL1/IPL2 execution a real ROM would drive.
+            let pif = [0u8; crate::cart::pif::PIF_ROM_LEN];
+            let mut sys = System::new(0);
+            real_pif_boot(&mut sys, &rom, &pif).expect("boot");
+            sys.bus.audio.write_reg(4, 1103); // AI_DACRATE
+            sys.bus.audio.sample_rate()
+        };
+        assert_ne!(
+            rate_for(b'E'),
+            rate_for(b'P'),
+            "real_pif_boot must select the region as hle_boot does"
+        );
+    }
+
     #[test]
     fn cic_seed_covers_every_variant() {
         // The low byte is the IPL2 seed the boot leaves in PIF RAM; bits 8-15 the
