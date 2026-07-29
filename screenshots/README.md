@@ -1,76 +1,80 @@
 # Screenshots
 
-Frames captured from RustyN64. **ROMs are never committed** (see `.gitignore` and the
-`no-commercial-roms` CI job) — only the rendered output is, which the
-`commercial-roms` policy in `CLAUDE.md` explicitly permits.
+Frames captured from RustyN64 running **commercial cartridges**, through the
+full LLE path: retail HLE boot → the game's own code → its graphics microcode on
+the LLE RSP → the DPC seam → the LLE RDP → `Bus::scanout_scaled`. Nothing above
+the cartridge boundary is HLE'd.
 
-## `super-mario-64-title.png`
+**ROMs are never committed** (see `.gitignore` and the `no-commercial-roms` CI
+job). Only the rendered output is, which the `commercial-roms` policy in
+`CLAUDE.md` explicitly permits.
 
-**Super Mario 64's title screen** (ledger R-18), 2026-07-29 — a commercial N64
-game rendering its own title screen through the full LLE path.
+Reproduce with the committed census runner, which reads a locally-staged corpus
+and skips loudly when there is none:
 
-- **Title:** Super Mario 64 (USA), EEPROM 4k, from the local gitignored corpus.
-- **Path:** retail HLE boot -> the game's own code -> its graphics microcode on
-  the LLE RSP -> DPC seam -> LLE RDP -> `Bus::scanout_scaled`. Nothing above the
-  cartridge boundary is HLE'd.
-- **Captured at:** frame 360 of a 600-frame run; **125,278 RDP commands** issued
-  by that point, 138,474 of 148,125 pixels lit.
-- **What unblocked it:** SM64 was previously halted in its own assert path
-  (`B -1` at `0x80246DD8`) because the PIF answered as a connected controller on
-  **all four** joybus channels, so `osContInit` reported four pads on a one-pad
-  console. Fixing the "no device" RX flag let it past the assert. See R-18.
+```bash
+cargo test -p rustyn64-test-harness --release --test microcode_families \
+    -- --ignored --nocapture
+```
 
-## `banjo-kazooie-first-3d-scene.png`
+## The selection rule: these were looked at
 
-Banjo-Kazooie rendering real 3D geometry after the same fix (133,625 RDP
-commands, up from **zero**). **Kept deliberately as a known-imperfect frame:**
-the geometry, textures and depth ordering are right, but the colours carry a
-heavy blue/yellow cast — an open combiner/texel-format issue. It is committed as
-evidence of *what currently happens*, not as a correctness target; do not treat
-it as a golden.
+Ledger **R-18** records that "lit pixel count" was cited for weeks as evidence
+of rendering and was **wrong** — uninitialised RDRAM is non-black, so a broken
+machine scores 90%+ as easily as a working one. The corpus census proves it on
+its own data: **Rayman 2 and Namco Museum 64 report zero RDP commands with
+123,540 and 137,681 lit pixels.** Pure garbage, scanned out.
 
-## `paper-mario-first-commercial-frame.png`
+So every file here was **rendered to PNG and viewed** before being committed,
+and frames that scored well but looked wrong were rejected — Blast Corps
+(garbled colour blocks), Turok (glitchy plane), Wave Race 64 (ambiguous),
+GoldenEye and WCW/nWo (see *Known defects* below). **Do not add a screenshot
+here on a pixel count. Look at it first.**
 
-**The first rendered frame from a commercial cartridge** (ledger R-18), 2026-07-29.
+## Rendering correctly
 
-- **Title:** Paper Mario (USA), FlashRAM, from the local gitignored corpus.
-- **Path:** retail HLE boot (`rom::hle_boot`) → the game's own code → its graphics
-  microcode on the LLE RSP → DPC seam → LLE RDP → `Bus::scanout_scaled`.
-  Nothing here is HLE'd above the cartridge boundary; the picture is rasterised by
-  the RDP from the game's own display list.
-- **Geometry:** 625x237, and **all 148,125 pixels are lit**. That is the real VI
-  output for this NTSC title, not a bug — `VI_X_SCALE` is `0x200` (0.5 in 2.10),
-  so the 320-wide framebuffer upscales to 640, less the 8/7-pixel
-  `minhpass`/`maxhpass` crop. A PAL title scans out taller (576 lines); these
-  dimensions are this capture's, not a fixed expectation.
+| File | Title | What it shows |
+|---|---|---|
+| `super-mario-64-title.png` | Super Mario 64 | The title screen — Mario's head, textured cap with the M logo, over the tiled *SUPER MARIO 64* background. 125,278 RDP commands. |
+| `pokemon-snap-3d-landscape.png` | Pokémon Snap | A full 3D landscape: sky, hills, a river and foliage, textured and shaded. |
+| `pokemon-stadium-n64-logo.png` | Pokémon Stadium | The *NINTENDO 64* wordmark with the coloured 3D "N" cube. |
+| `mario-kart-64-attract-mode.png` | Mario Kart 64 | Attract mode — a checkered flag over the track, karts, sky and grass. |
+| `castlevania-legacy-of-darkness-menu.png` | Castlevania: Legacy of Darkness | The *"Controller Pak not inserted"* dialog, fully legible with its cursor. A text/UI path rather than 3D geometry. |
+| `bomberman-hero-3d-scene.png` | Bomberman Hero | A textured tower on a green landscape with a rainbow. |
+| `bomberman-64-intro.png` | Bomberman 64 | The intro grid floor with the character sprite. |
 
-  *Provenance for those constants* — none of them are asserted here. The 2.10
-  fixed-point step semantics of `VI_X_SCALE`/`VI_Y_SCALE` are N64brew *Video
-  Interface* §VI_X_SCALE, §VI_Y_SCALE; the horizontal overscan and the 8/7-pixel
-  `minhpass`/`maxhpass` crop are the Angrylion VI pipeline geometry that ledger
-  **R-5** implements and validates RGB byte-for-byte through the `.vivec`
-  conformance vectors (13 VI probes in the accuracy battery). See
-  `docs/accuracy-ledger.md` §R-5 and `Bus::scanout_scaled`'s rustdoc.
-- **Two denominators, kept apart on purpose.** The same frame measures
-  **75,840 / 75,840** through the unscaled 1:1 `Bus::scanout` (320x237) and
-  **148,125 / 148,125** through `Bus::scanout_scaled` (625x237). Both are "fully
-  lit"; quoting one figure beside the other frame's dimensions is a mistake this
-  file made in its first revision.
-- **Captured at:** frame 120 of a 300-frame run; the frame is stable through
-  frame 270, so it is a held picture rather than a transient.
-- **What it shows:** flat-shaded geometry with clean edge-walked slopes — a green
-  quad with an orange top edge, a band of blue stripes, on a light-grey clear.
-  It is **not** the Paper Mario title screen; it is early boot geometry.
+## Kept deliberately as known-imperfect
 
-### Why this file exists at all
+These are committed as evidence of **what currently happens**, not as
+correctness targets. Do not treat them as goldens.
 
-Ledger R-18 records that "lit pixel count" was cited for weeks as evidence of
-rendering and was **wrong**: uninitialised RDRAM is non-black, so a broken machine
-scores 90%+ as easily as a working one. R-18 therefore admits only two kinds of
-evidence — a byte-comparison against a committed golden, or **someone actually
-looking at the image**. This file is the second kind, and it was checked against
-that standard: Ocarina of Time scored 62,963 lit pixels on the same run and,
-rendered and viewed, is pure noise. It is not committed. Paper Mario was viewed
-and is real.
+| File | Title | What is wrong |
+|---|---|---|
+| `banjo-kazooie-first-3d-scene.png` | Banjo-Kazooie | Geometry, textures and depth ordering are right; the colours carry a heavy blue/yellow cast. Open combiner / texel-format issue. |
+| `paper-mario-first-commercial-frame.png` | Paper Mario | **The first frame ever rendered from a commercial cartridge** (2026-07-29), kept for that reason. 87 distinct RGBA5551 values; flat-shaded quads with clean edge-walked slopes, but early boot geometry rather than a title screen. |
 
-Do not add a screenshot here on a pixel count alone. Look at it first.
+## Known defects visible in rejected frames
+
+Recorded here because the *rejected* captures localise real bugs:
+
+- **Mirrored text.** GoldenEye 007's "Nintendo" logo and WCW vs. nWo's
+  "WCW World Championship Wrestling" banner both render **left-right flipped**.
+  Two independent titles showing the same flip points at the texture S-axis
+  mirror path, not at either game.
+- **Garbled colour blocks** (Blast Corps) and a **glitchy textured plane**
+  (Turok) — both issue large command counts, so the failure is downstream of
+  submission.
+
+## Geometry
+
+Most frames are **625×237**. That is the real VI output for an NTSC title, not
+a bug: `VI_X_SCALE = 0x200` is 0.5 in 2.10 fixed point, so a 320-wide
+framebuffer upscales to 640, less the 8/7-pixel `minhpass`/`maxhpass` crop.
+Titles differ where they program the VI differently (Banjo-Kazooie is 570×213).
+
+*Provenance* — none of those constants are asserted here. The 2.10 step
+semantics of `VI_X_SCALE`/`VI_Y_SCALE` are N64brew *Video Interface*
+§VI_X_SCALE, §VI_Y_SCALE; the horizontal overscan and the 8/7-pixel crop are the
+Angrylion VI geometry that ledger **R-5** implements and validates RGB
+byte-for-byte through the `.vivec` conformance vectors. See
+`docs/accuracy-ledger.md` §R-5 and `Bus::scanout_scaled`'s rustdoc.
