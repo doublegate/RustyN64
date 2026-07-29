@@ -605,6 +605,9 @@ fn seed_rdpq_overlay(
     buf_base: u32,
     buf_room: u32,
 ) {
+    // The id-map loop below runs `ovl_id..=0xF`; a larger id would both skip the
+    // map and be a nonsense overlay id, so fail loudly rather than write oddly.
+    assert!(ovl_id <= 0xF, "overlay id must be 4-bit (got {ovl_id:#x})");
     let cur_ovl = sym("RSPQ_CURRENT_OVL");
     sys.bus.rsp.dmem[cur_ovl..cur_ovl + 2].copy_from_slice(&u16::from(ovl_id).to_be_bytes());
     let idmap = sym("RSPQ_OVERLAY_IDMAP");
@@ -623,9 +626,7 @@ fn seed_rdpq_overlay(
     sys.bus.rsp.dmem[dyn_bufs + 4..dyn_bufs + 8]
         .copy_from_slice(&(buf_base + buf_room).to_be_bytes());
     let at = sym("RDPQ_ADDRESS_TABLE");
-    for i in 0..16 {
-        sys.bus.rsp.dmem[at + i * 4..at + i * 4 + 4].copy_from_slice(&0u32.to_be_bytes());
-    }
+    sys.bus.rsp.dmem[at..at + 16 * 4].fill(0);
 }
 
 /// **The real microcode's command list RASTERISES — the ADR 0002 payoff, end to end.**
@@ -736,7 +737,7 @@ fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
     assert_eq!(
         dp_end,
         BUF_BASE + 8 * 8,
-        "the microcode must emit exactly 8 RDP commands          (6 queued + the SET_SCISSOR SetOtherModes re-emits + the SET_FILL_COLOR           SetColorImage appends)"
+        "the microcode must emit exactly 8 RDP commands: 6 queued, plus the SET_SCISSOR that SetOtherModes re-emits and the SET_FILL_COLOR that SetColorImage appends"
     );
 
     // --- Execute the microcode-generated list on our RDP. ---
@@ -759,7 +760,7 @@ fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
             let px = u16::from_be_bytes([sys.bus.rdram[o], sys.bus.rdram[o + 1]]);
             assert_eq!(
                 px, GREEN,
-                "pixel ({x},{y}) must be the microcode-programmed fill colour                  (got {px:#06x}); the framebuffer began as {SENTINEL:#06x}"
+                "pixel ({x},{y}) must be the microcode-programmed fill colour (got {px:#06x}); the framebuffer began as {SENTINEL:#06x}"
             );
         }
     }
