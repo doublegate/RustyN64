@@ -8,6 +8,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — first `Load Block` oracle coverage; its count is inclusive (R-18)
+
+- **`Load Block` (0x33) had zero vector coverage** — every texture vector loaded
+  through `Load Tile` — while Ocarina of Time issues **4,374 `Load Block`s** of
+  its 74,508 commands, making it the dominant load path in a live retail stream.
+- §0x33's prose (*"`lower_right.s - upper_left.s` determines the number of
+  texels"*, no `+1`) disagrees with `Load Tile`'s inclusive convention, so the
+  count was genuinely ambiguous. `load_block_count_16` settles it: with
+  `uls = 0, lrs = 1` **Angrylion loads two texels**, so the count is **inclusive**
+  and our `shi - slo + 1` is correct.
+- Deliberately minimal — one line, two texels, `dxt = 0` — so neither the
+  odd-line swap nor multi-line layout can confound the answer. Two larger
+  `Load Block` vectors were authored earlier and **discarded** because their
+  goldens showed Angrylion reading unwritten TMEM.
+- Mutation-checked: dropping the `+1` turns it red. Battery is now **52 probes**
+  (39 RDP + 13 VI).
+- Still untested on this path: multi-line loads, the odd-line swap under a real
+  `dxt`, and non-16-bit texel sizes.
+
 ### Fixed — "lit pixels" is not evidence of rendering (ledger R-18)
 
 - **No title produces a picture yet, and earlier entries here implied otherwise.**

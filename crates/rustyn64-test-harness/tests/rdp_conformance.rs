@@ -105,6 +105,26 @@ fn tex_tri_ci4_tlut_16_matches_angrylion() {
     assert_matches("tex_tri_ci4_tlut_16");
 }
 
+/// **`Load Block`'s texel count is INCLUSIVE of `lower_right.s` (R-18).**
+///
+/// The first committed vector to exercise `Load Block` (0x33) at all — every other
+/// texture vector loads through `Load Tile`. That was a real gap: Ocarina of Time
+/// issues **4,374** `Load Block`s of its 74,508 commands.
+///
+/// §0x33's prose reads *"`lower_right.s - upper_left.s` determines the number of
+/// texels"* — no `+1` — while `Load Tile` is inclusive, so the two readings
+/// disagree and prose cannot settle it. This vector does: with `uls = 0,
+/// lrs = 1` it loads either **one** texel or **two**, and Angrylion loads two.
+/// `load_block`'s `shi - slo + 1` is therefore right.
+///
+/// Deliberately minimal — a single line, two texels, `dxt = 0` — so that neither
+/// the odd-line swap nor any multi-line TMEM layout can confound the answer. Two
+/// earlier, larger `Load Block` vectors were discarded for exactly that reason.
+#[test]
+fn load_block_count_16_matches_angrylion() {
+    assert_matches("load_block_count_16");
+}
+
 /// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
 ///
 /// This left-major triangle (a vertical left edge at x=2, the hypotenuse widening
