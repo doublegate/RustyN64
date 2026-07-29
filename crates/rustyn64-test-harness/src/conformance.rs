@@ -166,11 +166,25 @@ pub fn replay(v: &Vector<'_>) -> Vec<u8> {
     // Point the DP FIFO at the list and drain it (one command per tick).
     bus.rdp.dpc_write(0, v.cmd_addr); // DPC_START
     bus.rdp.dpc_write(1, v.cmd_addr + v.cmds.len() as u32); // DPC_END
-    let n_words = v.cmds.len() / 4;
-    // A generous budget: multi-word triangle commands still retire in a handful
-    // of ticks, so twice the word count cannot leave the FIFO mid-list.
-    for _ in 0..(n_words * 2 + 16) {
+    // Drain until the FIFO is OBSERVABLY empty (`DPC_CURRENT >= DPC_END`, the same
+    // condition `Rdp::tick` itself no-ops on) rather than for a fitted number of
+    // ticks. A tick budget that is merely "generous" can silently score a partly
+    // rendered frame as an oracle result; the cap below therefore exists only as a
+    // liveness backstop and ASSERTS instead of falling through, so a command that
+    // stalls the FIFO (a `Sync Pipe`, say) fails loudly rather than quietly
+    // producing a wrong comparison.
+    let end = v.cmd_addr.wrapping_add(v.cmds.len() as u32);
+    let cap = v.cmds.len() * 8 + 4096;
+    let mut ticks = 0usize;
+    while bus.rdp.dpc_read(2) < end {
         bus.rdp_tick();
+        ticks += 1;
+        assert!(
+            ticks <= cap,
+            "DP FIFO did not drain in {cap} ticks (DPC_CURRENT {:#x} < DPC_END {end:#x}) — \
+             the replay would have scored a partly rendered frame",
+            bus.rdp.dpc_read(2),
+        );
     }
 
     bus.rdram[fb..fb + fb_len].to_vec()
