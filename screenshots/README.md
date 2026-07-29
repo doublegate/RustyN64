@@ -9,8 +9,12 @@ the cartridge boundary is HLE'd.
 job). Only the rendered output is, which the `commercial-roms` policy in
 `CLAUDE.md` explicitly permits.
 
-Reproduce with the committed census runner, which reads a locally-staged corpus
-and skips loudly when there is none:
+Reproduce with the committed census runner (`microcode_families.rs`), which
+reads a locally-staged corpus and skips loudly when there is none. It is a
+*different* test from `game_microcode.rs`: that one witnesses a retail title's
+microcode executing on the LLE RSP and reaching the RDP, while this one censuses
+the whole corpus for what actually reaches the screen. Both are T-71-003
+evidence and both are committed.
 
 ```bash
 cargo test -p rustyn64-test-harness --release --test microcode_families \
@@ -52,6 +56,10 @@ here on a pixel count. Look at it first.**
 These are committed as evidence of **what currently happens**, not as
 correctness targets. Do not treat them as goldens.
 
+(`paper-mario-first-commercial-frame.png` predates the rest — it was committed
+when it was the *only* commercial frame that existed. It is listed here for
+completeness of the set, not because this change produced it.)
+
 | File | Title | What is wrong |
 |---|---|---|
 | `banjo-kazooie-first-3d-scene.png` | Banjo-Kazooie | Geometry, textures and depth ordering are right; the colours carry a heavy blue/yellow cast. Open combiner / texel-format issue. |
@@ -73,7 +81,7 @@ Recorded here because the *rejected* captures localise real bugs:
   (Turok) — both issue large command counts, so the failure is downstream of
   submission.
 
-## Geometry
+## Output resolution and VI scaling
 
 Most frames are **625×237**. That is the real VI output for an NTSC title, not
 a bug: `VI_X_SCALE = 0x200` is 0.5 in 2.10 fixed point, so a 320-wide
