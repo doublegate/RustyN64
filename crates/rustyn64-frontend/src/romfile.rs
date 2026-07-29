@@ -113,16 +113,40 @@ pub fn read_rom(path: &Path) -> Result<Vec<u8>, RomFileError> {
     }
 }
 
-/// Read a bare ROM image, refusing anything implausibly large before allocating.
-fn read_plain(mut file: File) -> Result<Vec<u8>, RomFileError> {
-    let len = file.metadata()?.len();
-    if len > MAX_ROM_BYTES {
-        return Err(RomFileError::TooLarge(len));
+/// Read at most `cap` bytes from `reader`, refusing a stream that exceeds it.
+///
+/// **Both** the plain and the zip path go through here, deliberately. `declared`
+/// is whatever the source *claims* the size is — file metadata, or the zip entry
+/// header — and is only ever a hint: it lets an obviously-oversized input be
+/// refused before a byte is read, and sizes the buffer. The **read itself is
+/// capped independently**, because `declared` cannot be trusted:
+///
+/// - A zip entry header is attacker-controlled and can understate the real
+///   decompressed length (the classic bomb).
+/// - `File::metadata().len()` reports **0** for a FIFO, a character device, or a
+///   pipe, so a declared-size check alone passes trivially and an unbounded
+///   `read_to_end` on `/dev/urandom` never returns.
+/// - The file can grow between the `metadata()` call and the read.
+///
+/// `take(cap + 1)` is the enforcement: if the reader yields that extra byte, the
+/// stream is genuinely over-long whatever it declared.
+fn read_capped<R: Read>(reader: R, declared: u64, cap: u64) -> Result<Vec<u8>, RomFileError> {
+    if declared > cap {
+        return Err(RomFileError::TooLarge(declared));
     }
-    // `len` is bounded above, so the cast cannot lose information.
-    let mut buf = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-    file.read_to_end(&mut buf)?;
+    // `declared` is bounded by `cap` here, so the cast cannot lose information.
+    let mut buf = Vec::with_capacity(usize::try_from(declared).unwrap_or(0));
+    let read = reader.take(cap + 1).read_to_end(&mut buf)?;
+    if read as u64 > cap {
+        return Err(RomFileError::TooLarge(read as u64));
+    }
     Ok(buf)
+}
+
+/// Read a bare ROM image, refusing anything implausibly large before allocating.
+fn read_plain(file: File) -> Result<Vec<u8>, RomFileError> {
+    let declared = file.metadata()?.len();
+    read_capped(file, declared, MAX_ROM_BYTES)
 }
 
 /// Extract the single ROM member from a zip archive.
@@ -133,20 +157,30 @@ fn read_from_zip(file: File) -> Result<Vec<u8>, RomFileError> {
     // Collect candidates by index so the archive is only borrowed briefly, and
     // sort by name so the ambiguity message (and any future tie-break) is
     // deterministic rather than dependent on central-directory order.
-    let mut candidates: Vec<(String, usize)> = (0..archive.len())
-        .filter_map(|i| {
-            let entry = archive.by_index_raw(i).ok()?;
-            if entry.is_dir() {
-                return None;
-            }
-            let name = entry.name().to_owned();
-            let ext = Path::new(&name)
-                .extension()
-                .and_then(|e| e.to_str())?
-                .to_ascii_lowercase();
-            ROM_EXTENSIONS.contains(&ext.as_str()).then_some((name, i))
-        })
-        .collect();
+    let mut candidates: Vec<(String, usize)> = Vec::new();
+    for i in 0..archive.len() {
+        // A malformed entry header is REPORTED, not skipped. Swallowing it would
+        // turn "this archive is corrupt" into "this archive contains no ROM",
+        // which sends the user looking for the wrong problem — and if the corrupt
+        // entry were the only ROM, the real cause would never surface.
+        let entry = archive
+            .by_index_raw(i)
+            .map_err(|e| RomFileError::Archive(format!("entry {i}: {e}")))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_owned();
+        let Some(ext) = Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+        else {
+            continue;
+        };
+        if ROM_EXTENSIONS.contains(&ext.as_str()) {
+            candidates.push((name, i));
+        }
+    }
     candidates.sort_by(|a, b| a.0.cmp(&b.0));
 
     let (_, index) = match candidates.len() {
@@ -162,21 +196,8 @@ fn read_from_zip(file: File) -> Result<Vec<u8>, RomFileError> {
     let entry = archive
         .by_index(index)
         .map_err(|e| RomFileError::Archive(e.to_string()))?;
-    // Refuse on the DECLARED size first — cheap, and it rejects an obvious bomb
-    // without decompressing a byte.
     let declared = entry.size();
-    if declared > MAX_ROM_BYTES {
-        return Err(RomFileError::TooLarge(declared));
-    }
-    // ... but the declared size is attacker-controlled, so the read itself is
-    // *also* capped. `take` one byte past the limit: if the reader yields that
-    // extra byte, the header lied and the real stream is over-long.
-    let mut buf = Vec::with_capacity(usize::try_from(declared).unwrap_or(0));
-    let read = entry.take(MAX_ROM_BYTES + 1).read_to_end(&mut buf)?;
-    if read as u64 > MAX_ROM_BYTES {
-        return Err(RomFileError::TooLarge(read as u64));
-    }
-    Ok(buf)
+    read_capped(entry, declared, MAX_ROM_BYTES)
 }
 
 #[cfg(test)]
@@ -346,6 +367,55 @@ mod tests {
         drop(f);
         let rom = read_rom(&path).expect("a 64 MiB ROM is valid");
         assert_eq!(rom.len() as u64, MAX_ROM_BYTES);
+    }
+
+    /// **A stream that exceeds the cap is refused even when it DECLARES a small
+    /// size.** This is the actual anti-bomb control — the branch the module's
+    /// whole security argument rests on — and it had no coverage: a zip written
+    /// by `ZipWriter` always declares its size honestly, so no archive fixture
+    /// can reach it.
+    ///
+    /// Testing [`read_capped`] directly with a small cap does reach it, and is
+    /// the *same* code path both callers use. A declared size of 0 also covers
+    /// the FIFO / character-device case, where `metadata().len()` reports 0 and a
+    /// declared-size check alone would pass trivially.
+    #[test]
+    fn a_stream_longer_than_the_cap_is_refused_whatever_it_declares() {
+        let body = vec![0xAAu8; 100];
+        // Declares 10 bytes, really 100: the header lies.
+        assert!(matches!(
+            read_capped(body.as_slice(), 10, 32),
+            Err(RomFileError::TooLarge(n)) if n == 33
+        ));
+        // Declares nothing at all — what a FIFO or /dev/urandom looks like.
+        assert!(matches!(
+            read_capped(body.as_slice(), 0, 32),
+            Err(RomFileError::TooLarge(n)) if n == 33
+        ));
+        // And an honest stream at exactly the cap still succeeds, so the guard
+        // is not simply rejecting everything.
+        let exact = vec![0xBBu8; 32];
+        assert_eq!(
+            read_capped(exact.as_slice(), 32, 32).expect("at the cap"),
+            exact
+        );
+    }
+
+    /// **An oversized DECLARED size is refused before the stream is read.** The
+    /// cheap first gate: the reader here would panic if touched, so this fails if
+    /// the declared-size check is ever removed in favour of the read cap alone.
+    #[test]
+    fn an_oversized_declared_size_is_refused_without_reading() {
+        struct Exploding;
+        impl Read for Exploding {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("the stream must not be read when the declared size is over the cap");
+            }
+        }
+        assert!(matches!(
+            read_capped(Exploding, 1000, 32),
+            Err(RomFileError::TooLarge(n)) if n == 1000
+        ));
     }
 
     /// **A file too short to hold the magic is read as a plain image**, not

@@ -59,7 +59,15 @@ fn extracted_by_stem() -> Vec<(String, PathBuf)> {
 #[ignore = "local-only: set RUSTYN64_ROM_ARCHIVES to a directory of .zip ROMs"]
 fn real_archives_match_their_extracted_twins() {
     let Ok(dir) = std::env::var("RUSTYN64_ROM_ARCHIVES") else {
-        eprintln!("RUSTYN64_ROM_ARCHIVES unset — nothing to check");
+        // Skipping, NOT passing. Said loudly because a green tick here would
+        // otherwise read as "real archives verified" when nothing was read at
+        // all. It stays a skip rather than a failure so the test is runnable by
+        // someone without a ROM corpus, matching `commercial_boot.rs`.
+        eprintln!(
+            "SKIPPED (verified nothing): RUSTYN64_ROM_ARCHIVES is unset, so no \
+             archive was read. Set it to a directory of .zip ROMs to actually \
+             exercise this test."
+        );
         return;
     };
     let extracted = extracted_by_stem();
