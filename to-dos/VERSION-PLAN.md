@@ -170,6 +170,22 @@ The release where the corpus staged in Phase 0 is finally used for what it was s
 - The battery authored and reporting a real pass rate; the commercial corpus triaged.
 - The custom-microcode families rendering correctly — the Factor 5 and Boss Game Studios titles
   that break HLE, and therefore the concrete payoff of ADR 0002.
+
+  **This is the one cut criterion CI can never run, and the exception is deliberate.**
+  F3DEX, F3DEX2 and the per-studio variants are proprietary and ship *inside* commercial
+  ROMs, which ADR 0008 forbids committing; there is no licence-clean substitute that
+  exercises the real thing (the rdpq path in `tests/microcode.rs` is a genuine LLE
+  microcode gate and *is* CI-run, but rdpq is not F3DEX and cannot stand in for it).
+  **Decided 2026-07-29:** the criterion closes on a **reproducible local census plus
+  committed screenshots** — `crates/rustyn64-test-harness/tests/microcode_families.rs`,
+  `#[ignore]`d and skipping *loudly* when no corpus is staged, together with the
+  per-family frames under `screenshots/`. The runner is committed so any maintainer
+  holding a corpus can reproduce the evidence; the ROMs never are. The census
+  deliberately asserts **only that staged titles render**, not a pass rate: the corpus is
+  whatever a given machine happens to hold, so a percentage computed from it would
+  describe a ROM collection while looking like an accuracy metric. Every *other* v0.8.0
+  criterion remains CI-gated; this one is the single documented exception, and it is
+  recorded here rather than left as an unstated weakening of the gate.
 - `docs/accuracy-ledger.md` created, mapping every residual to a disposition.
 - Region timing moved into a table, closing the PAL open question.
 - **Cut criterion:** the battery hits its target pass rate, and every residual has a ledger entry.

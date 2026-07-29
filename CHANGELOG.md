@@ -8,6 +8,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — the T-71-003 microcode-family census (the one non-CI gate)
+
+- `crates/rustyn64-test-harness/tests/microcode_families.rs` — committed,
+  `#[ignore]`d, **skips loudly** when no corpus is staged. F3DEX and its
+  per-studio variants ship inside commercial ROMs that ADR 0008 forbids
+  committing, so this criterion can never be CI-gated; `to-dos/VERSION-PLAN.md`
+  now records it as the single documented exception rather than leaving the
+  gate silently weakened.
+- **29 of 66 staged titles render** (>1000 RDP commands **and** >1000 lit
+  pixels); 24 still issue zero commands.
+- Asserts only that staged titles render, **not** a pass rate — the corpus is
+  whatever a machine happens to hold, so a percentage from it would describe a
+  ROM collection while looking like an accuracy metric.
+- Both terms are load-bearing: Rayman 2 and Namco Museum 64 report **zero** RDP
+  commands with 123,540 and 137,681 lit pixels — uninitialised RDRAM, which a
+  lit-pixel-only metric would score as a success.
+
 ### Added — Super Mario 64 renders its title screen (R-18 capstone)
 
 - `screenshots/super-mario-64-title.png` — Mario's head, textured cap, over the
