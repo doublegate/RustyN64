@@ -198,12 +198,27 @@ pub struct RcpRegs {
     pub mi_mask: MiInterrupt,
     /// `MI_MODE`'s storage bits (the repeat count and flags).
     pub mi_mode: u32,
-    // The SP, DP (DPC), VI, AI, PI, SI, and MI register blocks are all decoded
+    /// The RI (RDRAM controller) register file, `0x0470_0000..0x0470_0020`:
+    /// `RI_MODE`, `RI_CONFIG`, `RI_CURRENT_LOAD`, `RI_SELECT`, `RI_REFRESH`,
+    /// `RI_LATENCY`, `RI_ERROR`, `RI_BANK_STATUS` (N64brew *RDRAM Interface*
+    /// §Registers).
+    ///
+    /// Plain storage — writes stick and reads return them. That is enough for the
+    /// one thing that actually depends on it today: the cartridge's IPL3 reads
+    /// `RI_SELECT` and branches on whether RDRAM has already been brought up
+    /// (ledger R-18). The documented read *oddities* are deliberately NOT modelled
+    /// (see R-22): `RI_CURRENT_LOAD` is write-only on hardware and its read
+    /// returns a collection of bits from other registers, and `RI_ERROR` /
+    /// `RI_BANK_STATUS` reflect controller state rather than the last write.
+    /// Nothing exercises those yet and there is no oracle for them — the suite has
+    /// no RI group — so they stay honest storage rather than invented behaviour.
+    pub ri: [u32; 8],
+    // The SP, DP (DPC), VI, AI, PI, SI, MI, and RI register blocks are all decoded
     // (see the `is_*_register` methods + the read/write dispatch). Still undecoded:
-    // the RI RDRAM-controller block (`0x0470_0000`) and the RDRAM-config registers
-    // (`0x03F0_0000`). n64-systemtest has no RI/RDRAM-register group, so these have
-    // no suite oracle — they are validated by commercial-boot progress (ledger R-18)
-    // rather than pinned here, and land with that work.
+    // the RDRAM-config registers (`0x03F0_0000`) — the per-chip Rambus device
+    // registers, distinct from the RI controller block above. n64-systemtest has no
+    // RI/RDRAM-register group, so neither has a suite oracle; they are validated by
+    // commercial-boot progress (ledger R-18) instead.
 }
 
 /// Everything mutable lives here — the single owner.
@@ -564,6 +579,16 @@ impl Bus {
             AiIrq::Lower => self.rcp.mi_intr.ai = false,
             AiIrq::None => {}
         }
+    }
+
+    /// Base of the RI (RDRAM controller) register block (`0x0470_0000`).
+    pub const RI_BASE: u32 = 0x0470_0000;
+
+    /// Is this address in the RI register block? Eight registers span
+    /// `0x0470_0000..0x0470_0020`; the rest of the `0x047x_xxxx` window mirrors
+    /// them via the three-bit decode `(addr >> 2) & 7`, as the other RCP blocks do.
+    const fn is_ri_register(addr: u32) -> bool {
+        addr >= Self::RI_BASE && addr < Self::SI_BASE
     }
 
     /// Base of the SI register block (`0x0480_0000`).
@@ -1423,6 +1448,9 @@ impl CpuBus for Bus {
         if Self::is_ai_register(addr) {
             return (self.audio.read_reg((addr >> 2) & 7) >> (8 * (3 - (addr & 3)))) as u8;
         }
+        if Self::is_ri_register(addr) {
+            return (self.rcp.ri[((addr >> 2) & 7) as usize] >> (8 * (3 - (addr & 3)))) as u8;
+        }
         if Self::is_si_register(addr) {
             return (self.si_read(addr) >> (8 * (3 - (addr & 3)))) as u8;
         }
@@ -1508,6 +1536,9 @@ impl CpuBus for Bus {
         }
         if Self::is_ai_register(addr) {
             return self.audio.read_reg((addr >> 2) & 7);
+        }
+        if Self::is_ri_register(addr) {
+            return self.rcp.ri[((addr >> 2) & 7) as usize];
         }
         if Self::is_si_register(addr) {
             return self.si_read(addr);
@@ -1701,6 +1732,10 @@ impl CpuBus for Bus {
         }
         if Self::is_ai_register(addr) {
             self.ai_write(addr, val);
+            return;
+        }
+        if Self::is_ri_register(addr) {
+            self.rcp.ri[((addr >> 2) & 7) as usize] = val;
             return;
         }
         if Self::is_si_register(addr) {
@@ -2502,6 +2537,43 @@ mod pi_tests {
         let mut bus = Bus::new();
         bus.write_u32(Bus::ISVIEWER_WRITE_LEN, 0xFFFF_FFFF);
         assert_eq!(bus.isviewer_output().len(), Bus::ISVIEWER_LEN);
+    }
+
+    /// **The RI register block round-trips.** Eight registers at
+    /// `0x0470_0000..0x0470_0020` (N64brew *RDRAM Interface* §Registers). Before
+    /// this block was decoded every RI address read back `0`, which is not inert:
+    /// the cartridge's IPL3 opens by reading `RI_SELECT` (`0x0470_000C`) to decide
+    /// whether RDRAM has already been brought up, so an undecoded block silently
+    /// forced the cold-init path on every boot (ledger R-18).
+    ///
+    /// Each register is given a *distinct* value so a decode that collapses them
+    /// onto one another — or drops the low address bits — fails rather than
+    /// passing on a shared zero.
+    #[test]
+    fn the_ri_register_block_round_trips() {
+        let mut bus = Bus::new();
+        for i in 0..8u32 {
+            CpuBus::write_u32(&mut bus, Bus::RI_BASE + i * 4, 0x1234_0000 + i);
+        }
+        for i in 0..8u32 {
+            assert_eq!(
+                CpuBus::read_u32(&mut bus, Bus::RI_BASE + i * 4),
+                0x1234_0000 + i,
+                "RI register {i} must read back what was written"
+            );
+        }
+    }
+
+    /// **`RI_SELECT` specifically reads back**, since it is the one RI register a
+    /// real boot depends on: IPL3 branches on it. Asserted separately from the
+    /// round-trip above so the intent survives if that test is ever narrowed.
+    #[test]
+    fn ri_select_reads_back_what_ipl3_writes() {
+        let mut bus = Bus::new();
+        // The value IPL3 configures: TSEL = 0b0001, RSEL = 0b0100 (N64brew
+        // *RDRAM Interface* §RI_SELECT, "Extra Details").
+        CpuBus::write_u32(&mut bus, 0x0470_000C, 0x14);
+        assert_eq!(CpuBus::read_u32(&mut bus, 0x0470_000C), 0x14);
     }
 
     /// **The RSP powers up halted.** Reading `SP_STATUS` as zero claims a

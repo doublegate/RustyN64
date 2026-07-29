@@ -108,6 +108,19 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
         .cop0
         .set_hardware(reg::CONFIG, 0x7006_E463);
 
+    // **The stack pointer IPL3 inherits.** IPL1 sets it before handing off —
+    // N64brew *IPL2* §IPL1 listing, `0xBFC000D0`:
+    // `ORI sp, sp, 0x1FF0  # sp = 0xA4001FF0 (this prepares sp for use in IPL2)`
+    // — and IPL2 leaves it alone, so IPL3 runs on it. It points at the top of RSP
+    // IMEM, which is where IPL3's stack lives while IPL3 itself executes from DMEM.
+    //
+    // Skipping this is NOT harmless. `sp` would be 0, IPL3's opening
+    // `ADDIU sp, sp, -24` / `SW s3, 0(sp)` prologue would store to `0xFFFF_FFE8`
+    // (KSEG3 — TLB-mapped, no entries), and the resulting TLB-refill exception
+    // vectors to `0x8000_0000` in empty RDRAM. Every retail title then executed a
+    // NOP sled to the end of memory instead of booting (ledger R-18).
+    system.cpu.regs.write(29, 0xFFFF_FFFF_A400_1FF0);
+
     // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
     // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.
     system.cpu.regs.write(19, 0);
@@ -201,6 +214,37 @@ pub fn real_pif_boot(system: &mut System, rom: &[u8], pif_rom: &[u8]) -> Result<
 mod tests {
     use super::*;
     use crate::cart::Cic;
+
+    /// **`hle_boot` seeds the stack pointer IPL3 inherits** (`0xA400_1FF0`,
+    /// sign-extended). IPL1 sets it before handing off — N64brew *IPL2* §IPL1
+    /// listing, `0xBFC000D0` — and `hle_boot` skips IPL1/IPL2, so it must stand in.
+    ///
+    /// This is asserted on its own because leaving `sp` at 0 does **not** crash or
+    /// panic: IPL3's opening `ADDIU sp, sp, -24` / `SW s3, 0(sp)` prologue faults to
+    /// `0xFFFF_FFE8` (KSEG3, unmapped), takes a TLB-refill exception to
+    /// `0x8000_0000`, and executes a NOP sled through empty RDRAM to the end of
+    /// memory. Every retail title did exactly that, quietly, while still retiring
+    /// hundreds of millions of instructions — so an instruction-count or
+    /// does-not-panic check cannot detect it. Ledger R-18.
+    #[test]
+    fn hle_boot_seeds_the_stack_pointer_ipl3_inherits() {
+        let mut rom = [0u8; 0x1000];
+        rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]); // .z64 magic
+        let mut sys = System::new(0);
+        hle_boot(&mut sys, &rom).expect("boot");
+        assert_eq!(
+            sys.cpu.regs.read(29),
+            0xFFFF_FFFF_A400_1FF0,
+            "sp must be the top of RSP IMEM, sign-extended"
+        );
+        // And it must be a *valid* address to store through: the whole failure was
+        // that `sp - 24` landed outside any mapped segment.
+        let prologue = sys.cpu.regs.read(29).wrapping_sub(24) & 0xFFFF_FFFF;
+        assert!(
+            (0xA400_0000..0xA400_2000).contains(&prologue),
+            "sp-24 must stay inside SP DMEM/IMEM, got {prologue:#010x}"
+        );
+    }
 
     #[test]
     fn too_small_a_rom_is_rejected_before_any_slice() {
