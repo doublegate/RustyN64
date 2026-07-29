@@ -163,7 +163,12 @@ fn a_commercial_rom_boots_and_executes() {
         match boot_and_run(&rom_path, 120) {
             Some(r) => {
                 eprintln!(
-                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, lit pixels={}",
+                    // "lit pixels" is a DIAGNOSTIC, never a pass condition: it
+                    // counts non-black scanned-out pixels, and uninitialised RDRAM
+                    // is non-black. Two titles have scored 90%+ lit and turned out
+                    // to be pure noise when the frame was actually viewed (ledger
+                    // R-18). Real video evidence is a golden-frame comparison.
+                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, non-black pixels (NOT proof of rendering)={}",
                     r.retired, r.pc, r.rdram_nonzero, r.lit
                 );
                 assert!(

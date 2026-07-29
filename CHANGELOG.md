@@ -8,6 +8,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Corrected — "lit pixels" is not evidence of rendering (ledger R-18)
+
+- **No title produces a picture yet, and earlier entries here implied otherwise.**
+  The lit-pixel count reports non-black scanned-out pixels, and *uninitialised
+  RDRAM is non-black*. Rogue Squadron and Jet Force Gemini score 90-92% lit with
+  4,790 and 6,203 distinct colours; rendered to PNG and **actually viewed, both
+  are pure noise**, and neither runs microcode at all.
+- This is the `retired > 1_000_000` failure repeated: a metric a broken machine
+  satisfies as easily as a working one. It was quoted for weeks because nobody
+  opened the image.
+- Video evidence now means one of two things only: a byte-comparison against a
+  committed golden frame, or someone actually viewing the output. The capstone
+  still reports the count as a diagnostic, never as a pass condition.
+- `screenshots/` stays empty. Ocarina of Time executes 733 RSP instructions and
+  submits 17,900 RDP commands yet scans out an entirely black frame, so the
+  RDP→VI presentation path is the next thing to close.
+
 ### Fixed — CIC-6105 titles boot under HLE (ledger R-23 RESOLVED)
 
 - **Ocarina of Time, Majora's Mask, Banjo-Tooie, Donkey Kong 64 and the rest of
@@ -61,7 +78,9 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 - Result: titles boot into their own code. Super Mario 64 reaches `pc=0x80246ddc`
   with 928 KiB of RDRAM populated; Star Fox 64 submits **122** RDP commands,
   World Driver Championship **45**; Star Wars Rogue Squadron scans out **68,527
-  lit pixels**. Every title uploads its graphics microcode into IMEM.
+  lit pixels** — but see the correction below: that figure is **not** evidence of
+  rendering. Super Mario 64, Star Fox 64 and World Driver Championship upload
+  their graphics microcode into IMEM.
 - The local capstone now asserts what was silently false — that RDRAM is
   populated and the PC is inside cached RDRAM — instead of only counting retired
   instructions.
