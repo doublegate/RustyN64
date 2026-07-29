@@ -43,8 +43,13 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
         sys.run_until(target);
     }
 
+    // Measured through `scanout_scaled`, which is what the frontend actually
+    // presents (`rustyn64_frontend::emu::Emu::produce_frame`). It used to read the
+    // 1:1 `Bus::scanout`, so the number reported here was not the number a user
+    // would see: `scanout_scaled` applies the real `VI_X_SCALE` upscale, so a
+    // 320-wide framebuffer scans out 625 wide and the counts differ by ~2x.
     let mut frame = vec![0u8; 640 * 480 * 4];
-    let (w, h) = sys.bus.scanout(&mut frame);
+    let (w, h) = sys.bus.scanout_scaled(&mut frame);
     let non_black_pixels = frame
         .chunks_exact(4)
         .take((w * h) as usize)
@@ -91,6 +96,11 @@ struct BootResult {
     /// evidence of rendering — uninitialised RDRAM is non-black, and two titles
     /// scored 90%+ here while producing pure noise (ledger R-18). A diagnostic;
     /// never assert on it.
+    ///
+    /// Re-confirmed 2026-07-29 rather than merely restated: Ocarina of Time
+    /// scored 62,963 of 75,840 on a 300-frame run and, rendered to PNG and
+    /// looked at, is pure noise; the same run's Paper Mario frame is a real
+    /// picture (`screenshots/`). The two are indistinguishable by this count.
     non_black_pixels: usize,
     rdram_nonzero: usize,
     pc: u32,

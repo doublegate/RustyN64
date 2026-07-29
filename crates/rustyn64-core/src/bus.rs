@@ -783,9 +783,13 @@ impl Bus {
     /// `cvg = 7`, so de-dither can still apply — currently gated to `aa_mode ≤ 1`),
     /// and the remaining R-6 field timing (interlace / serrate and the exact
     /// `H_TOTAL`; the PAL 50 Hz field rate itself is handled by `Vi::field_hz`, which
-    /// drives the same `ispal` region split this geometry uses). Not yet wired into
-    /// the frontend — [`Bus::scanout`] remains the live path until the pipeline is
-    /// complete (mirrors the R-12 depth path landing ahead of its runtime caller).
+    /// drives the same `ispal` region split this geometry uses).
+    ///
+    /// **This is the live presented path.** The frontend calls it directly
+    /// (`rustyn64_frontend::emu::Emu::produce_frame`), so what a user sees is this
+    /// function's output, not [`Bus::scanout`]'s 1:1 copy. `Bus::scanout` is
+    /// retained as the simpler unscaled reference the R-5 vectors are compared
+    /// against and as the geometry contrast in the frontend's own tests.
     ///
     /// Returns `(0, 0)` (writing nothing) when the VI is blanked (`TYPE` 0/1), the
     /// computed width/height is non-positive, or `out` is too small.
