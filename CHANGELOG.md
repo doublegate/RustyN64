@@ -30,7 +30,7 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   frame still ends as the clear colour: **the RDP rasterises real geometry to
   black**. Narrowed further by inspecting the RDP state: the **Z path is
   refuted** (`z_compare_en=false`), and the combiner decodes to
-  `(0−0)×0 + TEXEL0` — a pure texture pass-through, so the pixel colour *is* the
+  `(0 - 0) x 0 + TEXEL0` — a pure texture pass-through, so the pixel colour *is* the
   texel and a black frame means the **texel fetch resolves to 0**. The tiles are
   `fmt=2, size=0` = **CI4** (colour-indexed via TLUT); both TMEM halves are
   populated (1,508/2,048 texture bytes, 760/2,048 TLUT bytes) and TLUT entry 0
