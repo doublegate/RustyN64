@@ -493,17 +493,30 @@ pub fn parse_vi(bytes: &[u8]) -> ViVector {
     let src_bpp = h(12);
     assert!(src_bpp == 2 || src_bpp == 4, "src_bpp must be 2 or 4");
     let (out_w, out_h) = (h(13), h(14));
-    let mut off = 15 * 4;
-    // Widen before multiplying so an implausible header cannot wrap the length.
-    let src_len = (src_w as usize) * (src_h as usize) * (src_bpp as usize);
-    let hidden_len = if version == 2 {
-        (src_w as usize) * (src_h as usize)
-    } else {
-        0
-    };
-    let golden_len = (out_w as usize) * (out_h as usize) * 4;
+    // `origin` indexes the hidden-coverage plane as `origin >> 1`, so an odd
+    // origin would silently desync that mapping from RDRAM.
+    assert_eq!(h(3) % 2, 0, ".vivec origin must be halfword-aligned");
+    let mut off: usize = 15 * 4;
+    // CHECKED throughout: an implausible header must fail loudly, not wrap `usize`
+    // (which would slip past the length check below and panic in a later slice).
+    let px = (src_w as usize)
+        .checked_mul(src_h as usize)
+        .expect("source dimensions overflow");
+    let src_len = px
+        .checked_mul(src_bpp as usize)
+        .expect("source length overflows");
+    let hidden_len = if version == 2 { px } else { 0 };
+    let golden_len = (out_w as usize)
+        .checked_mul(out_h as usize)
+        .and_then(|n| n.checked_mul(4))
+        .expect("golden dimensions overflow");
+    let total = off
+        .checked_add(src_len)
+        .and_then(|n| n.checked_add(hidden_len))
+        .and_then(|n| n.checked_add(golden_len))
+        .expect("payload sizes overflow");
     assert!(
-        bytes.len() >= off + src_len + hidden_len + golden_len,
+        bytes.len() >= total,
         "truncated .vivec: header declares more payload than the file holds"
     );
     let src = bytes[off..off + src_len].to_vec();
