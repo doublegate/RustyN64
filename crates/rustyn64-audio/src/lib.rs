@@ -298,10 +298,10 @@ impl Audio {
         // (LRCK) toggles at DACRATE/2, out of phase by half a period. Both are
         // gated by BITRATE != 0. Derived from `last_tick`; see ledger.
         if self.bit_rate != 0 && self.dac_rate != 0 {
+            // Both readbacks are phases of the same video-clock tick count.
+            let vi_ticks = self.last_tick.saturating_mul(u64::from(self.video_clock)) / MASTER_HZ;
             let half = u64::from(self.dac_rate) / 2;
             if half != 0 {
-                let vi_ticks =
-                    self.last_tick.saturating_mul(u64::from(self.video_clock)) / MASTER_HZ;
                 let phase = vi_ticks % (half * 2);
                 let count = if phase < half {
                     half - phase
@@ -312,6 +312,21 @@ impl Audio {
                 if phase >= half {
                     s |= 1 << 19; // WC high on the second half-period
                 }
+            }
+            // BC (bit 16) — the BCLK line to the BU9480 DAC. `AI_BITRATE` is
+            // "Half of bit clock period" and "the bit clock rate is the Video
+            // clock, divided by two, divided by one more than this number"
+            // (wiki §AI_BITRATE), so one half-period is `BITRATE + 1` video
+            // clocks and the line toggles once per half-period. A `BITRATE` of 0
+            // stops the clock, which the enclosing gate already excludes.
+            //
+            // The wiki itself hedges this ("believed", "probably") because the
+            // CPU "cannot reliably sample it rapidly enough even when BITRATE is
+            // set to 15" — so it is un-observable by software in practice and
+            // stays ungated (ledger R-16), like `COUNT`/`WC`.
+            let half_periods = vi_ticks / u64::from(u32::from(self.bit_rate) + 1);
+            if half_periods & 1 != 0 {
+                s |= 1 << 16; // BC
             }
         }
         s
@@ -664,6 +679,64 @@ mod tests {
     fn ai_status_write_acknowledges_the_interrupt() {
         let mut ai = programmed();
         assert_eq!(ai.write_reg(3, 0), AiIrq::Lower);
+    }
+
+    /// **`BC` toggles at the documented bit-clock half-period (R-16).**
+    ///
+    /// The wiki gives `AI_BITRATE` as "half of bit clock period" and the bit clock
+    /// as "the Video clock, divided by two, divided by one more than this number",
+    /// so one half-period is `BITRATE + 1` video clocks and BCLK toggles once per
+    /// half-period. This counts the transitions over a fixed span and compares
+    /// against that relation derived independently from the two documented
+    /// quantities — so a wrong divisor (`BITRATE` instead of `BITRATE + 1`, or the
+    /// DAC rate) changes the count and fails.
+    #[test]
+    fn bc_toggles_at_the_documented_bit_clock_half_period() {
+        const BITRATE: u32 = 15;
+        let span_master_ticks = 20_000u64;
+
+        let mut ai = programmed();
+        ai.write_reg(5, BITRATE); // AI_BITRATE
+        let mut bus = TestBus::new(0x1000);
+
+        let mut transitions = 0usize;
+        let mut prev = ai.status() & (1 << 16) != 0;
+        for now in 1..=span_master_ticks {
+            ai.tick(now, &mut bus);
+            let bc = ai.status() & (1 << 16) != 0;
+            if bc != prev {
+                transitions += 1;
+                prev = bc;
+            }
+        }
+
+        // Expected from the documented relation alone: video clocks elapsed over
+        // the span, divided by the half-period of `BITRATE + 1` video clocks.
+        let vi_ticks = span_master_ticks * u64::from(VIDEO_CLOCK_NTSC) / MASTER_HZ;
+        let expected = (vi_ticks / u64::from(BITRATE + 1)) as usize;
+        assert_eq!(
+            transitions,
+            expected,
+            "BC must toggle once per {} video clocks",
+            BITRATE + 1
+        );
+        assert!(
+            transitions > 100,
+            "the span must actually exercise the clock"
+        );
+    }
+
+    /// **A `BITRATE` of 0 stops the bit clock.** The wiki: "A written value of 0
+    /// instead stops the clock", so `BC` must not toggle.
+    #[test]
+    fn a_zero_bitrate_stops_the_bit_clock() {
+        let mut ai = programmed();
+        ai.write_reg(5, 0); // AI_BITRATE = 0 → clock stopped
+        let mut bus = TestBus::new(0x1000);
+        for now in 1..=5_000u64 {
+            ai.tick(now, &mut bus);
+            assert_eq!(ai.status() & (1 << 16), 0, "BC must stay low at BITRATE 0");
+        }
     }
 
     #[test]

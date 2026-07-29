@@ -8,6 +8,20 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — AI bit-clock (`BC`) readback (ledger R-16)
+
+- **`AI_STATUS` `BC` (bit 16) is now modelled.** `AI_BITRATE` is documented as
+  "half of bit clock period", and the bit clock as "the Video clock, divided by
+  two, divided by one more than this number" — so a half-period is `BITRATE + 1`
+  video clocks and BCLK toggles once per half-period. `BC` derives from the same
+  video-clock tick count `COUNT`/`WC` already use; `BITRATE = 0` stops the clock,
+  as documented.
+- **Ungated, and the source is hedged too:** the wiki says only that this is
+  "(probably)" toggled per bit and "is believed" to be the BCLK line, because the
+  CPU "cannot reliably sample it rapidly enough" — it is un-observable by
+  software, so no capture can pin it and none is claimed. Two mutation-checked
+  tests pin the documented relation and the stopped-clock case.
+
 ### Fixed — the console region is selected from the cartridge (ledger C-34, `T-71-005`)
 
 - **A PAL cartridge no longer plays audio at the NTSC rate.** The region machinery
