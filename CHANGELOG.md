@@ -14,10 +14,13 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   longer returns an empty probe set: it scores every committed Angrylion RDP
   conformance vector across **two** oracle suites — 35 RDP rasteriser vectors
   (`rdp-conformance/<vector>`) and 13 VI scan-out vectors
-  (`vi-conformance/<vector>`) — replayed through RustyN64 and compared
-  byte-for-byte against the oracle's golden output. Every expected value is
-  externally defined — never RustyN64's own output. `docs/STATUS.md` now reports a
-  real **100% (48/48)** instead of "0% (battery stubbed)".
+  (`vi-conformance/<vector>`) — replayed through RustyN64 and compared against the
+  oracle's golden output. Every expected value is externally defined — never
+  RustyN64's own output. **Exactness differs by suite:** RDP probes are
+  byte-for-byte over the framebuffer; VI probes are **RGB-only**, because the
+  fourth output byte carries Angrylion's coverage rather than opacity.
+  `docs/STATUS.md` now reports a real **100% (48/48)** instead of
+  "0% (battery stubbed)".
 - **An empty battery no longer scores 1.0.** `AccuracyReport::ratio` returned
   `1.0` for an empty battery ("vacuously green"); a battery that ran nothing has
   proven nothing, so it now scores `0.0`. Added `AccuracyReport::failures()` so a

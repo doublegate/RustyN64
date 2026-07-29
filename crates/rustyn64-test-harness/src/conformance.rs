@@ -590,7 +590,13 @@ pub fn replay_vi(v: &ViVector) -> ((u32, u32), Vec<u8>) {
     CpuBus::write_u32(&mut bus, VI + 0x30, v.x_scale); // VI_X_SCALE (+0x30)
     CpuBus::write_u32(&mut bus, VI + 0x34, v.y_scale); // VI_Y_SCALE (+0x34)
 
-    let mut frame = vec![0u8; (v.out_w as usize) * (v.out_h as usize) * 4];
+    // Checked: `ViVector` is public, so `replay_vi` must validate independently of
+    // `parse_vi` rather than trusting a hand-built value.
+    let frame_len = (v.out_w as usize)
+        .checked_mul(v.out_h as usize)
+        .and_then(|n| n.checked_mul(4))
+        .expect("output dimensions overflow");
+    let mut frame = vec![0u8; frame_len];
     let dims = bus.scanout_scaled(&mut frame);
     (dims, frame)
 }
@@ -619,7 +625,13 @@ pub enum ViMismatch {
 }
 
 /// Scan a `.vivec` out and report the first divergence from the Angrylion golden,
-/// or `None` on a match. Only RGB is compared (the alpha byte carries coverage).
+/// or `None` on a match.
+///
+/// **Scope: RGB only.** The fourth byte of each output pixel carries Angrylion's
+/// *coverage*, not opacity, so it is deliberately excluded — an alpha-only
+/// divergence does NOT fail this comparison. The RDP `.rvec` comparison
+/// ([`first_mismatch`]) is byte-for-byte; this one is not, and every label that
+/// reports it says so.
 ///
 /// # Panics
 ///

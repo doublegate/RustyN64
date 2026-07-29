@@ -13,8 +13,10 @@
 //! conformance vector — the RDP rasteriser set ([`crate::conformance::RDP_VECTORS`])
 //! and the VI scan-out set ([`crate::conformance::VI_VECTORS`]): the expected output
 //! in each vector was rendered by Angrylion, so a probe passes only when `RustyN64`
-//! reproduces the oracle byte-for-byte. The battery grows as further oracle-backed
-//! suites come online.
+//! reproduces the oracle. **Exactness differs by suite:** the RDP probes are
+//! byte-for-byte over the framebuffer; the VI probes compare **RGB only**, because
+//! the fourth output byte carries Angrylion's coverage rather than opacity. The
+//! battery grows as further oracle-backed suites come online.
 //!
 //! See `docs/testing-strategy.md` §accuracy battery.
 
@@ -108,9 +110,10 @@ impl AccuracyScorer {
     /// through `RustyN64` and scored against the oracle's golden output.
     ///
     /// Probes are named `rdp-conformance/<vector>` and `vi-conformance/<vector>`.
-    /// A probe passes only on a byte-for-byte match with Angrylion's output, so
-    /// the score is an externally-defined measurement rather than a
-    /// self-assessment.
+    /// A probe passes only on a match with Angrylion's output, so the score is an
+    /// externally-defined measurement rather than a self-assessment. **Exactness
+    /// differs by suite:** RDP probes are byte-for-byte over the framebuffer; VI
+    /// probes are **RGB-only** (the fourth output byte is coverage, not opacity).
     ///
     /// This is the battery `docs/STATUS.md` reports. It grows as further
     /// oracle-backed suites (the n64-systemtest categories) are wired in.
@@ -172,6 +175,20 @@ mod tests {
         assert_eq!(rdp, crate::conformance::RDP_VECTORS.len(), "RDP suite");
         assert_eq!(vi, crate::conformance::VI_VECTORS.len(), "VI suite");
         assert_eq!(rdp + vi, report.total(), "every probe names its suite");
+        // Counts alone are not enough: swapping an omitted vector for a DUPLICATE
+        // keeps every count intact and still reports a full score. Assert the exact
+        // probe SET, so a dropped vector cannot hide behind a repeated one.
+        let got: std::collections::BTreeSet<&str> =
+            report.probes.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(got.len(), report.total(), "probe names are unique");
+        for (name, _) in crate::conformance::RDP_VECTORS {
+            let want = format!("rdp-conformance/{name}");
+            assert!(got.contains(want.as_str()), "missing probe {want}");
+        }
+        for (name, _) in crate::conformance::VI_VECTORS {
+            let want = format!("vi-conformance/{name}");
+            assert!(got.contains(want.as_str()), "missing probe {want}");
+        }
     }
 
     /// **The battery is green against the Angrylion oracle.** This is the accuracy
