@@ -18,9 +18,11 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   as documented.
 - **Ungated, and the source is hedged too:** the wiki says only that this is
   "(probably)" toggled per bit and "is believed" to be the BCLK line, because the
-  CPU "cannot reliably sample it rapidly enough" — it is un-observable by
-  software, so no capture can pin it and none is claimed. Two mutation-checked
-  tests pin the documented relation and the stopped-clock case.
+  CPU "cannot reliably sample it rapidly enough" — it is not CPU-observable. That
+  is a limit on *software* sampling, not a claim that BC is unpinnable in
+  principle: an external logic-analyser probe could establish it. What is claimed
+  is only that no public capture is known and none is asserted. Two
+  mutation-checked tests pin the documented relation and the stopped-clock case.
 
 ### Fixed — the console region is selected from the cartridge (ledger C-34, `T-71-005`)
 
