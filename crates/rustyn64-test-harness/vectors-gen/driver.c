@@ -1137,15 +1137,47 @@ static const uint32_t V34_TEX_TRI_MIP_TILE_16[] = {
 // writes the SET_FILL_COLOR register in FILL mode, but in 1-/2-cycle mode the
 // hardware rasterises it like any other primitive — through the COMBINER. This
 // vector distinguishes the two: the combine emits the PRIM colour (0x224466) while
-// SET_FILL_COLOR is set to a clearly different green (0x07C1). Whichever colour the
-// oracle renders tells us which path the hardware takes; RustyN64 currently ignores
-// the cycle type and always writes the fill register, so if the golden is the prim
-// colour this vector fails until R-21 is fixed.
+// SET_FILL_COLOR is set to a clearly different green (0x07C1), so the rendered
+// colour alone says which path the hardware took.
+//
+// The oracle answered PRIM, which is what established R-21 and drove the fix.
+// This vector is now the **regression guard** for it: revert the cycle-type gate
+// in `fill_rectangle` and the golden goes back to reading 07 C1 instead of 22 19.
 static const uint32_t V35_FILL_RECT_1CYCLE_16[] = {
     0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-CYCLE (bits 21:20 = 0), dither off
     0x3A000000u, 0x224466FFu, // Set Prim Color: R=0x22 G=0x44 B=0x66 A=0xFF
     0x3C000000u, 0x000000C3u, // Set Combine: cyc1 rgb_d=prim(3), a_d=prim(3) — as V19
     0x37000000u, 0x07C107C1u, // Set Fill Color: green — DIFFERENT from the prim colour
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
+};
+
+// V36: FILL RECTANGLE in **2-CYCLE** mode (ledger R-21). V35 pins 1-cycle, but the
+// cycle-type gate covers 1- AND 2-cycle, and 2-cycle takes a distinct path:
+// `combine()` evaluates cycle 0 first and feeds its output to cycle 1 as the
+// COMBINED input. A vector that only exercised 1-cycle would leave that chaining
+// unpinned.
+//
+// The combine is built so the candidate outcomes are all distinguishable:
+//   cyc0 rgb_d = ENV(5), a_d = ENV(5)           -> cycle 0 emits the ENV colour
+//   cyc1 rgb_d = COMBINED(0), a_d = COMBINED(0) -> cycle 1 passes it through
+// (Field positions: cyc0 rgb_d = lo bits 17:15, cyc0 a_d = lo 11:9, cyc1 rgb_d =
+// lo 8:6, cyc1 a_d = lo 2:0. A/B/C all select 0, so `(a-b)*c` vanishes and D alone
+// decides the output.)
+//
+// So the rendered colour is diagnostic rather than merely pass/fail:
+//   ENV   0x88AACC -> the 2-cycle chain ran (cycle 0 fed cycle 1)
+//   BLACK          -> cycle 0 was skipped, so COMBINED read as zero
+//   GREEN 0x07C1   -> the fill register was used: the R-21 bug
+// ENV, PRIM and the fill colour are all deliberately different, so no two outcomes
+// can be confused.
+static const uint32_t V36_FILL_RECT_2CYCLE_16[] = {
+    0x2F1000F0u, 0x00000000u, // Set Other Modes: 2-CYCLE (bits 21:20 = 1), dither off
+    0x3A000000u, 0x224466FFu, // Set Prim Color: 0x224466 — distinct from env and fill
+    0x3B000000u, 0x88AACCFFu, // Set Env Color: 0x88AACC — what cycle 0 emits
+    0x3C000000u, 0x00028A00u, // Set Combine: cyc0 d=env, cyc1 d=combined (see above)
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green — must NOT appear
     0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
@@ -1853,6 +1885,11 @@ int main(int argc, char **argv) {
                   sizeof(V35_FILL_RECT_1CYCLE_16) / 4, V35_FILL_RECT_1CYCLE_16,
                   0, 0, NULL};
     if (emit_vector(&v35, out_dir)) return 1;
+
+    Vector v36 = {"fill_rect_2cycle_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V36_FILL_RECT_2CYCLE_16) / 4, V36_FILL_RECT_2CYCLE_16,
+                  0, 0, NULL};
+    if (emit_vector(&v36, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 

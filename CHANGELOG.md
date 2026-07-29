@@ -22,6 +22,10 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   unit tests and the `golden_frame` end-to-end test were named for FILL-mode
   behaviour but never selected FILL mode; they now emit a `Set Other Modes` with
   `cycle_type = FILL` and test what their names claim.
+- A second vector `fill_rect_2cycle_16` pins the **2-cycle** branch, which the
+  1-cycle vector cannot reach: there `combine()` runs cycle 0 first and feeds its
+  output to cycle 1 as `COMBINED`. Its combine makes each candidate outcome a
+  different colour, so the result is diagnostic rather than merely pass/fail.
 - Still open in R-21: the same question for a *flat* `Fill Triangle` (0x08), which
   selects the combiner on the presence of a shade/texture block rather than on the
   cycle type. No vector exercises it yet.

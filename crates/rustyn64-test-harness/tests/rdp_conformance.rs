@@ -70,6 +70,20 @@ fn fill_rect_1cycle_16_matches_angrylion() {
     assert_matches("fill_rect_1cycle_16");
 }
 
+/// **A `Fill Rectangle` in 2-CYCLE mode goes through BOTH combiner cycles (R-21).**
+///
+/// The 1-cycle vector above leaves the 2-cycle branch unpinned, and 2-cycle takes a
+/// distinct path: `combine()` evaluates cycle 0 first and feeds its output to cycle
+/// 1 as the `COMBINED` input. Here cycle 0 emits the env colour `0x88AACC` and cycle
+/// 1 selects `COMBINED`, so the three candidate outcomes are all distinguishable —
+/// env `0x8D73` means the chain ran, black means cycle 0 was skipped, and the green
+/// fill register `0x07C1` means the cycle type was ignored. Angrylion renders
+/// `0x8D73`.
+#[test]
+fn fill_rect_2cycle_16_matches_angrylion() {
+    assert_matches("fill_rect_2cycle_16");
+}
+
 /// **A flat Fill Triangle matches Angrylion (regression guard for R-14).**
 ///
 /// This left-major triangle (a vertical left edge at x=2, the hypotenuse widening
