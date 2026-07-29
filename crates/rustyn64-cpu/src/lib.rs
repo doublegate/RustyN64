@@ -218,8 +218,17 @@ pub struct Cpu {
     /// (ADR 0006). A work tally is the one kind of counter that is still allowed
     /// to be incremented; see `System::cpu_cycles()` for the CPU's *position*.
     pub retired: u64,
-    // TODO(T-CPU-01): branch-delay-slot latch, CP0 registers + TLB entries,
-    // CP1 (FPU) register file + control/status, LL/SC link bit — see `docs/cpu.md`.
+    // This struct deliberately holds no CP0/TLB/CP1/LL state. All of it exists and
+    // lives one level down, in [`Pipeline`], because it is pipelined state rather
+    // than architectural state the fetch loop owns (ADR 0007): `pipeline.cop0`,
+    // `pipeline.tlb`, `pipeline.fpr`, `pipeline.ll_bit`, and the branch-delay-slot
+    // flag as `in_delay_slot` riding in the inter-stage latch rather than a global
+    // CPU flag.
+    //
+    // This carried a `TODO(T-CPU-01)` listing those five as unimplemented long
+    // after all five shipped — a false-incompleteness marker of exactly the kind
+    // the Stage-A comment sweep existed to remove, and one it missed. Nothing
+    // fails when a stale TODO survives, which is why it survived.
 }
 
 impl Default for Cpu {
