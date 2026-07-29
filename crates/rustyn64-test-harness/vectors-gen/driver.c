@@ -1185,7 +1185,7 @@ static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
     0x3C000000u, 0x00000041u, // Set Combine: rgb_d=1 / a_d=1 — pure TEXEL0 passthrough
     // --- palette -> TMEM high ---
     0x3D100003u, 0x00003008u, // Set Texture Image: **16-bit**, width 4, addr 0x3008
-    0x35000100u, 0x07000000u, // Set Tile 7 (TLUT): fmt RGBA?no -> size 0 (4-bit), tmem word 0x100
+    0x35400100u, 0x07000000u, // Set Tile 7 (TLUT): fmt CI(2), size 0 (4-bit), tmem word 0x100
     0x30000000u, 0x0701C000u, // Load Tlut 7: uls=0 ult=0 lrs=0x1C (8 entries) lrt=0
     // --- CI4 texel bytes -> TMEM low ---
     0x3D080003u, 0x00003000u, // Set Texture Image: 8-bit, width 4, addr 0x3000
