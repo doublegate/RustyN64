@@ -59,10 +59,22 @@ pub struct Rsp {
     pub vu_regs: [[u16; 8]; 32],
     /// 48-bit-per-lane VU accumulator (modeled as `[u64; 8]`, low 48 used).
     pub vu_acc: [u64; 8],
-    /// Program counter into IMEM (12-bit).
-    pub pc: u16,
-    /// Halted (`SP_STATUS.halt`) — the RSP idles until the CPU clears it.
-    pub halted: bool,
+    /// **Vestigial.** The authoritative PC lives in [`Self::sp`]
+    /// (`SpRegs::pc()`), which is what [`su::Rsp::su_step`] fetches from; this
+    /// field is never written. Kept only so the save-state layout is unchanged —
+    /// removing it is a format break (ADR 0005) — and made **private** so nothing
+    /// can read it by accident. Use [`Rsp::pc`] instead.
+    ///
+    /// This is not hypothetical tidiness: while it was `pub` it was sampled twice
+    /// in one debugging session and produced two confident, wrong conclusions —
+    /// "the RSP never starts" and "its PC never advances" — when in fact retail
+    /// microcode was executing hundreds of distinct instructions. That is the
+    /// inert-API hazard in `docs/engineering-lessons.md` §3.2 exactly.
+    pc: u16,
+    /// **Vestigial** — see [`Self::pc`]. The authoritative halt state is
+    /// `sp.halted()` (`SP_STATUS.halt`), which is what gates execution. Use
+    /// [`Rsp::halted`] instead.
+    halted: bool,
     /// 4 KiB data memory.
     #[serde(with = "rustyn64_snapshot::boxed_bytes")]
     pub dmem: alloc::boxed::Box<[u8; SP_MEM_SIZE]>,
@@ -141,6 +153,22 @@ impl Rsp {
     /// rests on the oracle.
     const fn fold(off: u32) -> usize {
         (off & 0x1FFF) as usize
+    }
+
+    /// The RSP's program counter into IMEM — the value execution actually uses.
+    ///
+    /// Delegates to `SP_STATUS`'s register file rather than the struct field of
+    /// the same name, which is vestigial.
+    #[must_use]
+    pub const fn pc(&self) -> u32 {
+        self.sp.pc()
+    }
+
+    /// Is the RSP halted? This is `SP_STATUS.halt`, the flag that actually gates
+    /// [`Rsp::tick`] — not the vestigial `halted` field.
+    #[must_use]
+    pub const fn halted(&self) -> bool {
+        self.sp.halted()
     }
 
     /// Read a byte of DMEM/IMEM as the CPU sees it.

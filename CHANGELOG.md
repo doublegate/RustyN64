@@ -8,6 +8,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — a retail title's own microcode executes on the LLE RSP (`T-71-003`)
+
+- **The ADR 0002 payoff, witnessed on real commercial microcode.** New local
+  capstone `tests/game_microcode.rs` asserts the full chain: the game uploads
+  microcode into IMEM, the RSP leaves halt, and its PC visits **many distinct
+  IMEM addresses** — the last of which cannot be satisfied by a stalled, halted,
+  or spinning core, only by executing the game's own program.
+- Witnessed by Castlevania: Legacy of Darkness (**805** distinct RSP PCs, 33 RDP
+  commands), 007: The World Is Not Enough (459), Beetle Adventure Racing! (356),
+  Mega Man 64 (229, 50 RDP commands); also Star Fox 64 (331), Super Mario 64
+  (236), World Driver Championship (148).
+- No microcode-specific code path exists anywhere in the tree — F3DEX and its
+  vendor variants run for the same reason libdragon's `rdpq` does. The
+  licence-clean CI-gated counterpart remains `tests/microcode.rs`.
+- Mutation-checked: stubbing `Rsp::tick` turns the witness red.
+
 ### Fixed — retail games now boot into their own code (ledger R-18)
 
 - **`hle_boot` never seeded the stack pointer.** IPL1 sets `sp = 0xA4001FF0`
@@ -31,8 +47,14 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 - The local capstone now asserts what was silently false — that RDRAM is
   populated and the PC is inside cached RDRAM — instead of only counting retired
   instructions.
-- **Still open (R-18):** no title starts the RSP, so those RDP commands come from
-  the CPU driving the DPC directly, not from microcode. **New R-23:** CIC-6105
+- **Correction to the above, same day:** an earlier revision of this entry said
+  "no title starts the RSP". That was measured off `Rsp::halted`/`Rsp::pc`, two
+  `pub` fields that are **never written**; the authoritative state is `SP_STATUS`.
+  Measured correctly, retail microcode **does** execute — see `T-71-003` below.
+  The fields are now private behind `Rsp::halted()`/`Rsp::pc()` accessors.
+- **Still open (R-18):** several titles (Blast Corps, Bomberman 64, Donkey Kong
+  64, Jet Force Gemini) never load microcode into IMEM at all, and Rogue Squadron
+  never starts the RSP — their boots stall before the RSP seam. **New R-23:** CIC-6105
   titles still need `real_pif_boot`; their IPL3 self-descrambles using registers
   only the real IPL2 leaves set. The capstone detects and reports them rather
   than passing quietly. n64-systemtest is unchanged at 90.
