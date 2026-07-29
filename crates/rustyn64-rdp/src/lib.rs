@@ -79,8 +79,18 @@ pub const DPC_ADDR_MASK: u32 = 0x00FF_FFF8;
 /// `tick` is one GCLK.
 pub const SYNC_LOAD_GCLK: u32 = 25;
 
-/// `Set Other Modes.cycle_type` value for **2-cycle** mode (`0` = 1-cycle,
-/// `1` = 2-cycle, `2` = copy, `3` = fill).
+// `Set Other Modes.cycle_type` (command bits 53:52 = word-0 bits 21:20).
+// Provenance: N64brew *Reality Display Processor/Commands* §0x2F – Set Other
+// Modes, the `bit 53:52` row — *"cycle_type[1:0]: Determines pipeline mode.
+// Either 1-Cycle (0), 2-Cycle (1), COPY (2), FILL (3)"*. Which of these read the
+// fill register rather than the combiner is ledger **R-21**.
+
+/// `Set Other Modes.cycle_type` value for **1-cycle** mode — the default
+/// pipeline: one combiner pass per pixel.
+pub const CYCLE_TYPE_1CYCLE: u8 = 0;
+
+/// `Set Other Modes.cycle_type` value for **2-cycle** mode — two combiner passes
+/// per pixel, so a second texel and the LOD fraction become available.
 pub const CYCLE_TYPE_2CYCLE: u8 = 1;
 
 /// `Set Other Modes.cycle_type` value for **copy** mode — a raw texel blit that
@@ -1818,12 +1828,10 @@ impl Rdp {
     /// N GCLK; exact per-command base timing is deferred to the command-timing
     /// model.
     ///
-    /// The FILL-pipeline arms take the command's two 32-bit halves (`hi` =
-    /// RDRAM bits 63:32, `lo` = 31:0). `Fill Rectangle` writes the fill colour
-    /// into the color image, clipped to the scissor — the FILL-mode path (the
-    /// cycle-type gate arrives with `Set Other Modes`, so `Fill Rectangle` is a
-    /// solid FILL fill for now; 1-/2-cycle rectangles route through the blender,
-    /// not this code).
+    /// The rectangle arms take the command's two 32-bit halves (`hi` = RDRAM bits
+    /// 63:32, `lo` = 31:0). `Fill Rectangle` covers the rectangle ∩ scissor; what
+    /// it writes depends on `Set Other Modes.cycle_type` — the fill register in
+    /// FILL/COPY, the combiner output in 1-/2-cycle (ledger R-21).
     fn dispatch<B: VideoBus>(&mut self, opcode: u8, hi: u32, lo: u32, cmd_base: u32, bus: &mut B) {
         match opcode {
             OP_SYNC_LOAD => self.stall = SYNC_LOAD_GCLK,
@@ -1937,8 +1945,14 @@ impl Rdp {
         }
     }
 
-    /// Render a `Fill Rectangle` in FILL mode: write the 32-bit fill colour into
-    /// the color image over the rectangle, clipped to the scissor.
+    /// Render a `Fill Rectangle` (0x36) over the rectangle ∩ scissor.
+    ///
+    /// **What is written depends on `Set Other Modes.cycle_type`** (ledger R-21).
+    /// FILL and COPY repeat the `Set Fill Color` register verbatim; 1-/2-cycle
+    /// treat the rectangle as an ordinary primitive and take the **combiner**
+    /// output, then alpha-compare and dither, exactly as the triangle path does.
+    /// A rectangle carries no shade or texture block, so the combiner sees only
+    /// its register inputs and the result is constant across the whole rectangle.
     ///
     /// FILL mode "repeats the 32-bit value verbatim out to memory", which
     /// resolves per pixel by size (N64brew *…/Commands* §Set Fill Color):
@@ -2016,26 +2030,42 @@ impl Rdp {
         // against the Angrylion oracle (ledger R-21, vector `fill_rect_1cycle_16`):
         // a 1-cycle rectangle with a green fill register and a *distinct* prim
         // colour renders the **prim** colour in all 64 pixels.
-        let through_combiner = !matches!(
+        if matches!(
             self.other_modes.cycle_type,
             CYCLE_TYPE_COPY | CYCLE_TYPE_FILL
-        );
+        ) {
+            for y in y0..y1 {
+                let row = self.color_image.wrapping_add(y * stride);
+                for x in x0..x1 {
+                    self.fill_pixel(row, x, bpp, bus);
+                }
+            }
+            return;
+        }
+
+        // 1-/2-cycle: the combiner output is **loop-invariant**. A rectangle has
+        // no shade or texture block, so `combined_color` reads only the prim/env/
+        // key/convert registers and the interpolation origin
+        // (`major_x`/`line`/`y_base`/`x`) is unused — hence the zeros. Evaluating
+        // it once per rectangle rather than once per pixel is not a speculative
+        // optimisation but a statement of that invariance: if this ever needs to
+        // move back inside the loop, something has started varying per pixel and
+        // the change deserves the scrutiny.
+        let (base, _shade_alpha) = self.combined_color(None, None, 0, 0, 0, 0, 0);
+        // Alpha-compare gates the write exactly as on the triangle path — and on
+        // an invariant alpha it either passes for every pixel or for none, so the
+        // whole rectangle is rejected here rather than per pixel.
+        if !self.alpha_compare_passes(base[3]) {
+            return;
+        }
         for y in y0..y1 {
             let row = self.color_image.wrapping_add(y * stride);
             for x in x0..x1 {
-                if through_combiner {
-                    // A rectangle has no shade/texture block, so the interpolation
-                    // origin (`major_x`/`line`/`y_base`/`x`) is unused — pass zeros.
-                    let (mut color, _shade_alpha) = self.combined_color(None, None, 0, 0, 0, 0, 0);
-                    // Alpha-compare gates the write exactly as on the triangle path.
-                    if !self.alpha_compare_passes(color[3]) {
-                        continue;
-                    }
-                    self.dither_pixel(&mut color, x, y);
-                    Self::write_pixel(row, x, bpp, color, bus);
-                } else {
-                    self.fill_pixel(row, x, bpp, bus);
-                }
+                // Dither is the one genuinely per-pixel step, so it works on a
+                // copy and must not mutate the shared `base`.
+                let mut color = base;
+                self.dither_pixel(&mut color, x, y);
+                Self::write_pixel(row, x, bpp, color, bus);
             }
         }
     }
