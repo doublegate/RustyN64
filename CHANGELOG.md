@@ -26,7 +26,7 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   so the VI presents a genuinely black buffer and `scanout` is correct. A
   DPC-seam opcode census shows the real F3DEX stream arriving — **7,412
   Z-buffered `TRIANGLE`s**, 1,630 `TEXTURE_RECTANGLE`, 4,374 `LOAD_BLOCK`, 7,705
-  `SET_TILE` of 74,508 commands. Geometry and textures reach the RDP and the
+  `SET_TILE` and 1,589 `SET_COMBINE`, of 74,508 commands. Geometry and textures reach the RDP and the
   frame still ends as the clear colour: **the RDP rasterises real geometry to
   black**. First suspects — the Z path, texture fetch, and the combiner — each
   testable against the existing Angrylion vector harness.
