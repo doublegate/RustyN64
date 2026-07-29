@@ -30,6 +30,33 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   selects the combiner on the presence of a shade/texture block rather than on the
   cycle type. No vector exercises it yet.
 
+### Added — the frontend opens zipped ROMs
+
+- **`File -> Open ROM` and the CLI now accept a `.zip`.** ROM sets are
+  distributed as one `.z64` per `.zip`, so requiring a manual unpack was friction
+  with no upside. New `rustyn64-frontend::romfile` module; native-only (the wasm
+  build receives bytes from the browser file API, never a path).
+- **The container is sniffed by magic (`PK\x03\x04`), not by extension** — the
+  same rule the byte-order detection already follows, and for the same reason. A
+  zip named `game.z64` is unwrapped; a raw ROM named `game.zip` is read verbatim.
+- Exactly one `.z64`/`.n64`/`.v64` member (matched case-insensitively) is
+  extracted. Zero is an error; **more than one is an error naming the
+  candidates**, because picking "the first" or "the largest" would silently boot a
+  game the user did not choose.
+- Byte order is unaffected: extracted bytes go through the existing
+  `RomFormat::detect`, so a `.v64` inside a zip normalises identically.
+- Treated as untrusted input — declared sizes are checked against a 64 MiB
+  cartridge-space cap **before** allocating, the read is **independently**
+  hard-capped so a lying header cannot exhaust memory, and nothing is written to
+  disk (so zip-slip cannot arise). Both the plain and the zip path share one
+  capped-read helper, so the two cannot drift: a declared size is only ever a
+  hint, since a zip header can understate the real length and
+  `metadata().len()` reports **0** for a character device — reading `/dev/zero`
+  as a ROM is refused at the cap rather than allocating without bound.
+- Verified against the real thing, not only self-written archives: a local
+  `#[ignore]`d test reads genuine ROM-set zips and asserts byte-identity with
+  separately-extracted copies of the same games.
+
 ### Added — the real microcode's command list now RASTERISES end to end (ADR 0002)
 
 - **microcode → RDP → framebuffer, closed.** Every earlier microcode test stopped
