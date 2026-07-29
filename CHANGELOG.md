@@ -8,6 +8,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Added — the real microcode's command list now RASTERISES end to end (ADR 0002)
+
+- **microcode → RDP → framebuffer, closed.** Every earlier microcode test stopped
+  at "the microcode emitted the right bytes". The new
+  `the_microcode_generated_list_rasterises_to_the_expected_picture` runs the real
+  libdragon `rdpq` microcode on the LLE RSP, has it generate a complete RDP
+  command list, then **executes that generated list on RustyN64's own RDP** and
+  asserts the framebuffer. No hand-written RDP command takes part in the drawing.
+- This is the **licence-clean form** of the `v0.8.0` "custom-microcode families
+  render" goal: F3DEX and kin are proprietary and ship inside commercial ROMs, so
+  they can never be committed or CI-gated (ADR 0008); `rdpq` is the only
+  vendorable real N64 graphics microcode and is therefore the proxy.
+- Two `rdpq` behaviours in the emitted list were **predicted from the vendored
+  source before being observed**: `SetOtherModes` re-emits a `SET_SCISSOR` when
+  the cycle type changes, and `SetColorImage` appends a `SET_FILL_COLOR` from its
+  cached `RDPQ_FILL_COLOR`. The test asserts the exact 8-command count.
+- Mutation-checked: skipping the RDP execution leaves the red pre-fill sentinel
+  and fails; changing the queue's fill colour changes the picture and fails.
+
 ### Added — AI bit-clock (`BC`) readback (ledger R-16)
 
 - **`AI_STATUS` `BC` (bit 16) is now modelled.** `AI_BITRATE` is documented as

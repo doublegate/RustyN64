@@ -590,3 +590,209 @@ fn the_microcode_generates_a_set_fill_color_command() {
         "DP_END must advance past the generated command through the DPC seam"
     );
 }
+
+/// Seed the DMEM state the resident `rdpq` overlay needs before launch: overlay
+/// registration, the command base, the RDP dynamic-buffer pointers `RDPQ_Send`
+/// writes through, and a zeroed `RDPQ_ADDRESS_TABLE`.
+///
+/// The address table matters: `RDPQ_FixupAddress` adds `ADDRESS_TABLE[addr >> 26]`
+/// to every image address, so zeroing it makes a top-bits-zero address pass
+/// through verbatim instead of being relocated.
+fn seed_rdpq_overlay(
+    sys: &mut rustyn64_core::System,
+    ovl_id: u8,
+    command_base: u16,
+    buf_base: u32,
+    buf_room: u32,
+) {
+    // The id-map loop below runs `ovl_id..=0xF`; a larger id would both skip the
+    // map and be a nonsense overlay id, so fail loudly rather than write oddly.
+    assert!(ovl_id <= 0xF, "overlay id must be 4-bit (got {ovl_id:#x})");
+    let cur_ovl = sym("RSPQ_CURRENT_OVL");
+    sys.bus.rsp.dmem[cur_ovl..cur_ovl + 2].copy_from_slice(&u16::from(ovl_id).to_be_bytes());
+    let idmap = sym("RSPQ_OVERLAY_IDMAP");
+    for hi in ovl_id..=0xF {
+        sys.bus.rsp.dmem[idmap + usize::from(hi)] = ovl_id;
+    }
+    let cmd_base_off = sym("_ovl_data_start") + OVL_HEADER_CMDBASE;
+    sys.bus.rsp.dmem[cmd_base_off..cmd_base_off + 2].copy_from_slice(&command_base.to_be_bytes());
+
+    let cur = sym("RDPQ_CURRENT");
+    sys.bus.rsp.dmem[cur..cur + 4].copy_from_slice(&buf_base.to_be_bytes());
+    let sentinel = sym("RDPQ_SENTINEL");
+    sys.bus.rsp.dmem[sentinel..sentinel + 4].copy_from_slice(&(buf_base + buf_room).to_be_bytes());
+    let dyn_bufs = sym("RDPQ_DYNAMIC_BUFFERS");
+    sys.bus.rsp.dmem[dyn_bufs..dyn_bufs + 4].copy_from_slice(&buf_base.to_be_bytes());
+    sys.bus.rsp.dmem[dyn_bufs + 4..dyn_bufs + 8]
+        .copy_from_slice(&(buf_base + buf_room).to_be_bytes());
+    let at = sym("RDPQ_ADDRESS_TABLE");
+    sys.bus.rsp.dmem[at..at + 16 * 4].fill(0);
+}
+
+/// Point the RDP at `[start, end)` and drain it, asserting it actually finished.
+///
+/// Drains on the observed condition (`DPC_CURRENT >= DPC_END`) rather than a
+/// fixed tick budget, so a list that stalls fails loudly instead of being scored
+/// from a partly rendered frame.
+fn execute_rdp_list(sys: &mut rustyn64_core::System, start: u32, end: u32) {
+    sys.bus.rdp.dpc_write(0, start); // DPC_START
+    sys.bus.rdp.dpc_write(1, end); // DPC_END
+    let mut ticks = 0;
+    while sys.bus.rdp.dpc_read(2) < end && ticks < 4096 {
+        sys.bus.rdp_tick();
+        ticks += 1;
+    }
+    assert!(
+        sys.bus.rdp.dpc_read(2) >= end,
+        "the RDP must drain the generated list (stalled at {:#x} of {end:#x})",
+        sys.bus.rdp.dpc_read(2)
+    );
+}
+
+/// **The real microcode's command list RASTERISES — the ADR 0002 payoff, end to end.**
+///
+/// Every earlier microcode test stops at "the microcode emitted the right bytes".
+/// This one closes the chain: the real libdragon `rdpq` microcode runs on the LLE
+/// RSP, generates a complete RDP command list, and **that generated list is then
+/// executed by `RustyN64`'s own RDP**, with the resulting framebuffer asserted. No
+/// hand-written RDP command is involved in the drawing — the picture is produced
+/// by microcode output alone.
+///
+/// This is the licence-clean form of "the custom-microcode families render"
+/// (`v0.8.0` "Breadth"): F3DEX and kin are proprietary and ship inside commercial
+/// ROMs, so they can never be committed or CI-gated (`docs/adr/0008`); `rdpq` is
+/// the only vendorable real N64 graphics microcode, so it is the proxy.
+///
+/// **Two rdpq behaviours the emitted list exhibits are deliberate, not noise, and
+/// were predicted from the vendored source before being observed:**
+/// - `RDPQCmd_SetOtherModes` re-emits a `SET_SCISSOR` when the cycle type changes.
+/// - `RDPQCmd_SetColorImage` appends a `SET_FILL_COLOR` from its cached
+///   `RDPQ_FILL_COLOR` (zero here, later overwritten by the explicit one).
+///
+/// The expected picture is derived from the **documented** FILL-mode semantics
+/// (N64brew *Reality Display Processor/Commands* §`0x36 - Fill Rectangle`: fills
+/// the inclusive `u10.2` span with `SET_FILL_COLOR`), not from our own renderer.
+#[test]
+fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
+    use rustyn64_core::System;
+    use rustyn64_core::rsp::sp;
+
+    const CLR_HALT: u32 = 1 << 0;
+    const SET_SIG_MORE: u32 = 1 << 24;
+    const IDLE_PC: u32 = 0x18;
+    const MAX_STEPS: usize = 20_000;
+    const RDPQ_OVL_ID: u8 = 0xC;
+    const COMMAND_BASE: u16 = 0x180; // = (RDPQ_OVL_ID as u16) << 5
+
+    const QUEUE_ADDR: u32 = 0x2000;
+    const BUF_BASE: u32 = 0x3000;
+    const BUF_ROOM: u32 = 0x400;
+    const FB: u32 = 0x8000;
+    const W: u32 = 8;
+    const H: u32 = 8;
+    /// RGBA5551 green — the `SET_FILL_COLOR` the queue programs.
+    const GREEN: u16 = 0x07C1;
+    /// The framebuffer's pre-run fill: NOT the fill colour, so a renderer that
+    /// never ran cannot pass (the converging-paths hazard).
+    const SENTINEL: u16 = 0xF801; // red
+
+    let mut sys = System::new(0);
+    sys.bus.rsp.dmem[..IMEM_LMA].copy_from_slice(&UCODE[..IMEM_LMA]);
+    let imem_len = UCODE.len() - IMEM_LMA;
+    sys.bus.rsp.imem[..imem_len].copy_from_slice(&UCODE[IMEM_LMA..]);
+
+    seed_rdpq_overlay(&mut sys, RDPQ_OVL_ID, COMMAND_BASE, BUF_BASE, BUF_ROOM);
+
+    // The rspq queue. Command ids are `0xC0 | rdp_opcode` (the rdpq overlay table
+    // in `third_party/libdragon-rsp/src/rsp_rdpq.S`).
+    let queue: [u32; 13] = [
+        0xEF30_0000,
+        0x0000_0000, // SET_OTHER_MODES: cycle_type = FILL (word0 bits 21:20 = 3)
+        0xFF10_0007,
+        FB, // SET_COLOR_IMAGE: 16-bit, width-1 = 7, addr = FB
+        0xED00_0000,
+        0x0002_0020, // SET_SCISSOR: (0,0)-(8,8) in u10.2
+        0xF700_0000,
+        0x07C1_07C1, // SET_FILL_COLOR: green in both halves
+        0xF602_0020,
+        0x0000_0000, // FILL_RECTANGLE: (0,0)-(8,8) in u10.2
+        0xE900_0000,
+        0x0000_0000, // SYNC_FULL
+        0x0000_0000, // rspq terminator (WaitNewInput)
+    ];
+    let qa = QUEUE_ADDR as usize;
+    for (i, w) in queue.iter().enumerate() {
+        sys.bus.rdram[qa + i * 4..qa + i * 4 + 4].copy_from_slice(&w.to_be_bytes());
+    }
+    let rdram_ptr = sym("RSPQ_RDRAM_PTR");
+    sys.bus.rsp.dmem[rdram_ptr..rdram_ptr + 4].copy_from_slice(&QUEUE_ADDR.to_be_bytes());
+
+    // Pre-fill with the sentinel (see its doc above).
+    for i in 0..(W * H) as usize {
+        sys.bus.rdram[FB as usize + i * 2..FB as usize + i * 2 + 2]
+            .copy_from_slice(&SENTINEL.to_be_bytes());
+    }
+
+    // --- Run the microcode. ---
+    sys.bus.rsp.sp.set_pc(0);
+    sys.bus
+        .rsp
+        .sp
+        .write(sp::reg::STATUS, CLR_HALT | SET_SIG_MORE);
+    let mut steps = 0;
+    while !sys.bus.rsp.sp.halted() && steps < MAX_STEPS {
+        sys.bus.rsp_tick();
+        steps += 1;
+    }
+    assert!(
+        sys.bus.rsp.sp.halted() && sys.bus.rsp.sp.broke() && sys.bus.rsp.sp.pc() == IDLE_PC,
+        "the microcode must run to its idle break (halted={}, broke={}, pc={:#x})",
+        sys.bus.rsp.sp.halted(),
+        sys.bus.rsp.sp.broke(),
+        sys.bus.rsp.sp.pc()
+    );
+
+    // The microcode advanced DP_END through the DPC seam; that span IS the list.
+    let dp_end = sys.bus.rdp.dpc_read(1);
+    assert_eq!(
+        dp_end,
+        BUF_BASE + 8 * 8,
+        "the microcode must emit exactly 8 RDP commands: 6 queued, plus the SET_SCISSOR that SetOtherModes re-emits and the SET_FILL_COLOR that SetColorImage appends"
+    );
+
+    // The emitted SET_OTHER_MODES must actually carry FILL cycle type. Asserting
+    // the *emitted* command (not just the queued one) is what catches a wrong
+    // SOM packing: `SOM_CYCLE_FILL` is `3 << 52`, i.e. word0 bits 21:20, and a
+    // value placed in word1 instead leaves the cycle type at 0 while every other
+    // assertion in this test still passes.
+    let som0 = u32::from_be_bytes(
+        sys.bus.rdram[BUF_BASE as usize..BUF_BASE as usize + 4]
+            .try_into()
+            .expect("4 bytes"),
+    );
+    assert_eq!(
+        som0 >> 24,
+        0xEF,
+        "the first emitted command must be SET_OTHER_MODES (got {som0:#010x})"
+    );
+    assert_eq!(
+        (som0 >> 20) & 0x3,
+        3,
+        "the emitted SET_OTHER_MODES must select FILL cycle type in word0 bits 21:20 (got {som0:#010x})"
+    );
+
+    // --- Execute the microcode-generated list on our RDP. ---
+    execute_rdp_list(&mut sys, BUF_BASE, dp_end);
+
+    // --- The picture. FILL mode writes SET_FILL_COLOR over the inclusive span. ---
+    for y in 0..H {
+        for x in 0..W {
+            let o = FB as usize + ((y * W + x) * 2) as usize;
+            let px = u16::from_be_bytes([sys.bus.rdram[o], sys.bus.rdram[o + 1]]);
+            assert_eq!(
+                px, GREEN,
+                "pixel ({x},{y}) must be the microcode-programmed fill colour (got {px:#06x}); the framebuffer began as {SENTINEL:#06x}"
+            );
+        }
+    }
+}
