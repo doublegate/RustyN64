@@ -64,32 +64,6 @@ const fn apply_cartridge_region(system: &mut System) {
     system.bus.audio.set_region(region);
 }
 
-/// The MIPS general-purpose register index of the stack pointer (`$29`/`$sp`).
-/// Named so the seed below reads as intent rather than as a magic index, matching
-/// how the COP0 writes use `reg::STATUS` / `reg::CONFIG`.
-const GPR_SP: u8 = 29;
-
-/// `$at` — the first of the ROM-independent IPL2-exit registers `hle_boot`
-/// seeds (ledger R-23). Named, like [`GPR_SP`], so the seeds below read as
-/// intent rather than as a column of bare indices.
-const GPR_AT: u8 = 1;
-/// `$a2` — see [`GPR_AT`].
-const GPR_A2: u8 = 6;
-/// `$a3` — see [`GPR_AT`].
-const GPR_A3: u8 = 7;
-/// `$t0` — see [`GPR_AT`].
-const GPR_T0: u8 = 8;
-/// `$t2` — see [`GPR_AT`].
-const GPR_T2: u8 = 10;
-/// `$t3` — the RSP DMEM base. Called out separately because it is the one
-/// register that decides whether CIC-6105 titles boot at all: their IPL3
-/// self-descrambles by reading `0x44(t3)`, its own image in DMEM.
-const GPR_T3: u8 = 11;
-/// `$s4` — see [`GPR_AT`].
-const GPR_S4: u8 = 20;
-/// `$ra` — see [`GPR_AT`].
-const GPR_RA: u8 = 31;
-
 /// **HLE-boot a retail ROM.**
 ///
 /// Seed the state IPL3 expects, copy the cart's *real* IPL3 (ROM `0x40..0x1000`)
@@ -105,6 +79,7 @@ const GPR_RA: u8 = 31;
 /// [`BootError::TooSmall`] if the image is shorter than a `0x1000` boot header.
 pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     use crate::cpu::cop0::reg;
+    use crate::cpu::regs::gpr;
 
     if rom.len() < 0x1000 {
         return Err(BootError::TooSmall);
@@ -145,7 +120,7 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     // (KSEG3 — TLB-mapped, no entries), and the resulting TLB-refill exception
     // vectors to `0x8000_0000` in empty RDRAM. Every retail title then executed a
     // NOP sled to the end of memory instead of booting (ledger R-18).
-    system.cpu.regs.write(GPR_SP, 0xFFFF_FFFF_A400_1FF0);
+    system.cpu.regs.write(gpr::SP, 0xFFFF_FFFF_A400_1FF0);
 
     // **The rest of the IPL2 exit state IPL3 inherits — MEASURED, not invented.**
     //
@@ -159,26 +134,32 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     // cartridge's IPL3, and `s6` is the CIC seed, already set per-CIC above.
     // Freezing any of those would be fabricating a value the boot computes.
     //
+    // `s4` is absent here on purpose: the `s3`-`s7` block below already writes it
+    // (as `tv_type = 1`), and IPL2 leaves the same value, so seeding it twice would
+    // be two writes to one register with no second source of truth.
+    //
     // `t3 = 0xA400_0000` is the one that matters most: **CIC-6105's IPL3 is a
     // different program** that opens with a self-descrambling XOR loop reading
     // `0x44(t3)` — DMEM + 0x40, its own image. With `t3 = 0` that read goes to
     // low RDRAM and the descramble produces garbage (ledger R-23).
-    system.cpu.regs.write(GPR_AT, 1);
-    system.cpu.regs.write(GPR_A2, 0xFFFF_FFFF_A400_1F0C);
-    system.cpu.regs.write(GPR_A3, 0xFFFF_FFFF_A400_1F08);
-    system.cpu.regs.write(GPR_T0, 0xC0);
-    system.cpu.regs.write(GPR_T2, 0x40);
-    system.cpu.regs.write(GPR_T3, 0xFFFF_FFFF_A400_0000);
-    system.cpu.regs.write(GPR_S4, 1);
-    system.cpu.regs.write(GPR_RA, 0xFFFF_FFFF_A400_1550);
+    system.cpu.regs.write(gpr::AT, 1);
+    system.cpu.regs.write(gpr::A2, 0xFFFF_FFFF_A400_1F0C);
+    system.cpu.regs.write(gpr::A3, 0xFFFF_FFFF_A400_1F08);
+    system.cpu.regs.write(gpr::T0, 0xC0);
+    system.cpu.regs.write(gpr::T2, 0x40);
+    system.cpu.regs.write(gpr::T3, 0xFFFF_FFFF_A400_0000);
+    system.cpu.regs.write(gpr::RA, 0xFFFF_FFFF_A400_1550);
 
     // s3–s7 the OS/IPL3 rely on: rom_type=0 (cart), tv_type=1 (NTSC),
     // reset_type=0 (cold), s6 = the CIC seed byte, s7 = 0.
-    system.cpu.regs.write(19, 0);
-    system.cpu.regs.write(20, 1);
-    system.cpu.regs.write(21, 0);
-    system.cpu.regs.write(22, u64::from((seed >> 8) & 0xFF));
-    system.cpu.regs.write(23, 0);
+    system.cpu.regs.write(gpr::S3, 0);
+    system.cpu.regs.write(gpr::S4, 1);
+    system.cpu.regs.write(gpr::S5, 0);
+    system
+        .cpu
+        .regs
+        .write(gpr::S6, u64::from((seed >> 8) & 0xFF));
+    system.cpu.regs.write(gpr::S7, 0);
 
     // PI DOM1 bus timing from the ROM header's first word (as IPL2 does).
     let cfg = u32::from_be_bytes([rom[0], rom[1], rom[2], rom[3]]);
