@@ -168,6 +168,18 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
     const FRAMES: u64 = 90;
 
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/roms/external/commercial");
+    // **The local-only absence path is checked ONCE, here, before discovery.**
+    // Past that point every failure is an error rather than a quiet `continue` —
+    // an oracle that runs nothing looks exactly like one that passes, and this
+    // test was explicitly invoked (`--ignored`), so a present-but-unusable corpus
+    // is a misconfiguration, not an absence.
+    if !base.is_dir() {
+        eprintln!(
+            "no commercial corpus at {} — T-71-003 witness skipped (local-only)",
+            base.display()
+        );
+        return;
+    }
     let mut staged = 0usize;
     let mut witnesses: Vec<String> = Vec::new();
     // Staged ROMs that failed to boot at all. Tracked and asserted on, because a
@@ -182,9 +194,16 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
         "flashram",
         "controller-pak",
     ] {
-        let Ok(entries) = std::fs::read_dir(base.join(folder)) else {
+        let dir = base.join(folder);
+        // A save-type folder that simply is not staged is fine and reported; one
+        // that exists but cannot be *read* is a real failure and must not be
+        // mistaken for "no ROMs here".
+        if !dir.exists() {
+            eprintln!("[{folder}] not staged");
             continue;
-        };
+        }
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("[{folder}] exists but could not be read: {e}"));
         // Directory-entry failures are REPORTED, not flattened away. `.flatten()`
         // silently drops `Err` entries, so a corpus could shrink — or vanish —
         // while the run still looked complete.
@@ -227,10 +246,17 @@ fn a_retail_titles_own_microcode_executes_on_the_rsp() {
         }
     }
 
-    if staged == 0 {
-        eprintln!("no commercial ROMs staged — T-71-003 witness skipped (local-only)");
-        return;
-    }
+    // The corpus root exists (checked above), so reaching here with nothing staged
+    // means the witness was invoked against an empty corpus — a failure, not a
+    // pass. Rust records a bare `return` as success, which is exactly how an
+    // oracle silently stops proving anything.
+    assert!(
+        staged > 0,
+        "the commercial corpus at {} exists but stages no .z64 — the witness \
+         verified nothing. Stage ROMs, or remove the corpus directory to take the \
+         local-only skip path.",
+        base.display()
+    );
     // A staged ROM that cannot boot is a regression, not a skip. R-23 (CIC-6105)
     // titles still *boot* under HLE far enough to be measured here — they fail
     // later — so this does not need a carve-out for them.
