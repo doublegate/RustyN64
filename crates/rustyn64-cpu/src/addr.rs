@@ -805,4 +805,42 @@ mod tests {
             );
         }
     }
+    /// **A sign-extended KSEG0 address stays Direct with `KX = 1`.**
+    ///
+    /// Kept from an R-18 investigation that this test **refuted**: a stalled
+    /// retail title appeared to take `AdES` storing to `0xFFFF_FFFF_8028_4C78`
+    /// in wide kernel mode, which would have meant the segment map mishandled
+    /// KSEG0 under 64-bit addressing. It does not — the address is `Direct`
+    /// either way, and the apparent `AdES` came from an *uncorrelated* reading
+    /// of `Cause`/`EPC` sampled long after the fact.
+    ///
+    /// Retained because the invariant is real and previously untested: KSEG0 is
+    /// direct-mapped regardless of `KX`, and a regression that made 64-bit
+    /// addressing route it through the TLB would be caught here rather than as
+    /// an unexplained boot hang.
+    #[test]
+    fn r18_kseg0_is_direct_in_wide_kernel_mode() {
+        let acc = Access {
+            mode: Mode::Kernel,
+            wide: true,
+            erl: false,
+        };
+        let v = 0xFFFF_FFFF_8028_4C78u64;
+        assert!(
+            matches!(segment(v, acc), Segment::Direct { .. }),
+            "KSEG0 must stay direct with KX=1, got {:?}",
+            segment(v, acc)
+        );
+        // ... and with KX clear, for contrast.
+        let narrow = Access {
+            mode: Mode::Kernel,
+            wide: false,
+            erl: false,
+        };
+        assert!(
+            matches!(segment(v, narrow), Segment::Direct { .. }),
+            "KSEG0 must also stay direct with KX=0, got {:?}",
+            segment(v, narrow)
+        );
+    }
 }
