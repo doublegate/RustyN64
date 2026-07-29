@@ -5972,6 +5972,22 @@ mod tests {
         assert!(om.aa_enable);
         assert!(om.alpha_compare_en);
         assert_eq!(om.rgb_dither_mode, 1);
+
+        // **`tlut_en` (bit 47) and `tlut_type` (bit 46) decode independently.**
+        // They are ADJACENT bits, so a swapped extraction is the likely error and
+        // would pass any test that sets both or neither. Assert each with the other
+        // clear, in both polarities, so a swap fails and so does dropping either.
+        let om = |hi: u32| {
+            let mut r = Rdp::new();
+            r.set_other_modes(hi, 0);
+            r.other_modes
+        };
+        let a = om(1 << 15); // tlut_en only
+        assert!(a.tlut_en, "bit 47 must set tlut_en");
+        assert!(!a.tlut_type, "bit 47 must NOT set tlut_type");
+        let b = om(1 << 14); // tlut_type only
+        assert!(!b.tlut_en, "bit 46 must NOT set tlut_en");
+        assert!(b.tlut_type, "bit 46 must set tlut_type");
     }
 
     /// **The magic-matrix RGB dither matches Angrylion's `rgb_dither` cell-for-cell.**

@@ -1207,12 +1207,14 @@ static const uint32_t V39_CI4_TLUT_DISABLED_16[] = {
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
     0x00000000u, 0x00000000u, // XL, DxLDy
-    0x00000000u, 0x00000000u, // XH = 0.0 — start at column 0 so all EIGHT
-    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0   indices are sampled
-    // dx.S = 0x20 advances one texel per pixel, so columns sample indices 0..7.
-    // The edges start at column 0 on purpose: with XH/XM = 2.0 the widest row only
-    // reached six columns, so palette entries 6 and 7 were declared but never
-    // fetched — the vector would have claimed eight distinct entries and proved six.
+    0x00000000u, 0x00000000u, // XH = 0.0 — geometry identical to V37
+    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0
+    // The geometry spans all eight columns, as V37's does — but do NOT read that as
+    // eight-entry coverage here. With `tlut_en` clear every column renders black
+    // whatever its index, so this vector proves the **gate**, not per-index palette
+    // resolution. V37 is what proves the resolution; this one proves the flag
+    // suppresses it. Identical geometry is the point: it makes the two goldens
+    // differ by exactly one bit of input.
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
 };
 static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
