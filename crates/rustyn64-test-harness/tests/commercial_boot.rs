@@ -48,7 +48,16 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
     // 1:1 `Bus::scanout`, so the number reported here was not the number a user
     // would see: `scanout_scaled` applies the real `VI_X_SCALE` upscale, so a
     // 320-wide framebuffer scans out 625 wide and the counts differ by ~2x.
-    let mut frame = vec![0u8; 640 * 480 * 4];
+    //
+    // Sized for the largest scan-out any supported mode can produce, not for the
+    // NTSC case that happens to be in front of us. `scanout_scaled` returns
+    // `(0, 0)` and writes nothing when the destination is too small — which would
+    // arrive here as `non_black_pixels == 0`, i.e. a buffer-sizing mistake
+    // wearing the exact costume of "this title renders nothing". PAL is 576
+    // lines, so a 480-line buffer would have made every PAL title read as blank.
+    // The dimensions are carried out in `BootResult` so a `(0, 0)` is visible as
+    // itself rather than collapsing into the pixel count.
+    let mut frame = vec![0u8; 720 * 576 * 4];
     let (w, h) = sys.bus.scanout_scaled(&mut frame);
     let non_black_pixels = frame
         .chunks_exact(4)
@@ -64,6 +73,7 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
     Some(BootResult {
         retired: sys.cpu.retired,
         non_black_pixels,
+        scanout_dims: (w, h),
         rdram_nonzero,
         pc,
         rdram_len: u32::try_from(sys.bus.rdram.len()).unwrap_or(u32::MAX),
@@ -98,10 +108,20 @@ struct BootResult {
     /// never assert on it.
     ///
     /// Re-confirmed 2026-07-29 rather than merely restated: Ocarina of Time
-    /// scored 62,963 of 75,840 on a 300-frame run and, rendered to PNG and
-    /// looked at, is pure noise; the same run's Paper Mario frame is a real
-    /// picture (`screenshots/`). The two are indistinguishable by this count.
+    /// scored 62,963 of 75,840 (measured 1:1, before this caller migrated) on a
+    /// 300-frame run and, rendered to PNG and looked at, is pure noise; the same
+    /// run's Paper Mario frame is a real picture (`screenshots/`). The two are
+    /// indistinguishable by this count.
+    ///
+    /// The denominator is `scanout_dims.0 * scanout_dims.1` — the **scaled**
+    /// dimensions this is now measured at — not the 1:1 framebuffer size.
     non_black_pixels: usize,
+    /// The `(width, height)` [`rustyn64_core::Bus::scanout_scaled`] returned.
+    ///
+    /// Reported alongside the count so `(0, 0)` — the VI blanked, or a
+    /// destination buffer too small — is distinguishable from "scanned a real
+    /// frame and none of it was lit". Both produce `non_black_pixels == 0`.
+    scanout_dims: (u32, u32),
     rdram_nonzero: usize,
     pc: u32,
     /// Installed RDRAM length, so the PC bound below is the real mapped size
@@ -183,8 +203,15 @@ fn a_commercial_rom_boots_and_executes() {
                 eprintln!(
                     // Diagnostic only, never a pass condition — uninitialised
                     // RDRAM is non-black too (ledger R-18).
-                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, non-black pixels (NOT proof of rendering)={}",
-                    r.retired, r.pc, r.rdram_nonzero, r.non_black_pixels
+                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, \
+                     scanout={}x{}, non-black pixels (NOT proof of rendering)={}/{}",
+                    r.retired,
+                    r.pc,
+                    r.rdram_nonzero,
+                    r.scanout_dims.0,
+                    r.scanout_dims.1,
+                    r.non_black_pixels,
+                    r.scanout_dims.0 * r.scanout_dims.1
                 );
                 assert!(
                     r.retired >= MIN_RETIRED,

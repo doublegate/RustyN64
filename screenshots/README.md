@@ -13,9 +13,16 @@ Frames captured from RustyN64. **ROMs are never committed** (see `.gitignore` an
   microcode on the LLE RSP → DPC seam → LLE RDP → `Bus::scanout_scaled`.
   Nothing here is HLE'd above the cartridge boundary; the picture is rasterised by
   the RDP from the game's own display list.
-- **Geometry:** 625x237. That is the real VI output, not a bug — `VI_X_SCALE` is
-  `0x200` (0.5 in 2.10), so the 320-wide framebuffer upscales to 640, less the
-  8/7-pixel `minhpass`/`maxhpass` crop.
+- **Geometry:** 625x237, and **all 148,125 pixels are lit**. That is the real VI
+  output for this NTSC title, not a bug — `VI_X_SCALE` is `0x200` (0.5 in 2.10),
+  so the 320-wide framebuffer upscales to 640, less the 8/7-pixel
+  `minhpass`/`maxhpass` crop. A PAL title scans out taller (576 lines); these
+  dimensions are this capture's, not a fixed expectation.
+- **Two denominators, kept apart on purpose.** The same frame measures
+  **75,840 / 75,840** through the unscaled 1:1 `Bus::scanout` (320x237) and
+  **148,125 / 148,125** through `Bus::scanout_scaled` (625x237). Both are "fully
+  lit"; quoting one figure beside the other frame's dimensions is a mistake this
+  file made in its first revision.
 - **Captured at:** frame 120 of a 300-frame run; the frame is stable through
   frame 270, so it is a held picture rather than a transient.
 - **What it shows:** flat-shaded geometry with clean edge-walked slopes — a green
