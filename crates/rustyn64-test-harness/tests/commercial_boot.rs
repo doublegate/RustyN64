@@ -7,8 +7,10 @@
 //! HLE handoff lands, the CPU fetches the game's own instructions, and the PC
 //! advances through millions of retired instructions across varied routines.
 //!
-//! It also *reports* the scanned-out lit-pixel count for information, but does
-//! **not** assert on it: reaching a rendered title frame depends on the retail
+//! It also *reports* the non-black pixel count for information, but does
+//! **not** assert on it — and that count is NOT evidence of rendering, because
+//! uninitialised RDRAM is non-black (ledger R-18). Reaching a rendered title
+//! frame depends on the retail
 //! OS-boot runtime (the VI vblank interrupt loop, the RI/RDRAM interface, and
 //! F3DEX graphics microcode) that is out of scope for the Phase 5 cart boundary
 //! and is tracked as a ledgered cross-subsystem gap (accuracy-ledger R-18).
@@ -43,7 +45,7 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
 
     let mut frame = vec![0u8; 640 * 480 * 4];
     let (w, h) = sys.bus.scanout(&mut frame);
-    let lit = frame
+    let non_black_pixels = frame
         .chunks_exact(4)
         .take((w * h) as usize)
         .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
@@ -56,7 +58,7 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
     let pc = (sys.cpu.pc & 0xFFFF_FFFF) as u32;
     Some(BootResult {
         retired: sys.cpu.retired,
-        lit,
+        non_black_pixels,
         rdram_nonzero,
         pc,
         rdram_len: u32::try_from(sys.bus.rdram.len()).unwrap_or(u32::MAX),
@@ -83,7 +85,13 @@ fn is_cic_6105(path: &Path) -> bool {
 /// assertions below distinguish "executed a lot" from "executed the *game*".
 struct BootResult {
     retired: u64,
-    lit: usize,
+    /// Non-black pixels on the final scanned-out frame.
+    ///
+    /// **Named for what it measures, not what it was mistaken for.** It is NOT
+    /// evidence of rendering — uninitialised RDRAM is non-black, and two titles
+    /// scored 90%+ here while producing pure noise (ledger R-18). A diagnostic;
+    /// never assert on it.
+    non_black_pixels: usize,
     rdram_nonzero: usize,
     pc: u32,
     /// Installed RDRAM length, so the PC bound below is the real mapped size
@@ -163,8 +171,10 @@ fn a_commercial_rom_boots_and_executes() {
         match boot_and_run(&rom_path, 120) {
             Some(r) => {
                 eprintln!(
-                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, lit pixels={}",
-                    r.retired, r.pc, r.rdram_nonzero, r.lit
+                    // Diagnostic only, never a pass condition — uninitialised
+                    // RDRAM is non-black too (ledger R-18).
+                    "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, non-black pixels (NOT proof of rendering)={}",
+                    r.retired, r.pc, r.rdram_nonzero, r.non_black_pixels
                 );
                 assert!(
                     r.retired >= MIN_RETIRED,
