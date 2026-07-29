@@ -70,7 +70,7 @@ the frontend shell (Phase 6, v0.7.0) is now complete too; the next phase is the
 accuracy battery (Phase 7, v0.8.0). See `to-dos/ROADMAP.md`.
 
 **Read this before trusting any green checkmark:** CI passing means the
-workspace compiles and its **712** tests pass. The CPU, the RSP, the LLE RDP,
+workspace compiles and its **803** tests pass. The CPU, the RSP, the LLE RDP,
 the AI, and the cartridge boot now genuinely execute — that is real, and proven
 by the oracle criteria above, not a self-assessment. The honest remaining gap is
 that a **commercial** ROM boots and executes but does not yet reach a rendered
@@ -85,7 +85,7 @@ not the same as a wired gate.
 ## What works today
 
 - The Cargo workspace: all `rustyn64-*` crates build; `cargo test --workspace`
-  passes 712 tests.
+  passes 803 tests.
 - `rustyn64-core`: the `Bus` (owns RDRAM + every chip + the RCP/MI register
   state), and the **canonical 187.5 MHz scheduler** (ADR 0006) — `master_ticks`
   is the only incremented counter; CPU (÷2), RCP (÷3) and COP0 `Count` (÷4)
@@ -160,9 +160,10 @@ systemtest` runner and reports a real count (Phase 1 categories `Failed: 0`; RSP
 category `Failed: 0`; 90 suite-wide). The **golden-log** gate (`--test
 golden_log`) replays 50,027 retired records at 0 diff against ares. A fourth,
 the **synthetic visual golden** (`--test golden_frame`, T-31-005), executes the
-FILL → VI scan-out path against a committed frame hash. The rest of the corpus
-(the real-ROM krom/240p visual goldens, the accuracy battery, commercial ROMs)
-is staged only — an oracle on disk that no gate executes yet.
+FILL → VI scan-out path against a committed frame hash. The **accuracy battery now executes**
+(`AccuracyScorer::default_battery`, 52 probes, 100% — see the table above); the
+rest of the corpus (the real-ROM krom/240p visual goldens and the commercial
+ROMs) is staged only — an oracle on disk that no gate executes yet.
 
 ## What is stubbed (the roadmap)
 
