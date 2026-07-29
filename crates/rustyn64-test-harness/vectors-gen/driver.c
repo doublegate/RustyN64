@@ -1279,6 +1279,46 @@ static const uint32_t V38_LOAD_BLOCK_COUNT_16[] = {
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
 };
 
+// V40 (probe): does a tile with **`mirror_s` set** fold the S axis?
+//
+// Authored to settle the mirrored-text defect found by inspecting the commercial
+// screenshot captures: GoldenEye 007's "Nintendo" logo and WCW vs. nWo's banner
+// both render left-right FLIPPED, while WCW/nWo Revenge -- same publisher --
+// renders its THQ logo correctly. Per-draw, not global. The `Set Tile` decode of
+// `mirror_s` (bit 8) and `mask_coupled`'s fold were both read and look correct,
+// so prose will not settle it and a vector must.
+//
+// Four distinct 16-bit texels, `mask_s = 2` (a 4-texel period) and `mirror_s = 1`,
+// sampled across EIGHT columns at one texel per pixel. The two candidate outcomes
+// are maximally distinguishable across the row:
+//
+//   mirrored : red green blue white  white blue green red   (fold at the period)
+//   NOT      : red green blue white  red green blue white   (plain wrap)
+//
+// Eight columns are the point: a 4-column render would sample only the forward
+// half and both outcomes would be identical -- the same "success and failure paths
+// converge" trap that let an earlier CI4 vector declare eight palette entries
+// while exercising six.
+static const uint16_t TEX_MIRROR_TEXELS[4] = {0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu};
+static const uint32_t V40_TEX_TRI_MIRROR_S_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0, persp off
+    0x3C000000u, 0x00000041u, // Set Combine: pure TEXEL0 passthrough
+    0x3D100003u, 0x00003000u, // Set Texture Image: 16-bit, width 4, addr 0x3000
+    0x35100200u, 0x07000000u, // Set Tile 7 (LOAD): 16-bit, line 1 word, tmem 0
+    0x33000000u, 0x07003000u, // Load Block 7: uls=0 lrs=3 (4 texels), dxt=0
+    // Render tile 0: 16-bit, line 1, tmem 0, **mask_s = 2, mirror_s = 1**
+    // (low word: mask_s at bits 7:4 -> 0x20, mirror_s at bit 8 -> 0x100).
+    0x35100200u, 0x00000120u,
+    0x32000000u, 0x0000C000u, // Set Tile Size 0: uls0 ult0 lrs=3 texels lrt0
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00000000u, 0x00000000u, // XH = 0.0 -- start at column 0 so both halves render
+    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
+};
+
 // V36: FILL RECTANGLE in **2-CYCLE** mode (ledger R-21). V35 pins 1-cycle, but the
 // cycle-type gate covers 1- AND 2-cycle, and 2-cycle takes a distinct path:
 // `combine()` evaluates cycle 0 first and feeds its output to cycle 1 as the
@@ -2031,6 +2071,11 @@ int main(int argc, char **argv) {
                   sizeof(V39_CI4_TLUT_DISABLED_16) / 4, V39_CI4_TLUT_DISABLED_16,
                   0x3000, sizeof(TEX_CI4_TLUT) / sizeof(uint16_t), TEX_CI4_TLUT};
     if (emit_vector(&v39, out_dir)) return 1;
+
+    Vector v40 = {"tex_tri_mirror_s_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V40_TEX_TRI_MIRROR_S_16) / 4, V40_TEX_TRI_MIRROR_S_16,
+                  0x3000, sizeof(TEX_MIRROR_TEXELS) / sizeof(uint16_t), TEX_MIRROR_TEXELS};
+    if (emit_vector(&v40, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 

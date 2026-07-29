@@ -73,7 +73,11 @@ Recorded here because the *rejected* captures localise real bugs:
 - **Mirrored text.** GoldenEye 007's "Nintendo" logo and WCW vs. nWo's
   "WCW World Championship Wrestling" banner both render **left-right flipped**.
   Two independent titles showing the same flip points at the texture S-axis
-  mirror path, not at either game. It is **tile-specific rather than global**:
+  mirror path, not at either game. **UPDATE: the S-axis mirror path is now
+  exonerated** — the `tex_tri_mirror_s_16` conformance vector shows RustyN64
+  matching Angrylion byte-for-byte on a mirrored tile, so the cause is
+  elsewhere (a negative `DsDx`, or the triangle edge/winding path). It is
+  **tile-specific rather than global**:
   WCW/nWo Revenge — same publisher — renders its THQ logo correctly oriented,
   and that frame is committed above. So the defect is in how a particular tile's
   `mirror_s` is resolved, not in every textured quad.

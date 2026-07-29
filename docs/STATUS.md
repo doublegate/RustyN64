@@ -161,7 +161,7 @@ category `Failed: 0`; 90 suite-wide). The **golden-log** gate (`--test
 golden_log`) replays 50,027 retired records at 0 diff against ares. A fourth,
 the **synthetic visual golden** (`--test golden_frame`, T-31-005), executes the
 FILL → VI scan-out path against a committed frame hash. The **accuracy battery now executes**
-(`AccuracyScorer::default_battery`, 53 probes, 100% — see the table above); the
+(`AccuracyScorer::default_battery`, 54 probes, 100% — see the table above); the
 rest of the corpus (the real-ROM krom/240p visual goldens and the commercial
 ROMs) is staged only — an oracle on disk that no gate executes yet.
 
@@ -255,7 +255,7 @@ entropy, threads and unordered collections anywhere in the core.
 | n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. **90** assertions still fail suite-wide, down from 413 (and from 93 before the Phase 5 cart/PIF/SI work); **none are RSP-prefixed** (the RSP category is Phase 2's criterion and is now 0), leaving the RDP rasterizer (Phase 3), the MI's RDRAM repeat mode, and the remaining cart/PIF corners |
 | n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** across 917 tests started — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
-| Accuracy battery (`AccuracyScorer::default_battery`) | **yes** — 53 probes across two oracle suites: 40 Angrylion RDP rasteriser vectors + 13 Angrylion VI scan-out vectors (expected values are the oracle's, never our own output; RDP probes are byte-for-byte, VI probes are RGB-only since the 4th byte is coverage) | **100% (53/53)** — asserted by `default_battery_matches_the_oracle`; both suites are asserted to contribute, and an empty battery now scores 0%, not a vacuous 100% |
+| Accuracy battery (`AccuracyScorer::default_battery`) | **yes** — 54 probes across two oracle suites: 41 Angrylion RDP rasteriser vectors + 13 Angrylion VI scan-out vectors (expected values are the oracle's, never our own output; RDP probes are byte-for-byte, VI probes are RGB-only since the 4th byte is coverage) | **100% (54/54)** — asserted by `default_battery_matches_the_oracle`; both suites are asserted to contribute, and an empty battery now scores 0%, not a vacuous 100% |
 | Visual golden / screenshots | **yes** — krom + 240p + commercial staged | **first frame MET** (T-31-005) — a synthetic RDP FILL list rendered through the full command-decode → FILL → VI scan-out path is pinned byte-exact against a committed golden hash (`--test golden_frame`). Real-ROM krom/240p goldens await cartridge boot (Phase 5). **A commercial-cartridge frame is now captured** — `screenshots/paper-mario-first-commercial-frame.png` (R-18) — as a viewed artefact, not yet a byte-pinned golden |
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
