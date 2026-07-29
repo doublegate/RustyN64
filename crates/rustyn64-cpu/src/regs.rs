@@ -7,6 +7,41 @@
 
 use serde::{Deserialize, Serialize};
 
+/// MIPS general-purpose register indices, by their ABI names.
+///
+/// Lives here rather than beside any one caller so the numbering is stated once:
+/// a second private copy elsewhere is how `$t3` and `$t4` eventually swap in one
+/// of them. Only the names currently needed are defined — this is a shared
+/// vocabulary, not an exhaustive table for its own sake.
+pub mod gpr {
+    /// `$at` — assembler temporary.
+    pub const AT: u8 = 1;
+    /// `$a2` — argument 2.
+    pub const A2: u8 = 6;
+    /// `$a3` — argument 3.
+    pub const A3: u8 = 7;
+    /// `$t0` — temporary 0.
+    pub const T0: u8 = 8;
+    /// `$t2` — temporary 2.
+    pub const T2: u8 = 10;
+    /// `$t3` — temporary 3.
+    pub const T3: u8 = 11;
+    /// `$s3` — saved 3.
+    pub const S3: u8 = 19;
+    /// `$s4` — saved 4.
+    pub const S4: u8 = 20;
+    /// `$s5` — saved 5.
+    pub const S5: u8 = 21;
+    /// `$s6` — saved 6.
+    pub const S6: u8 = 22;
+    /// `$s7` — saved 7.
+    pub const S7: u8 = 23;
+    /// `$sp` — stack pointer.
+    pub const SP: u8 = 29;
+    /// `$ra` — return address.
+    pub const RA: u8 = 31;
+}
+
 /// General-purpose registers plus the `HI`/`LO` multiply-divide pair.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Regs {
