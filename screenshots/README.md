@@ -38,7 +38,7 @@ here on a pixel count. Look at it first.**
 ## Rendering correctly
 
 | File | Title | What it shows |
-|---|---|---|
+| --- | --- | --- |
 | `super-mario-64-title.png` | Super Mario 64 | The title screen — Mario's head, textured cap with the M logo, over the tiled *SUPER MARIO 64* background. 125,278 RDP commands. |
 | `pokemon-snap-3d-landscape.png` | Pokémon Snap | A full 3D landscape: sky, hills, a river and foliage, textured and shaded. |
 | `pokemon-stadium-n64-logo.png` | Pokémon Stadium | The *NINTENDO 64* wordmark with the coloured 3D "N" cube. |
@@ -61,7 +61,7 @@ when it was the *only* commercial frame that existed. It is listed here for
 completeness of the set, not because this change produced it.)
 
 | File | Title | What is wrong |
-|---|---|---|
+| --- | --- | --- |
 | `banjo-kazooie-first-3d-scene.png` | Banjo-Kazooie | Geometry, textures and depth ordering are right; the colours carry a heavy blue/yellow cast. Open combiner / texel-format issue. |
 | `ocarina-of-time-night-sky.png` | Ocarina of Time | Hyrule Field at night — the moon over a dark horizon, recognisably correct, but the moon carries a **visible rectangular texture-clamp box**. An open clamp/border defect (R-13). |
 | `paper-mario-first-commercial-frame.png` | Paper Mario | **The first frame ever rendered from a commercial cartridge** (2026-07-29), kept for that reason. 87 distinct RGBA5551 values; flat-shaded quads with clean edge-walked slopes, but early boot geometry rather than a title screen. |
