@@ -8,6 +8,28 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Fixed — an interrupt across an `ERET` was charged to the `ERET` (R-18)
+
+- `ERET` resolves in **EX**, clearing `Status.EXL` and pointing `next_pc` at
+  `EPC`. The **DC** interrupt check runs one cycle later, saw `EXL` clear, and
+  charged the interrupt to whatever sat in `ex_dc` — **the `ERET` itself**.
+  `EPC` was overwritten with the `ERET`'s own address, destroying the return
+  address it was about to consume, so the handler returned to the `ERET`, which
+  resumed at itself: an architectural **livelock**.
+- The same defect charges `EPC = 0` when a **fill bubble** sits in DC. Both
+  exclusions are load-bearing; neither works alone.
+- `interrupt_has_an_instruction_to_charge` defers the interrupt until a real
+  instruction is in DC. Nothing is lost — `Cause.IP` is a level, re-sampled
+  every cycle, so the interrupt is re-attributed, never dropped.
+- **Oracle-validated:** n64-systemtest Phase 1 categories stay `Failed: 0` and
+  the suite-wide count stays **90**. Mutation-checked.
+- **Effect:** Banjo-Tooie goes from **1 to 80 distinct PCs** and now programs
+  the VI at all (`VI_CTRL` `0x0` → `0x13006`); Banjo-Kazooie now scans out real
+  geometry (`0x0` → `570x213`).
+- `interrupt_is_not_accepted_on_the_cycle_after_a_stall` was corrected in the
+  same change: it accepted its interrupt while DC was still a fill bubble and
+  never noticed, because it asserted the abort **flag** and never `EPC`.
+
 ### Added — the first rendered frame from a commercial cartridge (R-18)
 
 - **Paper Mario renders real geometry through the full LLE path** — retail HLE
