@@ -73,9 +73,29 @@ Power-on runs a three-stage Initial Program Loader
 RustyN64 has **two boot paths** (ADR 0009), both implemented:
 
 - **HLE boot** (`rom::hle_boot`) — the default. Skips IPL1/IPL2, copies the cart's
-  real IPL3 into DMEM, seeds the post-IPL3 CPU/COP0/PI-DOM1 state and the CIC seed
-  word into PIF RAM `0x24`, and jumps to IPL3 at `0xA4000040`. Copyright-clean and
-  CI-able; the seeds are cited constants (accuracy-ledger **C-32**).
+  real IPL3 into DMEM, seeds the state IPL3 inherits, writes the CIC seed word into
+  PIF RAM `0x24`, and jumps to IPL3 at `0xA4000040`. Copyright-clean and CI-able;
+  the seeds are cited constants (accuracy-ledger **C-32**).
+
+  **What "the state IPL3 inherits" means, and why it is load-bearing.** IPL3 is the
+  cartridge's *real* bootcode, so it runs on whatever IPL1/IPL2 left behind. Two
+  register groups matter:
+
+  - **`sp = 0xA400_1FF0`** — the top of RSP IMEM, IPL3's stack while it executes
+    from DMEM. IPL1 sets it (N64brew *IPL2* §IPL1, `0xBFC000D0`). Without it,
+    IPL3's opening `ADDIU sp, sp, -24` / `SW s3, 0(sp)` prologue faults to KSEG3
+    and the machine executes a NOP sled through empty RDRAM — ledger **R-18**.
+  - **The ROM-independent IPL2 exit state**: `at=1`, `a2=0xA400_1F0C`,
+    `a3=0xA400_1F08`, `t0=0xC0`, `t2=0x40`, `t3=0xA400_0000`, `s4=1`,
+    `ra=0xA400_1550`. **Measured**, by running the real IPL1/IPL2 from a PIF ROM
+    dump and keeping only values identical across CIC variants. `t3` is decisive:
+    CIC-6105's IPL3 self-descrambles by reading `0x44(t3)` = DMEM + 0x40, its own
+    image, so with `t3 = 0` those titles never boot — ledger **R-23**.
+
+  **Deliberately NOT seeded:** `v0`, `v1`, `a0`, `a1` and `t4`–`t9`. They carry
+  IPL2's running checksum of *that cartridge's* IPL3 and differ per ROM, so
+  freezing them would fabricate a value the boot computes. `s6` is the CIC seed,
+  set per-CIC from the table below.
 - **Real-PIF boot** (`rom::real_pif_boot`) — faithful, **off by default, local-only,
   never CI-gated** (it needs the copyrighted PIF ROM, never committed). Installs the
   real IPL1/IPL2 at `0x1FC0_0000` and runs the CPU from the reset vector

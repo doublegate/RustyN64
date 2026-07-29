@@ -65,10 +65,8 @@ fn boot_and_run(path: &Path, frames: u64) -> Option<BootResult> {
 
 /// Is this ROM's bootcode CIC-6105? Read from the cartridge header the same way
 /// the boot does, so the classification cannot drift from what actually runs.
+/// Only the 0x1000-byte boot header is read — the CIC is resolved from it.
 fn is_cic_6105(path: &Path) -> bool {
-    // Read only the 0x1000-byte boot header, not the whole 8-64 MiB image:
-    // `Cart::load` resolves the CIC from the header + IPL3, both of which live
-    // inside it, and `boot_and_run` reads the full image separately anyway.
     use std::io::Read as _;
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
@@ -123,6 +121,10 @@ fn a_commercial_rom_boots_and_executes() {
     // while looking like five.
     let mut staged = 0usize;
     let mut exercised = 0usize;
+    // Whether any exercised title was CIC-6105. R-23 is specifically the claim
+    // that those boot, so a run that never exercised one has not tested it —
+    // reported rather than silently assumed.
+    let mut cic_6105_seen = false;
     for folder in [
         "eeprom-4k",
         "eeprom-16k",
@@ -145,17 +147,19 @@ fn a_commercial_rom_boots_and_executes() {
             continue;
         }
         staged += 1;
-        // Scan **past** skipped ROMs to the first HLE-eligible one, rather than
-        // stopping at the first ROM and giving up if it happens to be CIC-6105.
-        let Some(rom_path) = roms.into_iter().find(|p| !is_cic_6105(p)) else {
-            eprintln!(
-                "[{folder}] every staged ROM is CIC-6105 — no HLE-eligible title \
-                 in this folder (ledger R-23)"
-            );
-            continue;
-        };
+        // No eligibility filter: R-23 closed the CIC-6105 gap, so the first ROM
+        // is exercised whatever its CIC.
+        //
+        // That is NOT a claim that every CIC variant boots — R-18 still has open
+        // cases across 6102/6103/6106 (titles that fill IMEM but never start the
+        // RSP, or never load microcode). It is the narrower claim this capstone
+        // actually asserts: whichever title is selected reaches its own code in
+        // RDRAM. `cic_6105_seen` below adds the R-23-specific proof.
+        let rom_path = roms.remove(0);
         exercised += 1;
         let name = rom_path.file_name().unwrap().to_string_lossy().into_owned();
+        let is_6105 = is_cic_6105(&rom_path);
+        cic_6105_seen |= is_6105;
         match boot_and_run(&rom_path, 120) {
             Some(r) => {
                 eprintln!(
@@ -205,11 +209,21 @@ fn a_commercial_rom_boots_and_executes() {
     // must not report success when its corpus was skipped.
     assert!(
         exercised > 0,
-        "{staged} save-type folder(s) are staged but every ROM in them is \
-         CIC-6105, so no HLE boot was exercised and this capstone asserted \
-         nothing (ledger R-23). Stage a non-6105 title, or close R-23."
+        "{staged} save-type folder(s) are staged but none was exercised, so this \
+         capstone asserted nothing"
     );
     eprintln!("HLE capstone exercised {exercised} of {staged} staged folder(s)");
+    // R-23's own evidence. Not an assertion, because a corpus may legitimately
+    // contain no 6105 title — but said out loud, so "R-23 still holds" is never
+    // inferred from a run that never exercised one.
+    if cic_6105_seen {
+        eprintln!("  ... including a CIC-6105 title, so R-23 is exercised");
+    } else {
+        eprintln!(
+            "  ... but NO CIC-6105 title was exercised, so R-23 was not tested by \
+             this run (the microcode witness covers Ocarina/Majora/Conker)"
+        );
+    }
 }
 
 /// **A commercial ROM boots through the real PIF ROM** (local capstone, faithful

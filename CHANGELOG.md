@@ -8,6 +8,24 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Fixed — CIC-6105 titles boot under HLE (ledger R-23 RESOLVED)
+
+- **Ocarina of Time, Majora's Mask, Banjo-Tooie, Donkey Kong 64 and the rest of
+  the CIC-6105 share now boot through `hle_boot`.** Their IPL3 is a different
+  program that self-descrambles by reading `0x44(t3)`, and `hle_boot` never
+  seeded the IPL2 exit state it inherits.
+- **Measured, not invented.** The registers were captured at IPL3's entry by
+  running the console's real IPL1/IPL2 from a PIF ROM dump, keeping only values
+  **identical across different CIC variants**: `at`, `a2`, `a3`, `t0`, `t2`,
+  `t3`, `s4`, `ra`. `v0`/`v1`/`a0`/`a1`/`t4`-`t9` are excluded on purpose — they
+  carry IPL2's checksum of that cartridge's IPL3 and differ per ROM.
+- Corroborated independently: Banjo-Tooie under HLE reaches **exactly** the PC
+  `real_pif_boot` reaches (`0x800329a8`), retired counts within 0.3%.
+- The `T-71-003` witness set **doubled from 4 titles to 8**. Ocarina of Time
+  executes 733 distinct RSP instructions and submits **17,900 RDP commands**;
+  Majora's Mask 732 and 2,310. The capstone's CIC-6105 skip is deleted.
+- n64-systemtest unchanged at 90 suite-wide, Phase 1 categories `Failed: 0`.
+
 ### Added — a retail title's own microcode executes on the LLE RSP (`T-71-003`)
 
 - **The ADR 0002 payoff, witnessed on real commercial microcode.** New local
