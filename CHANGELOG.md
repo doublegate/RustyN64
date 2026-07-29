@@ -6,7 +6,18 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
-Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
+## [0.8.0] - 2026-07-29 — "Breadth"
+
+**Phase 7 — the accuracy battery, and the first commercial pictures.**
+
+Cut criterion met: the battery reports a real pass rate (**54 probes, 100%**,
+across two Angrylion oracle suites) and **every residual R-1…R-23 has a ledger
+entry** in `docs/accuracy-ledger.md`.
+
+The headline is that commercial cartridges render. **Super Mario 64 draws its
+title screen**, and **29 of 66 staged titles** render through their own graphics
+microcode. Both defects that unblocked it were in the **CPU and the PIF** —
+not the RDP, where R-18 had been looking for months.
 
 ### Added — the T-71-003 microcode-family census (the one non-CI gate)
 

@@ -1,6 +1,6 @@
 [package]
 name = "rustyn64-rdp"
-version = "0.7.0"
+version = "0.8.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 serde-big-array = "0.5"
 rustyn64-snapshot = { path = "../rustyn64-snapshot" }
 bitflags = { version = "2", features = ["serde"] }
-rustyn64-cart = { path = "../rustyn64-cart", version = "0.7.0", default-features = false }
+rustyn64-cart = { path = "../rustyn64-cart", version = "0.8.0", default-features = false }
 
 [lints]
 workspace = true
