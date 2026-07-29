@@ -1153,6 +1153,61 @@ static const uint32_t V35_FILL_RECT_1CYCLE_16[] = {
     0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
 };
 
+// V37: a **CI4 texture resolved through a TLUT** (ledger R-18). No committed
+// vector exercised `Load Tlut` before this one, so the whole colour-indexed path
+// had zero oracle coverage — and Ocarina of Time renders every triangle through it
+// (tiles report `fmt=2 size=0`, combiner a pure TEXEL0 pass-through).
+//
+// The encoding follows N64brew *…/Commands* §0x30 – Load TLUT exactly, because a
+// first attempt got two things wrong and produced a golden that encoded the
+// authoring error rather than hardware:
+//   - `lower_right.s` is command bits **23:12**, i.e. `lo >> 12` — not >> 14. In
+//     u10.2 an 8-entry palette is `(8-1) << 2 = 0x1C`, so `lo |= 0x1C << 12`.
+//   - the TLUT tile must be **4-bit** and neither RGBA nor YUV format (the section's
+//     own Hazards list); the *texture image* stays 16-bit.
+//   - the TMEM base must be >= word 0x100 and 128-byte aligned — 0x100 satisfies both.
+//
+// Eight CI4 indices 0..7 are packed two-per-byte (0x01 0x23 0x45 0x67) at 0x3000 and
+// loaded by an 8-bit Load Tile (there is no 4-bit LOAD — the V20 route). The palette
+// sits at 0x3008. Every entry is DISTINCT and NON-ZERO **including index 0**, so
+// neither an unloaded TLUT (reads all-zero → black) nor a black index-0 entry can be
+// mistaken for a correct fetch.
+static const uint16_t TEX_CI4_TLUT[12] = {
+    0x0123u, 0x4567u,          // 0x3000: eight CI4 indices 0..7, two per byte
+    0x0000u, 0x0000u,          // 0x3004: pad to the palette's 8-byte alignment
+    0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, // 0x3008: TLUT 0-3  red, green, blue, white
+    0xFFC1u, 0x07FFu, 0xF83Fu, 0x8421u, //         TLUT 4-7  yellow, cyan, magenta, grey
+};
+static const uint32_t V37_TEX_TRI_CI4_TLUT_16[] = {
+    // Set Other Modes: 1-cycle, bi_lerp0, persp off, **tlut_en** (bit 47 = word-0
+    // bit 15; N64brew §0x2F "tlut_en: Enables Texture Look-Up Table (TLUT) sampling").
+    0x2F0088F0u, 0x00000000u,
+    0x3C000000u, 0x00000041u, // Set Combine: rgb_d=1 / a_d=1 — pure TEXEL0 passthrough
+    // --- palette -> TMEM high ---
+    0x3D100003u, 0x00003008u, // Set Texture Image: **16-bit**, width 4, addr 0x3008
+    0x35400100u, 0x07000000u, // Set Tile 7 (TLUT): fmt CI(2), size 0 (4-bit), tmem word 0x100
+    0x30000000u, 0x0701C000u, // Load Tlut 7: uls=0 ult=0 lrs=0x1C (8 entries) lrt=0
+    // --- CI4 texel bytes -> TMEM low ---
+    0x3D080003u, 0x00003000u, // Set Texture Image: 8-bit, width 4, addr 0x3000
+    0x35080200u, 0x06000000u, // Set Tile 6 (LOAD): 8-bit, line 1, tmem 0
+    0x32000000u, 0x0600C000u, // Set Tile Size 6: uls0 ult0 lrs3 lrt0 (4 bytes)
+    0x34000000u, 0x0600C000u, // Load Tile 6
+    // --- render tile: format CI(2), size 0 (4-bit), palette 0 ---
+    0x35400200u, 0x00000030u, // Set Tile 0 (RENDER): fmt CI, 4-bit, line 1, mask_s=3
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: uls0 ult0 lrs7 lrt0 (8 CI4 texels)
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00000000u, 0x00000000u, // XH = 0.0 — start at column 0 so all EIGHT
+    0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0   indices are sampled
+    // dx.S = 0x20 advances one texel per pixel, so columns sample indices 0..7.
+    // The edges start at column 0 on purpose: with XH/XM = 2.0 the widest row only
+    // reached six columns, so palette entries 6 and 7 were declared but never
+    // fetched — the vector would have claimed eight distinct entries and proved six.
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
+};
+
 // V36: FILL RECTANGLE in **2-CYCLE** mode (ledger R-21). V35 pins 1-cycle, but the
 // cycle-type gate covers 1- AND 2-cycle, and 2-cycle takes a distinct path:
 // `combine()` evaluates cycle 0 first and feeds its output to cycle 1 as the
@@ -1890,6 +1945,11 @@ int main(int argc, char **argv) {
                   sizeof(V36_FILL_RECT_2CYCLE_16) / 4, V36_FILL_RECT_2CYCLE_16,
                   0, 0, NULL};
     if (emit_vector(&v36, out_dir)) return 1;
+
+    Vector v37 = {"tex_tri_ci4_tlut_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V37_TEX_TRI_CI4_TLUT_16) / 4, V37_TEX_TRI_CI4_TLUT_16,
+                  0x3000, 12, TEX_CI4_TLUT};
+    if (emit_vector(&v37, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 

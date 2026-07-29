@@ -394,6 +394,10 @@ pub const RDP_VECTORS: &[(&str, &[u8])] = &[
         "fill_rect_2cycle_16",
         include_bytes!("../tests/vectors/fill_rect_2cycle_16.rvec"),
     ),
+    (
+        "tex_tri_ci4_tlut_16",
+        include_bytes!("../tests/vectors/tex_tri_ci4_tlut_16.rvec"),
+    ),
 ];
 
 /// Look up a committed vector's bytes by name.

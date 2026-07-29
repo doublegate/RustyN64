@@ -40,8 +40,13 @@ Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
   Angrylion is the oracle, so the disagreement means the authored `Load Tlut`
   encoding is wrong — not that our decoder is right. The vector was deliberately
   **not committed**, since that golden would pin an authoring error as the spec.
-  CI4 is therefore **weakly de-prioritised, not eliminated**: the probe never
-  exercised a verified `Load Tlut`.
+  CI4 was therefore weakly de-prioritised — **and is now genuinely eliminated**:
+  the `Load Tlut` encoding was verified against N64brew §0x30 (two errors found:
+  `lower_right.s` is bits 23:12, and the TLUT tile must be 4-bit, not 16-bit),
+  the vector re-authored, and **RustyN64 now matches Angrylion byte-for-byte**.
+  `tex_tri_ci4_tlut_16` is committed (38 RDP vectors, 51 battery probes) and
+  mutation-checked — the
+  colour-indexed path finally has oracle coverage it never had.
 - **A separate, independently real defect:** `Set Other Modes.tlut_en` — bit 47,
   N64brew *Reality Display Processor/Commands* §0x2F, with `tlut_type` at bit 46
   — is **not decoded at all**. Our TLUT lookup is driven purely by the tile's
