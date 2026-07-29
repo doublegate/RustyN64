@@ -44,6 +44,23 @@ pub const fn cic_seed(cic: crate::cart::Cic) -> u32 {
     }
 }
 
+/// Select the AI region from the inserted cartridge's **destination code** (ROM
+/// header byte `0x3E`, the last character of the 4-byte game code).
+///
+/// The AI's video clock — and so its sample rate for a given `AI_DACRATE` —
+/// differs between NTSC and PAL consoles. The machinery existed but nothing drove
+/// it, so a PAL cartridge played at the NTSC rate; this is the selector
+/// (`T-71-005`). An unrecognised code maps to NTSC, so the default is
+/// behaviour-preserving.
+///
+/// The classification and its provenance limits live on
+/// [`rustyn64_audio::Region::from_destination_code`].
+const fn apply_cartridge_region(system: &mut System) {
+    let code = system.bus.cart.header().game_code[3];
+    let region = rustyn64_audio::Region::from_destination_code(code);
+    system.bus.audio.set_region(region);
+}
+
 /// **HLE-boot a retail ROM.**
 ///
 /// Seed the state IPL3 expects, copy the cart's *real* IPL3 (ROM `0x40..0x1000`)
@@ -68,6 +85,7 @@ pub fn hle_boot(system: &mut System, rom: &[u8]) -> Result<(), BootError> {
     let cart = crate::cart::Cart::load(rom).map_err(BootError::Cart)?;
     let cic = cart.header().cic;
     system.bus.cart = cart;
+    apply_cartridge_region(system);
 
     // Inject the CIC seed into PIF RAM 0x24..0x28 (the boot reads it for s3–s7).
     let seed = cic_seed(cic);
@@ -148,6 +166,7 @@ pub fn real_pif_boot(system: &mut System, rom: &[u8], pif_rom: &[u8]) -> Result<
     let cart = crate::cart::Cart::load(rom).map_err(BootError::Cart)?;
     let cic = cart.header().cic;
     system.bus.cart = cart;
+    apply_cartridge_region(system);
 
     // Install the real IPL1/IPL2 so the CPU fetches them from the reset vector.
     system.bus.cart.pif_load_boot_rom(pif_rom);
@@ -196,6 +215,38 @@ mod tests {
             real_pif_boot(&mut sys, &rom, &[0u8; 16]),
             Err(BootError::TooSmall),
             "a PIF ROM shorter than its window is rejected"
+        );
+    }
+
+    /// **Booting a PAL cartridge retunes the AI (T-71-005).** The region selector
+    /// must actually run during boot, not merely exist: this boots two ROMs that
+    /// differ ONLY in the destination code (header byte 0x3E) and asserts the AI
+    /// sample rate differs. Removing the `apply_cartridge_region` call makes both
+    /// rates identical and fails here.
+    #[test]
+    fn a_pal_destination_code_retunes_the_ai_at_boot() {
+        // AI_DACRATE must be programmed for a rate to exist at all; the boot path
+        // does not set it, so drive it directly after booting.
+        let rate_for = |dest: u8| {
+            let mut rom = [0u8; 0x1000];
+            rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]); // .z64 big-endian magic
+            rom[0x3E] = dest;
+            let mut sys = System::new(0);
+            hle_boot(&mut sys, &rom).expect("boot");
+            sys.bus.audio.write_reg(4, 1103); // AI_DACRATE
+            sys.bus.audio.sample_rate()
+        };
+        let ntsc = rate_for(b'E'); // North America
+        let pal = rate_for(b'P'); // Europe
+        assert_ne!(
+            ntsc, pal,
+            "a PAL cartridge must boot with a different AI rate than an NTSC one"
+        );
+        // And an unknown code keeps the NTSC default (behaviour-preserving).
+        assert_eq!(
+            rate_for(b'?'),
+            ntsc,
+            "an unknown destination code stays NTSC"
         );
     }
 

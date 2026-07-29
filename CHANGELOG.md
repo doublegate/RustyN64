@@ -8,6 +8,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 Work toward `v0.8.0 "Breadth"` — the accuracy battery (Phase 7).
 
+### Fixed — the console region is selected from the cartridge (ledger C-34, `T-71-005`)
+
+- **A PAL cartridge no longer plays audio at the NTSC rate.** The region machinery
+  (`Region`, `Region::video_clock`, `Ai::set_region`, both region video clocks) was
+  fully built and documented, but **nothing drove it** — `set_region` was reachable
+  only from the AI crate's own unit tests. `Region::from_destination_code` now maps
+  the ROM header's destination code (byte `0x3E`), and both boot paths apply it.
+- Three cases are decided **explicitly** rather than guessed, and pinned by name in
+  the tests: `B` Brazil → NTSC (PAL-**M** is a 60 Hz standard), `C` China → NTSC (no
+  known retail N64), `A` "All" → NTSC. Every unrecognised byte also stays NTSC, so
+  unknown and homebrew codes are behaviour-preserving.
+- **Ungated, and labelled as such:** the destination characters are the N64brew ROM
+  Header table, but the 50/60 Hz classification is the broadcast standard rather
+  than an N64-documented fact, and no test ROM checks region detection — so this is
+  modelled and ledgered in the same posture as R-16/R-17, not claimed as verified.
+
 ### Added — the accuracy battery is real (gap-analysis Stage C, `T-71-001`/`T-HARNESS-03`)
 
 - **`AccuracyScorer::default_battery_stub` → `default_battery`.** The battery no
