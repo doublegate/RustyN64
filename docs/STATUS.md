@@ -3,11 +3,16 @@
 This file is authoritative for per-suite pass counts, the board matrix, the
 chip→crate map, and version policy. Everything else defers to it.
 
-**Current release:** **v0.7.0 "Shell"** — this commit is the v0.7.0 release; the `v0.7.0`
+**Current release:** **v0.8.0 "Breadth"** — this commit is the v0.8.0 release; the `v0.8.0`
 tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
 v0.4.0 "Rasteriser".)
 
-**Phases 1, 2, 3, 4, 5, and 6 are complete.** Phase 6 is frontend integration — the egui
+**Phases 1, 2, 3, 4, 5, 6, and 7 are complete.** Phase 7 is the accuracy battery and the
+commercial-corpus breadth pass: the battery reports a real **54 probes / 100%** across
+two Angrylion oracle suites, every residual **R-1…R-23** carries a ledger disposition,
+and **29 of 66 staged commercial titles render** through their own graphics microcode —
+Super Mario 64 draws its title screen. The two defects that unblocked that were in the
+**CPU and the PIF**, not the RDP. Phase 6 is frontend integration — the egui
 shell now presents the **real machine** (VI scan-out, AI audio drain, SI controller input),
 plus save-states / rewind / run-ahead (all frontend-side and off by default, ADR 0004) and a
 wasm browser entry point. It is **the first playable release**, with playability honestly
@@ -131,7 +136,7 @@ actually stands.
 | Repository | `github.com/doublegate/RustyN64`, **public**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
 | CI | **Green, verified.** All jobs pass on `ubuntu`/`macOS`/`windows`: `setup`, `test` (fmt + clippy + test + `no_std`), `rustdoc` (`-D warnings`, an independent job so a doc break cannot ride in behind a green test job), `test-roms`, `no-commercial-roms`, `wasm-bindgen-pin`. Split light/full: the `test-roms` job and the macOS/Windows matrix run only on push-to-main, the merge queue, `release/*` PRs, dispatch, and a weekly cron. |
 | Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
-| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0` through `v0.7.0` are all tagged and released (`v0.2.0` onward published checksummed three-target binaries). |
+| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0` through `v0.8.0` are all tagged and released (`v0.2.0` onward published checksummed three-target binaries). |
 | wasm | Compiles for `wasm32-unknown-unknown` **and has a browser entry point** (`#[wasm_bindgen(start)]` in `crates/rustyn64-frontend/src/wasm.rs`, `web/index.html`); `trunk build` produces a 2D-canvas demo that boots a homebrew ROM and blits the VI scan-out. The full in-browser winit/wgpu/egui shell is roadmap. |
 | Hardware reference | `n64brew_wiki/` — offline mirror of the N64brew Wiki (324 pages, 96 media, gitignored). Rebuild with `scripts/mirror_n64brew_wiki.py`. |
 | Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licences vary and several forbid copying** — read `ref-proj/README.md` first. |
@@ -308,6 +313,6 @@ save-type DB lookup itself (identity only) is a Phase-7 item (`T-CART-02`).
   (reach — netplay, achievements, TAS, scripting, shaders) is deliberately NOT in
   the v1.0.0 gate** — it is v1.1.0 onward (VERSION-PLAN §Post-v1.0). See
   `to-dos/ROADMAP.md`. Of those release-readiness items, **Pages is already green**
-  and the release matrix has run for real: `v0.1.0` through `v0.7.0` are all
+  and the release matrix has run for real: `v0.1.0` through `v0.8.0` are all
   tagged, and `release.yml` has published checksummed binaries across the
   three-target matrix (`v0.2.0` onward).
