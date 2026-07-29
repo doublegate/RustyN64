@@ -42,6 +42,10 @@ here on a pixel count. Look at it first.**
 | `castlevania-legacy-of-darkness-menu.png` | Castlevania: Legacy of Darkness | The *"Controller Pak not inserted"* dialog, fully legible with its cursor. A text/UI path rather than 3D geometry. |
 | `bomberman-hero-3d-scene.png` | Bomberman Hero | A textured tower on a green landscape with a rainbow. |
 | `bomberman-64-intro.png` | Bomberman 64 | The intro grid floor with the character sprite. |
+| `super-smash-bros-3d-stage.png` | Super Smash Bros. | A textured 3D room — wallpaper, blocks and a character, with correct perspective. |
+| `mario-golf-course.png` | Mario Golf | Mario on the green with his club, textured grass and trees. |
+| `resident-evil-2-intro.png` | Resident Evil 2 | The R.P.D. building with a legible content-warning overlay — text composited over a pre-rendered background. |
+| `wcw-nwo-revenge-thq-logo.png` | WCW/nWo Revenge | The *THQ INC.* logo, crisp and correctly oriented. |
 
 ## Kept deliberately as known-imperfect
 
@@ -51,6 +55,7 @@ correctness targets. Do not treat them as goldens.
 | File | Title | What is wrong |
 |---|---|---|
 | `banjo-kazooie-first-3d-scene.png` | Banjo-Kazooie | Geometry, textures and depth ordering are right; the colours carry a heavy blue/yellow cast. Open combiner / texel-format issue. |
+| `ocarina-of-time-night-sky.png` | Ocarina of Time | Hyrule Field at night — the moon over a dark horizon, recognisably correct, but the moon carries a **visible rectangular texture-clamp box**. An open clamp/border defect (R-13). |
 | `paper-mario-first-commercial-frame.png` | Paper Mario | **The first frame ever rendered from a commercial cartridge** (2026-07-29), kept for that reason. 87 distinct RGBA5551 values; flat-shaded quads with clean edge-walked slopes, but early boot geometry rather than a title screen. |
 
 ## Known defects visible in rejected frames
@@ -60,7 +65,10 @@ Recorded here because the *rejected* captures localise real bugs:
 - **Mirrored text.** GoldenEye 007's "Nintendo" logo and WCW vs. nWo's
   "WCW World Championship Wrestling" banner both render **left-right flipped**.
   Two independent titles showing the same flip points at the texture S-axis
-  mirror path, not at either game.
+  mirror path, not at either game. It is **tile-specific rather than global**:
+  WCW/nWo Revenge — same publisher — renders its THQ logo correctly oriented,
+  and that frame is committed above. So the defect is in how a particular tile's
+  `mirror_s` is resolved, not in every textured quad.
 - **Garbled colour blocks** (Blast Corps) and a **glitchy textured plane**
   (Turok) — both issue large command counts, so the failure is downstream of
   submission.
