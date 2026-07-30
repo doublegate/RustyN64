@@ -111,7 +111,11 @@ The gate must therefore:
 - **carry a timeout** per fixture and for the suite, so a hang fails rather than
   hanging;
 - **define its failure conditions**, including "the fast path never engaged" and "no
-  bailout boundary was reached", both of which would otherwise look like success.
+  bail-out boundary was reached", both of which would otherwise look like success. Both
+  are **suite-wide**, not per-fixture: a fixture that runs start to finish on the fast
+  path without ever handing back is a legitimate and valuable case, and requiring every
+  fixture to bail would make it unwritable. What must not happen is a whole run in which
+  nothing engaged the fast path, or nothing ever left it.
 
 The witness is asserted, not printed for a human to notice.
 
