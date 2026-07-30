@@ -423,7 +423,10 @@ toolchain nobody is using. `crates/rustyn64-cpu/src/pipeline.rs` carries
 `const _: () = assert!(size_of::<Latch>() == 120, …)` next to the struct; if it fires,
 the instruction is to re-measure rather than to change the number, since either a field
 was added or the layout algorithm moved and the "no padding" conclusion needs
-re-deriving.
+re-deriving. There are two assertions: **no padding**, which holds on every target and
+is the property this breakdown rests on, and **120 where a `u64` aligns to 8**, written
+as an implication so it pins the figure without breaking a cross-compile to an ABI the
+figure does not describe.
 
 **120 is the size on this workspace's targets, not a universal fact.** Every field is
 fixed-width, but that does not make the layout width-independent — it is `u64`
