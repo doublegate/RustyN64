@@ -934,20 +934,22 @@ impl Bus {
                     // `xfrac` between zero and non-zero — so the unconditional
                     // four-tap form spent most of its work on samples multiplied by
                     // zero.
-                    let col = if yfrac == 0 {
-                        fetch(sx, sy)
-                    } else {
-                        vi_lerp3(fetch(sx, sy), fetch(sx, sy + 1), yfrac)
+                    // One column's vertical lerp, or its single upper sample when
+                    // `yfrac` weights the lower row at zero. Named rather than written
+                    // twice so the `sx` and `sx + 1` columns cannot drift apart — this
+                    // is a correctness-critical path pinned by the VI vectors.
+                    let vlerp = |x: i32| {
+                        if yfrac == 0 {
+                            fetch(x, sy)
+                        } else {
+                            vi_lerp3(fetch(x, sy), fetch(x, sy + 1), yfrac)
+                        }
                     };
+                    let col = vlerp(sx);
                     if xfrac == 0 {
                         col
                     } else {
-                        let ncol = if yfrac == 0 {
-                            fetch(sx + 1, sy)
-                        } else {
-                            vi_lerp3(fetch(sx + 1, sy), fetch(sx + 1, sy + 1), yfrac)
-                        };
-                        vi_lerp3(col, ncol, xfrac)
+                        vi_lerp3(col, vlerp(sx + 1), xfrac)
                     }
                 } else {
                     fetch(sx, sy)
