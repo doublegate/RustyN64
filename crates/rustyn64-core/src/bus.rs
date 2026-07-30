@@ -109,8 +109,12 @@ struct ViSampler {
     x_lo: i32,
     /// Columns per memo row.
     span: usize,
-    /// The source row each memo row holds; `i32::MIN` marks an unused row.
-    row_y: [i32; 2],
+    /// The source row each memo row holds; `None` marks an unused row.
+    ///
+    /// An `Option` rather than a sentinel because a sentinel is a value the domain
+    /// might one day contain, and a collision would return another row's pixels
+    /// without invalidating anything.
+    row_y: [Option<i32>; 2],
     /// `2 * span` filtered pixels, row-major. `None` is "not computed yet".
     cells: alloc::vec::Vec<Option<[u8; 3]>>,
 }
@@ -120,14 +124,29 @@ impl ViSampler {
     /// `sy + 1`, and the walk over output rows only ever moves `sy` forward.
     const ROWS: usize = 2;
 
+    /// The widest memo this will allocate, in source columns per row.
+    ///
+    /// The real bound is much smaller — `VI_X_SCALE` fields are 12 bits and the
+    /// output is clamped to a 640-pixel prescale line, so the walk cannot ask for
+    /// more than about 3,000 columns — but that argument lives a hundred lines away
+    /// in `scanout_scaled`'s register decode and would not survive someone relaxing a
+    /// clamp. `x_lo`/`x_hi` are ultimately guest-controlled through VI MMIO, and an
+    /// allocation sized by guest registers deserves a bound stated where the
+    /// allocation happens. Past the cap the memo is simply empty and every sample
+    /// takes the uncached path: slower, never wrong.
+    const MAX_SPAN: usize = 4096;
+
     /// Build a memo covering source columns `x_lo..=x_hi` inclusive.
     fn new(cfg: ViCfg, x_lo: i32, x_hi: i32) -> Self {
-        let span = usize::try_from(i64::from(x_hi) - i64::from(x_lo) + 1).unwrap_or(0);
+        // `i64` throughout: the subtraction is on guest-derived values, and a signed
+        // overflow here would be a debug-build panic in a scan-out path.
+        let want = usize::try_from(i64::from(x_hi) - i64::from(x_lo) + 1).unwrap_or(0);
+        let span = if want > Self::MAX_SPAN { 0 } else { want };
         Self {
             cfg,
             x_lo,
             span,
-            row_y: [i32::MIN; Self::ROWS],
+            row_y: [None; Self::ROWS],
             cells: alloc::vec![None; span * Self::ROWS],
         }
     }
@@ -136,16 +155,17 @@ impl ViSampler {
     ///
     /// Eviction takes the row with the smaller `y`: the scan-out walks `y` forward
     /// (`y_add` is unsigned), so the lower row is the one that will not be asked for
-    /// again. A wrong choice here would only cost hit rate, never correctness.
+    /// again. A wrong choice here would only cost hit rate, never correctness — and
+    /// `None` sorts below every `Some`, so an unused row is always evicted first.
     fn row_slot(&mut self, y: i32) -> usize {
-        if self.row_y[0] == y {
+        if self.row_y[0] == Some(y) {
             return 0;
         }
-        if self.row_y[1] == y {
+        if self.row_y[1] == Some(y) {
             return 1;
         }
         let victim = usize::from(self.row_y[1] < self.row_y[0]);
-        self.row_y[victim] = y;
+        self.row_y[victim] = Some(y);
         let base = victim * self.span;
         self.cells[base..base + self.span].fill(None);
         victim
@@ -986,8 +1006,16 @@ impl Bus {
         // loop bounds rather than guessed, because a memo whose range is short by one
         // silently falls back to the uncached path and reads as "the optimization did
         // not help".
-        let x_first = (x_start + minhpass * x_add) >> 10;
-        let x_last = ((x_start + (minhpass + width - 1) * x_add) >> 10) + 1;
+        // `i64` because every term is guest-controlled through VI MMIO: `x_start` and
+        // `x_add` come from `VI_X_SCALE`, and `width` from the `VI_H_VIDEO` span. The
+        // product is small in practice, but "small in practice" is not a property that
+        // survives a clamp being relaxed, and the failure mode would be a debug-build
+        // overflow panic in the scan-out.
+        let x_span_end = i64::from(x_start) + i64::from(minhpass + width - 1) * i64::from(x_add);
+        let x_first =
+            i32::try_from((i64::from(x_start) + i64::from(minhpass) * i64::from(x_add)) >> 10)
+                .unwrap_or(0);
+        let x_last = i32::try_from((x_span_end >> 10) + 1).unwrap_or(x_first);
         let mut sampler = ViSampler::new(
             ViCfg {
                 origin,
@@ -2335,6 +2363,158 @@ mod tests {
         let mut out = alloc::vec![0xFFu8; 8]; // too small (< 16)
         assert_eq!(bus.scanout(&mut out), (0, 0), "undersized: refused");
         assert!(out.iter().all(|&b| b == 0xFF), "and left untouched");
+    }
+
+    /// The memo must be invisible: a scan-out that consults it has to produce exactly
+    /// what one that never does would.
+    ///
+    /// This is the test that would catch a wrong key, a stale row, or an eviction that
+    /// keeps the wrong row — none of which the geometry tests above can see, because
+    /// they read a single pixel. It recomputes every output pixel from
+    /// [`Bus::vi_sample_direct`], which bypasses the memo entirely, and compares the
+    /// whole buffer.
+    ///
+    /// The framebuffer is filled with a pattern that varies per pixel in *both* axes
+    /// and sets coverage bits unevenly, so a sample taken from the wrong column, the
+    /// wrong row, or the wrong coverage class differs in its bytes. A flat fill would
+    /// pass with the memo returning any pixel at all.
+    #[test]
+    fn memoized_scanout_matches_uncached_recomputation() {
+        for &(ctrl, x_scale, y_scale) in &[
+            // The coverage path with divot + de-dither, at the 2x horizontal upscale
+            // that makes the memo worth having (what Super Mario 64 programs).
+            (0x0001_3016u32, 0x0000_0200u32, 0x0000_0400u32),
+            // Same filters, a vertical fraction as well, so both memo rows are live.
+            (0x0001_3016, 0x0000_0200, 0x0000_0300),
+            // Coverage path without divot, 1:1.
+            (0x0001_3006, 0x0000_0400, 0x0000_0400),
+            // Downscale: consecutive output pixels skip source columns, so the memo
+            // mostly misses and the eviction path runs hot.
+            (0x0001_3016, 0x0000_0900, 0x0000_0400),
+        ] {
+            let mut bus = Bus::new();
+            let fb = 0x2000usize;
+            let stride = 64u32;
+            for i in 0..(stride as usize * 64) {
+                // Vary both axes and leave coverage bit 0 set on only some pixels.
+                let px = ((i * 7919) % 0xFFFF) as u16;
+                let off = fb + i * 2;
+                bus.rdram[off..off + 2].copy_from_slice(&px.to_be_bytes());
+            }
+            bus.vi.regs[vi::VI_CTRL as usize] = ctrl;
+            bus.vi.regs[vi::VI_ORIGIN as usize] = fb as u32;
+            bus.vi.regs[vi::VI_WIDTH as usize] = stride;
+            bus.vi.regs[vi::VI_V_TOTAL as usize] = 525;
+            bus.vi.regs[vi::VI_H_VIDEO as usize] = (108 << 16) | 0x94;
+            bus.vi.regs[vi::VI_V_VIDEO as usize] = (34 << 16) | 0x54;
+            bus.vi.regs[vi::VI_X_SCALE as usize] = x_scale;
+            bus.vi.regs[vi::VI_Y_SCALE as usize] = y_scale;
+
+            let mut memoized = alloc::vec![0u8; 640 * 64 * 4];
+            let (w, h) = bus.scanout_scaled(&mut memoized);
+            assert!(
+                w > 0 && h > 0,
+                "ctrl {ctrl:#x}: scan-out produced no pixels"
+            );
+
+            // The same walk with the memo disabled. `span == 0` makes every lookup
+            // fall through to `vi_sample_direct`, which is the uncached path.
+            let cfg = ViCfg {
+                origin: bus.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF,
+                src_stride: i32::try_from(bus.vi.read(vi::VI_WIDTH) & 0xFFF).expect("12-bit"),
+                bpp: 2,
+                aa_mode: (ctrl >> 8) & 0x3,
+                divot: (ctrl >> 4) & 1 != 0,
+                dither_filter: (ctrl >> 16) & 1 != 0,
+            };
+            let mut bypass = ViSampler::new(cfg, 0, -1);
+            assert_eq!(bypass.span, 0, "the bypass sampler must cache nothing");
+
+            let x_add = i32::try_from(x_scale & 0xFFF).expect("12-bit field");
+            let y_add = i32::try_from(y_scale & 0xFFF).expect("12-bit field");
+            let x_start = i32::try_from((x_scale >> 16) & 0xFFF).expect("12-bit field");
+            let y_start = i32::try_from((y_scale >> 16) & 0xFFF).expect("12-bit field");
+            let (wi, hi) = (
+                i32::try_from(w).expect("width fits i32"),
+                i32::try_from(h).expect("height fits i32"),
+            );
+            for oy in 0..hi {
+                let curry = y_start + oy * y_add;
+                let (sy, yfrac) = (curry >> 10, (curry >> 5) & 0x1F);
+                for ox in 0..wi {
+                    let x_offs = x_start + (8 + ox) * x_add;
+                    let (sx, xfrac) = (x_offs >> 10, (x_offs >> 5) & 0x1F);
+                    let want = if xfrac != 0 || yfrac != 0 {
+                        let col = bus.vi_column(&mut bypass, sx, sy, yfrac);
+                        if xfrac == 0 {
+                            col
+                        } else {
+                            let ncol = bus.vi_column(&mut bypass, sx + 1, sy, yfrac);
+                            vi_lerp3(col, ncol, xfrac)
+                        }
+                    } else {
+                        bus.vi_sample(&mut bypass, sx, sy)
+                    };
+                    let dst = usize::try_from((oy * wi + ox) * 4).expect("non-negative index");
+                    assert_eq!(
+                        &memoized[dst..dst + 3],
+                        &want,
+                        "ctrl {ctrl:#x} x_scale {x_scale:#x}: output ({ox}, {oy}) \
+                         disagrees with the uncached recomputation"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Eviction keeps the row the walk is still using, and an unused row goes first.
+    #[test]
+    fn vi_sampler_evicts_the_lower_row() {
+        let cfg = ViCfg {
+            origin: 0,
+            src_stride: 8,
+            bpp: 2,
+            aa_mode: 0,
+            divot: false,
+            dither_filter: false,
+        };
+        let mut s = ViSampler::new(cfg, 0, 7);
+        assert_eq!(s.row_y, [None, None], "a fresh memo holds no rows");
+        assert_eq!(s.row_slot(5), 0, "the first unused row is taken");
+        assert_eq!(s.row_slot(6), 1, "then the second");
+        assert_eq!(s.row_slot(5), 0, "an existing row is found, not re-taken");
+        assert_eq!(s.row_slot(7), 0, "row 5 is evicted, not row 6");
+        assert_eq!(s.row_y, [Some(7), Some(6)]);
+    }
+
+    /// A column outside the memo's range must fall through rather than index it, and
+    /// an over-wide range must disable the memo rather than allocate for it.
+    #[test]
+    fn vi_sampler_falls_through_outside_its_range() {
+        let cfg = ViCfg {
+            origin: 0,
+            src_stride: 8,
+            bpp: 2,
+            aa_mode: 0,
+            divot: false,
+            dither_filter: false,
+        };
+        let bus = Bus::new();
+        let mut s = ViSampler::new(cfg, 10, 12);
+        assert_eq!(s.span, 3);
+        // Left of, right of, and inside the range all answer; only the last is cached.
+        let _ = bus.vi_sample(&mut s, 9, 0);
+        let _ = bus.vi_sample(&mut s, 13, 0);
+        let _ = bus.vi_sample(&mut s, 11, 0);
+        assert_eq!(
+            s.cells.iter().filter(|c| c.is_some()).count(),
+            1,
+            "only the in-range column is memoized"
+        );
+
+        let huge = ViSampler::new(cfg, 0, i32::MAX);
+        assert_eq!(huge.span, 0, "an over-wide range disables the memo");
+        assert!(huge.cells.is_empty(), "and allocates nothing for it");
     }
 
     /// **`scanout_scaled` geometry + truncating convert (R-5).** A hand-computed

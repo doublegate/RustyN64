@@ -835,8 +835,8 @@ is cached: under 2/3 a sample is two RDRAM reads and a format convert, cheaper t
 row bookkeeping.
 
 Measured on Super Mario 64, `--release`, two runs each: the scan-out fell from
-**21.64 ms to 7.97 ms** (2.72x) and the frame from 139.31 ms to 124.94 ms (1.115x,
-7.18 → 8.00 FPS). `docs/performance.md` §Measured carries the provenance. Verified by
+**21.64 ms to 7.82 ms** (2.77x) and the frame from 139.31 ms to 123.76 ms (1.126x,
+7.18 → 8.08 FPS). `docs/performance.md` §Measured carries the provenance. Verified by
 the 164 VI/Angrylion conformance vectors, which are byte-for-byte and were shown to
 cover this path by mutation — an off-by-one in the memo index turns them red.
 
