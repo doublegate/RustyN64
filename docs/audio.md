@@ -93,6 +93,19 @@ one: computing the period first and then discovering the sample is not due cost
 **3.67% of a rendering frame**, the largest single source line outside the CPU
 pipeline, for a quotient that was thrown away (`docs/performance.md`).
 
+**Stepping the AI does not move it.** `Bus::audio_tick` used to `core::mem::take` the
+whole `Audio` — 88 bytes out, a `Default` written into the vacated slot, and 88 back —
+on **every RCP step**, purely so `tick` could borrow its owner. Since the DAC is idle on
+~1,949 of every 1,950 of those steps, the AI is now asked first
+(`Audio::tick_without_bus`) and only a `NeedsBus` token buys the move. The bus-free half
+still runs every step and still mutates — it stamps `last_tick` and anchors the first
+sample — so this skips the *move*, never the step. Measured **105.64 → 97.58 ms,
+1.083x** (`docs/performance.md`).
+
+The token carries the DAC period as well as the proof, so the divide above is not
+repeated in the second half; its fields are private, and it derives neither `Copy` nor
+`Clone`, so it cannot be forged or replayed against a schedule that has moved on.
+
 It is an ordering change, not a cache: the quotient stays derived from
 `sample_rate` on demand. Memoizing it in a field would add serialized state and so
 change the save-state layout (ADR 0005) to buy what the reordering buys for

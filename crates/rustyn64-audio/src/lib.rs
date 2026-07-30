@@ -154,6 +154,50 @@ pub enum AiIrq {
     Lower,
 }
 
+/// Proof that a step needs the bus, produced only by [`Audio::tick_without_bus`]
+/// and consumed only by [`Audio::tick_with_bus`].
+///
+/// The two halves exist for a caller that cannot lend this struct out without
+/// first moving it, and so needs to know whether the step will touch RDRAM
+/// *before* paying for the move. At a typical ~32 kHz that is about one step in
+/// 1,950. (In this workspace that caller is the Bus, which owns every chip.)
+///
+/// The fields are private and the type has no constructor, so it cannot be forged.
+/// It carries the DAC period as well as the proof, which keeps the 64-bit divide
+/// that produced it from being repeated in the second half.
+///
+/// **`Copy` and `Clone` are deliberately not derived**, and it is taken by value:
+/// either would let a caller keep a token past the step it authorized and present
+/// it again once `next_sample_tick` had moved on. `Debug` is derived because it
+/// cannot duplicate the value.
+///
+/// **Dropping a token loses the samples that were due**, unlike the RDP's
+/// equivalent: `tick_without_bus` has already stamped `last_tick`, and the `while`
+/// in the second half is what advances `next_sample_tick`, so a dropped token
+/// leaves those samples unemitted and the schedule behind `now` — the next call
+/// then emits them late in a burst.
+///
+/// What makes ignoring one loud is the `#[must_use]` on
+/// [`Audio::tick_without_bus`] **itself**, not the one on this type: an attribute
+/// on `T` does not propagate through `Option<T>`, and `Option` — unlike `Result`
+/// — is not `#[must_use]` either.
+///
+/// The attribute here is **dormant, and kept only for the day the return type is
+/// not wrapped** — it does not catch a caller who binds the token and drops it.
+/// That was proposed in review and probed rather than assumed: with
+/// `if let Some(_proof) = ai.tick_without_bus(1) {}`, `cargo clippy --all-targets`
+/// reports **zero** warnings both with and without it. A type-level `#[must_use]`
+/// fires on an unused *expression*, not on a binding; a bound-then-dropped value
+/// is `unused_variables`, which the leading underscore silences either way.
+#[derive(Debug)]
+#[must_use]
+pub struct NeedsBus {
+    /// Master ticks between output samples, already divided.
+    period: u64,
+    /// The tick the step is advancing to, as passed to `tick_without_bus`.
+    now: u64,
+}
+
 /// Audio Interface state: the two-deep DMA FIFO, the DAC rate divider, and the
 /// derived-timing sample emission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,6 +541,27 @@ impl Audio {
     /// `now` and the DAC period, never of an independently incremented counter.
     /// Hot path — allocation into the sink is the only cost while playing.
     pub fn tick<B: AudioBus>(&mut self, now: u64, bus: &mut B) {
+        if let Some(proof) = self.tick_without_bus(now) {
+            self.tick_with_bus(proof, bus);
+        }
+    }
+
+    /// The part of a step that needs **no bus access**, returning `None` when it
+    /// finished the step on its own and `Some(NeedsBus)` when samples must be read
+    /// out of RDRAM.
+    ///
+    /// **This advances state**, despite the `Option` return: it stamps `last_tick`
+    /// on every call and anchors `next_sample_tick` on the first one. It is named
+    /// `tick_*` rather than `is_*` for that reason.
+    ///
+    /// Split out so a caller can decide whether to pay for bus access *before*
+    /// arranging it. A caller that owns this struct cannot lend it out without
+    /// first moving it, and that move is pure overhead on the ~99.95% of steps
+    /// that emit nothing (`docs/audio.md` §Derived timing). [`Audio::tick`] calls
+    /// this too, so there is one implementation of the early-outs and no way for
+    /// the two to disagree.
+    #[must_use = "a `Some` means samples are due and the step needs `tick_with_bus`"]
+    pub fn tick_without_bus(&mut self, now: u64) -> Option<NeedsBus> {
         self.last_tick = now;
         // A schedule exists and its next sample is still ahead: nothing to do, and
         // in particular no need for `period_ticks`, whose 64-bit divide dominated
@@ -513,7 +578,7 @@ impl Audio {
                 self.sample_rate != 0,
                 "a constructed AI must never have a stopped DAC"
             );
-            return;
+            return None;
         }
         let period = self.period_ticks();
         if period == 0 {
@@ -526,14 +591,33 @@ impl Audio {
             // future change that reintroduces a zero rate is exactly the R-16
             // defect, and a silent `return` is how it hid the first time.
             debug_assert!(period > 0, "a constructed AI must never have a stopped DAC");
-            return;
+            return None;
         }
         if self.next_sample_tick == 0 {
             // Anchor the first sample one period out so a large `now` does not
             // dump a backlog of silence at power-on / rate change.
             self.next_sample_tick = now.saturating_add(period);
-            return;
+            return None;
         }
+        Some(NeedsBus { period, now })
+    }
+
+    /// The rest of the step, which reads sample words out of RDRAM.
+    ///
+    /// Reachable only with a [`NeedsBus`] from [`Audio::tick_without_bus`], so the
+    /// two halves cannot run out of order: the preconditions — a non-zero period
+    /// and at least one sample already due — are carried by the type rather than by
+    /// a comment or an assertion. The token also carries the period, so the 64-bit
+    /// divide that produced it is not repeated here.
+    // `needless_pass_by_value` is correct that a `&NeedsBus` would compile — both
+    // fields are `Copy`, so nothing here needs ownership. Taking it by value is the
+    // entire safety property: a token passed by reference stays usable, and the
+    // caller could present the same one again after `next_sample_tick` had moved
+    // past it. Ownership is what makes a token good for exactly one step, so this
+    // signature is load-bearing rather than careless.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn tick_with_bus<B: AudioBus>(&mut self, proof: NeedsBus, bus: &mut B) {
+        let NeedsBus { period, now } = proof;
         while self.next_sample_tick <= now {
             self.emit_sample(bus);
             self.next_sample_tick = self.next_sample_tick.saturating_add(period);
@@ -957,6 +1041,54 @@ mod tests {
             ai.tick(now, &mut bus);
             assert_eq!(ai.status() & (1 << 16), 0, "BC must stay low at BITRATE 0");
         }
+    }
+
+    /// **Every bus-free early-out returns `None` on its own condition, and the one
+    /// case that needs RDRAM returns `Some`.**
+    ///
+    /// A predicate that *always* skipped would pass any test that only checks the
+    /// skip fires — and a silently-always-skipping AI is a dead DAC. So the
+    /// positive case is asserted here beside the negatives, and the token it
+    /// returns is consumed, which is the only way to reach the second half.
+    ///
+    /// `last_tick` is checked on the skip paths too: the bus-free half must still
+    /// *advance* on the steps it declines to finish, or the DAC stops tracking the
+    /// clock while appearing to work.
+    #[test]
+    fn every_bus_free_early_out_fires_on_its_own_condition() {
+        let mut bus = TestBus::new(0x1_0000);
+
+        // 1. A schedule exists and its next sample is still ahead.
+        let mut ai = programmed();
+        ai.write_reg(0, 0x100);
+        ai.write_reg(1, 8);
+        let due = ai.next_sample_tick;
+        assert!(
+            ai.tick_without_bus(due - 1).is_none(),
+            "no bus needed before the boundary"
+        );
+        assert_eq!(ai.last_tick, due - 1, "the skipped step still advances");
+
+        // 2. No schedule yet: the first sample is anchored without touching RDRAM.
+        let mut fresh = programmed();
+        assert!(
+            fresh.tick_without_bus(7).is_none(),
+            "anchoring needs no bus"
+        );
+        assert_ne!(fresh.next_sample_tick, 0, "and it did anchor");
+
+        // 3. A sample is due — this one does need the bus, and the token proves it.
+        bus.write_word(0x100, 0x0001_0002);
+        bus.write_word(0x104, 0x0003_0004);
+        let proof = ai
+            .tick_without_bus(due)
+            .expect("a due sample must ask for the bus");
+        ai.tick_with_bus(proof, &mut bus);
+        assert_eq!(
+            ai.drain(),
+            [StereoSample { left: 1, right: 2 }],
+            "the second half emits the sample the token was issued for"
+        );
     }
 
     #[test]

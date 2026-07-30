@@ -561,9 +561,21 @@ impl Bus {
     /// Step the AI against this bus's narrow [`AudioBus`] view (split-borrow),
     /// advancing the DAC to `master_ticks` so sample emission is derived from
     /// the one canonical clock (ADR 0006) rather than an independent counter.
+    /// The move is skipped on the steps that emit nothing, which at a typical
+    /// ~32 kHz is about 1,949 of every 1,950: the AI is asked first, and only a
+    /// `NeedsBus` buys the `take`. Same shape as [`Bus::rdp_tick`] and for the
+    /// same reason — the borrow cannot be arranged without moving the chip out,
+    /// so the decision has to happen before it.
+    ///
+    /// The bus-free half still runs every step and still mutates (it stamps
+    /// `last_tick` and anchors the first sample), so this skips the *move*, never
+    /// the step.
     pub fn audio_tick(&mut self, master_ticks: u64) {
+        let Some(proof) = self.audio.tick_without_bus(master_ticks) else {
+            return;
+        };
         let mut audio = core::mem::take(&mut self.audio);
-        audio.tick(master_ticks, self);
+        audio.tick_with_bus(proof, self);
         self.audio = audio;
     }
 
@@ -2210,6 +2222,58 @@ mod tests {
     }
 
     /// **The AI register block is CPU-addressable and drives audio end to end.**
+    /// **Stepping the AI one master tick at a time still emits every sample.**
+    ///
+    /// [`Bus::audio_tick`] skips the `core::mem::take` on the steps whose bus-free
+    /// half reports nothing due — the overwhelming majority. This drives the real
+    /// per-tick cadence rather than one large jump, so every skip is exercised, and
+    /// asserts the emitted stream is exactly what an unskipped run produces.
+    ///
+    /// The oracle is the RDRAM the test wrote, not another run of this path: both
+    /// sample values are asserted against the words placed at `0x2000`, and the
+    /// count against the 8-byte `AI_LENGTH`. Mutation-checked — forcing the take to
+    /// be skipped unconditionally turns this red on the count, which is a clearer
+    /// signal than the index-out-of-bounds panic that the only other covering test
+    /// produced.
+    #[test]
+    fn skipping_the_take_never_skips_a_sample() {
+        let mut bus = Bus::new();
+        CpuBus::write_u32(&mut bus, 0x0000_2000, 0x1111_2222);
+        CpuBus::write_u32(&mut bus, 0x0000_2004, 0x3333_4444);
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x10, 1103); // AI_DACRATE
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x08, 1); // AI_CONTROL
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE, 0x2000); // AI_DRAM_ADDR
+        CpuBus::write_u32(&mut bus, Bus::AI_REGS_BASE + 0x04, 8); // AI_LENGTH
+
+        let period = rustyn64_audio::MASTER_HZ / u64::from(bus.audio.sample_rate());
+        // Two periods, one master tick at a time: thousands of skipped takes and a
+        // handful of real ones.
+        for now in 1..=(period * 2) {
+            bus.audio_tick(now);
+        }
+        let stepped = bus.drain_audio_samples();
+
+        assert_eq!(
+            stepped.len(),
+            2,
+            "both buffered samples must come out of the per-tick cadence"
+        );
+        assert_eq!(
+            stepped[0],
+            StereoSample {
+                left: 0x1111,
+                right: 0x2222
+            }
+        );
+        assert_eq!(
+            stepped[1],
+            StereoSample {
+                left: 0x3333,
+                right: 0x4444
+            }
+        );
+    }
+
     /// Programming `AI_DACRATE`/`AI_CONTROL`/`AI_DRAM_ADDR`/`AI_LENGTH` through
     /// the memory-mapped path at `0x0450_0000` starts a transfer that raises
     /// `MI_INTR.ai` on enqueue, mirrors `AI_LENGTH` on the write-only registers,
