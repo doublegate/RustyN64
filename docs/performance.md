@@ -712,6 +712,55 @@ not the exception. **Corollary for the remaining split-borrows: do not size one 
 RSP executes microcode on essentially every step, so it genuinely needs the bus and there
 is no idle majority to skip.
 
+## The VI divided for a half-line period it almost never needed
+
+Re-profiling after the AI work put **`crates/rustyn64-core/src/vi.rs:167` at 5.00% — the
+single hottest line in the frame.** That line is
+`MASTER_HZ / (field_hz() * total_halflines())`, a 64-bit divide, and `Vi::tick` runs on
+every RCP step. A half-line is ~5,952 master ticks against a step every 3, so a half-line
+elapses on roughly **one call in 1,980** and the rest divide to compare against an
+accumulator that cannot have reached the period.
+
+Fixed with a bound rather than a cache, so no state was added and the save-state layout is
+untouched (ADR 0005). `total_halflines()` is `(VI_V_TOTAL & 0x3FF) + 1`, so the field is
+**1..=1024** half-lines, and `field_hz()` is 50 or 60. The divisor is therefore at most
+61,440 and
+
+```text
+VI_MIN_TICKS_PER_HALFLINE = MASTER_HZ / (60 * 1024) = 3051
+```
+
+is a true lower bound over the **entire** programmable space. Below it the `while` cannot
+execute for any legal register programming, so the divide is skipped — **exact, not
+approximate**. A `const` assertion ties the constant to the `0x3FF` mask and to NTSC being
+the faster field rate, so widening either breaks the build instead of silently making the
+bound too large, which would swallow a half-line and make the VI interrupt late.
+
+A-B-A, one sitting, environment as tabled in §Measured (2026-07-30):
+
+| leg | variant | frame mean |
+| --- | --- | --- |
+| A | divide every step | 96.547 / 97.214 ms |
+| B | **skip below the bound** | **94.925 / 93.642 ms** |
+| A | divide every step, again | 97.310 / 98.117 ms |
+
+**This one is noisier than the others and the number is quoted loosely on purpose.** The
+four A legs climb monotonically (96.5 → 98.1, a 1.6% upward drift over the sequence) and
+the two B legs differ by 1.37%, both wider than the 0.05–0.13% back-to-back spread. What is
+solid is the *sign*: both A brackets sit entirely above both B legs. Taking the adjacent
+brackets (A2, A3) against B gives **~1.03x**; the conservative pairing, best A over worst B
+(`96.547 / 94.925`), gives **1.017x**. The 5.00% profile share would have predicted ~1.053x,
+so here the share **over**-predicted — the opposite direction from the two split-borrows,
+and a reminder that the share bounds rather than forecasts.
+
+**A dead guard and a wrong comment, found on the way.** `Vi::tick` returned early on
+`per_hl == 0` under the comment "no timing until `VI_V_TOTAL` is programmed". That branch is
+unreachable — the divisor is at least 50 against a 187.5 MHz numerator — and the comment
+misdescribed it besides: an unprogrammed `VI_V_TOTAL` is *one* half-line, a period of
+3,750,000 ticks, very long and never zero. The guard stays as a divide-by-zero backstop with
+a `debug_assert` making the claim checkable, which is the same treatment ledger R-16's guard
+gets in the AI.
+
 ## The render-phase map, re-measured after the VI and RDP work
 
 The attribution the earlier plan worked from was taken at **138.7 ms/frame**, before the

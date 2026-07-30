@@ -761,7 +761,23 @@ remainder), wrapping at `VI_V_TOTAL + 1`, and raises `MI_INTR.vi` once per field
 when it lands on `VI_V_INTR` — the per-half-line step means a call spanning many
 half-lines cannot skip it, and a `VI_V_INTR` beyond the field never fires.
 `VI_CTRL.TYPE == 0` suppresses the interrupt, and the position is kept relative so
-a mid-run `VI_V_TOTAL` change re-bases without a scale jump. The field cadence is
+a mid-run `VI_V_TOTAL` change re-bases without a scale jump.
+
+**The period is only divided for when a half-line could actually have elapsed.**
+`Vi::tick` runs every RCP step but a half-line takes ~5,952 master ticks against a
+step every 3, so ~1,979 calls in 1,980 cannot cross one. Those return before the
+64-bit divide, on a comparison against `VI_MIN_TICKS_PER_HALFLINE` — the smallest
+period the whole programmable space admits, `MASTER_HZ / (60 * 1024) = 3051`, since
+`total_halflines()` is `(VI_V_TOTAL & 0x3FF) + 1` (so 1..=1024) and `field_hz()` is
+50 or 60. Below that bound the `while` provably cannot execute for **any** legal
+programming, so this is exact rather than approximate, and it adds no state (a cache
+would have changed the save-state layout, ADR 0005). A `const` assertion ties the
+bound to the `0x3FF` mask and to NTSC being the faster rate, because a bound that
+grew too large would swallow a half-line and delay the interrupt silently. Two tests
+pin it: one walks all 1,024 encodable `VI_V_TOTAL` values, and one drives the scan
+one master tick at a time and requires the same landing half-line as a single jump.
+
+The field cadence is
 **region-aware** (R-6): `Vi::field_hz` picks the standard PAL **50 Hz** when the
 field is PAL-length (`VI_V_TOTAL > 550`) and NTSC **60 Hz** otherwise — the same
 `ispal` split the scan-out geometry uses, so cadence and geometry agree on the

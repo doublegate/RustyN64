@@ -80,6 +80,47 @@ pub const VI_FIELD_HZ: u64 = 60;
 /// exact `H_TOTAL` sub-field timing remain deferred under R-6.
 pub const VI_FIELD_HZ_PAL: u64 = 50;
 
+/// The number of half-lines the widest `VI_V_TOTAL` can encode.
+///
+/// `Vi::total_halflines` is `(VI_V_TOTAL & 0x3FF) + 1`, so the field is 1..=1024
+/// half-lines long and can never be zero — which is why `ticks_per_halfline` cannot
+/// divide by zero, and also why it can never *return* zero.
+const VI_MAX_HALFLINES: u64 = 1024;
+
+/// The smallest value `Vi::ticks_per_halfline` can take over the **entire**
+/// programmable space: the fastest field rate against the longest field.
+///
+/// `Vi::tick` runs on every RCP step and a half-line elapses on roughly one call in
+/// 1,980, so the division that produces the real period is almost always wasted. It
+/// is skipped when the accumulator has not reached this bound, which is exact rather
+/// than approximate: below it the `while` loop cannot execute for *any* legal
+/// register programming, so nothing that depends on the true period is being guessed.
+///
+/// Both operands are extremal on purpose. `VI_FIELD_HZ` (60) is the larger of the two
+/// field rates and [`VI_MAX_HALFLINES`] the longest field, so their product is the
+/// largest divisor and this quotient the smallest period. A `const` assertion below
+/// pins that, so a new field rate or a wider `VI_V_TOTAL` mask breaks the build
+/// rather than silently making the bound too large — which would skip a half-line.
+const VI_MIN_TICKS_PER_HALFLINE: u64 = crate::MASTER_HZ / (VI_FIELD_HZ * VI_MAX_HALFLINES);
+
+const _: () = {
+    assert!(
+        VI_FIELD_HZ >= VI_FIELD_HZ_PAL,
+        "VI_MIN_TICKS_PER_HALFLINE assumes the NTSC rate is the faster one; if PAL \
+         ever exceeds it, the minimum period is computed from the wrong field rate"
+    );
+    // The mask in `total_halflines` is what actually bounds the field length. If it
+    // widens, this constant must widen with it or `Vi::tick` will skip a half-line.
+    assert!(
+        VI_MAX_HALFLINES == (0x3FF + 1),
+        "VI_MAX_HALFLINES must match the 0x3FF mask in Vi::total_halflines"
+    );
+    assert!(
+        VI_MIN_TICKS_PER_HALFLINE > 0,
+        "a zero bound would disable the fast path rather than merely loosen it"
+    );
+};
+
 /// The **encoded** `VI_V_TOTAL` register value above which a field is treated as
 /// **PAL** rather than NTSC.
 ///
@@ -183,13 +224,31 @@ impl Vi {
     pub fn tick(&mut self, master_ticks: u64) -> bool {
         let delta = master_ticks.saturating_sub(self.prev_ticks);
         self.prev_ticks = master_ticks;
+        // Below the smallest period any legal programming can produce, the `while`
+        // cannot execute whatever the registers hold, so the division that would
+        // produce the exact period is skipped. Exact, not approximate — and it is
+        // most of the work here, since a half-line elapses on about one call in
+        // 1,980 (`docs/performance.md`).
+        let acc = self.acc + delta;
+        if acc < VI_MIN_TICKS_PER_HALFLINE {
+            self.acc = acc;
+            return false;
+        }
         let per_hl = self.ticks_per_halfline();
-        // No timing until `VI_V_TOTAL` is programmed; prev_ticks is still advanced
-        // above so the pre-setup ticks are not accumulated retroactively.
+        // Unreachable: `total_halflines()` is `(VI_V_TOTAL & 0x3FF) + 1`, so it is at
+        // least 1, and `field_hz()` is 50 or 60 — the divisor is therefore at most
+        // 61,440 against a 187.5 MHz numerator and the quotient cannot be zero. Kept
+        // as a divide-by-zero guard rather than as modeled VI state, with an assert
+        // so the claim is checkable instead of merely asserted.
+        //
+        // The comment this replaces said "no timing until `VI_V_TOTAL` is
+        // programmed", which misdescribed it: an unprogrammed `VI_V_TOTAL` is one
+        // half-line, giving a period of 3,750,000 ticks — very long, never zero.
+        debug_assert!(per_hl > 0, "the VI period is bounded below by construction");
         if per_hl == 0 {
             return false;
         }
-        self.acc += delta;
+        self.acc = acc;
         let halflines = self.total_halflines();
         let v_intr = self.regs[VI_V_INTR as usize] & 0x3FF;
         let on = self.regs[VI_CTRL as usize] & 0x3 != 0;
@@ -235,6 +294,73 @@ impl Vi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The skip bound is a true lower bound across the whole programmable space.**
+    ///
+    /// `Vi::tick` returns before dividing when the accumulator is below
+    /// [`VI_MIN_TICKS_PER_HALFLINE`]. That is only sound if no legal
+    /// `(VI_V_TOTAL, field_hz)` pair can produce a *shorter* period — otherwise the
+    /// fast path swallows a half-line, `VI_V_CURRENT` runs slow, and the VI
+    /// interrupt arrives late, with nothing to indicate why.
+    ///
+    /// So this checks the bound against every encodable `VI_V_TOTAL` rather than
+    /// against the two the retail regions happen to use, walking all 1,024 values.
+    /// Mutation-checked: halving `VI_MAX_HALFLINES` (which doubles the bound) turns
+    /// this red.
+    #[test]
+    fn no_legal_programming_produces_a_shorter_halfline_than_the_skip_bound() {
+        let mut vi = Vi::new();
+        for encoded in 0..=0x3FFu32 {
+            vi.regs[VI_V_TOTAL as usize] = encoded;
+            let per_hl = vi.ticks_per_halfline();
+            assert!(
+                per_hl >= VI_MIN_TICKS_PER_HALFLINE,
+                "VI_V_TOTAL={encoded} gives a {per_hl}-tick half-line, below the \
+                 {VI_MIN_TICKS_PER_HALFLINE}-tick skip bound: tick() would skip it"
+            );
+            assert!(per_hl > 0, "VI_V_TOTAL={encoded} divides to a zero period");
+        }
+    }
+
+    /// **Ticking one master tick at a time lands on exactly the same half-line as
+    /// one big jump.** The skip must not lose an accumulated remainder.
+    ///
+    /// The per-tick cadence is what the scheduler actually does, and it is the path
+    /// that takes the early-out thousands of times per half-line; the single jump
+    /// takes it never. Both are driven to the same `master_ticks`, so any tick the
+    /// fast path drops shows up as a different `VI_V_CURRENT`.
+    #[test]
+    fn stepping_one_tick_at_a_time_matches_one_jump() {
+        let mut stepped = Vi::new();
+        let mut jumped = Vi::new();
+        for vi in [&mut stepped, &mut jumped] {
+            vi.regs[VI_V_TOTAL as usize] = 524; // NTSC, 525 half-lines
+            vi.regs[VI_CTRL as usize] = 0x3; // VI on
+            vi.regs[VI_V_INTR as usize] = 2;
+        }
+        // Three half-lines' worth, so the early-out runs thousands of times.
+        let target = stepped.ticks_per_halfline() * 3 + 17;
+
+        let mut stepped_fired = false;
+        for now in 1..=target {
+            stepped_fired |= stepped.tick(now);
+        }
+        let jumped_fired = jumped.tick(target);
+
+        assert_eq!(
+            stepped.v_current, jumped.v_current,
+            "the per-tick cadence must land on the same half-line as one jump"
+        );
+        assert_eq!(stepped.acc, jumped.acc, "and carry the same remainder");
+        assert!(
+            stepped_fired,
+            "V_INTR == 2 is crossed within three half-lines"
+        );
+        assert_eq!(
+            stepped_fired, jumped_fired,
+            "and both paths must agree that it fired"
+        );
+    }
 
     #[test]
     fn power_on_is_all_zero_so_the_vi_is_off() {
