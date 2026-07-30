@@ -853,7 +853,9 @@ whole `Rdp` — 344 bytes, read and written, plus a default written into the vac
 on **every RCP step**, purely so `tick` could borrow its owner. On most steps the RDP is
 frozen, stalling, or looking at an empty FIFO and needs no bus at all, so that shuffle
 bought nothing. `Rdp::tick_without_bus` answers those cases from the struct's own fields
-and `Bus::rdp_tick` only takes when it returns `false`; `Rdp::tick` calls the same
+and `Bus::rdp_tick` only takes when it hands back a `NeedsBus` — a token with no
+public constructor, so the bus half cannot be called out of order at all;
+`Rdp::tick` calls the same
 helper, so there is one implementation of the early-outs. Measured on Super Mario 64,
 `--release`, two runs each: **125.24 → 108.22 ms, 1.157x** (7.98 → 9.24 FPS), with the
 scan-out unchanged. Verified by the Angrylion `.rvec` and VI conformance vectors.

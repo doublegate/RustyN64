@@ -1857,7 +1857,8 @@ impl Rdp {
         Some(NeedsBus(()))
     }
 
-    /// The remainder of a step, once [`Rdp::tick_without_bus`] has returned `false`.
+    /// The remainder of a step, once [`Rdp::tick_without_bus`] has handed back a
+    /// [`NeedsBus`].
     ///
     /// Reachable only with a [`NeedsBus`], which [`Rdp::tick_without_bus`] hands out
     /// exactly when the FIFO is non-empty and the pipeline is neither frozen nor
