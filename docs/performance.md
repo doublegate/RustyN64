@@ -456,12 +456,17 @@ needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
 
 ### The Bus split-borrow moves 1.35 GB a frame (open)
 
-`core::mem`'s `replace` is **5.32%** of the frame on its own — 4.21% and 1.11% at lines
-930 and 929 of the **Rust standard library's** `library/core/src/mem/mod.rs`, inside the
-toolchain, not a file in this repository. Those two lines are the `read_via_copy` /
-`write_via_move` pair inside `replace`, in **`rustc 1.96.0`** — the exactly-pinned
-toolchain (`rust-toolchain.toml`), which is what makes a stdlib line number citable at
-all here; on any other toolchain, look for that pair rather than for the numbers. About **6.7 ms of 125**, and all of it is the
+**`core::mem::replace` is 5.32% of the frame on its own** — specifically the
+`read_via_copy` / `write_via_move` pair inside it, which is the durable way to find these
+samples. In the **Rust standard library's** `library/core/src/mem/mod.rs` (inside the
+toolchain, not a file in this repository) that pair sat at lines 930 and 929, worth 4.21%
+and 1.11%, under **`rustc 1.96.0`** — the exactly-pinned toolchain
+(`rust-toolchain.toml`), which is the only reason a stdlib line number is quotable here
+at all. On any other toolchain, search for the pair.
+
+`take` is what the code calls and `replace` is what the profile shows because
+`mem::take(x)` **is** `mem::replace(x, Default::default())` — which is also where the
+second write comes from: the default has to be written into the vacated slot. About **6.7 ms of 125**, and all of it is the
 Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
 `crates/rustyn64-core/src/bus.rs` (lines 539 and 548 as of commit `2abc817`, same
 convention as the table above):
