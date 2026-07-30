@@ -43,8 +43,17 @@ incompatible-rust-versions = "fallback"
 # between curl's HTTP/2 multiplexing and the crates.io CDN that surfaces as
 # intermittent "Error in the HTTP2 framing layer" / "unexpected eof while reading"
 # fetch failures, and a higher retry count lets any remaining transient blip
-# self-heal instead of failing a CI job. Repo-wide, so it covers every cargo
-# invocation in CI as well as local builds.
+# self-heal instead of failing a CI job.
+#
+# Provenance, since this is a workaround and workarounds outlive their causes:
+# it is inherited from `RustyNES`, where those failures were observed. They have
+# NOT been observed in this repository, and the cost of disabling multiplexing --
+# slower parallel fetches -- has not been measured here either. It is kept
+# repo-wide rather than moved behind a CI-only `CARGO_HTTP_MULTIPLEXING=false`
+# because the failure it prevents is not CI-specific and is painful to recognize:
+# it presents as a corrupt download rather than as a network error. If it ever
+# becomes a nuisance locally, the env var is the smaller change and this comment
+# is the reason to reach for it.
 [net]
 retry = 10
 

@@ -189,7 +189,7 @@ cargo full-run path/to/rom.z64
 **Always run a release build.** `cargo full-run` (and `cargo full-build`) are aliases
 for `--release -p rustyn64-frontend --features full`, and the `--release` is not
 cosmetic: a debug build of this emulator is **8.7x slower** — 0.82 FPS against 7.18 on
-the same ROM, measured as a paired pair of runs (`docs/performance.md` §Measured). A
+the same ROM, measured as two runs each on one tree (`docs/performance.md` §Measured). A
 plain `cargo run` looks like an emulation defect rather than a build-profile choice,
 which has already happened once.
 

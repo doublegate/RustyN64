@@ -39,10 +39,12 @@ retroachievements = []
 # that does not exist. It is also NOT `--all-features`, which this workspace forbids
 # outright because mutually-exclusive backend features cannot resolve together.
 #
-# Today this equals `default`, which makes the aliases' `--features full` a no-op and
-# their whole value the `--release` they also pass — that is the point, given a debug
-# build is 8.7x slower. Add features here as they gain code.
-full = ["emu-thread"]
+# It enables `default` by name rather than restating its contents, so a feature added
+# to `default` reaches `full` without anyone remembering to. Today that makes
+# `--features full` a no-op and the aliases' whole value the `--release` they also pass
+# — which is the point, given a debug build is 8.7x slower. Additive natives that are
+# NOT in `default` go in the list alongside it.
+full = ["default"]
 
 [[bin]]
 name = "rustyn64"
