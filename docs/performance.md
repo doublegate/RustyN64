@@ -6,10 +6,12 @@
 ## The bottleneck (where the time goes)
 
 > **Partly superseded by measurement — see *Measured (2026-07-30)* below.** The
-> prediction in this section was that the RSP + CPU dominate. Measured on a real title
-> in the render phase, the **CPU is 32.0% and the RSP only 9.2%**, while **Bus + VI is
-> 29.0%** — the VI scan-out filters were not on the predicted list at all. A prediction
-> left unmarked reads as a finding, so it is marked.
+> prediction in this section was that the **RSP + CPU** dominate together. Measured on
+> a real title in the render phase they do still lead, at 32.0% + 9.2% = 41.2% against
+> **Bus + VI's 29.0%** — so the shape is right and the weights are not. The RSP was
+> predicted co-dominant and is **9.2%**, less than a third of the pair; and the VI
+> scan-out filters, which are the single largest source file in the profile, were not
+> on the list at all. A prediction left unmarked reads as a finding, so it is marked.
 
 Per `ref-docs/research-report.md` §4 and §challenge 7, once the RDP is on the GPU
 (ParaLLEl-RDP: ~0.2 ms/frame, 2000–5000 VI/s on mid-range GPUs), the RDP is **not**
@@ -136,14 +138,18 @@ render-phase table.
 | | A — frame timing | B — render-phase profile |
 | --- | --- | --- |
 | Harness | `crates/rustyn64-frontend/tests/frame_cost_probe.rs` | `crates/rustyn64-frontend/tests/gameplay_phase_probe.rs` |
-| Window | 30 frames from the first frame the VI is live (frame 36 for SM64) | ~frames 400-870, reached by mashing START/A |
+| Window | 30 frames from the first frame the VI is live (frame 36 for SM64) | the tail of a 900-frame run (`RUSTYN64_PROBE_SKIP=900`), reached by mashing START/A |
 | Samples | 9,431 (`perf record -F 999`) | **58,326** (`cpu/cycles:u`) |
-| Duration | one probe run, ~9 s | **58.9 s of samples**, after `-D 70000` discards the first 70 s — the process runs ~130 s in total |
+| Duration | one probe run, ~9 s | **58.9 s of samples**, after `-D 70000` discards the first 70 s — the process runs ~130 s in total, so the sampled tail is roughly the last 400 of the 900 frames |
 | Answers | ms/frame, and the scan-out's share of it | which subsystem owns the time |
 
 ```bash
+# `$ROOT` rather than `$PWD`: these run from anywhere in the workspace.
+ROOT=$(git rev-parse --show-toplevel)
+ROM="$ROOT/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64"
+
 # A — frame timing (the FPS numbers). Run twice; take the mean line.
-RUSTYN64_PROBE_ROM="$PWD/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64" \
+RUSTYN64_PROBE_ROM="$ROM" \
   cargo test -p rustyn64-frontend --release --test frame_cost_probe -- --ignored --nocapture
 
 # B — render-phase profile. `-D 70000` discards the first 70 s, which is boot.
@@ -158,7 +164,8 @@ BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
         --no-run --test gameplay_phase_probe --message-format=json \
       | jq -r 'select(.target.name == "gameplay_phase_probe" and .executable != null)
              | .executable')
-RUSTYN64_PROBE_ROM="$PWD/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64" \
+test -n "$BIN" || { echo "no test binary — did the build fail?" >&2; exit 1; }
+RUSTYN64_PROBE_ROM="$ROM" \
 RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o perf_play.data -- \
   "$BIN" --ignored --nocapture
 perf report -i perf_play.data -s srcline --full-source-path --no-children -g none
@@ -266,7 +273,8 @@ measurements would overstate them:
   scan-out share. The paired share is 22.9%, so the ceiling is 1.64. The difference is
   immaterial to 0011's argument — its point is that ~8-9x is unreachable against a
   ceiling under 1.7 — but a derived figure that no longer follows from its inputs is
-  the kind of thing that gets re-quoted, so it is corrected here and in ADR 0012 §5.
+  the kind of thing that gets re-quoted, so it is corrected here; ADR 0011 is immutable,
+  so its copy is marked superseded in ADR 0012 §5, which lands separately.
 
   Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
   physical impossibility, since something has to produce the pixels — would leave
