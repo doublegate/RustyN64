@@ -298,8 +298,12 @@ pub struct Latch {
 //
 // | target | `size_of::<Latch>()` |
 // | --- | --- |
-// | `x86_64`, `thumbv7em-none-eabihf`, `wasm32-unknown-unknown` | 120 |
+// | `x86_64`, `thumbv7em-none-eabihf`, `wasm32-unknown-unknown`, `armv7-*` | 120 |
 // | `i686-*` (32-bit x86, `u64` aligns to 4) | 108 |
+//
+// `armv7` is in that first row by measurement, not by assumption: it is 32-bit with an
+// 8-byte-aligned `u64`, which is the combination the implication below is keyed on, so
+// it is the case that would fail first if the keying were wrong.
 //
 // So there are two assertions rather than one, and neither breaks a cross-compile:
 //
@@ -317,8 +321,15 @@ pub struct Latch {
 // the copies `docs/performance.md` is trying to shrink.
 const _: () = {
     // The scalars: `occupied` + `pc` + `word` + `in_delay_slot` + `rs_val` + `rt_val`.
-    // Sizes, not alignments, so this term is the same on every target.
-    let scalars = 1 + 8 + 4 + 1 + 8 + 8;
+    // Written as `size_of` of each field's type rather than as literals, so a field
+    // whose type changes updates this term instead of silently desynchronizing it —
+    // which would mask exactly the padding this is meant to detect.
+    let scalars = core::mem::size_of::<bool>()
+        + core::mem::size_of::<u64>()
+        + core::mem::size_of::<u32>()
+        + core::mem::size_of::<bool>()
+        + core::mem::size_of::<u64>()
+        + core::mem::size_of::<u64>();
     let parts = core::mem::size_of::<Decoded>()
         + core::mem::size_of::<Option<Exception>>()
         + core::mem::size_of::<WriteBack>()
