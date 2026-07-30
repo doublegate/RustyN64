@@ -83,7 +83,10 @@ The gate must therefore:
   The expected value for the reason count is **not a hand-maintained constant**: it is
   derived from the enumerated bail-out set the fast path itself declares, so adding a
   bail-out reason without a fixture that reaches it fails the gate, and no one has to
-  remember to bump a total. A gate whose expected count
+  remember to bump a total. **How** the count is derived — an exhaustive match, a
+  generated table, a `strum`-style derive — is left to the implementing PR, because the
+  requirement is a property (the number cannot be stated independently of the enum), not
+  a technique. A gate whose expected count
   is a literal drifts the moment the suite grows, which converts the witness into
   decoration.
 
@@ -187,7 +190,7 @@ permission to bail out to the accurate path for anything unhandled.
 ## Process note
 
 The generalizable lesson is recorded where this repository keeps them, in
-`docs/engineering-lessons.md` under *"Re-requesting a review and then checking once is
+[`docs/engineering-lessons.md`](../engineering-lessons.md) under *"Re-requesting a review and then checking once is
 not waiting for it"* — cited by title, since a section number is the part that goes
 stale. It is referenced rather than argued here so that
 this document stays a specification.
