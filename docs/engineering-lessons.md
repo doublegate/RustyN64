@@ -549,6 +549,25 @@ attributed the stall to it.
 few times its expected runtime (30 for CI legs, 20 for Pages, 45 for release builds). A job that
 hits its budget is reporting a hang, which is information; a job with no budget reports nothing.
 
+### 4.4 Re-requesting a review and then checking once is not waiting for it
+
+**The pattern.** Automated reviewers answer asynchronously, minutes after CI goes green. A
+merge taken on the first green — or after a single poll that found nothing — lands before the
+review exists, and the findings then arrive against a closed PR where nothing can be applied.
+
+**How it went wrong here.** Twice. The second time cost more than the first: ADR 0011 declares
+itself immutable on merge, so a review that landed moments afterwards could not be edited in,
+and its two substantive findings — a self-contradiction between "byte-identical default builds"
+and a save-state header change, and a differential gate with no completion witness — needed a
+whole second document, ADR 0012, to carry corrections that would otherwise have been two lines.
+One of the findings was a contradiction *introduced while adopting an earlier review suggestion*,
+which is precisely the class of error a second reader catches and an author does not.
+
+**Practice adopted.** A merge waits for the review to have **arrived**, not for CI. Poll until
+the reviewer has actually commented, adjudicate every thread, and only then merge. For an
+immutable document the rule is stricter still, because there is no such thing as a follow-up
+edit: an ADR merges only once every comment on it is resolved.
+
 ---
 
 ## Applying this document

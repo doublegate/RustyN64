@@ -72,7 +72,12 @@ The gate must therefore:
 
 - **emit an explicit end-of-suite marker** naming how many boundary fixtures and
   comparison points actually ran, and fail if that count is zero or below the expected
-  number — a run that compared nothing must not read as agreement;
+  number — a run that compared nothing must not read as agreement. The expected number is
+  **not a hand-maintained constant**: it is the length of the enumerated bail-out set the
+  fast path itself declares, so adding a bail-out reason without a fixture that reaches it
+  fails the gate, and no one has to remember to bump a total. A gate whose expected count
+  is a literal drifts the moment the suite grows, which converts the witness into
+  decoration;
 - **carry a timeout** per fixture and for the suite, so a hang fails rather than
   hanging;
 - **define its failure conditions**, including "the fast path never engaged" and "no
@@ -121,8 +126,7 @@ permission to bail out to the accurate path for anything unhandled.
 
 ## Process note
 
-The generalizable lesson, since this is the second time a review has landed after a
-merge in this repository: re-triggering a review and then polling once is not waiting
-for it. A merge is safe only once the review has actually arrived and every thread is
-adjudicated — for an **immutable** document, that is the difference between an edit and
-an extra ADR.
+The generalizable lesson is recorded where this repository keeps them, as
+`docs/engineering-lessons.md` §4.4 — re-requesting a review and then checking once is not
+waiting for it. It is referenced rather than argued here so that this document stays a
+specification.
