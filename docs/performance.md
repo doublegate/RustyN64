@@ -634,3 +634,159 @@ can.
    is rarely satisfied" from "the reordered test is itself more expensive". Settling it
    needs a coverage histogram over a real frame, which belongs with the scan-out
    memoization work rather than here. Until then, do not aim an optimization using it.
+6. **Shrinking `Latch` to cut the inter-stage copies** — the premise does not survive a
+   sensitivity test. Six source lines in `pipeline.rs` are all the same thing (`self.ex_dc =
+   out`, `let mut out = self.rf_ex`, and their peers) and together they are **16.1%** of a
+   rendering frame, which reads as "the copies are expensive". They are not: **adding**
+   `[u64; 9]` of padding to `Latch`, taking it 120 → 192 bytes and the bytes moved per
+   emulated cycle 840 → 1344 (+60%), measured **1.1% faster**, not slower —
+   103.45/103.18 ms → 102.29/102.03 ms.
+
+   So `perf` is charging each stage's retired work to the store that ends it, and the 16.1%
+   is not a transfer cost that shrinking the struct would recover. This retires the sizing
+   behind the "split `Latch` into a front half and an EX-onward payload" task, which the
+   line attribution had made look like ~1.07x.
+
+   **Provenance.** Experiment A (`frame_cost_probe`, `where_does_a_frame_go`), 30 frames
+   from the first live-VI frame, on the environment tabled in §Measured (2026-07-30) —
+   same machine, `rustc 1.96.0`, same SM64 dump. Tree at commit `9631c06` with the padding
+   applied as an uncommitted patch: `probe_pad: [u64; 9]` added to `Latch`, the two
+   non-struct-update construction sites extended, and `pipeline.rs`'s size assertion
+   retargeted 120 → 192. Built with `cargo build -p rustyn64-frontend --release --tests`.
+   Two runs padded; the unpadded pair is the B leg of the DAC-period A-B-A above, run
+   minutes earlier on the same tree minus the patch. The patch was reverted afterwards
+   and the tree verified clean; it is not in any commit.
+
+   **Two weaknesses, because they bound what may be concluded.**
+
+   *It is a two-leg comparison, not A-B-A.* There is no return leg, and 1.1% sits inside
+   the 1–2% a session drifts. **So "1.1% faster" is not a claim** — the padded build and
+   the unpadded one are indistinguishable here. What the data does carry is the *absence
+   of the predicted regression*: if the copies were transfer-bound at 16.1%, +60% of
+   traffic predicts roughly **+10%** frame time, and nothing remotely that size appeared.
+   Refuting a 10% prediction does not require resolving 1%.
+
+   *Padding that nothing reads can be narrowed by LLVM*, so this cannot prove every added
+   byte was actually moved. Evidence against copy width driving the cost, then, rather
+   than proof — but the codegen did change (the timings moved outside the back-to-back
+   spread), so it was not a no-op build.
+
+   Together that is enough to say the refactor should not be undertaken *on this
+   evidence*. A sound positive test is the split itself, which is the work being
+   questioned; do it only if some other measurement first shows the copies matter.
+
+## The render-phase map, re-measured after the VI and RDP work
+
+The attribution the earlier plan worked from was taken at **138.7 ms/frame**, before the
+scan-out memo and the RDP split-borrow skip. Both cut buckets that map named, so it is
+stale for exactly the parts that changed and must not be used to size the next step.
+
+Re-measured on the current head: Super Mario 64, `--release` with
+`CARGO_PROFILE_RELEASE_DEBUG=1`, `gameplay_phase_probe` advanced 1,400 frames,
+`perf record -D 70000 -F 999 --call-graph=dwarf`, **67,278 samples**, attributed with
+`perf report -s srcline --full-source-path --no-children -g none` and summed per file.
+The `-D` delay is what keeps this a *rendering* profile: a boot-window capture reports the
+RDP at 0.00%.
+
+| subsystem | old map (138.7 ms) | **now** |
+| --- | --- | --- |
+| CPU (`pipeline` 31.8 + decode/cop0/addr/cache/exec/regs/alu/softfloat/mem/fpr) | 31.6% | **44.6%** |
+| Bus + VI (`bus.rs` 11.4 + `vi.rs` 2.6) | 29.0% | **14.0%** |
+| RSP (`vu.rs` 6.7 + `su.rs` 6.5) | 9.0% | **13.2%** |
+| scheduler | 6.4% | **8.9%** |
+| RDP | 7.5% | **4.3%** |
+| AI (audio) | not broken out | **4.0%** |
+| core/stdlib (inlined arithmetic, `mem`, conversions) | — | 8.7% |
+| **subtotal** | 83.5% | **97.7%** |
+| unattributed remainder | 16.5% | 2.3% |
+| **total** | **100%** | **100%** |
+
+The two columns are not equally complete, and the remainders say so. The "now" column
+resolves all but 2.3% — frontend, allocator, and per-file shares below 0.28% that were not
+worth a row. The old column's 16.5% is larger because it was recorded as five coarse
+subsystem buckets with no AI or stdlib row at all; that is a limit of the old record, not a
+gap that has since been closed. **Do not read the old column as a like-for-like baseline**:
+use it for the direction of travel, and the "now" column for arithmetic.
+
+Bus + VI has halved and the CPU is now the clear majority. Nothing "got slower": these are
+shares of a smaller frame.
+
+## The 60 FPS target is out of reach for this execution model — measured, not estimated
+
+At 103.3 ms a frame, 16.7 ms means **6.19x**: 83.8% of all work must disappear.
+
+The fast-path scheduler (ADR 0011) targets the CPU pipeline and the scheduler's per-edge
+dispatch. Those are **44.6% + 8.9% = 53.5%** of the frame. Set both to *zero* — a fast path
+so good the CPU costs nothing at all — and the frame still contains the other 46.5%:
+
+- ceiling, both buckets free: 103.3 x 0.465 = **48.0 ms → 20.8 FPS (2.15x)**
+- realistic, if a block interpreter removes ~2/3 of the CPU bucket and most of dispatch:
+  **~66 ms → ~15 FPS (1.57x)**
+
+So ADR 0011 is worth doing — 1.5x is the largest single win left on the board — but the
+task list's description of it as "the only path to 60 FPS" is **wrong, and this measurement
+retires that claim**. There is no path to 60 FPS through it, because there is no path to
+60 FPS through eliminating any one subsystem: no bucket above is 84% of the frame, and the
+four non-CPU ones total 40% on their own.
+
+The measured bound above is arithmetic and stands on its own. What follows is a *proposed
+route*, not a consequence of it.
+
+The usual way emulators close a gap of this size is dynamic recompilation of the VR4300 and
+RSP. ADR 0011 deliberately leaves the fast path's mechanism open, so a dynarec is within
+what that ADR permits rather than a departure from it. Its costs are the reason it is not
+scheduled here, not a prohibition:
+
+- It is a second execution architecture, with a second correctness surface, on top of the
+  block-based fast path ADR 0011 already asks for.
+- Emitting and running host code needs `unsafe`. Every chip crate and `rustyn64-core` carry
+  `#![forbid(unsafe_code)]`, so it could not live in any of them — but the repo already
+  permits `unsafe` in the frontend and FFI, so this is a **placement and review question**,
+  not an impossibility. It would want its own ADR.
+
+Worth stating either way: cycle-accurate LLE N64 emulation is not usually real-time. CEN64,
+named in this project's accuracy bar, does not run full speed either.
+
+**What this does not say.** It does not say optimization is finished. It says the *goal
+number* needs restating: "as fast as the cycle-accurate model can go" is reachable and is
+what the remaining work delivers; "60 FPS with the cycle-accurate model" is not, on this
+host, by these means.
+
+## The AI recomputed its DAC period 1.04 M times a frame
+
+`Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
+divide** — and only then asked whether a sample was due. The scheduler calls it on every RCP
+step, ~1.04 M times a frame, while at ~32 kHz the period is ~5,859 master ticks, so roughly
+**1,950 of every 1,951 calls divided and threw the quotient away**. One source line,
+`crates/rustyn64-audio/src/lib.rs:489`, was **3.67%** of a rendering frame — the largest
+single line outside the CPU pipeline.
+
+The fix is ordering, not caching: return before the divide when
+`next_sample_tick != 0 && now < next_sample_tick`. Behavior-identical rather than
+approximately so — on that path the old code either returned at the `period == 0` guard or
+fell into a `while` whose condition is exactly the negation of the new test, and neither
+route touches a field. A memo field was rejected: the quotient is derived from
+`sample_rate`, and caching derived state in a serialized struct changes the save-state
+layout (ADR 0005) to buy what the reordering buys for free.
+
+A-B-A, one sitting, `frame_cost_probe` on Super Mario 64, `--release`:
+
+| leg | | frame mean |
+| --- | --- | --- |
+| A | before | 107.413 / 107.587 ms |
+| B | **after** | 103.447 / 103.175 ms |
+| A | before, again | 107.652 ms |
+
+Three A legs within **0.22%**, so the session did not drift; **107.55 → 103.31 ms, 1.041x**
+(conservative pairing of the worst B against the best A gives 1.038x). The profile predicted
+3.67% and the change delivered 4.0% — the small excess is consistent with also freeing the
+divider unit, and is not claimed as anything more.
+
+**Coverage note, because the guard was mutation-checked and the suite failed the check.**
+Breaking the early-out grossly (never emit again) is caught by seven existing tests. The
+*off-by-one* — `<=` instead of `<`, which defers every sample by one RCP step — left the
+entire workspace green, because the other AI tests advance `now` in strides of a full period
+and never land on the boundary. That is audio which is correct but late, the same
+correct-but-late class ADR 0011 names for the fast-path bailout, and it now has a test
+(`a_sample_due_exactly_now_is_emitted_on_this_call`) that goes red under the mutation and
+green without it.

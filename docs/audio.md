@@ -81,6 +81,27 @@ independently incremented counter. Each output sample reads one 32-bit word
 (two i16 L/R) from RDRAM, pushes it to the per-frame sink, and advances the
 address; the frontend drains the sink and resamples to the host device rate.
 
+**The period is not computed on the calls that have nothing to do.** `Audio::tick`
+runs on every RCP step — roughly 1.04 M times a frame — while at a typical ~32 kHz
+the period is ~5,859 master ticks, so about one call in 1,950 emits anything. The
+division is therefore performed *after* the "is a sample due" test rather than
+before it. Precisely: it is skipped when a schedule already exists and its next
+sample is still ahead. It is still computed on the two paths that need it — when a
+sample is due, and when `next_sample_tick` is zero and the first one has to be
+anchored — so "only when due" would overstate it. That ordering is worth stating because the obvious version is the wrong
+one: computing the period first and then discovering the sample is not due cost
+**3.67% of a rendering frame**, the largest single source line outside the CPU
+pipeline, for a quotient that was thrown away (`docs/performance.md`).
+
+It is an ordering change, not a cache: the quotient stays derived from
+`sample_rate` on demand. Memoizing it in a field would add serialized state and so
+change the save-state layout (ADR 0005) to buy what the reordering buys for
+nothing. The boundary condition — a sample due at exactly `now` must be emitted on
+that call, not the next — is pinned by
+`a_sample_due_exactly_now_is_emitted_on_this_call`, because an off-by-one there is
+audio that is correct but one RCP step late, which no other test in the suite could
+see.
+
 ### Sample rate
 
 Derived, not fixed (`ref-docs/research-report.md` §5; wiki §AI_DACRATE):
