@@ -425,6 +425,11 @@ the instruction is to re-measure rather than to change the number, since either 
 was added or the layout algorithm moved and the "no padding" conclusion needs
 re-deriving.
 
+**`#[repr(C)]` would be the wrong way to get that stability**, measured: it lays fields
+out in declaration order, so the two `bool`s can no longer occupy alignment gaps and the
+struct becomes **128 bytes**. On something copied four times per emulated cycle that adds
+~1.2 ms a frame — to the very copies this section is about.
+
 **What the byte breakdown adds to 0011's analysis.** The last three fields — **72 of the
 120 bytes** — are *produced at `EX`*. In `ic_rf` and `rf_ex` they are structurally always
 `None`/`WriteBack::None`, so those two latches copy 72 bytes of provably-empty payload,

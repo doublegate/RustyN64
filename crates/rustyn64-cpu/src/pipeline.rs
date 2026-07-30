@@ -297,6 +297,12 @@ pub struct Latch {
 /// this crate for `thumbv7em-none-eabihf`, where a divergence would fail the build. A
 /// `#[cfg]` would switch the guard off on exactly the target where a pointer-sized field
 /// would first change the answer.
+///
+/// `#[repr(C)]` is not the alternative either, and this was measured rather than
+/// reasoned: `repr(C)` lays fields out in declaration order, which costs **128 bytes**
+/// instead of 120 because the two `bool`s can no longer sit in alignment gaps. On a
+/// struct copied four times per emulated cycle that adds ~1.2 ms a frame, to exactly
+/// the copies `docs/performance.md` is trying to shrink.
 const _: () = assert!(
     core::mem::size_of::<Latch>() == 120,
     "Latch changed size; docs/performance.md's copy-cost breakdown must be re-measured"
