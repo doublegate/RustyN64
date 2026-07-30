@@ -93,16 +93,20 @@ path.
    vectors, the VI vectors, the audio goldens — continues to run against the
    accurate scheduler, unchanged. The fast path never becomes the thing correctness
    is measured on.
-3. **Equivalence is proven differentially, not asserted.** The fast path must
-   reproduce the accurate path's *observable* results: a new gate runs both
-   schedulers over the same ROM + seed + input and requires bit-identical
-   framebuffers and audio at frame boundaries. Where they are permitted to differ
-   (see below), the difference must be enumerated in `docs/accuracy-ledger.md`
-   before the divergence is allowed to ship, not discovered afterwards.
+3. **Equivalence is proven differentially, and scored from emulated STATE — not
+   from pixels.** A new gate runs both schedulers over the same ROM + seed + input
+   and requires equality of the **architectural state**: GPRs/`HI`/`LO`/PC, COP0 and
+   the TLB, the FP register file and `FCSR`, RSP DMEM/IMEM and its vector state, RDP
+   and VI register state, RDRAM contents, pending interrupts, and pending exception
+   state. Framebuffer and audio equality are **supplemental** evidence, not the
+   verdict: identical pixels can hide divergent state that only fails several frames
+   later, which would make the gate report agreement precisely when it matters least.
+   Where the two modes are permitted to differ, the difference must be enumerated in
+   `docs/accuracy-ledger.md` before it ships, not discovered afterwards.
 4. **Determinism is preserved per mode.** ADR 0004's contract (seed + ROM + input ⇒
    bit-identical AV) holds *within* each mode. The two modes are not required to
    agree on save-state layout; a state captured in one mode is not portable to the
-   other, and the state header must record which mode produced it so a mismatch is
+   other, and the state header must record which mode produced it, so a mismatch is
    rejected rather than silently misinterpreted (ADR 0005).
 5. **The mechanism is block-based execution, not reduced accuracy.** The fast path
    earns its speed by *not dispatching per cycle when nothing observable depends on
@@ -111,9 +115,18 @@ path.
    an observable interaction is possible (an RCP event, a memory-mapped access, an
    interrupt window, a pending exception). This is how ares and CEN64 obtain their
    throughput. It is a *scheduling* change, not a change to what the CPU computes.
-6. **The fast path may be incomplete.** It is allowed to bail out to the accurate
-   scheduler for any situation it does not handle. A correct-but-slow fallback is
-   always acceptable; a fast-but-wrong path is not.
+6. **The fast path may be incomplete, but the hand-off is exact.** It is allowed to
+   bail out to the accurate scheduler for any situation it does not handle — a
+   correct-but-slow fallback is always acceptable; a fast-but-wrong path is not.
+   **The bailout invariant:** at every bailout boundary the accurate scheduler must
+   resume with exactly the state it would have held had it executed that stretch
+   itself — the same `master_ticks` (and therefore the same derived edge positions,
+   ADR 0006), the same pipeline latches, the same pending events and exception state,
+   and the same memory effects already applied. A fallback that lands on the right
+   state at the wrong `master_ticks` is *correct-but-late*, and every timing result
+   downstream of it is then wrong in a way no AV comparison would reveal. The
+   differential gate must therefore **force each bailout boundary explicitly** rather
+   than hoping a ROM happens to hit them.
 
 ## Relationship to 0006 and 0007
 
@@ -130,23 +143,25 @@ This ADR **amends** both without superseding them, and the distinction matters:
   can show no observer could distinguish the result — and where it cannot show that,
   it must run the cascade.
 
-Neither ADR is retired, because neither is wrong. What was wrong is the implicit
+Neither ADR is retired because neither is wrong. What was wrong is the implicit
 assumption that the accurate model is the *only* execution mode the project would
 ever ship.
 
 ## Consequences
 
-**Good**
+### Good
 
 - 60 FPS becomes reachable at all, which it currently is not.
 - The accuracy work retains its meaning: the accurate scheduler is still the thing
   every oracle measures, so no accuracy result is invalidated by this change.
-- Differential testing gets stronger, not weaker — two independent implementations
-  agreeing on a golden output is better evidence than one implementation matching
-  itself.
+- Differential testing gets stronger, not weaker — two schedulers agreeing on a
+  golden output is better evidence than one implementation matching itself. Note the
+  two are *not* independent implementations: the fast path reuses the same CPU/RSP/RDP
+  execution code and differs only in dispatch, so their agreement rules out dispatch
+  bugs and nothing more. Claiming more than that would overstate the gate.
 - The fallback design means partial work ships safely.
 
-**Bad, and accepted**
+### Bad, and accepted
 
 - **Two execution paths to maintain**, and the classic hazard that the fast path
   silently drifts. Mitigated by the differential gate being a merge requirement, not
@@ -157,7 +172,7 @@ ever ship.
   and do nothing).
 - CI cost rises: the differential gate runs the same work twice.
 
-**Explicitly rejected alternatives**
+### Explicitly rejected alternatives
 
 - *Keep optimizing the accurate model only.* Measured ceiling ~1.66x. Does not meet
   the requirement, and would consume a lot of effort producing 10% increments against
