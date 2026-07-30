@@ -212,18 +212,17 @@ because the arithmetic that produced them is what makes them wrong.
 | frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.99 FPS)** | measured, ×2 runs |
 | `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
 | effect, **step over the previous column** | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
-| effect, **cumulative from the baseline** | — | 1.114x frame | **1.24x** frame, **-77.8%** scan-out | derived |
+| effect, **cumulative from the baseline** | — | 1.114x frame, -39.1% scan-out | **1.24x** frame, **-77.8%** scan-out | derived |
 
 `646a3e0` skips the zero-weight bilinear taps (PR #211); `6a6adfa` memoizes the filtered
-source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms**, a
+source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms** (each the mean of its paired runs above), a
 **1.24x** speed-up, with the scan-out down from **35.5 ms to 7.9 ms**. (The percentage
 columns above have different denominators — each is a share of *its own* frame — so the
 durations are the comparable figures.)
 
 **Noise, measured rather than assumed.** Back-to-back runs of one binary agree to
 **0.05-0.13%**. The *same tree* measured about thirty minutes apart differed by **~1%**
-(123.5 against 125.2 ms measured for the same tree) — machine state drifts across a
-session. So the ±0.5% in the
+(123.5 against 125.2 ms) — machine state drifts across a session. So the ±0.5% in the
 method table is a **within-session** figure: pair a before and after in one sitting, and
 treat any cross-session comparison as ±1%.
 
@@ -275,6 +274,34 @@ Two corrections to the first version of this table, both found by re-deriving it
   library code (`u32::wrapping_*`, `core::mem::swap` on the pipeline latches, range
   iterators) executing on behalf of the crate above it, so they are real work — just not
   attributable to one subsystem by source path alone.
+
+### Where the time goes now (after `6a6adfa`)
+
+The table above is the shape *before* the scan-out memo. Re-profiled on `main` at
+`2abc817`, same method, the render window has changed shape rather than merely shrunk:
+
+| bucket | before `6a6adfa` | **after** | of a 125.24 ms frame |
+| --- | --- | --- | --- |
+| CPU (`rustyn64-cpu/`) | 32.0% | **41.0%** | ~51.3 ms |
+| — of which `pipeline.rs` | 22.6% | **28.9%** | **~36.2 ms** |
+| Bus + VI | 29.0% | **12.2%** | ~15.3 ms |
+| `core`/`std` inlined | 10.1% | 11.6% | ~14.5 ms |
+| RSP | 9.2% | 11.4% | ~14.3 ms |
+| `scheduler.rs` | 6.4% | 8.1% | ~10.1 ms |
+| RDP | 4.6% | 6.2% | ~7.8 ms |
+| audio | 2.6% | 3.0% | ~3.8 ms |
+| unresolved, libc, kernel | 5.9% | 6.4% | ~8.0 ms |
+| **total** | 99.8% | **99.8%** | |
+
+**This is the measurement that settles what the remaining work has to be.** The VI is no
+longer the second-largest bucket — it has gone from 29.0% to 12.2% — and the CPU is now
+**41.0%**, with the five-stage pipeline alone at **28.9%**, about **36 ms of a 125 ms
+frame**. The 60 FPS budget is 16.7 ms, so `pipeline.rs` on its own is more than twice it,
+and the whole CPU crate is **3.1x** it. Deleting every other bucket entirely — VI, RSP,
+RDP, audio, scheduler, libc — would still leave ~51 ms, or 19.5 FPS.
+
+No change that keeps per-cycle dispatch reaches 16.7 ms from there, which is ADR 0011's
+argument stated in measured milliseconds rather than in prospect.
 
 **The boot column is a trap, not a baseline.** `scheduler.rs` reads 0.0% there and 6.4%
 in the render window; the RDP reads 1.9% against 4.6%. A window taken before the title
