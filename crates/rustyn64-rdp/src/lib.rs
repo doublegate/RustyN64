@@ -1831,8 +1831,8 @@ impl Rdp {
     ///
     /// **This is the whole-step entry point and is not deprecated.** It is what a
     /// caller uses when it already holds the bus and has nothing to decide — tests,
-    /// and any future embedder. [`Bus::rdp_tick`] instead calls the two halves
-    /// directly, because it must know whether the step needs the bus *before*
+    /// and any future embedder. `Bus::rdp_tick` in `rustyn64-core` instead calls the two
+    /// halves directly, because it must know whether the step needs the bus *before*
     /// arranging one: the arranging is a `core::mem::take` of this whole struct.
     /// Splitting is worth it only for that caller, which is why the convenient form
     /// stays.
