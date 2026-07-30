@@ -413,6 +413,53 @@ Any attempt carries this repository's worst failure mode — `docs/engineering-l
 records four pipeline changes that compiled, passed every test, and did nothing — so it
 needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
 
+### The Bus split-borrow moves 1.35 GB a frame (open)
+
+`core::mem`'s `replace` is **5.32%** of the frame on its own —
+`core/src/mem/mod.rs:930` at 4.21% and `:929` at 1.11%, about **6.7 ms of 125**. All of
+it is the Bus split-borrow:
+
+```rust
+pub fn rdp_tick(&mut self) {
+    let mut rdp = core::mem::take(&mut self.rdp);   // read 344 + write 344
+    rdp.tick(self);
+    self.rdp = rdp;                                 // write 344
+}
+```
+
+`Rdp` is **344 bytes** and `Audio` is **88** (`size_of`-measured). Each `tick` therefore
+touches roughly `3 x size_of` bytes, and the scheduler runs them **every RCP step** —
+about 1.04 M steps a frame:
+
+| | bytes moved per frame |
+| --- | --- |
+| `rdp_tick` | ~1.07 GB |
+| `audio_tick` | ~0.27 GB |
+| **total** | **~1.35 GB** |
+
+At 125 ms a frame that is ~10.8 GB/s of memory traffic to satisfy the borrow checker,
+which is consistent with the 5.32% the profile attributes to `core::mem`.
+
+**The fix pattern is already in this repository.** `Bus::rsp_tick` used to do exactly
+this and no longer does; its comment records that the `take` was worse than the "no
+allocation" claim above it, because `take` needs `Default` and constructing an `Rsp`
+allocated 8 KiB of DMEM and IMEM **every RCP step**. `Rsp::tick` now *returns* what it
+wants done instead of borrowing its owner. `Rdp` and `Audio` were not converted.
+
+Two candidate routes, neither measured, both **hypotheses**:
+
+- **Return-a-request**, as the RSP did. Clean for the AI; awkward for the RDP, which
+  reads and writes RDRAM throughout rasterization rather than at the end.
+- **Take only when there is work.** The RDP is idle on most RCP steps, so an exact
+  idle predicate ahead of the `take` would remove the shuffle for the common case.
+  The risk is entirely in "exact": skipping a step that would have done something is a
+  correctness bug, and the predicate is a claim about the RDP's state machine rather
+  than about performance.
+
+Upper bound if the whole 5.32% went: **1.056x**. Like the latch split, worth doing after
+the dispatch question rather than instead of it — and the Angrylion `.rvec` vectors and
+the audio goldens are what would catch an idle predicate that is wrong.
+
 ### Ruled out by measurement — do not retry
 
 1. **Per-tick `u64` modulo in the scheduler** — divides are **< 2%** of the annotated
