@@ -429,7 +429,13 @@ carries no such entanglement.
 **Untested hypothesis, and it must stay labeled one until measured:** splitting `Latch`
 into a front half (`occupied`, `pc`, `word`, `in_delay_slot`, `abort`, `decoded`,
 `rs_val`, `rt_val` — 48 bytes) and an `EX`-onward payload would cut the two upstream
-copies by 60%. Upper bound if the 6.01% went entirely: **1.064x**. Real, and nowhere near
+copies by **60%**, because that is the share of the bytes those latches carry for
+nothing.
+
+Two figures, and they are not the same claim: 60% of the 6.01% is 3.61%, so the
+**expected** gain is `1 / (1 - 0.0361)` = **1.037x**. The **ceiling**, if those copies
+disappeared outright rather than shrinking, is `1 / (1 - 0.0601)` = **1.064x** — which
+nothing proposed here achieves, since the front half still has to move. Real, and nowhere near
 the ~7.5x the frame budget needs — which is the point of recording it here rather than
 acting on it: it is worth doing *after* the dispatch question is settled, not instead of
 it.
@@ -448,6 +454,8 @@ Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
 
 ```rust
 pub fn rdp_tick(&mut self) {
+    // `take` needs `Rdp: Default`; it writes a fresh default in place of the
+    // value it hands back, so this is a read AND a write, not a move.
     let mut rdp = core::mem::take(&mut self.rdp);   // read 344 + write 344
     rdp.tick(self);
     self.rdp = rdp;                                 // write 344
@@ -485,10 +493,14 @@ Two candidate routes, neither measured, both **hypotheses**:
 
 Upper bound if the whole 5.32% went: **1.056x**.
 
-**Both bounds are isolated, and they compose.** The latch split's 1.064x and this 1.056x
-address disjoint shares (6.01% and 5.32%), so collecting *both* entirely gives
-`1 / (1 - 0.1133)` = **1.128x** — 125.24 ms down to about 111 ms, or 9.0 FPS. Against a
-7.5x gap. That is the case for doing them after the dispatch question rather than
+**Both are isolated, and they compose.** They address disjoint shares, so:
+
+| | latch split | split-borrow | together |
+| --- | --- | --- | --- |
+| expected | 1.037x (3.61%) | 1.056x (5.32%) | **1.098x** → ~114 ms, 8.8 FPS |
+| ceiling | 1.064x (6.01%) | 1.056x (5.32%) | **1.128x** → ~111 ms, 9.0 FPS |
+
+Against a **7.5x** gap. That is the case for doing them after the dispatch question rather than
 instead of it — and the Angrylion `.rvec` vectors and
 the audio goldens are what would catch an idle predicate that is wrong.
 
