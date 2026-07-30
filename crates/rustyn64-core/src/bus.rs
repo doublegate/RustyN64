@@ -536,9 +536,25 @@ impl Bus {
     }
 
     /// Step the RDP against this bus's narrow [`VideoBus`] view (split-borrow).
+    ///
+    /// The `take` is how the RDP borrows its owner, and it is not free — it reads the
+    /// whole struct out, writes a fresh `Default` into the vacated slot, and the restore
+    /// overwrites that. It used to happen on **every RCP step**; the measurements are in
+    /// `docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame".
+    ///
+    /// So the step's bus-free half runs first. On most steps the RDP is frozen,
+    /// stalling, or looking at an empty command FIFO, and answers the whole step from
+    /// its own fields — in which case nothing is moved at all. The predicate lives in
+    /// [`rustyn64_rdp::Rdp::tick_without_bus`] beside the early-outs it encodes, not
+    /// here, so it cannot drift away from them, and it hands back a
+    /// [`rustyn64_rdp::NeedsBus`] token that the bus half requires — so the two cannot
+    /// be called out of order.
     pub fn rdp_tick(&mut self) {
+        let Some(proof) = self.rdp.tick_without_bus() else {
+            return;
+        };
         let mut rdp = core::mem::take(&mut self.rdp);
-        rdp.tick(self);
+        rdp.tick_with_bus(proof, self);
         self.rdp = rdp;
     }
 
@@ -2550,6 +2566,64 @@ mod tests {
         let huge = ViSampler::new(cfg, 0, i32::MAX);
         assert_eq!(huge.span, 0, "an over-wide range disables the memo");
         assert!(huge.cells.is_empty(), "and allocates nothing for it");
+    }
+
+    /// The other side of the skip: when the RDP *does* have a queued command,
+    /// `rdp_tick` must still take the bus and retire it.
+    ///
+    /// The stall test above proves the skip path fires; on its own that is satisfied by
+    /// a predicate that always skips, which would be a dead RDP. This pins the positive
+    /// case end to end through `Bus::rdp_tick` — a `Sync Pipe` (0x27) placed in RDRAM,
+    /// consumed, `cmd_current` advanced past it, and the documented stall applied.
+    #[test]
+    fn a_queued_command_is_retired_through_the_bus_half() {
+        let mut bus = Bus::new();
+        let fifo = 0x1000u32;
+        // Sync Pipe: opcode 0x27 in the top byte, one 64-bit word, no operands.
+        bus.rdram[fifo as usize] = 0x27;
+        bus.rdp.cmd_current = fifo;
+        bus.rdp.cmd_end = fifo + 8;
+
+        let before = bus.rdp.commands_processed;
+        bus.rdp_tick();
+
+        assert_eq!(
+            bus.rdp.commands_processed,
+            before + 1,
+            "the command must be consumed, not skipped"
+        );
+        assert_eq!(
+            bus.rdp.cmd_current,
+            fifo + 8,
+            "and the FIFO pointer advanced past it"
+        );
+        assert!(
+            bus.rdp.stall > 0,
+            "Sync Pipe applies its documented pipeline stall"
+        );
+    }
+
+    /// A stalling RDP still burns exactly one GCLK per RCP step through the skip path.
+    ///
+    /// The stall is the only thing the skip path **mutates**, so an ordering mistake
+    /// lands here: checking the FIFO before the stall would leave a stalled RDP with
+    /// nothing queued counting down forever, which no vector notices because it changes
+    /// *when* a command retires rather than whether it matches.
+    #[test]
+    fn a_stalled_rdp_decrements_exactly_once_per_rcp_step() {
+        let mut bus = Bus::new();
+        bus.rdp.stall = 3;
+        for expected in [2u32, 1, 0] {
+            bus.rdp_tick();
+            assert_eq!(
+                bus.rdp.stall, expected,
+                "one GCLK burned per step, never two"
+            );
+        }
+        // And the step after the stall expires must reach the FIFO check rather
+        // than wrapping the counter.
+        bus.rdp_tick();
+        assert_eq!(bus.rdp.stall, 0, "an expired stall stays expired");
     }
 
     /// **`scanout_scaled` geometry + truncating convert (R-5).** A hand-computed

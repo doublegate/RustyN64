@@ -848,6 +848,23 @@ R-6 field-rate / interlace serrate (only the progressive field is modeled).
 is a pure method the run loop does not call (the R-12 land-ahead-of-caller
 precedent); the frontend wiring is a later slice.
 
+**Stepping the RDP does not move it.** `Bus::rdp_tick` used to `core::mem::take` the
+whole `Rdp` — 344 bytes, read and written, plus a default written into the vacated slot —
+on **every RCP step**, purely so `tick` could borrow its owner. On most steps the RDP is
+frozen, stalling, or looking at an empty FIFO and needs no bus at all, so that shuffle
+bought nothing. `Rdp::tick_without_bus` answers those cases from the struct's own fields
+and `Bus::rdp_tick` only takes when it hands back a `NeedsBus` — a token with no
+public constructor, so the bus half cannot be called out of order at all;
+`Rdp::tick` calls the same
+helper, so there is one implementation of the early-outs. Measured on Super Mario 64,
+`--release`, two runs each: **125.24 → 108.22 ms, 1.157x** (7.98 → 9.24 FPS), with the
+scan-out unchanged. Graded by the Angrylion `.rvec` suite — the oracle that actually
+drives an RDP command list — plus unit tests that pin each early-out to its own
+condition and drive a queued command through the bus half end to end. The `.vivec` VI
+conformance vectors are **not** evidence for this change: they feed the VI from RDRAM
+and never step the RDP, so they would pass just as convincingly with the stepping
+broken. They stay attached to the scan-out claim below, which is what they grade.
+
 **Oracle effect:** not measured, and it cannot change the n64-systemtest count:
 both scan-out methods are pure conversions with **no runtime driver** — nothing in
 the run loop calls either during a suite run — so they are unreachable by it. The

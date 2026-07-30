@@ -1557,6 +1557,48 @@ pub struct TileDescriptor {
     pub th: u16,
 }
 
+/// Proof that a step needs the bus, produced only by [`Rdp::tick_without_bus`] and
+/// consumed only by [`Rdp::tick_with_bus`].
+///
+/// The two halves exist for a caller that cannot hand out a borrow of this struct
+/// without first moving the struct itself — it needs to know whether the step will use
+/// the bus *before* paying the 344-byte `core::mem::take` that arranging one costs.
+/// (In this workspace that caller is the Bus, which owns every chip.) The bus half
+/// then has real preconditions:
+/// the pipeline is unfrozen, `stall` is zero, and the command FIFO is non-empty.
+///
+/// Those preconditions are carried by this token rather than by a comment, an
+/// `assert!`, or a `debug_assert!` alone. A comment is not checked; a `debug_assert`
+/// compiles out, so a release build would decode a command from an empty FIFO in
+/// silence; and a release guard that returns early would make a caller who never calls
+/// `tick_without_bus` hang, because `stall` would never count down. Requiring the token
+/// removes all three: calling the bus half out of order does not compile.
+///
+/// The field is private and the type has no constructor, so it cannot be forged.
+///
+/// **Dropping a token loses a cycle, not the work.** The `Some` path mutates
+/// nothing — it is reached only once `stall` is zero, so no decrement has happened, and
+/// no FIFO pointer moves until the bus half runs. The command is therefore still
+/// pending and the next `rdp_tick` retries the identical step. What is lost is the
+/// *step*: the RDP made no progress during that GCLK and is one cycle late from then
+/// on. That is the failure mode worth naming here, because it is a timing divergence
+/// with **no wrong state anywhere** — correct-but-late, which no state comparison can
+/// see. Hence `#[must_use]`, below, rather than a `debug_assert` on the token count.
+///
+/// What makes ignoring one loud is the `#[must_use]` on
+/// [`Rdp::tick_without_bus`] **itself**, not the one on this type: an attribute on `T`
+/// does not propagate through `Option<T>`, and `Option` — unlike `Result` — is not
+/// `#[must_use]` either. Verified by discarding the call and watching the lint appear
+/// only once the attribute moved to the function.
+///
+/// **`Copy` and `Clone` are deliberately not derived.** Either would let a caller keep
+/// a token past the step it authorized and present it again after the state it attested
+/// to had changed — the same hole as taking it by reference. `Debug` is derived because
+/// it cannot duplicate the value.
+#[derive(Debug)]
+#[must_use = "a step that needs the bus is not finished until `tick_with_bus` runs it"]
+pub struct NeedsBus(());
+
 /// RDP state (skeleton).
 ///
 /// Holds the command-FIFO pointers, the current render mode (other-modes),
@@ -1792,21 +1834,86 @@ impl Rdp {
     /// Dispatch so far (`dispatch`) covers the four sync commands and the FILL
     /// pipeline (Set Color Image, Set Fill Color, Set Scissor, Fill Rectangle).
     /// Everything else is still recognized-and-consumed only.
+    ///
+    /// **This is the whole-step entry point and is not deprecated.** It is what a
+    /// caller uses when it already holds the bus and has nothing to decide — tests,
+    /// and any future embedder. `Bus::rdp_tick` in `rustyn64-core` instead calls the two
+    /// halves directly, because it must know whether the step needs the bus *before*
+    /// arranging one: the arranging is a `core::mem::take` of this whole struct.
+    /// Splitting is worth it only for that caller, which is why the convenient form
+    /// stays.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
+        if let Some(proof) = self.tick_without_bus() {
+            self.tick_with_bus(proof, bus);
+        }
+    }
+
+    /// The part of a step that needs **no bus access**, returning `None` when it
+    /// finished the step on its own and `Some(NeedsBus)` when work remains.
+    ///
+    /// **This advances state**, despite the `Option` return: on the stalling path it
+    /// burns one GCLK. It is named `tick_*` rather than `is_*` for that reason — in
+    /// this codebase `tick` means *advance by one step*, as in `Bus::rsp_tick` and
+    /// `Cpu::tick_at`.
+    ///
+    /// Split out so a caller can decide whether to pay for bus access *before*
+    /// arranging it. `Bus::rdp_tick` moves this whole struct out of the Bus with
+    /// `core::mem::take` to satisfy the borrow checker — 344 bytes read and written,
+    /// plus a default written back, on **every RCP step** — and on most steps the
+    /// answer here is `None`, so that shuffle bought nothing
+    /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame").
+    ///
+    /// It lives here rather than in the Bus because it is a statement about *this*
+    /// chip's early-outs: if they change, this changes with them, in the same file.
+    /// [`Rdp::tick`] calls it too, so there is one implementation and no way for the
+    /// two to disagree.
+    ///
+    /// Returns [`NeedsBus`] when the step still has work that requires RDRAM. That
+    /// token is the only way to reach [`Rdp::tick_with_bus`], so the two halves cannot
+    /// be called out of order — the preconditions are carried by the type rather than
+    /// by a comment or an assertion.
+    #[must_use = "a `Some` means the step is unfinished and needs `tick_with_bus`"]
+    pub fn tick_without_bus(&mut self) -> Option<NeedsBus> {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
         if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0 {
-            return;
+            return None;
         }
         // A prior sync is still stalling the pipeline — burn one GCLK and hold
         // the FIFO until the stall expires.
         if self.stall > 0 {
             self.stall -= 1;
-            return;
+            return None;
         }
+        // An empty command FIFO. A plain `>=` is right because these are RDRAM
+        // addresses, not ring indices: `DPC_START`/`DPC_END` are latched through
+        // `DPC_ADDR_MASK` in [`Rdp::dpc_write`], `cmd_current` only ever advances by a
+        // decoded command's length, and the hardware has no wrap — a driver that wants
+        // to restart writes `DPC_START` again. So there is no wrapped case for this
+        // comparison to get wrong.
+        //
+        // The *partially written* case cannot be decided here: its length comes from an
+        // opcode that lives in RDRAM, which is exactly why the check below is on the far
+        // side of the split.
         if self.cmd_current >= self.cmd_end {
-            return;
+            return None;
         }
+        Some(NeedsBus(()))
+    }
+
+    /// The remainder of a step, once [`Rdp::tick_without_bus`] has handed back a
+    /// [`NeedsBus`].
+    ///
+    /// Reachable only with a [`NeedsBus`], which [`Rdp::tick_without_bus`] hands out
+    /// exactly when the FIFO is non-empty and the pipeline is neither frozen nor
+    /// stalled. Those preconditions are therefore not asserted here: an assertion that
+    /// cannot fire is dead code that reads like a safeguard.
+    ///
+    /// The token is taken **by value**, not by reference, so it is consumed: one
+    /// `tick_without_bus` authorizes exactly one bus half. Relaxing this to
+    /// `&NeedsBus` would let a caller hold one and re-enter after the state it
+    /// attested to had changed, which is the whole property being bought here.
+    pub fn tick_with_bus<B: VideoBus>(&mut self, _proof: NeedsBus, bus: &mut B) {
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;
@@ -3789,6 +3896,57 @@ pub const fn version() -> &'static str {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    /// Every early-out of [`Rdp::tick_without_bus`], exercised here rather than only
+    /// through `Bus::rdp_tick` in another crate.
+    ///
+    /// Each branch is the reason a step can skip the 344-byte `core::mem::take`, so a
+    /// branch that stopped firing would be a silent performance regression, and one
+    /// that fired when it should not would be a **correctness** regression — a skipped
+    /// command. Neither shows up in the conformance vectors as long as the totals
+    /// happen to work out, which is why they are pinned individually.
+    #[test]
+    fn every_bus_free_early_out_fires_on_its_own_condition() {
+        // Frozen: no bus needed, and the stall is *not* touched — a frozen pipeline
+        // does not burn a GCLK.
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_FREEZE;
+        rdp.stall = 5;
+        rdp.cmd_current = 0;
+        rdp.cmd_end = 0x100;
+        assert!(rdp.tick_without_bus().is_none(), "frozen: no bus");
+        assert_eq!(rdp.stall, 5, "a frozen pipeline does not count down");
+
+        // XBUS (DMEM-sourced, not yet wired) takes the same exit.
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_XBUS;
+        rdp.cmd_end = 0x100;
+        assert!(rdp.tick_without_bus().is_none(), "xbus: no bus");
+
+        // Stalling: no bus, and exactly one GCLK burned.
+        let mut rdp = Rdp::new();
+        rdp.stall = 2;
+        rdp.cmd_end = 0x100;
+        assert!(rdp.tick_without_bus().is_none(), "stalled: no bus");
+        assert_eq!(rdp.stall, 1, "one GCLK per step");
+        assert!(rdp.tick_without_bus().is_none(), "still stalled");
+        assert_eq!(rdp.stall, 0, "and again");
+
+        // Empty FIFO: no bus, nothing mutated.
+        let mut rdp = Rdp::new();
+        rdp.cmd_current = 0x40;
+        rdp.cmd_end = 0x40;
+        assert!(rdp.tick_without_bus().is_none(), "empty FIFO: no bus");
+
+        // And the one case that DOES need the bus: unfrozen, unstalled, non-empty.
+        let mut rdp = Rdp::new();
+        rdp.cmd_current = 0;
+        rdp.cmd_end = 0x100;
+        assert!(
+            rdp.tick_without_bus().is_some(),
+            "a queued command needs RDRAM to decode its opcode"
+        );
+    }
 
     struct NullBus;
     impl RdramBus for NullBus {
