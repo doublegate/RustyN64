@@ -126,6 +126,7 @@ bilinear taps in the VI scan-out and is the only change between the two trees me
 | scan-out 35.5 ms, 23.6% of a frame | 35.5 ms, 22.9% (pre-fix); 21.6 ms, 15.5% (post) |
 | debug is 7.7x slower | **8.7x**, paired on one tree and one window |
 | required speedup ~9x | ~8.3x from 139.3 ms |
+| in-model ceiling ~1.66x | **~1.64x** — `1 / (1 - 0.389)`, from the paired 22.9% scan-out share rather than the single-run 23.6% |
 
 **The decision does not move.** That is the point of recording the drift rather than
 quietly correcting it: 0011's argument is that ~9x is unreachable inside a per-cycle model
