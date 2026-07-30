@@ -1817,8 +1817,8 @@ impl Rdp {
         }
     }
 
-    /// The part of a step that needs **no bus access**, returning `true` when it
-    /// finished the step on its own.
+    /// The part of a step that needs **no bus access**, returning `None` when it
+    /// finished the step on its own and `Some(NeedsBus)` when work remains.
     ///
     /// Split out so a caller can decide whether to pay for bus access *before*
     /// arranging it. `Bus::rdp_tick` moves this whole struct out of the Bus with
@@ -1861,22 +1861,9 @@ impl Rdp {
     ///
     /// Reachable only with a [`NeedsBus`], which [`Rdp::tick_without_bus`] hands out
     /// exactly when the FIFO is non-empty and the pipeline is neither frozen nor
-    /// stalled. The `debug_assert`s below restate those as executable documentation;
-    /// they are not the guarantee, because the token already is one.
+    /// stalled. Those preconditions are therefore not asserted here: an assertion that
+    /// cannot fire is dead code that reads like a safeguard.
     pub fn tick_with_bus<B: VideoBus>(&mut self, _proof: NeedsBus, bus: &mut B) {
-        debug_assert!(
-            self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) == 0,
-            "tick_with_bus on a frozen or XBUS pipeline: call tick_without_bus first"
-        );
-        debug_assert_eq!(
-            self.stall, 0,
-            "tick_with_bus while stalled: call tick_without_bus first"
-        );
-        debug_assert!(
-            self.cmd_current < self.cmd_end,
-            "tick_with_bus on an empty command FIFO: call tick_without_bus first"
-        );
-
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;

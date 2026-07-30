@@ -2569,13 +2569,6 @@ mod tests {
         assert!(huge.cells.is_empty(), "and allocates nothing for it");
     }
 
-    /// **`scanout_scaled` geometry + truncating convert (R-5).** A hand-computed
-    /// 1:1 case: `VI_H_VIDEO = 108..148` (NTSC overscan `-108` → `h_start = 0`,
-    /// `minhpass = 8`, so output column 0 samples **source column 8**), one active
-    /// line. Source column 8 holds `0x1234`; the truncating RGBA5551→8 conversion
-    /// (`(px>>8)&0xF8`, `(px&0x7C0)>>3`, `(px&0x3E)<<2`) gives `[10,40,D0]` with an
-    /// opaque display alpha. A `expand5`-style replicating conversion or a wrong
-    /// overscan offset would change the bytes, so this pins both.
     /// A stalling RDP still burns exactly one GCLK per RCP step through the skip path.
     ///
     /// The stall is the only thing the skip path **mutates**, so an ordering mistake
@@ -2599,6 +2592,13 @@ mod tests {
         assert_eq!(bus.rdp.stall, 0, "an expired stall stays expired");
     }
 
+    /// **`scanout_scaled` geometry + truncating convert (R-5).** A hand-computed
+    /// 1:1 case: `VI_H_VIDEO = 108..148` (NTSC overscan `-108` → `h_start = 0`,
+    /// `minhpass = 8`, so output column 0 samples **source column 8**), one active
+    /// line. Source column 8 holds `0x1234`; the truncating RGBA5551→8 conversion
+    /// (`(px>>8)&0xF8`, `(px&0x7C0)>>3`, `(px&0x3E)<<2`) gives `[10,40,D0]` with an
+    /// opaque display alpha. A `expand5`-style replicating conversion or a wrong
+    /// overscan offset would change the bytes, so this pins both.
     #[test]
     fn scanout_scaled_geometry_and_truncating_convert() {
         let mut bus = Bus::new();
