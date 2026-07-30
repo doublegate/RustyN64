@@ -545,7 +545,20 @@ Two candidate routes, neither measured, both **hypotheses**:
   Any predicate must be re-derived if those early-outs change, which is the argument for
   putting it next to them rather than in the Bus.
 
-Upper bound if the whole 5.32% went: **1.056x**.
+Upper bound if the whole 5.32% went: **1.056x** — **and that ceiling turned out to be
+wrong**, which is worth more than the estimate was.
+
+Implementing the RDP half alone (`Rdp::tick_without_bus`, so `rdp_tick` only takes when
+the step actually needs the bus) measured **125.24 → 108.22 ms, 1.157x**. A result that
+beats its own ceiling is a broken model, not a windfall, and the model's hole is
+identifiable: the profile attributed the `read_via_copy` / `write_via_move` intrinsics
+inside `mem::replace`, and **not** the construction of the `Rdp::default()` that `take`
+writes into the vacated slot. That default is built inline in `rdp_tick` and charged
+elsewhere in the attribution, so 5.32% was only the memcpy half of the cost.
+
+The lesson generalizes past this line: a share read off a profile bounds the code the
+profiler *named*, not the operation a reader has in mind. `take` is one word and two
+distinct costs.
 
 **Both are isolated, and they compose.** They address disjoint shares, so:
 
@@ -554,7 +567,13 @@ Upper bound if the whole 5.32% went: **1.056x**.
 | expected | 1.037x (3.61%) | 1.056x (5.32%) | **1.098x** → ~114 ms, 8.8 FPS |
 | ceiling | 1.064x (6.01%) | 1.056x (5.32%) | **1.128x** → ~111 ms, 9.0 FPS |
 
-Against a **7.5x** gap. That is the case for doing them after the dispatch question rather than
+**The split-borrow column is now history**: its RDP half shipped and measured 1.157x on
+its own, taking the frame to **108.22 ms (9.24 FPS)**. The audio half is still open, and
+so is the latch split — whose 1.037x estimate should now be read with the same suspicion,
+since it was built the same way from the same kind of profile share.
+
+Cumulatively the frame has gone **155.13 → 108.22 ms, 1.433x**, and the gap to 60 FPS is
+**6.5x**. That is the case for doing them after the dispatch question rather than
 instead of it — and the Angrylion `.rvec` vectors and
 the audio goldens are what would catch an idle predicate that is wrong.
 
