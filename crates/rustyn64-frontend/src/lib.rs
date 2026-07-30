@@ -65,6 +65,10 @@ pub mod emu_thread;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gfx;
 pub mod input;
+// The triple-buffer framebuffer handoff that keeps the present path off the emu
+// mutex (ported from RustySNES/RustyNES). Unconditional: the wasm present path
+// benefits from the same decoupling.
+pub mod present_buffer;
 // Host filesystem ROM reading (plain or zipped). Native-only: the wasm build
 // receives ROM bytes from the browser file API, never from a path.
 #[cfg(not(target_arch = "wasm32"))]

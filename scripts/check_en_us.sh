@@ -87,13 +87,49 @@ plain="$(IFS='|'; echo "${PLAIN_STEMS[*]}")"
 ise="$(IFS='|'; echo "${ISE_STEMS[*]}")"
 export PATTERN="${plain}|(${ise})${ISE_ENDINGS}"
 
-# `git ls-files` so untracked scratch files and ignored trees never fail the
-# gate; -I skips binaries (the .rvec/.snap/.png fixtures).
-mapfile -d '' -t files < <(
-  git ls-files -z |
-    grep -zvE '^(ref-docs|n64brew_wiki|ref-proj|third_party)/' |
-    grep -zvE '^scripts/check_en_us\.sh$'
-)
+# Tracked files PLUS untracked-but-not-ignored ones. `-I` skips binaries (the
+# .rvec/.snap/.png fixtures) and `--exclude-standard` honors .gitignore, so
+# scratch files under an ignored path still never fail the gate.
+#
+# `--others` is load-bearing and was MISSING in the first version, which made the
+# gate give a **false PASS** on the very commit that introduced a violation: a
+# brand-new file is untracked until it is staged, `git ls-files` alone lists only
+# TRACKED files, so a new file was invisible to the check for exactly as long as
+# it took to `git add` it. `present_buffer.rs` shipped a `licence` that way, and
+# the pre-commit hook would not have caught it until the NEXT commit. A gate that
+# cannot see new files is worst precisely where new violations arrive.
+# The listing is built through a FILE, not a process substitution, for one
+# reason: `mapfile -d '' -t files < <(producer)` discards the producer's exit
+# status entirely. `set -euo pipefail` cannot see inside a process
+# substitution, so a failing `git ls-files` yielded an empty `files` array and
+# the gate then reported "no en-GB spellings" over zero files -- PASS.
+#
+# That is the SAME false-PASS class this script was already fixed for once (the
+# missing `--others`, below). A gate whose failure mode is a silent pass is
+# worse than no gate, so both the producer's status and a suspiciously empty
+# result are now checked explicitly.
+list="$(mktemp)"
+raw="$(mktemp)"
+trap 'rm -f "$list" "$raw"' EXIT
+
+# Each `git ls-files` is a simple command with its status checked by `set -e`.
+git ls-files -z >"$raw"
+git ls-files -z --others --exclude-standard >>"$raw"
+
+# `grep -v` exits 1 when it selects nothing, which is not an error here, so the
+# filters are deliberately status-tolerant -- the emptiness check below is what
+# catches a broken listing.
+grep -zvE '^(ref-docs|n64brew_wiki|ref-proj|third_party)/' <"$raw" |
+  grep -zvE '^scripts/check_en_us\.sh$' >"$list" || true
+
+mapfile -d '' -t files <"$list"
+
+if [ "${#files[@]}" -eq 0 ]; then
+  echo "en-US check FAILED: the file listing is empty." >&2
+  echo "That is a broken gate, not a clean tree -- git ls-files produced" >&2
+  echo "nothing, or every path was filtered out. Refusing to report a pass." >&2
+  exit 1
+fi
 
 hits="$(
   printf '%s\0' "${files[@]}" |
@@ -140,4 +176,4 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-echo "en-US check passed: ${#files[@]} tracked files, no en-GB or malformed spellings."
+echo "en-US check passed: ${#files[@]} files (tracked + untracked), no en-GB or malformed spellings."
