@@ -8,7 +8,9 @@
 > **Partly superseded by measurement — see *Measured (2026-07-30)* below.** The
 > prediction in this section was that the **RSP + CPU** dominate together. Measured on
 > a real title in the render phase they do still lead, at 32.0% + 9.2% = 41.2% against
-> **Bus + VI's 29.0%** — so the shape is right and the weights are not. The RSP was
+> **Bus + VI's 29.0%** — more still if the 10.1% of inlined `core`/`std` is attributed
+> to whichever crate it runs on behalf of, which is mostly these two. So the shape is
+> right and the weights are not. The RSP was
 > predicted co-dominant and is **9.2%**, less than a third of the pair. And the VI
 > scan-out filters, the single largest source file in the profile, were not on the
 > list at all. A prediction left unmarked reads as a finding, so it is marked.
@@ -180,7 +182,7 @@ BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
       | jq -r 'select(.reason == "compiler-artifact"
                      and .target.name == "gameplay_phase_probe"
                      and .executable != null) | .executable' | tail -n 1)
-test -n "$BIN" || { echo "no test binary — did the build fail?" >&2; exit 1; }
+test -x "$BIN" || { echo "no test binary — did the build fail?" >&2; exit 1; }
 RUSTYN64_PROBE_ROM="$ROM" \
 RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o "$ROOT/target/perf_play.data" -- \
   "$BIN" does_a_retail_title_reach_a_rendering_phase --ignored --nocapture
