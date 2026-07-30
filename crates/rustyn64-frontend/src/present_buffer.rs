@@ -123,6 +123,14 @@ pub struct PresentBuffer {
     // once per frame by the producer and read freely by the UI: a status reading
     // that is one frame stale is invisible, and no reader can ever block a frame
     // of emulation to get it.
+    //
+    // They are four INDEPENDENT atomics, so `status()` may also tear *across*
+    // fields — a frame count from frame N beside a tick count from N-1. That is
+    // accepted for the same reason staleness is: it is a status line, the two
+    // counters are never compared against each other, and the alternative is a
+    // seqlock or a 128-bit atomic for a cosmetic readout. If anything ever needs a
+    // consistent (frames, ticks) pair, add a seqlock generation here rather than
+    // tightening the orderings, which cannot fix cross-field tearing.
     /// Frames the core has run (the status bar's frame counter).
     frames: AtomicU64,
     /// `master_ticks` (ADR 0006) — the status bar's tick counter.
@@ -194,6 +202,13 @@ impl PresentBuffer {
         slots.index = Self::pack(front, back, ready);
         self.has_new.store(true, Ordering::Relaxed);
         drop(slots);
+        // Bumped OUTSIDE the lock, deliberately: this is the present hot path and
+        // the counter is a diagnostic, not part of the frame contract. The cost is
+        // a bounded, cosmetic race with `reset` — an increment landing just after
+        // `reset` zeroes the counter leaves `has_published()` true over an empty
+        // handoff, so the present path re-shows its previous frame for one UI frame
+        // instead of black. No slice is ever taken from that state: `has_new` and
+        // the dims ARE under the lock, so `take_into` still returns `None`.
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -267,16 +282,39 @@ impl PresentBuffer {
     ///
     /// # Panics
     /// Only if the internal slots mutex is poisoned.
+    /// The ROM-loaded and paused flags are deliberately left alone: they are the
+    /// caller's state, not the handoff's, and the producer republishes them with
+    /// the next frame.
     pub fn reset(&self) {
-        self.has_new.store(false, Ordering::Release);
-        self.generation.store(0, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);
         self.master_ticks.store(0, Ordering::Relaxed);
+        // Every part of the frame handoff is cleared under the ONE lock that
+        // `publish` and `take_into` also take, so a concurrent publish either
+        // completes entirely before this reset or entirely after it.
+        //
+        // `has_new` used to be cleared BEFORE acquiring the lock, which broke this
+        // module's own contract (see the SPSC section of the module doc: the mutex
+        // guards the flag, the index, the bytes and the dims *together*). A
+        // publish landing in that window set `has_new = true` and then had its
+        // bytes wiped, so the next `take_into` returned `Some(dims)` for a
+        // zero-length buffer — and the present path slices `out[..w * h * 4]` from
+        // exactly that pair, which panics. `reset` runs on the UI thread while the
+        // emu thread publishes, so the window was real, not theoretical.
+        //
+        // Clearing the dims is the second, independent half: it makes the pair
+        // "nonzero dims, no bytes" *unrepresentable* rather than merely
+        // unreachable, so the invariant does not rest on the locking alone.
+        //
+        // `generation` is the one field that stays racy on purpose — see `publish`
+        // for why, and for the bound on what that race can do.
         let mut slots = self.slots.lock().expect("present buffer slots");
+        self.has_new.store(false, Ordering::Relaxed);
+        self.generation.store(0, Ordering::Relaxed);
         slots.index = Self::INIT_INDEX;
         for b in &mut slots.bufs {
             b.clear();
         }
+        slots.dims = [(0, 0); 3];
     }
 
     /// Worst-case N64 scan-out byte length (for the no-ROM black frame) — a
@@ -373,5 +411,53 @@ mod tests {
         assert!(!pb.has_published());
         let mut out = Vec::new();
         assert_eq!(pb.take_into(&mut out), None);
+    }
+
+    /// **`reset` must leave no dims behind.** "Nonzero dims, zero bytes" is the
+    /// pair a torn reset could hand a consumer, and the present path slices
+    /// `out[..w * h * 4]` straight from it. Clearing the dims makes that pair
+    /// unrepresentable independently of the locking that makes it unreachable, so
+    /// this is the deterministic half of the fix — restore the old `reset`, which
+    /// cleared the bytes but not the dims, and this goes red.
+    #[test]
+    fn reset_clears_the_dims_so_none_can_be_paired_with_empty_bytes() {
+        let pb = PresentBuffer::new();
+        pb.publish(&[7; 16], (2, 2));
+        let mut out = Vec::new();
+        assert_eq!(pb.take_into(&mut out), Some((2, 2)));
+        pb.reset();
+        let slots = pb.slots.lock().unwrap();
+        assert_eq!(slots.dims, [(0, 0); 3], "every slot's dims must be cleared");
+        for (i, b) in slots.bufs.iter().enumerate() {
+            assert!(b.is_empty(), "slot {i}: bytes must be cleared");
+        }
+    }
+
+    /// The status readings round-trip, and `reset` zeroes the two counters while
+    /// leaving the ROM/pause flags to the caller that owns them — a closed ROM
+    /// must therefore republish `rom_loaded = false` rather than expect `reset` to
+    /// infer it.
+    #[test]
+    fn status_round_trips_and_reset_zeroes_only_the_counters() {
+        let pb = PresentBuffer::new();
+        assert_eq!(pb.status(), PresentStatus::default());
+        pb.publish_status(42, 1_234_567, true, true);
+        assert_eq!(
+            pb.status(),
+            PresentStatus {
+                frames: 42,
+                master_ticks: 1_234_567,
+                rom_loaded: true,
+                paused: true,
+            }
+        );
+        pb.reset();
+        let s = pb.status();
+        assert_eq!((s.frames, s.master_ticks), (0, 0), "counters restart");
+        assert!(
+            s.rom_loaded,
+            "reset does not decide whether a ROM is loaded"
+        );
+        assert!(s.paused, "nor whether the core is paused");
     }
 }
