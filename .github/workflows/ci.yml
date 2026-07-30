@@ -147,6 +147,12 @@ jobs:
       # of thing nobody notices until they need it, and expanding it here by hand
       # would exercise everything about it except the part that can break.
       - run: cargo full-build
+      # And `full-run`, whose trailing `--` is the part that can break: `--help` is
+      # handled by the binary's own argv loop and exits before any window is opened,
+      # so it proves the forwarding works on a headless runner. If the `--` were ever
+      # dropped, cargo would eat the flag and this step would build-and-launch
+      # instead of printing usage.
+      - run: cargo full-run -- --help
       - name: Run the test-ROM battery, and prove the feature was on
         run: |
           set -euo pipefail
