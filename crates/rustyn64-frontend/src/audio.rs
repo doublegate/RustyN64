@@ -74,6 +74,15 @@ impl AudioRing {
     /// per-sample test-and-pop. That shortening is what makes the consumer's
     /// non-blocking acquire (see [`AudioRing::pull`]) succeed in practice rather
     /// than merely in principle.
+    ///
+    /// A poisoned lock drops the batch rather than recovering it. That is not a
+    /// silent swallow of a live failure: the release profile sets
+    /// `panic = "abort"` (workspace `Cargo.toml`), so there is no unwinding and a
+    /// `Mutex` **cannot** be poisoned in a shipped build. Under `test`/`debug` a
+    /// poisoned lock means a panic already happened and was already reported by the
+    /// panic handler; recovering the guard with `PoisonError::into_inner` would
+    /// continue on state whose invariants that panic may have interrupted, to save
+    /// audio that nobody is listening to in a failing test.
     pub fn push(&self, samples: &[f32]) {
         let Ok(mut q) = self.buf.lock() else {
             return;
@@ -84,7 +93,7 @@ impl AudioRing {
         let incoming = &samples[samples.len() - keep..];
         let evict = (q.len() + keep).saturating_sub(self.capacity).min(q.len());
         drop(q.drain(..evict));
-        q.extend(incoming.iter().copied());
+        q.extend(incoming);
         self.occupancy.store(q.len(), Ordering::Relaxed);
     }
 
@@ -100,6 +109,11 @@ impl AudioRing {
     /// one *might* have got real samples. That is the better failure — bounded and
     /// bursty rather than unbounded — and `push` keeps the window narrow enough
     /// that it should be rare.
+    ///
+    /// `WouldBlock` and `Poisoned` are deliberately not distinguished: both mean
+    /// "no samples available to this call", which is all a real-time callback can
+    /// act on, and `Poisoned` is unreachable in a shipped build anyway because the
+    /// release profile aborts rather than unwinds (see [`AudioRing::push`]).
     pub fn pull(&self, out: &mut [f32]) {
         let Ok(mut q) = self.buf.try_lock() else {
             out.fill(0.0);
