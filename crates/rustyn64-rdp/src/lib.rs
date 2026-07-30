@@ -1828,6 +1828,14 @@ impl Rdp {
     /// Dispatch so far (`dispatch`) covers the four sync commands and the FILL
     /// pipeline (Set Color Image, Set Fill Color, Set Scissor, Fill Rectangle).
     /// Everything else is still recognized-and-consumed only.
+    ///
+    /// **This is the whole-step entry point and is not deprecated.** It is what a
+    /// caller uses when it already holds the bus and has nothing to decide — tests,
+    /// and any future embedder. [`Bus::rdp_tick`] instead calls the two halves
+    /// directly, because it must know whether the step needs the bus *before*
+    /// arranging one: the arranging is a `core::mem::take` of this whole struct.
+    /// Splitting is worth it only for that caller, which is why the convenient form
+    /// stays.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
         if let Some(proof) = self.tick_without_bus() {
             self.tick_with_bus(proof, bus);

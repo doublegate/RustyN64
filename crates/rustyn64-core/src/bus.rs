@@ -537,13 +537,10 @@ impl Bus {
 
     /// Step the RDP against this bus's narrow [`VideoBus`] view (split-borrow).
     ///
-    /// The `take` is how the RDP borrows its owner, and it is not free: `Rdp` was 344
-    /// bytes when this was measured and grows most sprints, and `core::mem::take` reads
-    /// the whole struct out *and* writes a fresh `Default` into
-    /// the vacated slot, which the restore then overwrites — three touches of the whole
-    /// struct. This *used* to happen on **every RCP step**, about 1.07 GB a frame
-    /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame"); the point
-    /// of what follows is that it no longer does.
+    /// The `take` is how the RDP borrows its owner, and it is not free — it reads the
+    /// whole struct out, writes a fresh `Default` into the vacated slot, and the restore
+    /// overwrites that. It used to happen on **every RCP step**; the measurements are in
+    /// `docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame".
     ///
     /// So the step's bus-free half runs first. On most steps the RDP is frozen,
     /// stalling, or looking at an empty command FIFO, and answers the whole step from
