@@ -567,8 +567,16 @@ distinct costs.
 | expected | 1.037x (3.61%) | 1.056x (5.32%) | **1.098x** → ~114 ms, 8.8 FPS |
 | ceiling | 1.064x (6.01%) | 1.056x (5.32%) | **1.128x** → ~111 ms, 9.0 FPS |
 
-**The split-borrow column is now history**: its RDP half shipped and measured 1.157x on
-its own, taking the frame to **108.22 ms (9.24 FPS)**. The audio half is still open, and
+**The split-borrow column is superseded**: its RDP half shipped and measured 1.157x on
+its own, taking the frame to **108.22 ms (9.24 FPS)**, and 105.53 ms after a release-build
+precondition guard was added to `tick_with_bus`.
+
+That last 2.5% has **no mechanism I can offer** — adding three branches should not make a
+frame faster — so it is recorded and not counted. It is above the 0.05-0.13% back-to-back
+spread and inside the ~1% cross-session drift only if the two pairs are treated as
+different sessions, which they arguably are. The conservative figure is 108.22 ms; the
+measured one is 105.53. A speed-up without a mechanism is a coincidence waiting to be
+explained, and this document's rule is to say so rather than bank it. The audio half is still open, and
 so is the latch split — whose 1.037x estimate should now be read with the same suspicion,
 since it was built the same way from the same kind of profile share.
 

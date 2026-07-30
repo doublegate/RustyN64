@@ -1856,6 +1856,22 @@ impl Rdp {
             self.cmd_current < self.cmd_end,
             "tick_with_bus on an empty command FIFO: call tick_without_bus first"
         );
+        // The same three conditions as a **release** guard, because a `debug_assert`
+        // compiles out and this is `pub` across the crate boundary: without it, an
+        // out-of-order call would decode a command out of an empty FIFO in a shipped
+        // build. Three predictable branches on fields already in cache, against a
+        // 344-byte move — the cost is not measurable, and it is not the redundant work
+        // this split removed.
+        //
+        // Deliberately does **not** decrement `stall`: that belongs to
+        // [`Rdp::tick_without_bus`] and doing it here as well is the one way this pair
+        // could burn two GCLK in a step.
+        if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0
+            || self.stall > 0
+            || self.cmd_current >= self.cmd_end
+        {
+            return;
+        }
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;
