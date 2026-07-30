@@ -137,7 +137,8 @@ render-phase table.
 | --- | --- | --- |
 | Harness | `crates/rustyn64-frontend/tests/frame_cost_probe.rs` | `crates/rustyn64-frontend/tests/gameplay_phase_probe.rs` |
 | Window | 30 frames from the first frame the VI is live (frame 36 for SM64) | ~frames 400-870, reached by mashing START/A |
-| Samples | 9,431 (`perf record -F 999`) | **58,326** (`cpu/cycles:u`, 58.9 s) |
+| Samples | 9,431 (`perf record -F 999`) | **58,326** (`cpu/cycles:u`) |
+| Duration | one probe run, ~9 s | **58.9 s of samples**, after `-D 70000` discards the first 70 s — the process runs ~130 s in total |
 | Answers | ms/frame, and the scan-out's share of it | which subsystem owns the time |
 
 ```bash
@@ -149,11 +150,14 @@ RUSTYN64_PROBE_ROM="$PWD/tests/roms/external/commercial/eeprom-4k/Super Mario 64
 #
 # `perf` has to be pointed at the test binary, and cargo names it with a content
 # hash under `target/release/deps/`, so the path is asked for rather than guessed.
-# The `kind == "test"` filter is load-bearing: the stream also carries the frontend
-# `bin` artifact, and taking the last executable picks that one instead.
+# The filter is load-bearing: the stream also carries the frontend `bin` artifact,
+# so taking the last executable points perf at `target/release/rustyn64` instead.
+# Matching on the target *name* keeps it a single path even if more test targets are
+# built later.
 BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
         --no-run --test gameplay_phase_probe --message-format=json \
-      | jq -r 'select(.target.kind[0] == "test") | .executable // empty')
+      | jq -r 'select(.target.name == "gameplay_phase_probe" and .executable != null)
+             | .executable')
 RUSTYN64_PROBE_ROM="$PWD/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64" \
 RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o perf_play.data -- \
   "$BIN" --ignored --nocapture
@@ -252,11 +256,17 @@ measurements would overstate them:
 
 - **1.56 M CPU and 1.04 M RCP steps per emulated frame** — from `MASTER_HZ / 60`
   divided by the ADR 0006 divisors (2 and 3), not counted at runtime.
-- **~1.66x in-model ceiling** — Amdahl over the largest identified in-model targets as
+- **~1.64x in-model ceiling** — Amdahl over the largest identified in-model targets as
   they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
-  `1 / (1 - 0.39)`. It assumes both are eliminated *entirely*, so it is an upper bound
-  and not a forecast; part of it has since been collected (the scan-out is now 15.5% of
-  a frame), which is why the measured gain was 1.114x and not more.
+  `1 / (1 - 0.389)` = 1.637. It assumes both are eliminated *entirely*, so it is an
+  upper bound and not a forecast; part of it has since been collected (the scan-out is
+  now 15.5% of a frame), which is why the measured gain was 1.114x and not more.
+
+  ADR 0011 quotes **1.66x** for this, from `1 / (1 - 0.396)` with the single-run 23.6%
+  scan-out share. The paired share is 22.9%, so the ceiling is 1.64. The difference is
+  immaterial to 0011's argument — its point is that ~8-9x is unreachable against a
+  ceiling under 1.7 — but a derived figure that no longer follows from its inputs is
+  the kind of thing that gets re-quoted, so it is corrected here and in ADR 0012 §5.
 
   Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
   physical impossibility, since something has to produce the pixels — would leave
