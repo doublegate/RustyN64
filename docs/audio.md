@@ -103,7 +103,7 @@ sample — so this skips the *move*, never the step. Measured **105.64 → 97.58
 1.083x** (`docs/performance.md`).
 
 The token carries the DAC period as well as the proof, so the divide above is not
-repeated in the second half; its fields are private and it derives neither `Copy` nor
+repeated in the second half; its fields are private, and it derives neither `Copy` nor
 `Clone`, so it cannot be forged or replayed against a schedule that has moved on.
 
 It is an ordering change, not a cache: the quotient stays derived from

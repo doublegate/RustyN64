@@ -175,11 +175,22 @@ pub enum AiIrq {
 /// equivalent: `tick_without_bus` has already stamped `last_tick`, and the `while`
 /// in the second half is what advances `next_sample_tick`, so a dropped token
 /// leaves those samples unemitted and the schedule behind `now` — the next call
-/// then emits them late in a burst. What makes ignoring one loud is the
-/// `#[must_use]` on [`Audio::tick_without_bus`] **itself**, not one on this type:
-/// an attribute on `T` does not propagate through `Option<T>`, and `Option` —
-/// unlike `Result` — is not `#[must_use]` either.
+/// then emits them late in a burst.
+///
+/// What makes ignoring one loud is the `#[must_use]` on
+/// [`Audio::tick_without_bus`] **itself**, not the one on this type: an attribute
+/// on `T` does not propagate through `Option<T>`, and `Option` — unlike `Result`
+/// — is not `#[must_use]` either.
+///
+/// The attribute here is **dormant, and kept only for the day the return type is
+/// not wrapped** — it does not catch a caller who binds the token and drops it.
+/// That was proposed in review and probed rather than assumed: with
+/// `if let Some(_proof) = ai.tick_without_bus(1) {}`, `cargo clippy --all-targets`
+/// reports **zero** warnings both with and without it. A type-level `#[must_use]`
+/// fires on an unused *expression*, not on a binding; a bound-then-dropped value
+/// is `unused_variables`, which the leading underscore silences either way.
 #[derive(Debug)]
+#[must_use]
 pub struct NeedsBus {
     /// Master ticks between output samples, already divided.
     period: u64,

@@ -687,14 +687,15 @@ only takes when it hands back a `NeedsBus`.
 A-B-A, one sitting, `frame_cost_probe` on Super Mario 64, `--release`, environment as
 tabled in §Measured (2026-07-30):
 
-| leg | | frame mean |
+| leg | variant | frame mean |
 | --- | --- | --- |
 | A | take on every step | 105.391 / 106.086 ms |
 | B | **take only when a sample is due** | **97.854 / 97.309 ms** |
 | A | take on every step, again | 105.447 ms |
 
 Three A legs spanning 0.66%, bracketing B, so the session did not drift. **105.64 → 97.58
-ms, 1.083x**; the conservative pairing (worst B against best A) gives **1.072x**.
+ms, 1.083x**; the conservative pairing — the *best* A against the *worst* B, `105.391 /
+97.854` — gives **1.077x**.
 
 **It beat its predicted size by ~5x, which is a broken model rather than a windfall — and
 it is the same broken model as #219's.** The profile attributed 2.68% to
