@@ -193,6 +193,11 @@ the same ROM, measured as two runs each on one tree (`docs/performance.md` §Mea
 plain `cargo run` looks like an emulation defect rather than a build-profile choice,
 which has already happened once.
 
+`cargo full-run` ends in `--`, so **everything after it goes to the emulator**, not to
+cargo: `cargo full-run path/to/rom.z64` works, and a leading-dash emulator flag survives.
+The cost is that cargo's own flags do not — for `--verbose`, `--jobs`, or `--target`, spell
+the command out as `cargo run --release -p rustyn64-frontend --features full`.
+
 Never use `--all-features` on this workspace — mutually-exclusive backend features cannot
 resolve. CI uses explicit feature sets.
 
