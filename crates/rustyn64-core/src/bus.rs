@@ -95,6 +95,13 @@ struct ViCfg {
 /// therefore cannot disagree, and returning the first answer for the second call is
 /// not an approximation.
 ///
+/// **On the per-scan-out allocation.** `cells` is one heap allocation per frame — at
+/// most 32 KB, and about 5 KB at the resolutions a real title programs. It is not
+/// hoisted into `Bus` because `scanout_scaled` takes `&self`: caching there would mean
+/// interior mutability in the type whose field layout *is* the save-state format
+/// (ADR 0005), which is a far larger cost than one allocation. Against the ~7.8 ms of
+/// filtering the memo replaces, the allocation does not appear in a profile.
+///
 /// **Why it is worth having.** The scan-out samples each source pixel about three
 /// times: at `x_add = 512` (a 2x upscale, what Super Mario 64 programs) an even output
 /// pixel samples column `sx`, the odd one samples `sx` and `sx + 1`, so every column is
@@ -140,8 +147,14 @@ impl ViSampler {
     fn new(cfg: ViCfg, x_lo: i32, x_hi: i32) -> Self {
         // `i64` throughout: the subtraction is on guest-derived values, and a signed
         // overflow here would be a debug-build panic in a scan-out path.
-        let want = usize::try_from(i64::from(x_hi) - i64::from(x_lo) + 1).unwrap_or(0);
-        let span = if want > Self::MAX_SPAN { 0 } else { want };
+        // An empty or inverted range (`x_hi < x_lo`) and an over-wide one are the same
+        // outcome — no memo — but they are written as one explicit match so neither
+        // reads as an accident of `try_from` failing on a negative.
+        let columns = i64::from(x_hi) - i64::from(x_lo) + 1;
+        let span = match usize::try_from(columns) {
+            Ok(want) if want <= Self::MAX_SPAN => want,
+            _ => 0,
+        };
         Self {
             cfg,
             x_lo,
@@ -155,8 +168,13 @@ impl ViSampler {
     ///
     /// Eviction takes the row with the smaller `y`: the scan-out walks `y` forward
     /// (`y_add` is unsigned), so the lower row is the one that will not be asked for
-    /// again. A wrong choice here would only cost hit rate, never correctness — and
-    /// `None` sorts below every `Some`, so an unused row is always evicted first.
+    /// again. A wrong choice here would only cost hit rate, never correctness.
+    ///
+    /// The comparison leans on `Option`'s derived ordering, which is worth spelling
+    /// out: `None < Some(_)` for every `Some`, and `Some(a) < Some(b)` exactly when
+    /// `a < b`. So `row_y[1] < row_y[0]` selects slot 1 when it is unused or holds the
+    /// lower row, and slot 0 otherwise — unused rows first, then the row further
+    /// behind the walk.
     fn row_slot(&mut self, y: i32) -> usize {
         if self.row_y[0] == Some(y) {
             return 0;
@@ -1011,7 +1029,8 @@ impl Bus {
         // product is small in practice, but "small in practice" is not a property that
         // survives a clamp being relaxed, and the failure mode would be a debug-build
         // overflow panic in the scan-out.
-        let x_span_end = i64::from(x_start) + i64::from(minhpass + width - 1) * i64::from(x_add);
+        let x_span_end =
+            i64::from(x_start) + (i64::from(minhpass) + i64::from(width) - 1) * i64::from(x_add);
         let x_first =
             i32::try_from((i64::from(x_start) + i64::from(minhpass) * i64::from(x_add)) >> 10)
                 .unwrap_or(0);
