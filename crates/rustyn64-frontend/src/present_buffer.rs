@@ -177,6 +177,25 @@ impl PresentBuffer {
         (front as u8) | ((ready as u8) << 2) | ((back as u8) << 4)
     }
 
+    /// The producer's transition: swap `ready` <-> `back`, leaving the consumer's
+    /// `front` untouched.
+    ///
+    /// Named rather than open-coded because [`Self::pack`] takes three positional
+    /// slot ids **in field order**, so the call this needs — `pack(front, back,
+    /// ready)` — reads exactly like a transposition of its own parameters. Such a
+    /// slip would be *silent*: every permutation of `{0,1,2}` satisfies the
+    /// disjointness invariant, so the slots would stay valid while the wrong one
+    /// was handed over. Both transitions are pinned by a test.
+    const fn swap_ready_back(idx: u8) -> u8 {
+        Self::pack(Self::front(idx), Self::back(idx), Self::ready(idx))
+    }
+
+    /// The consumer's transition: swap `front` <-> `ready`, leaving the producer's
+    /// `back` untouched. See [`Self::swap_ready_back`] for why this is named.
+    const fn swap_front_ready(idx: u8) -> u8 {
+        Self::pack(Self::ready(idx), Self::front(idx), Self::back(idx))
+    }
+
     /// Producer: copy `frame` and its `dims` into the back slot, then publish
     /// (swap back<->ready). The consumer's `front` is never touched, so a
     /// concurrent take contends only for the brief copy window.
@@ -197,9 +216,7 @@ impl PresentBuffer {
         // The index move, the slot write and the fresh flag all happen under the
         // same lock, so the consumer (which also locks) can never observe a
         // half-published frame.
-        let front = Self::front(idx);
-        let ready = Self::ready(idx);
-        slots.index = Self::pack(front, back, ready);
+        slots.index = Self::swap_ready_back(idx);
         self.has_new.store(true, Ordering::Relaxed);
         drop(slots);
         // Bumped OUTSIDE the lock, deliberately: this is the present hot path and
@@ -231,12 +248,11 @@ impl PresentBuffer {
             return None;
         }
         let idx = slots.index;
-        let front = Self::front(idx);
         let ready = Self::ready(idx);
-        let back = Self::back(idx);
-        // Swap front <-> ready: the producer's next publish reuses our old front
-        // as its back, and we now hold the freshest frame.
-        slots.index = Self::pack(ready, front, back);
+        // The producer's next publish reuses our old front as its back, and we now
+        // hold the freshest frame. `ready` is read from the OLD index on purpose —
+        // it is the slot we are taking, which the swap renames to `front`.
+        slots.index = Self::swap_front_ready(idx);
         out.clear();
         out.extend_from_slice(&slots.bufs[ready]);
         Some(slots.dims[ready])
@@ -401,6 +417,37 @@ mod tests {
             seen.sort_unstable();
             assert_eq!(seen, [0, 1, 2], "iteration {i}: slots must stay disjoint");
         }
+    }
+
+    /// The two named transitions are the swaps they claim to be. This is the guard
+    /// against a silent `pack` transposition: a wrong argument order still yields a
+    /// valid permutation of `{0,1,2}`, so `the_slot_index_stays_a_permutation`
+    /// would keep passing while the wrong slot was handed over.
+    #[test]
+    fn the_named_transitions_swap_exactly_one_pair() {
+        let idx = PresentBuffer::INIT_INDEX;
+        let (f, r, b) = (
+            PresentBuffer::front(idx),
+            PresentBuffer::ready(idx),
+            PresentBuffer::back(idx),
+        );
+        let fields = |i: u8| {
+            (
+                PresentBuffer::front(i),
+                PresentBuffer::ready(i),
+                PresentBuffer::back(i),
+            )
+        };
+        assert_eq!(
+            fields(PresentBuffer::swap_ready_back(idx)),
+            (f, b, r),
+            "producer: ready <-> back, front untouched"
+        );
+        assert_eq!(
+            fields(PresentBuffer::swap_front_ready(idx)),
+            (r, f, b),
+            "consumer: front <-> ready, back untouched"
+        );
     }
 
     #[test]
