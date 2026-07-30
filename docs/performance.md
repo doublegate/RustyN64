@@ -303,6 +303,14 @@ RDP, audio, scheduler, libc — would still leave ~51 ms, or 19.5 FPS.
 No change that keeps per-cycle dispatch reaches 16.7 ms from there, which is ADR 0011's
 argument stated in measured milliseconds rather than in prospect.
 
+**Every bucket above 3% has now been looked at per line, and the two that hold a
+concentrated target are written up below.** The RSP's 11.4% is *not* one of them: its
+hottest attributable line is 0.65% and its largest entry is 1.17% of inlined code with no
+line at all, so it is thinly spread instruction execution with no structural target —
+which is why ADR 0011 scopes the fast path to the VR4300 first and leaves the RSP for
+later. The rest of the CPU's 41.0%, once the 14.66% of latch copying is set aside, is the
+same shape.
+
 **The boot column is a trap, not a baseline.** `scheduler.rs` reads 0.0% there and 6.4%
 in the render window; the RDP reads 1.9% against 4.6%. A window taken before the title
 draws under-reports precisely the subsystems that dominate once it does. Profile the
