@@ -547,13 +547,15 @@ impl Bus {
     /// stalling, or looking at an empty command FIFO, and answers the whole step from
     /// its own fields — in which case nothing is moved at all. The predicate lives in
     /// [`rustyn64_rdp::Rdp::tick_without_bus`] beside the early-outs it encodes, not
-    /// here, so it cannot drift away from them.
+    /// here, so it cannot drift away from them, and it hands back a
+    /// [`rustyn64_rdp::NeedsBus`] token that the bus half requires — so the two cannot
+    /// be called out of order.
     pub fn rdp_tick(&mut self) {
-        if self.rdp.tick_without_bus() {
+        let Some(proof) = self.rdp.tick_without_bus() else {
             return;
-        }
+        };
         let mut rdp = core::mem::take(&mut self.rdp);
-        rdp.tick_with_bus(self);
+        rdp.tick_with_bus(proof, self);
         self.rdp = rdp;
     }
 

@@ -1557,6 +1557,25 @@ pub struct TileDescriptor {
     pub th: u16,
 }
 
+/// Proof that a step needs the bus, produced only by [`Rdp::tick_without_bus`] and
+/// consumed only by [`Rdp::tick_with_bus`].
+///
+/// The two halves exist so `Bus::rdp_tick` can decide whether to pay for a 344-byte
+/// `core::mem::take` *before* arranging it, and the bus half has real preconditions:
+/// the pipeline is unfrozen, `stall` is zero, and the command FIFO is non-empty.
+///
+/// Those preconditions are carried by this token rather than by a comment, an
+/// `assert!`, or a `debug_assert!` alone. A comment is not checked; a `debug_assert`
+/// compiles out, so a release build would decode a command from an empty FIFO in
+/// silence; and a release guard that returns early would make a caller who never calls
+/// `tick_without_bus` hang, because `stall` would never count down. Requiring the token
+/// removes all three: calling the bus half out of order does not compile.
+///
+/// The field is private and the type has no constructor, so it cannot be forged.
+#[derive(Debug)]
+#[must_use = "a step that needs the bus is not finished until `tick_with_bus` runs it"]
+pub struct NeedsBus(());
+
 /// RDP state (skeleton).
 ///
 /// Holds the command-FIFO pointers, the current render mode (other-modes),
@@ -1793,10 +1812,9 @@ impl Rdp {
     /// pipeline (Set Color Image, Set Fill Color, Set Scissor, Fill Rectangle).
     /// Everything else is still recognized-and-consumed only.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
-        if self.tick_without_bus() {
-            return;
+        if let Some(proof) = self.tick_without_bus() {
+            self.tick_with_bus(proof, bus);
         }
-        self.tick_with_bus(bus);
     }
 
     /// The part of a step that needs **no bus access**, returning `true` when it
@@ -1814,36 +1832,38 @@ impl Rdp {
     /// [`Rdp::tick`] calls it too, so there is one implementation and no way for the
     /// two to disagree.
     ///
-    /// [`Rdp::tick_with_bus`] is a separate method only to avoid re-running these checks
-    /// after a caller has already made them — an optimization, **not** a correctness
-    /// requirement, since reaching the bus half implies `stall == 0` and a second pass
-    /// would find nothing to decrement.
-    pub fn tick_without_bus(&mut self) -> bool {
+    /// Returns [`NeedsBus`] when the step still has work that requires RDRAM. That
+    /// token is the only way to reach [`Rdp::tick_with_bus`], so the two halves cannot
+    /// be called out of order — the preconditions are carried by the type rather than
+    /// by a comment or an assertion.
+    pub fn tick_without_bus(&mut self) -> Option<NeedsBus> {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
         if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0 {
-            return true;
+            return None;
         }
         // A prior sync is still stalling the pipeline — burn one GCLK and hold
         // the FIFO until the stall expires.
         if self.stall > 0 {
             self.stall -= 1;
-            return true;
+            return None;
         }
         // An empty command FIFO. The *partially written* case cannot be decided
         // here: its length comes from an opcode that lives in RDRAM, which is
         // exactly why the check below is on the far side of the split.
-        self.cmd_current >= self.cmd_end
+        if self.cmd_current >= self.cmd_end {
+            return None;
+        }
+        Some(NeedsBus(()))
     }
 
     /// The remainder of a step, once [`Rdp::tick_without_bus`] has returned `false`.
     ///
-    /// Never call this without that check first: it assumes the FIFO is non-empty and
-    /// the pipeline is neither frozen nor stalled. Those are preconditions rather than
-    /// guards, so they are asserted — this is `pub` across the crate boundary, and an
-    /// out-of-order call would otherwise decode a command out of an empty FIFO in
-    /// silence.
-    pub fn tick_with_bus<B: VideoBus>(&mut self, bus: &mut B) {
+    /// Reachable only with a [`NeedsBus`], which [`Rdp::tick_without_bus`] hands out
+    /// exactly when the FIFO is non-empty and the pipeline is neither frozen nor
+    /// stalled. The `debug_assert`s below restate those as executable documentation;
+    /// they are not the guarantee, because the token already is one.
+    pub fn tick_with_bus<B: VideoBus>(&mut self, _proof: NeedsBus, bus: &mut B) {
         debug_assert!(
             self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) == 0,
             "tick_with_bus on a frozen or XBUS pipeline: call tick_without_bus first"
@@ -1856,22 +1876,7 @@ impl Rdp {
             self.cmd_current < self.cmd_end,
             "tick_with_bus on an empty command FIFO: call tick_without_bus first"
         );
-        // The same three conditions as a **release** guard, because a `debug_assert`
-        // compiles out and this is `pub` across the crate boundary: without it, an
-        // out-of-order call would decode a command out of an empty FIFO in a shipped
-        // build. Three predictable branches on fields already in cache, against a
-        // 344-byte move — the cost is not measurable, and it is not the redundant work
-        // this split removed.
-        //
-        // Deliberately does **not** decrement `stall`: that belongs to
-        // [`Rdp::tick_without_bus`] and doing it here as well is the one way this pair
-        // could burn two GCLK in a step.
-        if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0
-            || self.stall > 0
-            || self.cmd_current >= self.cmd_end
-        {
-            return;
-        }
+
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;
