@@ -42,14 +42,9 @@ incompatible-rust-versions = "fallback"
 # Resilient crates.io downloads: a higher retry count lets a transient blip
 # self-heal instead of failing a fetch. Costs nothing when nothing goes wrong.
 #
-# `http.multiplexing = false` was here too, and was REMOVED. It sidesteps a known
-# interaction between curl's HTTP/2 multiplexing and the crates.io CDN that
-# presents as "Error in the HTTP2 framing layer" / "unexpected eof while reading",
-# and it is worth knowing about -- but those failures were observed in `RustyNES`,
-# not here, and disabling multiplexing costs every local build parallel download
-# capacity to prevent something this repository has never seen. Shipping an
-# unobserved workaround is how a config file accumulates settings nobody can
-# justify. If the framing errors do turn up, `CARGO_HTTP_MULTIPLEXING=false` in
-# the environment is the fix, and this comment is the pointer to it.
+# If a fetch ever fails with "Error in the HTTP2 framing layer" or "unexpected eof
+# while reading", the fix is `CARGO_HTTP_MULTIPLEXING=false` in the environment --
+# a curl/CDN interaction seen in `RustyNES`, never here, which is why it is not
+# committed as a setting.
 [net]
 retry = 10
