@@ -308,8 +308,9 @@ concentrated target are written up below.** The RSP's 11.4% is *not* one of them
 hottest attributable line is 0.65% and its largest entry is 1.17% of inlined code with no
 line at all, so it is thinly spread instruction execution with no structural target —
 which is why ADR 0011 scopes the fast path to the VR4300 first and leaves the RSP for
-later. The rest of the CPU's 41.0%, once the 14.66% of latch copying is set aside, is the
-same shape.
+later. The same holds for the rest of the CPU: the 41.0% is the **whole** `rustyn64-cpu/`
+share, latch copying included, so setting that 14.66% aside leaves ~26% of genuine
+instruction execution with no concentrated site either.
 
 **The boot column is a trap, not a baseline.** `scheduler.rs` reads 0.0% there and 6.4%
 in the render window; the RDP reads 1.9% against 4.6%. A window taken before the title
@@ -450,7 +451,8 @@ needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
 930 and 929 of the **Rust standard library's** `library/core/src/mem/mod.rs`, inside the
 toolchain, not a file in this repository. About **6.7 ms of 125**, and all of it is the
 Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
-`crates/rustyn64-core/src/bus.rs` (lines 539 and 548 at the time of writing):
+`crates/rustyn64-core/src/bus.rs` (lines 539 and 548 at the time of writing; like the
+line numbers above, these drift and the function names are the durable part):
 
 ```rust
 pub fn rdp_tick(&mut self) {
@@ -485,11 +487,28 @@ Two candidate routes, neither measured, both **hypotheses**:
 
 - **Return-a-request**, as the RSP did. Clean for the AI; awkward for the RDP, which
   reads and writes RDRAM throughout rasterization rather than at the end.
-- **Take only when there is work.** The RDP is idle on most RCP steps, so an exact
-  idle predicate ahead of the `take` would remove the shuffle for the common case.
-  The risk is entirely in "exact": skipping a step that would have done something is a
-  correctness bug, and the predicate is a claim about the RDP's state machine rather
-  than about performance.
+- **Take only when there is work.** The RDP is idle on most RCP steps, so a predicate
+  ahead of the `take` would remove the shuffle for the common case. The risk is entirely
+  in "exact" — skipping a step that would have done something is a correctness bug — so
+  the predicate has to come from `Rdp::tick`'s own early-outs rather than from intuition.
+  Reading them, the tick returns **having touched nothing at all** in exactly two cases,
+  and both are pure reads of `self`:
+
+  - `status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0` — the pipeline counter is halted;
+  - `cmd_current >= cmd_end` — the command FIFO is empty.
+
+  Its third early-out, `stall > 0`, does **not** qualify: it decrements `stall`. But it
+  does not need the bus either, so it can be handled before the `take` as well rather
+  than being a reason to keep it. The fourth, a partially-written multi-word command
+  (`cmd_end - cmd_current < len_bytes`), is **not** decidable without the bus — it reads
+  the opcode from RDRAM to learn the length — so that case must still take.
+
+  `Audio::tick` is different and simpler: it writes `self.last_tick = now`
+  unconditionally on entry, so it is *never* idle by this definition and needs the
+  return-a-request route instead.
+
+  Any predicate must be re-derived if those early-outs change, which is the argument for
+  putting it next to them rather than in the Bus.
 
 Upper bound if the whole 5.32% went: **1.056x**.
 
