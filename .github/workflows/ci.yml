@@ -83,6 +83,11 @@ jobs:
       # to `default` today (`full = ["default"]`), so this costs a cache hit -- but
       # the moment a feature is added to `full` and not to `default`, this is the
       # only job that would notice it stopped compiling.
+      #
+      # Debug, not the alias: `cargo full-build` is a `--release` build with
+      # `lto = "fat"`, which is minutes on every PR to prove that a two-line config
+      # entry expands correctly. The alias itself runs in the FULL-run leg below,
+      # where that cost is already being paid.
       - run: cargo build -p rustyn64-frontend --features full
 
   rustdoc:
@@ -137,6 +142,11 @@ jobs:
       # its harness crate, so the ROM-oracle gate ran nothing and still reported
       # green. An oracle that runs zero tests looks identical to one that passes,
       # so the exit code cannot distinguish them -- only the probe can.
+      # Run the alias the README tells people to use, rather than a hand-expanded
+      # equivalent: an alias that has silently stopped resolving is exactly the kind
+      # of thing nobody notices until they need it, and expanding it here by hand
+      # would exercise everything about it except the part that can break.
+      - run: cargo full-build
       - name: Run the test-ROM battery, and prove the feature was on
         run: |
           set -euo pipefail
