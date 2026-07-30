@@ -675,6 +675,42 @@ can.
    evidence*. A sound positive test is the split itself, which is the work being
    questioned; do it only if some other measurement first shows the copies matter.
 
+## The AI's split-borrow move, and a ceiling that was wrong for the second time
+
+`Bus::audio_tick` took the whole `Audio` out of the Bus with `core::mem::take` on **every
+RCP step** — `size_of::<Audio>()` is **88 bytes**, so a `Default` is written into the
+vacated slot, 88 bytes move out, and 88 move back, ~264 bytes of traffic and the drop of
+the vacated value each time. The DAC emits nothing on ~1,949 of every 1,950 steps, so
+almost all of it was waste. `Bus::audio_tick` now asks `Audio::tick_without_bus` first and
+only takes when it hands back a `NeedsBus`.
+
+A-B-A, one sitting, `frame_cost_probe` on Super Mario 64, `--release`, environment as
+tabled in §Measured (2026-07-30):
+
+| leg | | frame mean |
+| --- | --- | --- |
+| A | take on every step | 105.391 / 106.086 ms |
+| B | **take only when a sample is due** | **97.854 / 97.309 ms** |
+| A | take on every step, again | 105.447 ms |
+
+Three A legs spanning 0.66%, bracketing B, so the session did not drift. **105.64 → 97.58
+ms, 1.083x**; the conservative pairing (worst B against best A) gives **1.072x**.
+
+**It beat its predicted size by ~5x, which is a broken model rather than a windfall — and
+it is the same broken model as #219's.** The profile attributed 2.68% to
+`core/src/mem/mod.rs` (the `mem::replace` copy intrinsics, *shared* between the RSP, RDP,
+and AI takes) plus 1.01% to the `audio_tick` line, so ~1.5% was the expectation. What that
+share does not name is the rest of a take-and-restore: constructing the `Default`, writing
+it into the slot, writing the real value back, and dropping the vacated one — for `Audio`
+that last part is drop glue for the `Vec` sink, on every step.
+
+The generalization already recorded for #219 — *a profile share bounds the code the
+profiler named* — now has a second independent confirmation, so treat it as the rule and
+not the exception. **Corollary for the remaining split-borrows: do not size one from its
+`mem::replace` share.** The RSP's take is the last one, and it is a different case — the
+RSP executes microcode on essentially every step, so it genuinely needs the bus and there
+is no idle majority to skip.
+
 ## The render-phase map, re-measured after the VI and RDP work
 
 The attribution the earlier plan worked from was taken at **138.7 ms/frame**, before the
