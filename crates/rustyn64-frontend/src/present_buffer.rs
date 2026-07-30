@@ -200,10 +200,29 @@ impl PresentBuffer {
     /// (swap back<->ready). The consumer's `front` is never touched, so a
     /// concurrent take contends only for the brief copy window.
     ///
+    /// `frame` must hold **exactly** `dims.0 * dims.1 * 4` bytes. Keeping the pair
+    /// consistent is the entire reason this type carries dims alongside bytes, and
+    /// an inconsistent pair is not a state it can represent usefully — so this is a
+    /// caller bug, checked by `debug_assert` at the one place the pair is
+    /// established. Left as a debug check rather than a release branch on purpose:
+    /// the alternatives are to silently drop the frame or to clamp the geometry,
+    /// and both would hide the caller's bug while producing a wrong picture. The
+    /// release-mode defense belongs at the consumer, which bounds its upload by the
+    /// bytes it actually received.
+    ///
     /// # Panics
-    /// Only if the internal slots mutex is poisoned — not a condition this
-    /// module's own code can create.
+    /// If the internal slots mutex is poisoned — not a condition this module's own
+    /// code can create — or, in debug builds, if `frame` and `dims` disagree.
     pub fn publish(&self, frame: &[u8], dims: (u32, u32)) {
+        debug_assert_eq!(
+            frame.len(),
+            // Saturating so the CHECK itself cannot overflow on a 32-bit usize;
+            // a saturated expectation still fails loudly against any real length.
+            (dims.0 as usize)
+                .saturating_mul(dims.1 as usize)
+                .saturating_mul(4),
+            "publish: frame bytes must be exactly width * height * 4"
+        );
         let mut slots = self.slots.lock().expect("present buffer slots");
         let idx = slots.index;
         let back = Self::back(idx);
@@ -383,10 +402,10 @@ mod tests {
     fn publishing_twice_between_takes_yields_the_newest() {
         let pb = PresentBuffer::new();
         pb.publish(&[0xAA; 8], (2, 1));
-        pb.publish(&[0xBB; 8], (4, 1));
+        pb.publish(&[0xBB; 16], (4, 1));
         let mut out = Vec::new();
         assert_eq!(pb.take_into(&mut out), Some((4, 1)));
-        assert_eq!(out, vec![0xBB; 8], "the newest frame, not the first");
+        assert_eq!(out, vec![0xBB; 16], "the newest frame, not the first");
     }
 
     /// Dims travel WITH the bytes: a publish whose size changes must never let a
@@ -424,6 +443,20 @@ mod tests {
             seen.sort_unstable();
             assert_eq!(seen, [0, 1, 2], "iteration {i}: slots must stay disjoint");
         }
+    }
+
+    /// **Bytes and dims must agree at the point the pair is created.** An
+    /// inconsistent publish is otherwise invisible here and surfaces far away, as
+    /// an out-of-bounds slice in whatever presents `out[..w * h * 4]`.
+    ///
+    /// Gated on `debug_assertions` because the guard is a `debug_assert`, so this
+    /// test would (correctly) not panic under `cargo test --release`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "width * height * 4")]
+    fn publishing_bytes_that_disagree_with_the_dims_is_a_caller_bug() {
+        let pb = PresentBuffer::new();
+        pb.publish(&[0; 8], (4, 4)); // 8 bytes offered for a 64-byte frame
     }
 
     /// The two named transitions are the swaps they claim to be. This is the guard
