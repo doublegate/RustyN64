@@ -634,6 +634,26 @@ can.
    is rarely satisfied" from "the reordered test is itself more expensive". Settling it
    needs a coverage histogram over a real frame, which belongs with the scan-out
    memoization work rather than here. Until then, do not aim an optimization using it.
+6. **Shrinking `Latch` to cut the inter-stage copies** — the premise does not survive a
+   sensitivity test. Six source lines in `pipeline.rs` are all the same thing (`self.ex_dc =
+   out`, `let mut out = self.rf_ex`, and their peers) and together they are **16.1%** of a
+   rendering frame, which reads as "the copies are expensive". They are not: **adding**
+   `[u64; 9]` of padding to `Latch`, taking it 120 → 192 bytes and the bytes moved per
+   emulated cycle 840 → 1344 (+60%), measured **1.1% faster**, not slower —
+   103.45/103.18 ms → 102.29/102.03 ms.
+
+   So `perf` is charging each stage's retired work to the store that ends it, and the 16.1%
+   is not a transfer cost that shrinking the struct would recover. This retires the sizing
+   behind the "split `Latch` into a front half and an EX-onward payload" task, which the
+   line attribution had made look like ~1.07x.
+
+   **The caveat, stated because it bounds the conclusion:** padding that nothing reads can
+   be narrowed by LLVM, so this cannot prove every added byte was moved. It is evidence
+   against copy width driving the cost, not proof. What it definitely shows is that a
+   +60% nominal growth in latch traffic costs nothing measurable — and that is enough to
+   say the refactor should not be undertaken *on this evidence*. A sound positive test is
+   the split itself, which is the work being questioned; do that only if some other
+   measurement first shows the copies matter.
 
 ## The render-phase map, re-measured after the VI and RDP work
 
@@ -657,6 +677,16 @@ RDP at 0.00%.
 | RDP | 7.5% | **4.3%** |
 | AI (audio) | not broken out | **4.0%** |
 | core/stdlib (inlined arithmetic, `mem`, conversions) | — | 8.7% |
+| **subtotal** | 83.5% | **97.7%** |
+| unattributed remainder | 16.5% | 2.3% |
+| **total** | **100%** | **100%** |
+
+The two columns are not equally complete, and the remainders say so. The "now" column
+resolves all but 2.3% — frontend, allocator, and per-file shares below 0.28% that were not
+worth a row. The old column's 16.5% is larger because it was recorded as five coarse
+subsystem buckets with no AI or stdlib row at all; that is a limit of the old record, not a
+gap that has since been closed. **Do not read the old column as a like-for-like baseline**:
+use it for the direction of travel, and the "now" column for arithmetic.
 
 Bus + VI has halved and the CPU is now the clear majority. Nothing "got slower": these are
 shares of a smaller frame.
@@ -679,13 +709,23 @@ retires that claim**. There is no path to 60 FPS through it, because there is no
 60 FPS through eliminating any one subsystem: no bucket above is 84% of the frame, and the
 four non-CPU ones total 40% on their own.
 
-Reaching 60 FPS with this design would require a dynamic recompiler for the VR4300 and the
-RSP, which is not an optimization but a second architecture — and it collides with a
-standing constraint: every chip crate and `rustyn64-core` carry `#![forbid(unsafe_code)]`,
-while generating and executing code at run time cannot be done in safe Rust. That is a
-decision for the maintainer, not something to slide in under a performance ticket. The
-honest framing meanwhile is the one this project's own accuracy peers live with: CEN64,
-named in the project's bar, does not run full speed either.
+The measured bound above is arithmetic and stands on its own. What follows is a *proposed
+route*, not a consequence of it.
+
+The usual way emulators close a gap of this size is dynamic recompilation of the VR4300 and
+RSP. ADR 0011 deliberately leaves the fast path's mechanism open, so a dynarec is within
+what that ADR permits rather than a departure from it. Its costs are the reason it is not
+scheduled here, not a prohibition:
+
+- It is a second execution architecture, with a second correctness surface, on top of the
+  block-based fast path ADR 0011 already asks for.
+- Emitting and running host code needs `unsafe`. Every chip crate and `rustyn64-core` carry
+  `#![forbid(unsafe_code)]`, so it could not live in any of them — but the repo already
+  permits `unsafe` in the frontend and FFI, so this is a **placement and review question**,
+  not an impossibility. It would want its own ADR.
+
+Worth stating either way: cycle-accurate LLE N64 emulation is not usually real-time. CEN64,
+named in this project's accuracy bar, does not run full speed either.
 
 **What this does not say.** It does not say optimization is finished. It says the *goal
 number* needs restating: "as fast as the cycle-accurate model can go" is reachable and is

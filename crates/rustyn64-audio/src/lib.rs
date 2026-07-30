@@ -498,22 +498,13 @@ impl Audio {
     /// Hot path — allocation into the sink is the only cost while playing.
     pub fn tick<B: AudioBus>(&mut self, now: u64, bus: &mut B) {
         self.last_tick = now;
-        // No sample is due, which is the overwhelmingly common case: at the usual
-        // ~32 kHz the period is ~5,859 master ticks and this runs every RCP step
-        // (every 3), so roughly 1,950 calls pass through here for each one that
-        // emits. Returning before `period_ticks` matters because that is a 64-bit
-        // divide, and computing it here is pure waste — the old order divided,
-        // then discovered the sample was not due and dropped the quotient. It was
-        // 3.67% of a rendering frame, the largest single line outside the CPU
-        // pipeline (`docs/performance.md`).
+        // A schedule exists and its next sample is still ahead: nothing to do, and
+        // in particular no need for `period_ticks`, whose 64-bit divide dominated
+        // this function (`docs/audio.md` §Derived timing for the cost and the
+        // reason it is an ordering change rather than a cached field).
         //
-        // Behavior-identical rather than approximately so: on this path the old
-        // code either returned at the `period == 0` guard or fell to a `while`
-        // whose condition is exactly the negation of the test above, and neither
-        // route touches any field. Deliberately not memoized in a field — the
-        // quotient is derived from `sample_rate`, and caching derived state in a
-        // serialized struct would change the save-state layout (ADR 0005) to buy
-        // what an ordering change buys for nothing.
+        // The old code returned from the same states without touching a field, so
+        // this only moves the decision earlier.
         if self.next_sample_tick != 0 && now < self.next_sample_tick {
             // The R-16 guard still has to be checkable on the hot path, or it
             // would only ever be evaluated on the ~0.05% of calls that emit.
@@ -998,7 +989,10 @@ mod tests {
     ///
     /// `next_sample_tick` is read directly instead of recomputing the anchor from
     /// `period_ticks`, so the test asserts against where the DAC actually is rather
-    /// than against a second copy of the formula it is meant to check.
+    /// than against a second copy of the formula it is meant to check. The schedule
+    /// comes from `write_reg` — enqueuing a transfer sets `next_sample_tick` — so no
+    /// priming tick is needed and none is issued; an earlier version called `tick`
+    /// first and claimed it anchored the schedule, which it did not.
     #[test]
     fn a_sample_due_exactly_now_is_emitted_on_this_call() {
         let mut ai = programmed();
@@ -1008,13 +1002,11 @@ mod tests {
         ai.write_reg(0, 0x100);
         ai.write_reg(1, 8); // 8 bytes = 2 sample-pairs
 
-        ai.tick(1, &mut bus);
         let due = ai.next_sample_tick;
         assert!(
             due > 1,
-            "the first tick must anchor the next sample ahead of now"
+            "enqueuing a transfer must schedule the next sample"
         );
-        drop(ai.drain());
 
         ai.tick(due - 1, &mut bus);
         assert!(
