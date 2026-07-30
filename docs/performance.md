@@ -209,7 +209,7 @@ because the arithmetic that produced them is what makes them wrong.
 
 | quantity | before `646a3e0` | after `646a3e0` | after `6a6adfa` | kind |
 | --- | --- | --- | --- | --- |
-| frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.98 FPS)** | measured, ×2 runs |
+| frame cost | 155.17 / 155.09 ms (6.45 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.98 FPS)** | measured, ×2 runs |
 | `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
 | effect, **step over the previous column** | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
 | effect, **cumulative from the baseline** | — | 1.114x frame, -39.1% scan-out | **1.24x** frame, **-77.8%** scan-out | derived |
