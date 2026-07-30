@@ -278,6 +278,79 @@ pub struct Latch {
     pub cop0: Option<Cop0Access>,
 }
 
+// The inter-stage latch is **copied four times per emulated CPU cycle**, so its size is
+// a performance fact and not merely a layout detail: at ~1.56 M steps a frame those
+// copies are ~15% of the frame (`docs/performance.md` §"The latch copies, anatomized").
+//
+// This pins it. `repr(Rust)` layout is not stable across compiler versions, and the
+// measured breakdown in that document — 120 bytes, with the six scalars occupying
+// exactly their naive sum, so no padding is wasted — would otherwise decay silently
+// into a claim about a toolchain nobody is using any more.
+//
+// **If this fires, do not just change the number.** Either a field was added, in which
+// case re-measure and update the breakdown, or the layout algorithm moved, in which
+// case the "no padding is wasted" conclusion needs re-deriving before it is re-quoted.
+//
+// **120 is not a universal fact**, and the distinction was learned in review. Every
+// field is fixed-width — no `usize`, no references, no pointers — but that does *not*
+// make the layout width-independent, because it is `u64` **alignment** that varies, not
+// pointer size:
+//
+// | target | `size_of::<Latch>()` |
+// | --- | --- |
+// | `x86_64`, `thumbv7em-none-eabihf`, `wasm32-unknown-unknown`, `armv7-*` | 120 |
+// | `i686-*` (32-bit x86, `u64` aligns to 4) | 108 |
+//
+// `armv7` is in that first row by measurement, not by assumption: it is 32-bit with an
+// 8-byte-aligned `u64`, which is the combination the implication below is keyed on, so
+// it is the case that would fail first if the keying were wrong.
+//
+// So there are two assertions rather than one, and neither breaks a cross-compile:
+//
+// 1. **No padding**, universally. This is the property the breakdown actually rests on
+//    — that no field ordering would make the struct smaller — and it holds on every
+//    target above, `i686` included.
+// 2. **120 where a `u64` aligns to 8**, written as an implication rather than a
+//    `#[cfg]`. It pins the documented figure on every ABI the figure describes, and
+//    makes no claim on the ones it does not.
+//
+// `#[repr(C)]` is not the alternative either, and this was measured rather than
+// reasoned: `repr(C)` lays fields out in declaration order, which costs **128 bytes**
+// instead of 120 because the two `bool`s can no longer sit in alignment gaps. On a
+// struct copied four times per emulated cycle that adds ~1.2 ms a frame, to exactly
+// the copies `docs/performance.md` is trying to shrink.
+const _: () = {
+    // The scalars: `occupied` + `pc` + `word` + `in_delay_slot` + `rs_val` + `rt_val`.
+    // Written as `size_of` of each field's type rather than as literals, so a field
+    // whose type changes updates this term instead of silently desynchronizing it —
+    // which would mask exactly the padding this is meant to detect.
+    let scalars = core::mem::size_of::<bool>()
+        + core::mem::size_of::<u64>()
+        + core::mem::size_of::<u32>()
+        + core::mem::size_of::<bool>()
+        + core::mem::size_of::<u64>()
+        + core::mem::size_of::<u64>();
+    let parts = core::mem::size_of::<Decoded>()
+        + core::mem::size_of::<Option<Exception>>()
+        + core::mem::size_of::<WriteBack>()
+        + core::mem::size_of::<Option<MemOp>>()
+        + core::mem::size_of::<Option<Cop0Access>>()
+        + scalars;
+    assert!(
+        core::mem::size_of::<Latch>() == parts,
+        "Latch has acquired padding; docs/performance.md's copy-cost breakdown assumes none"
+    );
+    // And the documented figure itself, conditioned on the property that actually
+    // determines it. Writing it as an implication rather than a `#[cfg]` keeps it
+    // compilable everywhere while still pinning 120 on every ABI the number describes:
+    // on 32-bit x86 a `u64` aligns to 4 and `Latch` is 108, which is not a defect and
+    // not something the document claims.
+    assert!(
+        core::mem::align_of::<u64>() != 8 || core::mem::size_of::<Latch>() == 120,
+        "Latch is no longer 120 bytes where a u64 aligns to 8; re-measure docs/performance.md"
+    );
+};
+
 /// Does a load into `load_rt` interlock with the following instruction?
 ///
 /// `rs` / `rt` are the *raw encoded fields* of the next instruction,

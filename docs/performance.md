@@ -303,6 +303,15 @@ RDP, audio, scheduler, libc — would still leave ~51 ms, or 19.5 FPS.
 No change that keeps per-cycle dispatch reaches 16.7 ms from there, which is ADR 0011's
 argument stated in measured milliseconds rather than in prospect.
 
+**Every bucket above 3% has now been looked at per line, and the two that hold a
+concentrated target are written up below.** The RSP's 11.4% is *not* one of them: its
+hottest attributable line is 0.65% and its largest entry is 1.17% of inlined code with no
+line at all, so it is thinly spread instruction execution with no structural target —
+which is why ADR 0011 scopes the fast path to the VR4300 first and leaves the RSP for
+later. The same holds for the rest of the CPU: the 41.0% is the **whole** `crates/rustyn64-cpu/`
+share, latch copying included, so setting that 14.66% aside leaves ~26% of genuine
+instruction execution with no concentrated site either.
+
 **The boot column is a trap, not a baseline.** `scheduler.rs` reads 0.0% there and 6.4%
 in the render window; the RDP reads 1.9% against 4.6%. A window taken before the title
 draws under-reports precisely the subsystems that dominate once it does. Profile the
@@ -356,6 +365,198 @@ always 0 and `xfrac` alternates 0 / 16, so the four-tap form averaged
 (35.52 → 21.64 ms) is as close as this kind of accounting gets, which is the reason to write it down: a
 speed-up that matches a mechanism is a result, and one that does not is a coincidence
 waiting to be explained.
+
+### The latch copies, anatomized (open — the largest in-model target left)
+
+ADR 0011 recorded that "latch copy/zero instructions" were ~16% of runtime and that
+removing them is "not safely possible", from a `perf annotate` view. Per-**line**
+attribution of the post-`6a6adfa` render capture says where that 16% actually sits:
+
+Line numbers are those of **commit `2abc817`**, the tree the capture was taken on, so
+they stay resolvable as a permalink even after they drift in `main`; the function and
+the statement are the durable part either way.
+
+All six are in `crates/rustyn64-cpu/src/pipeline.rs`.
+
+| function | statement | line at capture | share |
+| --- | --- | --- | --- |
+| `ex_stage` | `self.ex_dc = out;` (EX → DC store) | 2061 | 3.68% |
+| `dc_stage` | `self.dc_wb = out;` (DC → WB store) | 913 | 2.87% |
+| `ex_stage` | `let mut out = self.rf_ex;` (EX load) | 1903 | 2.58% |
+| `ic_stage` | `self.ic_rf = Latch { ... }` (IC store) | 2351 | 2.15% |
+| `dc_stage` | `let mut out = self.ex_dc;` (DC load) | 848 | 2.10% |
+| `rf_stage` | `self.rf_ex = out;` (RF store) | 2147 | 1.28% |
+| **six copy sites** | | | **14.66%** |
+
+Grouped by stage rather than by site: `ex_stage` **6.26%**, `dc_stage` **4.97%**,
+`ic_stage` 2.15%, `rf_stage` 1.28%. Each stage pays a load and a store except `IC`,
+which only stores, and `WB`, which consumes `dc_wb` in place.
+
+Plus 3.77% attributed to `pipeline.rs:0` (inlined, no line), so ~15-18% of the frame —
+about **19-22 ms of 125** — is moving `Latch` values. That is more than the entire VI
+scan-out cost after the memo.
+
+**`Latch` is 120 bytes and its contents account for exactly that**, which is the
+padding question rather than a dodge of it: `size_of::<Latch>()` **includes** whatever
+alignment padding the layout needs, and the component figures are each `size_of` of that
+component. They sum to the whole, so there is no padding left over — ADR 0011's
+"zero-padding-optimal" claim holds, now measured rather than asserted.
+
+| contents | bytes |
+| --- | --- |
+| `decoded: Decoded` | 16 |
+| `abort: Option<Exception>` | 2 |
+| `write_back: WriteBack` | 24 |
+| `mem: Option<MemOp>` | 24 |
+| `cop0: Option<Cop0Access>` | 24 |
+| the six scalars (`occupied`, `pc`, `word`, `in_delay_slot`, `rs_val`, `rt_val`) | 30 |
+| **`size_of::<Latch>()`** | **120** |
+
+The scalar row is the remainder, and 30 is also their naive sum (1 + 8 + 4 + 1 + 8 + 8) —
+so `repr(Rust)` has packed the two `bool`s into gaps rather than padding them out. That
+is the useful reading of "no padding": there is no field ordering that would make this
+struct smaller.
+
+**That breakdown is now pinned in code**, because `repr(Rust)` layout is not stable
+across compiler versions and this table would otherwise decay into a claim about a
+toolchain nobody is using. `crates/rustyn64-cpu/src/pipeline.rs` carries
+`const _: () = assert!(size_of::<Latch>() == 120, …)` next to the struct; if it fires,
+the instruction is to re-measure rather than to change the number, since either a field
+was added or the layout algorithm moved and the "no padding" conclusion needs
+re-deriving. There are two assertions: **no padding**, which holds on every target and
+is the property this breakdown rests on, and **120 where a `u64` aligns to 8**, written
+as an implication so it pins the figure without breaking a cross-compile to an ABI the
+figure does not describe.
+
+**120 is the size on this workspace's targets, not a universal fact.** Every field is
+fixed-width, but that does not make the layout width-independent — it is `u64`
+*alignment* that varies. On `x86_64`, `thumbv7em-none-eabihf` and
+`wasm32-unknown-unknown` (all three built in CI) it is 120; on 32-bit x86, where `u64`
+aligns to 4, it is **108**. The assert firing on a newly added target is the guard
+working: a different ABI is exactly when this breakdown must be re-measured.
+
+**`#[repr(C)]` would be the wrong way to get that stability**, measured: it lays fields
+out in declaration order, so the two `bool`s can no longer occupy alignment gaps and the
+struct becomes **128 bytes**. On something copied four times per emulated cycle that adds
+~1.2 ms a frame — to the very copies this section is about.
+
+**What the byte breakdown adds to 0011's analysis.** The last three fields — **72 of the
+120 bytes** — are *produced at `EX`*. In `ic_rf` and `rf_ex` they are structurally always
+`None`/`WriteBack::None`, so those two latches copy 72 bytes of provably-empty payload,
+twice each per cycle. That is the `:2351`, `:2147`, and `:1903` rows above — **6.01%** of
+the frame, moving nothing.
+
+This is **not** the hazard 0011 ruled out. That hazard is specific to the `DC` path:
+`dc_stage`'s error branch re-reads `self.ex_dc` *after* `abort_with` has stamped it, which
+entangles the `:848` / `:2061` / `:913` copies with abort propagation. The upstream pair
+carries no such entanglement.
+
+**Untested hypothesis, and it must stay labeled one until measured:** splitting `Latch`
+into a front half (`occupied`, `pc`, `word`, `in_delay_slot`, `abort`, `decoded`,
+`rs_val`, `rt_val` — 48 bytes) and an `EX`-onward payload would cut the two upstream
+copies by **60%**, because that is the share of the bytes those latches carry for
+nothing.
+
+Two figures, and they are not the same claim: 60% of the 6.01% is 3.61%, so the
+**expected** gain is `1 / (1 - 0.0361)` = **1.037x**. The **ceiling**, if those copies
+disappeared outright rather than shrinking, is `1 / (1 - 0.0601)` = **1.064x** — which
+nothing proposed here achieves, since the front half still has to move. Real, and nowhere near
+the ~7.5x the frame budget needs — which is the point of recording it here rather than
+acting on it: it is worth doing *after* the dispatch question is settled, not instead of
+it.
+
+Any attempt carries this repository's worst failure mode — `docs/engineering-lessons.md`
+records four pipeline changes that compiled, passed every test, and did nothing — so it
+needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
+
+### The Bus split-borrow moves 1.35 GB a frame (open)
+
+**`core::mem::replace` is 5.32% of the frame on its own** — specifically the
+`read_via_copy` / `write_via_move` pair inside it, which is the durable way to find these
+samples. In the **Rust standard library's** `library/core/src/mem/mod.rs` (inside the
+toolchain, not a file in this repository) that pair sat at lines 930 and 929, worth 4.21%
+and 1.11%, under **`rustc 1.96.0`** — the exactly-pinned toolchain
+(`rust-toolchain.toml`), which is the only reason a stdlib line number is quotable here
+at all. On any other toolchain, search for the pair.
+
+`take` is what the code calls and `replace` is what the profile shows because
+`mem::take(x)` **is** `mem::replace(x, Default::default())` — which is also where the
+second write comes from: the default has to be written into the vacated slot. About **6.7 ms of 125**, and all of it is the
+Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
+`crates/rustyn64-core/src/bus.rs` (lines 539 and 548 as of commit `2abc817`, same
+convention as the table above):
+
+```rust
+pub fn rdp_tick(&mut self) {
+    // `take` needs `Rdp: Default`; it writes a fresh default in place of the
+    // value it hands back, so this is a read AND a write, not a move.
+    let mut rdp = core::mem::take(&mut self.rdp);   // read 344 + write 344
+    rdp.tick(self);
+    self.rdp = rdp;                                 // write 344
+}
+```
+
+`Rdp` is **344 bytes** and `Audio` is **88** (`size_of`-measured). Each `tick` therefore
+touches roughly `3 x size_of` bytes, and the scheduler runs them **every RCP step** —
+about 1.04 M steps a frame:
+
+| | bytes moved per frame |
+| --- | --- |
+| `rdp_tick` | ~1.07 GB |
+| `audio_tick` | ~0.27 GB |
+| **total** | **~1.35 GB** |
+
+At 125 ms a frame that is ~10.8 GB/s of memory traffic to satisfy the borrow checker,
+which is consistent with the 5.32% the profile attributes to `core::mem`.
+
+**The fix pattern is already in this repository.** `Bus::rsp_tick` (same file, line 519
+at that commit)
+used to do exactly this and no longer does; its comment records that the `take` was worse than the "no
+allocation" claim above it, because `take` needs `Default` and constructing an `Rsp`
+allocated its 8 KiB of scratch — 4 KiB DMEM and 4 KiB IMEM — **every RCP step**. `Rsp::tick` now *returns* what it
+wants done instead of borrowing its owner. `Rdp` and `Audio` were not converted.
+
+Two candidate routes, neither measured, both **hypotheses**:
+
+- **Return-a-request**, as the RSP did. Clean for the AI; awkward for the RDP, which
+  reads and writes RDRAM throughout rasterization rather than at the end.
+- **Take only when there is work.** The RDP is idle on most RCP steps, so a predicate
+  ahead of the `take` would remove the shuffle for the common case. The risk is entirely
+  in "exact" — skipping a step that would have done something is a correctness bug — so
+  the predicate has to come from `Rdp::tick`'s own early-outs rather than from intuition.
+  Reading them, the tick returns **having touched nothing at all** in exactly two cases,
+  and both are pure reads of `self`:
+
+  - `status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0` — the pipeline counter is halted;
+  - `cmd_current >= cmd_end` — the command FIFO is empty.
+
+  Its third early-out, `stall > 0`, does **not** qualify: it decrements `stall`. But it
+  does not need the bus either, so it can be handled before the `take` as well rather
+  than being a reason to keep it. The fourth, a partially-written multi-word command
+  (`cmd_end - cmd_current < len_bytes`), is **not** decidable without the bus — it reads
+  the opcode from RDRAM to learn the length, and the RDP caches neither the opcode nor
+  the length (`Rdp` holds only `cmd_start` / `cmd_current` / `cmd_end`, and `tick`
+  re-reads `word0_hi` every time) — so that case must still take.
+
+  `Audio::tick` is different and simpler: it writes `self.last_tick = now`
+  unconditionally on entry, so it is *never* idle by this definition and needs the
+  return-a-request route instead.
+
+  Any predicate must be re-derived if those early-outs change, which is the argument for
+  putting it next to them rather than in the Bus.
+
+Upper bound if the whole 5.32% went: **1.056x**.
+
+**Both are isolated, and they compose.** They address disjoint shares, so:
+
+| | latch split | split-borrow | together |
+| --- | --- | --- | --- |
+| expected | 1.037x (3.61%) | 1.056x (5.32%) | **1.098x** → ~114 ms, 8.8 FPS |
+| ceiling | 1.064x (6.01%) | 1.056x (5.32%) | **1.128x** → ~111 ms, 9.0 FPS |
+
+Against a **7.5x** gap. That is the case for doing them after the dispatch question rather than
+instead of it — and the Angrylion `.rvec` vectors and
+the audio goldens are what would catch an idle predicate that is wrong.
 
 ### Ruled out by measurement — do not retry
 
