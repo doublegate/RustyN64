@@ -1814,14 +1814,10 @@ impl Rdp {
     /// [`Rdp::tick`] calls it too, so there is one implementation and no way for the
     /// two to disagree.
     ///
-    /// The bus-using remainder is a separate method purely to avoid re-running these
-    /// checks after a caller has already made them. It is **not** a correctness
-    /// requirement, and an earlier version of this comment claimed it was — that
-    /// re-entering `tick` would decrement `stall` twice. It would not: `rdp_tick` only
-    /// reaches the bus half when this returned `false`, which implies `stall == 0`, so
-    /// the second pass finds nothing to decrement. The claim was written from the shape
-    /// of the hazard rather than from the code, and a mutation test is what disproved
-    /// it.
+    /// [`Rdp::tick_with_bus`] is a separate method only to avoid re-running these checks
+    /// after a caller has already made them — an optimization, **not** a correctness
+    /// requirement, since reaching the bus half implies `stall == 0` and a second pass
+    /// would find nothing to decrement.
     pub fn tick_without_bus(&mut self) -> bool {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
@@ -1843,8 +1839,23 @@ impl Rdp {
     /// The remainder of a step, once [`Rdp::tick_without_bus`] has returned `false`.
     ///
     /// Never call this without that check first: it assumes the FIFO is non-empty and
-    /// the pipeline is neither frozen nor stalled.
+    /// the pipeline is neither frozen nor stalled. Those are preconditions rather than
+    /// guards, so they are asserted — this is `pub` across the crate boundary, and an
+    /// out-of-order call would otherwise decode a command out of an empty FIFO in
+    /// silence.
     pub fn tick_with_bus<B: VideoBus>(&mut self, bus: &mut B) {
+        debug_assert!(
+            self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) == 0,
+            "tick_with_bus on a frozen or XBUS pipeline: call tick_without_bus first"
+        );
+        debug_assert_eq!(
+            self.stall, 0,
+            "tick_with_bus while stalled: call tick_without_bus first"
+        );
+        debug_assert!(
+            self.cmd_current < self.cmd_end,
+            "tick_with_bus on an empty command FIFO: call tick_without_bus first"
+        );
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;

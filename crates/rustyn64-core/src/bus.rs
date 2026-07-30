@@ -2576,12 +2576,10 @@ mod tests {
     /// overscan offset would change the bytes, so this pins both.
     /// A stalling RDP still burns exactly one GCLK per RCP step through the skip path.
     ///
-    /// The skip path is new, and the stall is the only thing it **mutates** — the other
-    /// two early-outs are pure reads — so this is where an ordering mistake would land.
-    /// Mutation-checked: moving the empty-FIFO check ahead of the stall countdown turns
-    /// this red, because a stalled RDP with nothing queued would then never count down
-    /// and the pipeline would hang. Nothing else in the suite notices that: a stall that
-    /// never expires changes *when* a command retires, not whether the vectors match.
+    /// The stall is the only thing the skip path **mutates**, so an ordering mistake
+    /// lands here: checking the FIFO before the stall would leave a stalled RDP with
+    /// nothing queued counting down forever, which no vector notices because it changes
+    /// *when* a command retires rather than whether it matches.
     #[test]
     fn a_stalled_rdp_decrements_exactly_once_per_rcp_step() {
         let mut bus = Bus::new();
