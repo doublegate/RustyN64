@@ -38,7 +38,7 @@ before the ledger rows were replaced.
 | Residual | Subject |
 | --- | --- |
 | [R-5](R-5.md) | VI scan-out — scale/resample and the AA / divot / de-dither post-filters |
-| [R-10](R-10.md) | Colour-combiner exotic inputs — noise, LOD fraction, chroma key, YUV convert |
+| [R-10](R-10.md) | Color-combiner exotic inputs — noise, LOD fraction, chroma key, YUV convert |
 | [R-13](R-13.md) | Triangle texturing — perspective divide, bilinear sampling, LOD/mip |
 | [R-18](R-18.md) | Commercial video — boot, microcode, and the road to a rendered title screen |
 | [R-19](R-19.md) | n64-systemtest hang — the branch/vector race |

@@ -4,7 +4,7 @@
 **Sprint goal:** the scheduler counts one canonical 187.5 MHz master clock with every other
 cycle position derived from it, and the VR4300 executes the MIPS III integer instruction set as
 a five-stage pipeline advanced one PClock per step, with correct delay-slot and load-interlock
-behaviour.
+behavior.
 **Estimated duration:** 5 weeks (raised from 3: T-11-001 now carries the timebase rework and
 the pipeline structure, both of which are prerequisites for every ticket after it.)
 
@@ -70,7 +70,7 @@ both 32- and 64-bit forms, with the correct sign-extension rules for the 32-bit 
 - [x] `MULT`/`MULTU`/`DIV`/`DIVU` and the `D*` forms write `HI`/`LO` and **stall the entire
       pipeline** for the documented count — 5 / 37 / 8 / 69 PCycles (UM Table 3-12). These are
       not background operations.
-- [x] The `MFHI`/`MFLO` two-instruction hazard is modelled as a *non-interlocked* hazard
+- [x] The `MFHI`/`MFLO` two-instruction hazard is modeled as a *non-interlocked* hazard
       producing hardware's wrong result, not as a stall.
 - [x] 32-bit results are sign-extended into the 64-bit register as hardware does.
 - [x] Unit tests per family in both widths.
@@ -84,7 +84,7 @@ both 32- and 64-bit forms, with the correct sign-extension rules for the 32-bit 
 ### T-11-003 — Loads, stores, and the unaligned family
 
 **Description:** implement the load/store set including the unaligned `LWL`/`LWR`/`LDL`/`LDR`
-family and the atomic `LL`/`SC`/`LLD`/`SCD`, honouring the endianness and the alignment
+family and the atomic `LL`/`SC`/`LLD`/`SCD`, honoring the endianness and the alignment
 exception rules.
 
 **Acceptance criteria:**
@@ -117,7 +117,7 @@ plus `BREAK` and `SYSCALL`, each raising the correct exception.
 - [x] `TRAP` conditions, `BREAK`, and `SYSCALL` raise their exceptions with the right cause.
 - [x] **Blocked, not skipped** — same cause as T-11-003's n64-systemtest criterion; the suite
       cannot start. `TRAP`/`BREAK`/`SYSCALL` are implemented and unit-tested; what is missing is
-      the *oracle*, not the behaviour. Re-scoped to T-11-009 (Sprint 2).
+      the *oracle*, not the behavior. Re-scoped to T-11-009 (Sprint 2).
 
 **Dependencies:** T-11-003
 **Reference:** `docs/cpu.md` §control flow
@@ -138,11 +138,11 @@ multiplication bug, the 32-bit shift-right-arithmetic bug, and the sign-extensio
       `div_reproduces_the_35_bit_divisor_sign_extension_erratum`.
 - [x] Each test cites `n64brew_wiki/markdown/VR4300.md` so the intent is obvious to the next
       reader.
-- [x] `docs/cpu.md` records each erratum as intended behaviour.
+- [x] `docs/cpu.md` records each erratum as intended behavior.
 - [x] **The FP multiplication bug is deferred to Sprint 3**, where COP1 lands. It is also the
       only erratum that is *not* universal — NUS-01/02/03 only — so it needs the console
       revision as a machine parameter, and its exact corrupted output is undocumented and will
-      have to be characterised. Recorded here rather than silently dropped.
+      have to be characterized. Recorded here rather than silently dropped.
 
 **Dependencies:** T-11-002
 **Reference:** `n64brew_wiki/markdown/VR4300.md` §Known Bugs
@@ -185,14 +185,14 @@ a dangling reference that looks tracked and is not.
 - [x] A direct-load path that does what IPL3 would: copy **`0x10_0000` bytes** from ROM
       offset `0x1000` to RDRAM `0x1000`, clamped to the ROM's actual length, and set
       `PC = 0x8000_1000`. No CIC handshake, no PI DMA. The byte count is the documented boot
-      behaviour (`ref-proj/n64-tests/README.md`: *"copy 0x100000 bytes from 0x10001000 to
+      behavior (`ref-proj/n64-tests/README.md`: *"copy 0x100000 bytes from 0x10001000 to
       0x00001000"*), not `basic.z64`'s size — the two coincide here, and hard-coding either an
       end offset or "the whole ROM" breaks on the next target. Clamping matters because RDRAM
       is 8 MiB and a commercial ROM is up to 64 MiB.
 - [x] `run_until_complete` polls `r30` and returns `Passed` / `Failed(index)` / `Timeout`
       instead of always timing out.
 - [x] `basic.z64` reports a genuine result, and a failure names *which* of the five tests failed.
-- [x] The test **skips, not fails**, when the ROM is absent — Dillon's suite has **no licence**
+- [x] The test **skips, not fails**, when the ROM is absent — Dillon's suite has **no license**
       and is external-tier, so it cannot be committed and CI must stay green without it.
 - [x] `docs/STATUS.md`'s accuracy table gains its first real number.
 
@@ -255,7 +255,7 @@ time and charge a flat constant, and they disagree on what that constant is.
       contending for the bus and therefore the first that can observe the difference. Nothing in
       Phases 1-2 distinguishes an inline access from a phased one.
 - [ ] **Deferred — `M` is not measured.** As this ticket's own note predicted, `basic.z64` is
-      too short to constrain it and the realistic source is n64-systemtest's default-off
+      too short to constrain it and the realiztic source is n64-systemtest's default-off
       `timing` set, which needs Sprint 2. `M` remains an explicit ledger entry (C-1) with no
       value rather than a fitted-looking number without provenance.
       **Carried past the Phase 1 close**, unchanged and deliberately: the `timing` set is still
@@ -263,7 +263,7 @@ time and charge a flat constant, and they disagree on what that constant is.
       Owned by **Phase 7** (accuracy breadth), which is where the timing corpus is run.
 
 **Note on the `M` measurement.** Fitting `M` needs a ROM that runs long enough to measure, and
-`basic.z64` (T-11-006) is too short and too simple to constrain it. The realistic source is
+`basic.z64` (T-11-006) is too short and too simple to constrain it. The realiztic source is
 n64-systemtest's `timing` feature set, which is **default-off upstream** and depends on
 Sprint 2. So the *transaction model* is Sprint 1 work and the *measurement* is not; if the
 measurement slips, land the model with `M` as a single documented placeholder in the accuracy

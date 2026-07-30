@@ -474,16 +474,16 @@ fn the_microcode_emits_an_rdp_command_through_the_dpc_seam() {
 /// RDP command through verbatim, this feeds `RDPQCmd_SetFillColor32` (`0xD6`) —
 /// an rdpq command the handler *transforms* into an RDP command. With a 32-bit
 /// target (`RDPQ_TARGET_BITDEPTH == 3`), `RDPQ_WriteSetFillColor`
-/// (`rsp_rdpq.inc:704`) synthesises the opcode word `lui a0, 0xF700` and forwards
-/// the colour, emitting the two words `[0xF700_0000, colour]`.
+/// (`rsp_rdpq.inc:704`) synthesizes the opcode word `lui a0, 0xF700` and forwards
+/// the color, emitting the two words `[0xF700_0000, color]`.
 ///
 /// The golden vector is derived from the **documented** encoding, not from the
 /// microcode (which would be circular): N64brew *Reality Display Processor/
 /// Commands* §`0x37 - Set Fill Color` fixes `command[5:0] = 0x37` in bits 61:56
-/// and `colour[31:0]` in bits 31:0. Bits 63:62 are documented don't-cares
+/// and `color[31:0]` in bits 31:0. Bits 63:62 are documented don't-cares
 /// (shown `—`); libdragon canonically drives them `11`, so the command byte is
-/// `0xC0 | 0x37 = 0xF7` and word0 = `0xF700_0000`. Word1 is the colour verbatim.
-/// A change to either constant is an intentional, reviewed behaviour change.
+/// `0xC0 | 0x37 = 0xF7` and word0 = `0xF700_0000`. Word1 is the color verbatim.
+/// A change to either constant is an intentional, reviewed behavior change.
 #[test]
 fn the_microcode_generates_a_set_fill_color_command() {
     use rustyn64_core::System;
@@ -504,11 +504,11 @@ fn the_microcode_generates_a_set_fill_color_command() {
     const BUF_ROOM: u32 = 0x100;
     const BUF_SENTINEL: u8 = 0x5A;
 
-    // rdpq command 0xD6 (`RDPQCmd_SetFillColor32`); a1 carries the RGBA32 colour.
+    // rdpq command 0xD6 (`RDPQCmd_SetFillColor32`); a1 carries the RGBA32 color.
     const CMD_W0: u32 = 0xD600_0000;
     const COLOR: u32 = 0xAABB_CCDD;
     // Golden RDP command bytes, from N64brew §0x37 (see doc): opcode 0x37 in
-    // bits 61:56 (libdragon's 0xF7 with the don't-care top bits set), colour verbatim.
+    // bits 61:56 (libdragon's 0xF7 with the don't-care top bits set), color verbatim.
     const GOLDEN_W0: u32 = 0xF700_0000;
     const GOLDEN_W1: u32 = COLOR;
 
@@ -526,7 +526,7 @@ fn the_microcode_generates_a_set_fill_color_command() {
     }
     let cmd_base_off = sym("_ovl_data_start") + OVL_HEADER_CMDBASE;
     sys.bus.rsp.dmem[cmd_base_off..cmd_base_off + 2].copy_from_slice(&COMMAND_BASE.to_be_bytes());
-    // 32-bit target so the fill colour is forwarded, not down-converted to 16-bit.
+    // 32-bit target so the fill color is forwarded, not down-converted to 16-bit.
     sys.bus.rsp.dmem[sym("RDPQ_TARGET_BITDEPTH")] = TARGET_32BIT;
 
     // Seed the RDP dynamic-buffer state RDPQ_Send reads.
@@ -539,7 +539,7 @@ fn the_microcode_generates_a_set_fill_color_command() {
     sys.bus.rsp.dmem[dyn_bufs + 4..dyn_bufs + 8]
         .copy_from_slice(&(BUF_BASE + BUF_ROOM).to_be_bytes());
 
-    // Queue: [SetFillColor32(0xD6), colour, WaitNewInput(0x0) terminator].
+    // Queue: [SetFillColor32(0xD6), color, WaitNewInput(0x0) terminator].
     let qa = QUEUE_ADDR as usize;
     sys.bus.rdram[qa..qa + 4].copy_from_slice(&CMD_W0.to_be_bytes());
     sys.bus.rdram[qa + 4..qa + 8].copy_from_slice(&COLOR.to_be_bytes());
@@ -649,7 +649,7 @@ fn execute_rdp_list(sys: &mut rustyn64_core::System, start: u32, end: u32) {
     );
 }
 
-/// **The real microcode's command list RASTERISES — the ADR 0002 payoff, end to end.**
+/// **The real microcode's command list RASTERIZES — the ADR 0002 payoff, end to end.**
 ///
 /// Every earlier microcode test stops at "the microcode emitted the right bytes".
 /// This one closes the chain: the real libdragon `rdpq` microcode runs on the LLE
@@ -658,12 +658,12 @@ fn execute_rdp_list(sys: &mut rustyn64_core::System, start: u32, end: u32) {
 /// hand-written RDP command is involved in the drawing — the picture is produced
 /// by microcode output alone.
 ///
-/// This is the licence-clean form of "the custom-microcode families render"
+/// This is the license-clean form of "the custom-microcode families render"
 /// (`v0.8.0` "Breadth"): F3DEX and kin are proprietary and ship inside commercial
 /// ROMs, so they can never be committed or CI-gated (`docs/adr/0008`); `rdpq` is
 /// the only vendorable real N64 graphics microcode, so it is the proxy.
 ///
-/// **Two rdpq behaviours the emitted list exhibits are deliberate, not noise, and
+/// **Two rdpq behaviors the emitted list exhibits are deliberate, not noise, and
 /// were predicted from the vendored source before being observed:**
 /// - `RDPQCmd_SetOtherModes` re-emits a `SET_SCISSOR` when the cycle type changes.
 /// - `RDPQCmd_SetColorImage` appends a `SET_FILL_COLOR` from its cached
@@ -673,7 +673,7 @@ fn execute_rdp_list(sys: &mut rustyn64_core::System, start: u32, end: u32) {
 /// (N64brew *Reality Display Processor/Commands* §`0x36 - Fill Rectangle`: fills
 /// the inclusive `u10.2` span with `SET_FILL_COLOR`), not from our own renderer.
 #[test]
-fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
+fn the_microcode_generated_list_rasterizes_to_the_expected_picture() {
     use rustyn64_core::System;
     use rustyn64_core::rsp::sp;
 
@@ -692,7 +692,7 @@ fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
     const H: u32 = 8;
     /// RGBA5551 green — the `SET_FILL_COLOR` the queue programs.
     const GREEN: u16 = 0x07C1;
-    /// The framebuffer's pre-run fill: NOT the fill colour, so a renderer that
+    /// The framebuffer's pre-run fill: NOT the fill color, so a renderer that
     /// never ran cannot pass (the converging-paths hazard).
     const SENTINEL: u16 = 0xF801; // red
 
@@ -791,7 +791,7 @@ fn the_microcode_generated_list_rasterises_to_the_expected_picture() {
             let px = u16::from_be_bytes([sys.bus.rdram[o], sys.bus.rdram[o + 1]]);
             assert_eq!(
                 px, GREEN,
-                "pixel ({x},{y}) must be the microcode-programmed fill colour (got {px:#06x}); the framebuffer began as {SENTINEL:#06x}"
+                "pixel ({x},{y}) must be the microcode-programmed fill color (got {px:#06x}); the framebuffer began as {SENTINEL:#06x}"
             );
         }
     }

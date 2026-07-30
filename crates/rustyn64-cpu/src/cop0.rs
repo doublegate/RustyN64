@@ -1,7 +1,7 @@
 //! COP0 — the VR4300 system control coprocessor (T-12-001).
 //!
 //! The register file only: widths, writable-bit masks, and the four access
-//! instructions. The *behaviour* the registers drive — exception dispatch
+//! instructions. The *behavior* the registers drive — exception dispatch
 //! (T-12-002), interrupts (T-12-003), address translation (T-12-004) — reads
 //! this module rather than living in it.
 //!
@@ -26,7 +26,7 @@
 //! UM §6.4.4 (p. 183) defines only a handful of fields at cold reset and calls
 //! the rest **undefined**: `Index`, `EntryHi`/`EntryLo*`/`PageMask`, `LLAddr`,
 //! `TagLo`/`TagHi`, `WatchLo`/`WatchHi`, and most of `Status`. Undefined is not
-//! licence to be non-deterministic — ADR 0004 requires a reproducible machine —
+//! license to be non-deterministic — ADR 0004 requires a reproducible machine —
 //! so undefined fields are a documented zero, not entropy.
 
 use crate::decode::Decoded;
@@ -354,7 +354,7 @@ impl Cop0 {
     /// Advance the `Count` timeline to `now` (the scheduler's `count_ticks`).
     ///
     /// Called once per CPU step. Note this **sets** rather than increments: the
-    /// position is derived, so a dropped or repeated call cannot desynchronise
+    /// position is derived, so a dropped or repeated call cannot desynchronize
     /// it from the master clock the way an increment would.
     pub const fn set_now(&mut self, now: u64) {
         self.now = now;
@@ -415,12 +415,12 @@ impl Cop0 {
     pub const fn timer_edge(&mut self) -> bool {
         let now = self.count();
         let compare = self.regs[reg::COMPARE as usize] as u32;
-        // Distance travelled since the last poll, and the distance to `Compare`,
+        // Distance traveled since the last poll, and the distance to `Compare`,
         // both measured forward from `last_count`. `Compare` was crossed iff it
-        // is no further away than we travelled — and is not where we started.
-        let travelled = now.wrapping_sub(self.last_count);
+        // is no further away than we traveled — and is not where we started.
+        let traveled = now.wrapping_sub(self.last_count);
         let to_compare = compare.wrapping_sub(self.last_count);
-        let edge = travelled != 0 && to_compare != 0 && to_compare <= travelled;
+        let edge = traveled != 0 && to_compare != 0 && to_compare <= traveled;
         self.last_count = now;
         edge
     }
@@ -436,7 +436,7 @@ impl Cop0 {
         self.regs[reg::CAUSE as usize] = if on { cause | m } else { cause & !m };
     }
 
-    /// Is an interrupt currently *recognised*?
+    /// Is an interrupt currently *recognized*?
     ///
     /// All four conditions, and each one matters (UM §6.1 p. 160, §6.3.5 p. 168,
     /// Fig. 14-4 p. 357):
@@ -514,7 +514,7 @@ impl Cop0 {
     /// **Measured, replacing a guess.** The manual says nothing about these, so
     /// this implementation previously discarded writes and read zero, recorded
     /// as accuracy-ledger **U-1**. n64-systemtest documents and exercises the
-    /// real behaviour, sweeping five written values against three interposed
+    /// real behavior, sweeping five written values against three interposed
     /// ones specifically so an emulator cannot pass by echoing the first.
     pub const UNUSED: [u8; 7] = [7, 21, 22, 23, 24, 25, 31];
 
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(wide.len(), 8, "exactly eight, not seven or nine");
     }
 
-    /// Read-only registers must reject `MTC0`. Modelled as an all-zero write
+    /// Read-only registers must reject `MTC0`. Modeled as an all-zero write
     /// mask so "read-only" and "reserved bit" share one mechanism.
     #[test]
     fn read_only_registers_reject_writes() {
@@ -908,7 +908,7 @@ mod tests {
     /// This replaces a pinned *guess*: the manual documents an absence, so the
     /// implementation used to discard writes and read zero (ledger U-1), and
     /// this test pinned that choice. n64-systemtest documents and exercises the
-    /// real behaviour, so the guess is now evidence.
+    /// real behavior, so the guess is now evidence.
     ///
     /// The second half is the part a naive implementation fails: an intervening
     /// write to *any other* COP0 register changes what the reserved register
@@ -1236,7 +1236,7 @@ mod tests {
     /// The gap before the write is deliberate and load-bearing. If `Count` were
     /// polled immediately beforehand the detector's interval would already be
     /// empty, and the test would pass whether or not the write re-bases —
-    /// converging success and failure paths onto the same behaviour and proving
+    /// converging success and failure paths onto the same behavior and proving
     /// nothing.
     #[test]
     fn writing_compare_behind_count_does_not_fire_the_timer() {

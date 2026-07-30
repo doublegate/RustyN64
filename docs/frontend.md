@@ -52,7 +52,7 @@ game programs (VI/RI/F3DEX), tracked as accuracy-ledger **R-18**.
 
 The VI scans out **320×240 or 640×480** (NTSC), up to 32-bit color
 (`docs/rdp.md`, `ref-docs/research-report.md` §4). The present path uploads the
-post-VI-filter RGBA8888 frame to a wgpu texture; honour the VI's selected
+post-VI-filter RGBA8888 frame to a wgpu texture; honor the VI's selected
 resolution and AA per frame. PAL field timing differs (`docs/compatibility.md`).
 
 ### Controller map
@@ -80,8 +80,8 @@ and a memory viewer over RDRAM — the N64 analogs of the RustyNES debugger pane
 
 ## Save-states / rewind / run-ahead
 
-**Implemented** (frontend-side, ADR 0004). The whole `System` is serde-serialisable
-(the core just needs to be (de)serialisable + deterministic); the frontend picks
+**Implemented** (frontend-side, ADR 0004). The whole `System` is serde-serializable
+(the core just needs to be (de)serializable + deterministic); the frontend picks
 the wire format (bincode) and owns all orchestration:
 
 - **Save-states** — `EmuCore::snapshot`/`restore` (`bincode` over `System`). The
@@ -103,7 +103,7 @@ load, **Backspace** rewind.
 
 A wasm browser entry point ships in `src/wasm.rs` (`#[wasm_bindgen(start)]`),
 built with `trunk` from `web/index.html`. It is a **2D-canvas demo**, not the
-full shell: it boots a committed licence-clean homebrew ROM
+full shell: it boots a committed license-clean homebrew ROM
 (`render_fill.z64`), runs one emulated frame per `requestAnimationFrame`, and
 blits the VI scan-out to a `<canvas>` through `web-sys`'s `ImageData`
 (`EmuCore::frame_rgba`). This proves the LLE core runs and renders in a browser.

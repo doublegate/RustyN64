@@ -31,7 +31,7 @@ const CMD_BYTE: usize = 0x3F;
 ///
 /// Memory-mapped at `0x1FC0_0000..0x1FC0_07C0` during boot only (`PIF-NUS.md`
 /// §Internal ROMs). The 64-byte PIF RAM (`PIF_RAM_LEN`) is the tail of the same
-/// 2 KiB PIF space and is modelled separately. Used only on the real-PIF boot
+/// 2 KiB PIF space and is modeled separately. Used only on the real-PIF boot
 /// path; `None` under HLE.
 pub const PIF_ROM_LEN: usize = 0x7C0;
 

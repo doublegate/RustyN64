@@ -120,7 +120,7 @@ mod tests {
         for i in [32u8, 64, 96, 128, 160, 192, 224] {
             r.write(i, 0xDEAD_BEEF);
             assert_eq!(r.gpr[0], 0, "write({i}) corrupted $zero");
-            assert_eq!(r.read(i), 0, "read({i}) did not honour the $zero rule");
+            assert_eq!(r.read(i), 0, "read({i}) did not honor the $zero rule");
         }
         // A corrupted gpr[0] must still never be observable through `read`.
         r.gpr[0] = 0xBAD;

@@ -3,7 +3,7 @@
 //!
 //! Two distinct things live at this seam (ADR 0010):
 //!
-//! - **The retail boot** (HLE + real-PIF) is real console behaviour, so it now
+//! - **The retail boot** (HLE + real-PIF) is real console behavior, so it now
 //!   lives in [`rustyn64_core::boot`] where the frontend can boot a game too. It
 //!   is re-exported here for the harness's existing callers.
 //! - **The ELF direct-load** (`load_direct` / `seed_ipl3_handoff` / `load_elf`)
@@ -25,7 +25,7 @@ pub use rustyn64_core::boot::{cic_seed, real_pif_boot};
 
 /// Bytes IPL3 copies from the cartridge into RDRAM.
 ///
-/// The documented boot behaviour — *"copy 0x100000 bytes from 0x10001000 to
+/// The documented boot behavior — *"copy 0x100000 bytes from 0x10001000 to
 /// 0x00001000"* (`ref-proj/n64-tests/README.md`). It is **not** derived from any
 /// particular ROM's size; hard-coding an end offset happens to work for
 /// `basic.z64` and breaks on the next ROM.
@@ -42,7 +42,7 @@ pub const RDRAM_LOAD_OFFSET: usize = 0x1000;
 pub enum LoadError {
     /// Smaller than the header, so there is no payload at all.
     TooSmall,
-    /// No ELF header, so there is no IPL3 handoff to synthesise.
+    /// No ELF header, so there is no IPL3 handoff to synthesize.
     NoElfHeader,
     /// The ELF header is self-inconsistent — a program-header entry smaller
     /// than the 32 bytes a 32-bit `PT_LOAD` occupies, or a `memsz` below its
@@ -269,11 +269,11 @@ fn write_spmem_word(system: &mut System, offset: u32, value: u32) {
     }
 }
 
-/// Load a ROM whose payload is an **ELF**, honouring its program headers.
+/// Load a ROM whose payload is an **ELF**, honoring its program headers.
 ///
 /// # Why a flat copy is not enough
 ///
-/// [`load_direct`] models IPL3's behaviour for an ordinary ROM: copy a fixed
+/// [`load_direct`] models IPL3's behavior for an ordinary ROM: copy a fixed
 /// prefix into RDRAM at the entry point. That is wrong for a ROM whose payload
 /// is a linked ELF, because the ELF's segments each carry their **own** load
 /// address, and they are not laid out contiguously from the entry point.
@@ -289,7 +289,7 @@ fn write_spmem_word(system: &mut System, offset: u32, value: u32) {
 ///
 /// A segment's `memsz` may exceed its `filesz`; the difference is **BSS** and
 /// must be zeroed rather than left as whatever the previous ROM wrote. Skipping
-/// it gives a program uninitialised statics, which fails far from its cause.
+/// it gives a program uninitialized statics, which fails far from its cause.
 ///
 /// # Errors
 ///
@@ -425,7 +425,7 @@ mod tests {
     /// Build a minimal but well-formed big-endian 32-bit MIPS ELF wrapped in an
     /// N64 ROM image, with one `PT_LOAD` segment.
     ///
-    /// Synthesised rather than taken from a fixture so the expected placement is
+    /// Synthesized rather than taken from a fixture so the expected placement is
     /// stated by the test itself. A fixture would only prove the loader agrees
     /// with whatever it happened to do when the fixture was captured.
     fn rom_with_one_pt_load(vaddr: u32, filesz: usize, memsz: usize) -> Vec<u8> {
@@ -449,7 +449,7 @@ mod tests {
         elf[p + 16..p + 20].copy_from_slice(&u32::try_from(filesz).unwrap().to_be_bytes());
         elf[p + 20..p + 24].copy_from_slice(&u32::try_from(memsz).unwrap().to_be_bytes());
 
-        // Segment contents: a recognisable ascending pattern.
+        // Segment contents: a recognizable ascending pattern.
         elf.extend((0..filesz).map(seg_byte));
         rom.extend(elf);
         rom

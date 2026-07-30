@@ -12,7 +12,7 @@
 //!
 //! # Scope discipline
 //!
-//! FCSR needs *storage* with correct bit semantics, not *behaviour*: nothing
+//! FCSR needs *storage* with correct bit semantics, not *behavior*: nothing
 //! acts on the rounding mode or the enable bits until COP1 arithmetic lands.
 //! Adding an arithmetic path here would make this ticket Sprint 3 by stealth.
 

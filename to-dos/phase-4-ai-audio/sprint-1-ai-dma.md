@@ -42,8 +42,8 @@ queued buffer (not when a buffer completes; wiki §DMA).
       interrupt fires when a buffer *starts* (enqueue-into-idle, and promotion of the queued
       buffer), which is what lets the CPU refill during playback (wiki §DMA, ares). The CPU
       services it via the MI.
-- [x] Underrun behaviour is **defined as hold-and-decay** rather than being "we stopped";
-      hardware equivalence (the analogue decay curve) remains **unverified** (ledger R-17).
+- [x] Underrun behavior is **defined as hold-and-decay** rather than being "we stopped";
+      hardware equivalence (the analog decay curve) remains **unverified** (ledger R-17).
       *(Deterministic integer decay + an observable `underruns()` counter.)*
 - [x] A synthetic buffer test drives the whole path without requiring working microcode.
 
@@ -68,7 +68,7 @@ register state, and reproduce the AI's documented delayed-carry hardware bug.
       *(`dacrate_derives_rate_per_region`.)*
 - [x] The delayed-carry bug is reproduced, with a named test that fails if it is "fixed".
       *(`delayed_carry_bug_bumps_the_next_buffer`.)*
-- [x] `docs/audio.md` records the bug as intended behaviour.
+- [x] `docs/audio.md` records the bug as intended behavior.
 
 **Dependencies:** T-41-001
 **Reference:** `n64brew_wiki/markdown/Audio Interface.md` §Delayed-carry hardware bug
@@ -109,7 +109,7 @@ Sprint 3.
 
 - [x] All tickets checked off or explicitly deferred (with reason). *(T-41-004's frontend
       resampler is the one explicit deferral, to Sprint 3.)*
-- [~] A real ROM produces recognisable audio without underrun. **Deferred to Sprint 2/3** — needs
+- [~] A real ROM produces recognizable audio without underrun. **Deferred to Sprint 2/3** — needs
       the ELF/PI-DMA boot harness for the `DoubleShot` PCM ROM (Sprint 2) and the RSP-microcode
       ROM (Sprint 2), then the frontend drain (Sprint 3).
 - [x] CHANGELOG.md updated.

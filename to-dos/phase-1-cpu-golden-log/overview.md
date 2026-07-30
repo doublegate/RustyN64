@@ -27,7 +27,7 @@ finds 0 divergence over 50,027 retired records against an ares capture.
       `SYSCALL`, and interrupt dispatch through IP2 from the MI.
 - [x] The documented VR4300 errata are reproduced: the multiplication bug, the 32-bit
       shift-right-arithmetic bug, and the sign-extension bugs (`n64brew_wiki/markdown/VR4300.md`).
-- [x] The load-delay interlock is modelled, since it is observable through the pipeline.
+- [x] The load-delay interlock is modeled, since it is observable through the pipeline.
 - [x] `n64-systemtest` reports `Failed: 0` for the **CPU, COP0, TLB and COP1** categories.
       COP1 is named explicitly because `to-dos/VERSION-PLAN.md` §v0.2.0 — which is authoritative
       for the cut — includes it, and an earlier wording here listed only the first three. That is
@@ -107,7 +107,7 @@ Phase 0 criterion (T-02-005) and must land before the 0-diff gate can be met.
   the regression net rather than the primary gate. Left standing rather than deleted, because a
   risk that was correctly predicted *and* correctly mitigated is worth more as a record than as a
   blank line.
-- **Cache-coherency depth is an open question** — modelling the I/D caches exactly is expensive
+- **Cache-coherency depth is an open question** — modeling the I/D caches exactly is expensive
   and may not be observable. Mitigated by implementing to the depth the test ROMs actually
   detect and recording the decision, rather than guessing at a level up front.
 - **Errata are easy to "fix"** — the multiplication and shift-right-arithmetic bugs look like

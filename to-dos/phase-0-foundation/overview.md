@@ -3,13 +3,13 @@
 ## Goal
 
 Stand up the Cargo workspace with every crate skeleton compiling and CI green, and acquire and
-organise the material the accuracy work will be graded against: the hardware reference, the
+organize the material the accuracy work will be graded against: the hardware reference, the
 reference emulators, and the test-ROM corpora. By the end of this phase the repository builds,
 lints clean, publishes documentation, and has an oracle staged — even though no chip executes a
 single instruction.
 
 **Status: COMPLETE.** All exit criteria met; the workspace builds, lints, and publishes docs, and
-the oracle corpus is staged with licence tiers enforced. One criterion (the ADR 0001 3:2 clock)
+the oracle corpus is staged with license tiers enforced. One criterion (the ADR 0001 3:2 clock)
 was later superseded by ADR 0006 in Phase 1 — noted inline below.
 
 ## Exit criteria
@@ -27,13 +27,13 @@ was later superseded by ADR 0006 in Phase 1 — noted inline below.
       0006's canonical integer-divisor 187.5 MHz clock** — the 3:2 accumulator and its
       `fractional_divisor_holds_3_to_2` test no longer exist, only VI/AI keep a fractional
       accumulator now. `reset_preserves_phase` still passes.)*
-- [x] ROM-format detection and byte-order normalisation for `.z64`/`.n64`/`.v64`.
+- [x] ROM-format detection and byte-order normalization for `.z64`/`.n64`/`.v64`.
       *(`rustyn64-cart`: header parse plus the `SaveType`/`Cic`/`RomFormat` enums.)*
 - [x] The hardware reference is available offline. *(`n64brew_wiki/` — 324 pages, 96 media,
       rebuilt by `scripts/mirror_n64brew_wiki.py`.)*
-- [x] Reference emulators cloned, each with a verified licence and a vendor-vs-study decision.
+- [x] Reference emulators cloned, each with a verified license and a vendor-vs-study decision.
       *(11 clones in `ref-proj/`; see its `README.md`.)*
-- [x] Test-ROM corpora staged in licence tiers, with commercial ROMs unable to enter the tree.
+- [x] Test-ROM corpora staged in license tiers, with commercial ROMs unable to enter the tree.
       *(committed: n64-systemtest. External: krom, dillon-n64-tests, 240p, commercial. Three
       independent guards, each verified against a real `git add -f` bypass.)*
 - [x] A golden VR4300 instruction trace captured from cen64 or ares and committed to
@@ -80,7 +80,7 @@ None. This is the first phase.
   panics, so nothing fails loudly and "CI green" can be misread as "it works". Mitigated by
   `docs/STATUS.md` stating the distinction explicitly and by its accuracy table carrying an
   "oracle available?" column separate from status.
-- **Licence contamination from the reference clones** — several are copyleft or worse
+- **License contamination from the reference clones** — several are copyleft or worse
   (angrylion is non-commercial MAME-licensed despite shipping no `LICENSE` file). Mitigated by
   `ref-proj/README.md` classifying every clone vendor-ok or study-only, and by the standing rule
   that the permissive set is consulted first.

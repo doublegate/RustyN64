@@ -10,7 +10,7 @@ against at every rung.
 **RustyN64 has cut seven feature releases so far** (plus `v0.4.1`, a documentation-only patch —
 eight tags in all) — `v0.1.0` "Foundation", `v0.2.0` "Interpreter"
 (Phase 1, the complete VR4300), `v0.3.0` "Microcode" (Phase 2, the LLE RSP + real graphics
-microcode emitting an RDP command list), `v0.4.0` "Rasteriser" (Phase 3, the LLE RDP + VI —
+microcode emitting an RDP command list), `v0.4.0` "Rasterizer" (Phase 3, the LLE RDP + VI —
 164 conformance vectors bit-matching Angrylion and a real ROM rendering a golden frame) plus
 `v0.4.1`, a documentation-only patch; `v0.5.0` "Resonance" (Phase 4, AI audio — the real mixer
 microcode producing golden PCM on the RSP); `v0.6.0` "Cartridge" (Phase 5, cart boot + all four
@@ -61,11 +61,11 @@ Everything built to date, tagged as-is rather than left in a perpetual `[Unrelea
   at clippy `pedantic` + `nursery`.
 - The Bus owning all mutable state, with five narrow per-chip traits and split-borrow stepping.
 - The 3:2 fractional master-clock scheduler with seeded power-on phase and reset-preserves-phase.
-- ROM-format detection and byte-order normalisation for `.z64` / `.n64` / `.v64`.
+- ROM-format detection and byte-order normalization for `.z64` / `.n64` / `.v64`.
 - CI: eight jobs across Linux, macOS, and Windows, split light/full.
 - The published rustdoc site, the release workflow (written, never run), and the three-layer
   commercial-ROM guard.
-- The acquired reference corpus: the N64brew Wiki mirror, eleven licence-classified study clones,
+- The acquired reference corpus: the N64brew Wiki mirror, eleven license-classified study clones,
   and the test-ROM tiers.
 
 **Cut criterion:** already met. The only reason it is untagged is that no tag has been pushed.
@@ -100,11 +100,11 @@ The scalar and vector units execute real game microcode under master-clock locks
 - **Cut criterion:** n64-systemtest RSP category `Failed: 0`, and a real graphics microcode boots
   and emits a plausible RDP command list.
 
-### v0.4.0 "Rasteriser" — the LLE RDP and VI — Phase 3
+### v0.4.0 "Rasterizer" — the LLE RDP and VI — Phase 3
 
 The first release that produces a picture.
 
-- The software reference rasteriser through the full per-pixel pipeline, and VI scan-out.
+- The software reference rasterizer through the full per-pixel pipeline, and VI scan-out.
 - The first committed golden frame, which makes Layer 5 real rather than scaffolding.
 - **Cut criterion:** a real ROM renders a stable frame matching a committed golden, and the
   ParaLLEl-RDP fuzz suite bit-matches Angrylion.
@@ -138,7 +138,7 @@ The first release where a commercial cartridge boots.
   every save-type representative (6102/6103/6105 CICs) **boots and executes** through the real
   IPL1→IPL2→IPL3 chain to game code in RDRAM (validated locally on both boot paths). Reaching a
   rendered **title frame** is a downstream VI/RI/F3DEX gap (ledger **R-18**), deferred to a later
-  phase and outside the Phase 5 cart boundary (ADR 0003) — characterised, not faked.
+  phase and outside the Phase 5 cart boundary (ADR 0003) — characterized, not faked.
 
 ### v0.7.0 "Shell" — frontend integration — Phase 6 — RELEASED 2026-07-24
 
@@ -148,7 +148,7 @@ The first release that is *playable*. **Complete.**
   shell presents `Bus::scanout`, the AI drain, and SI input; a homebrew ROM shows a real frame,
   plays PCM, and reads the pad, all through the LLE core.
 - Save-states, rewind, and run-ahead — all frontend-side, per ADR 0004. **Done** — the whole
-  `System` is serde-serialisable; restore is bit-identical (two-run trace compare, incl. a booted
+  `System` is serde-serializable; restore is bit-identical (two-run trace compare, incl. a booted
   commercial ROM); rewind/run-ahead are byte-identical to `run_frame` when off.
 - The wasm browser entry point: the `wasm-bindgen` dependency, the `#[wasm_bindgen(start)]`
   entry, and an `index.html`. **Done** — a 2D-canvas demo boots a homebrew ROM and blits the VI
@@ -160,7 +160,7 @@ The first release that is *playable*. **Complete.**
   executes but scans out no frame, the cross-subsystem VI-vblank / RI-register / F3DEX gap
   tracked as ledger **R-18** and outside Phase 6's frontend scope. Shipped on the
   demonstrated-playable path plus an honest ledgered gap, per the plan's escalation gate — not a
-  faked commercial pass. The commercial title-frame lands with the Phase 3/7 rasteriser +
+  faked commercial pass. The commercial title-frame lands with the Phase 3/7 rasterizer +
   microcode work (v0.8.0 "Breadth").
 
 ### v0.8.0 "Breadth" — the accuracy battery — Phase 7
@@ -173,7 +173,7 @@ The release where the corpus staged in Phase 0 is finally used for what it was s
 
   **This is the one cut criterion CI can never run, and the exception is deliberate.**
   F3DEX, F3DEX2 and the per-studio variants are proprietary and ship *inside* commercial
-  ROMs, which ADR 0008 forbids committing; there is no licence-clean substitute that
+  ROMs, which ADR 0008 forbids committing; there is no license-clean substitute that
   exercises the real thing (the rdpq path in `tests/microcode.rs` is a genuine LLE
   microcode gate and *is* CI-run, but rdpq is not F3DEX and cannot stand in for it).
   **Decided 2026-07-29:** the criterion closes on a **reproducible local census plus
@@ -200,7 +200,7 @@ when Phase 7/8 leftovers surfaced during scoping.
 - Release engineering: actually exercising the release workflow end to end, which has never run.
 - Documentation parity: README, CHANGELOG, `docs/`, and `docs/STATUS.md` reconciled.
 - **Cut criterion:** no known-fixable residual outstanding, and a real tag has produced real
-  artefacts.
+  artifacts.
 
 ### v1.0.0 — the production cut
 
@@ -215,7 +215,7 @@ Phase 8 is deliberately *not* in the v1.0.0 gate, which is a divergence from Rus
 v1.0.0 (it front-loaded netplay, achievements, TAS, scripting, and a debugger into the 1.0 bar).
 The reasoning is the machine, not the ambition: the N64's LLE RSP and RDP are a far larger
 correctness surface than the NES's CPU and PPU, and shipping reach features on an emulator whose
-accuracy battery has not stabilised would invert the phase spine's whole premise.
+accuracy battery has not stabilized would invert the phase spine's whole premise.
 
 - **`v1.1.0` onward** — rollback netplay, RetroAchievements, TAS tooling, Lua scripting, and the
   shader pipeline, each additive and default-off, each proven byte-identical with its flag off.
@@ -231,13 +231,13 @@ accuracy battery has not stabilised would invert the phase spine's whole premise
 - **Release notes:** the annotated tag body IS the release note, at the technical depth this
   project's `CHANGELOG.md` already uses.
 - **Docs-as-spec:** a chip change touches the chip code and its `docs/<chip>.md` in the same
-  commit. A behaviour diff whose spec is untouched is rejected.
+  commit. A behavior diff whose spec is untouched is rejected.
 - **Honest status:** every rung updates `docs/STATUS.md`, and a rung that misses part of its
   scope says so in the tag body rather than quietly narrowing the claim. The
   "oracle available" versus "gate passes" distinction in `docs/STATUS.md` is load-bearing and
   must not be collapsed.
 - **Continuous research:** at each rung, re-consult `n64brew_wiki/` and the permissive study
-  clones (`ares`, `cen64`, `parallel-rdp`) for that rung's specific hardware behaviour. The
+  clones (`ares`, `cen64`, `parallel-rdp`) for that rung's specific hardware behavior. The
   sourcing in the phase overviews is a starting point to re-verify at implementation time, not a
   final citation. Respect `ref-proj/README.md`'s per-repo terms — several clones are study-only.
 - **Sibling-lockstep check:** run `to-dos/LOCKSTEP-CHECKLIST.md` once at the start of scoping

@@ -9,7 +9,7 @@ ADR 0006 (the clock), ADR 0007 (the pipeline); `crates/rustyn64-cpu/src/lib.rs`;
 `docs/scheduler.md`; `docs/cart.md`.
 
 This doc is the SPEC, not history — update it in the same PR as the code. Pin
-behaviour against **n64-systemtest** FIRST (test-ROM-is-spec), then implement
+behavior against **n64-systemtest** FIRST (test-ROM-is-spec), then implement
 until it passes.
 
 ## Purpose
@@ -92,11 +92,11 @@ HI/LO, PC, and a cycle counter; the rest are marked TODOs):
   32-vs-64-bit register-file aliasing.
 - **Caches** — 16 KB instruction cache (32-byte lines) + 8 KB write-back data
   cache (16-byte lines), 24 KB L1 total, both direct-mapped, virtually-indexed
-  and physically-tagged (UM §11.2). Modelled as of T-11-003, with one deliberate
+  and physically-tagged (UM §11.2). Modeled as of T-11-003, with one deliberate
   deviation: indexing is **physical** here (ledger **D-6**). Aliases are therefore
   impossible in the model, but that is a *divergence*, not an improvement —
   software that deliberately constructs an alias, or that issues an `Index_*`
-  operation on a TLB-mapped page, sees different behaviour, because translation
+  operation on a TLB-mapped page, sees different behavior, because translation
   preserves only the low 12 bits while the D-cache index reaches bit 12 and the
   I-cache bit 13. The tested scope is KSEG0, where the two indexings coincide.
   Instruction fetch and every
@@ -140,7 +140,7 @@ is data rather than logic:
   the CPU's own link address.
 - **Reserved registers 7, 21–25, 31 read zero and discard writes — by choice.**
   The manual says only *"Reserved for future use"*. Ledger **U-1**; a test pins
-  the choice so changing it is deliberate, not the behaviour.
+  the choice so changing it is deliberate, not the behavior.
 - **`PRId.Imp = 0x0B`; `Rev` is 0** because the manual gives no value for any
   specific part and warns against depending on it. Ledger **U-3**.
 
@@ -322,7 +322,7 @@ participate** (UM §5.4.9, p. 155): *"While the V bit of the entry must be set f
 a valid translation to take place, it is not involved in the determination of a
 matching TLB entry."*
 
-Checking `V` while matching looks like an optimisation and breaks two things:
+Checking `V` while matching looks like an optimization and breaks two things:
 
 - An invalid entry would fall through to a **refill** instead of **TLB Invalid**.
   Both carry the same `ExcCode`, so `Cause` cannot tell them apart — the *vector*
@@ -404,7 +404,7 @@ arithmetic is Sprint 3. This exists for exactly one reason: n64-systemtest's
 statement**, so without it the suite dies three statements after entry and every
 COP0/TLB test in Sprint 2 is unreachable behind it.
 
-FCSR needs *storage* with correct bit semantics, not *behaviour*: nothing acts on
+FCSR needs *storage* with correct bit semantics, not *behavior*: nothing acts on
 the rounding mode or the enable bits yet. Bits 25 and 22..=18 are unused and read
 zero; the `Cause` bits are software-writable, since that is how a handler
 acknowledges an FP exception.
@@ -423,7 +423,7 @@ Checked in `EX` (UM §4.7.5 lists `CPU` among the EX-stage exceptions), with
 
 A **valid but unimplemented** COP1 encoding decodes to `Cop1Unimplemented`, not
 `Reserved` — the encoding is real, so with `CU1` set it must **not** raise. That
-makes Sprint 3's arithmetic an *addition* rather than a behaviour change, and an
+makes Sprint 3's arithmetic an *addition* rather than a behavior change, and an
 emulator that raised here would look correct right up until the FPU landed.
 
 ## Behavior
@@ -440,7 +440,7 @@ load-bearing.
 
 The CPU advances **one PClock per step**, not one instruction — at least 5
 PCycles are required to execute an instruction (§4.1), and `DDIV` stalls the
-whole pipeline for 69 (Table 3-12). The pipeline is modelled as four inter-stage
+whole pipeline for 69 (Table 3-12). The pipeline is modeled as four inter-stage
 latches advanced in **reverse stage order (WB → DC → EX → RF → IC)**, which is
 what makes the latching implicit: a stage reads its input latch before any
 upstream stage writes it, so no value propagates two stages in one cycle. That
@@ -522,7 +522,7 @@ Two rules the table alone does not convey:
   cycle on a source exception or if an operand is zero or infinity; multiply also
   finishes in two cycles if either operand is a power of two; divide and sqrt
   exit on the second cycle for zero/infinity results (UM §7.5.6). **Not
-  modelled** — those operands are charged the full rate, so the model is slower
+  modeled** — those operands are charged the full rate, so the model is slower
   than hardware there and never faster. Accuracy ledger **C-29**.
 
 **The UM defines `M` but gives it no value.** It is *"Time needed to access
@@ -680,7 +680,7 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   as a NOP"* (UM §3.1), which is also why the VR4300 needs no memory barrier
   model: loads and stores already execute in program order. Decoding it to
   `Reserved` would raise on code that runs on hardware.
-- **`CACHE` (`0o57`) operates on modelled cache state** (T-11-003). It was an
+- **`CACHE` (`0o57`) operates on modeled cache state** (T-11-003). It was an
   address-translating no-op through T-12-005, which was sound **only** while no
   cache state existed to become stale — ledger **D-5** named that boundary, and
   n64-systemtest's `DCACHE:`/`ICACHE:` groups are where it came due. Both primary
@@ -703,7 +703,7 @@ and the TRAP/BREAK/SYSCALL family explicitly.
   passes every test that only checks "non-zero".
 
   **The dirty bit has no `TagLo` field.** A clean valid D-cache line and a dirty
-  one are indistinguishable to `Index_Load_Tag` — hardware behaviour, not an
+  one are indistinguishable to `Index_Load_Tag` — hardware behavior, not an
   omission. Reporting the distinction would mean inventing an encoding.
 
   **Only the address-addressed operations translate.** `op4..2` (UM Ch. 16,
@@ -797,7 +797,7 @@ and the TRAP/BREAK/SYSCALL family explicitly.
 ## The documented errata — reproduced, not corrected
 
 The VR4300 has known hardware bugs that software can observe and depend on.
-**Implementing the manual's described behaviour instead of the hardware's is the
+**Implementing the manual's described behavior instead of the hardware's is the
 bug.** Each is pinned by a named test that fails if it is "fixed", so the intent
 survives a well-meaning future reader.
 
@@ -842,7 +842,7 @@ founded — `remainder = (int32_t)(dividend - quotient * divisor)` computed in
 64-bit. What we do there is a **guess**, recorded as such in
 `docs/accuracy-ledger.md` C-5 rather than left looking authoritative.
 
-### The FP multiplication bug — modelled, deliberately not reproduced
+### The FP multiplication bug — modeled, deliberately not reproduced
 
 **Detectable but not reproducible.** The trigger is documented
 (`n64brew_wiki/markdown/VR4300.md`): a multiply whose *preceding* multiply had a
@@ -851,7 +851,7 @@ NaN, zero or infinity operand *"may produce unexpected results"*. GCC's
 `MUL.S`/`MUL.D`/`MULT`. The affected steppings are documented too — NUS-01 and
 NUS-02 (Japan only) and NUS-03 (the first US revision).
 
-**What the corrupted output actually is has never been characterised.** It sits
+**What the corrupted output actually is has never been characterized.** It sits
 in the timing supplement's undocumented-constants list with only trigger
 conditions known.
 
@@ -862,7 +862,7 @@ plausible wrong value would be exactly the fitted-constant failure the accuracy
 ledger's preamble forbids: every later result built on it would stop being
 evidence. Accuracy-ledger **U-7**.
 
-The switch exists now so that when the output *is* characterised, it goes in one
+The switch exists now so that when the output *is* characterized, it goes in one
 place rather than being threaded through afterwards.
 
 #### Historical note
@@ -874,7 +874,7 @@ after every `mul.s`/`mul.d`/`mult`.
 
 That last point — the console revision as a machine parameter — is now
 `fpu::Stepping`, and the missing output is ledger **U-7**. What remains is a
-hardware characterisation, not an implementation.
+hardware characterization, not an implementation.
 
 `PRId` correlates: processor id always `0x0B`; revision `0x10` (1.0, early units)
 or `0x22` (2.2, later) on retail, `0x40` on iQue.
@@ -885,14 +885,14 @@ or `0x22` (2.2, later) on retail, `0x40` on iQue.
   against a reference VR4300 trace of n64-systemtest (the `GoldenLogDiffer`,
   `docs/testing-strategy.md`).
 - **n64-systemtest categories (the strict gate):** CPU instructions, COP0 access
-  (MFC0/DMFC0/MTC0/DMTC0 + 64-bit behaviour), atomics (LL/LD/SC/SCD), exceptions
+  (MFC0/DMFC0/MTC0/DMTC0 + 64-bit behavior), atomics (LL/LD/SC/SCD), exceptions
   (overflow/unaligned/TRAP/BREAK/SYSCALL), the TLB, multi-width (8/16/32/64-bit)
   memory access to RAM/ROM/SPMEM/PIF, and COP0 hazards/timing. "Failed: 0" is the
   bar (`ref-docs/research-report.md` §7).
 - **FPU:** IEEE-754 single/double op vectors, NaN propagation, FR-bit modes,
   rounding modes, the unimplemented-op exception.
 - **TLB:** refill/invalid/modified exceptions across all page sizes; `Random`/
-  `Wired` index behaviour; `TLBP`/`TLBR`/`TLBWI`/`TLBWR`.
+  `Wired` index behavior; `TLBP`/`TLBR`/`TLBWI`/`TLBWR`.
 
 ## Open questions
 

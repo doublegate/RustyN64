@@ -8,7 +8,7 @@
 //! `rustyn64-rsp`), so under LLE the audio "falls out free" (ADR 0002).
 //!
 //! The model follows the hardware description in
-//! `n64brew_wiki/markdown/Audio Interface.md` and the reference behaviour in
+//! `n64brew_wiki/markdown/Audio Interface.md` and the reference behavior in
 //! ares (ISC) `ref-proj/ares/ares/n64/ai/`: a two-deep DMA FIFO, the
 //! delayed-carry address bug reproduced as a 13-bit/11-bit split with a
 //! one-sample-deferred carry, the `AI_LENGTH` mirror on every write-only
@@ -90,11 +90,11 @@ impl Region {
     /// `S` Spain · `U` Australia · `W` Scandinavia · `X`/`Y`/`Z` Europe
     ///
     /// **Provenance, and its limit.** That table gives *destinations*, **not TV
-    /// standards** — only `G`/`L` are labelled NTSC/PAL by the wiki itself. The
+    /// standards** — only `G`/`L` are labeled NTSC/PAL by the wiki itself. The
     /// 50/60 Hz classification of the remaining countries is the **broadcast
     /// standard for each territory**, not a hardware-documented N64 fact, and
     /// there is **no oracle** for it (no test ROM checks region detection). It is
-    /// therefore modelled and ledgered as documented-but-ungated rather than
+    /// therefore modeled and ledgered as documented-but-ungated rather than
     /// presented as measured — see `docs/accuracy-ledger.md` (T-71-005).
     ///
     /// Three cases are decided explicitly rather than guessed:
@@ -104,8 +104,8 @@ impl Region {
     ///   default is kept rather than inventing a 50 Hz cartridge that never shipped.
     /// - **`A` "All" → NTSC.** Names no single region, so it takes the default.
     ///
-    /// Any unrecognised byte also returns [`Region::Ntsc`], so an unknown or
-    /// homebrew code is behaviour-preserving rather than silently retuning audio.
+    /// Any unrecognized byte also returns [`Region::Ntsc`], so an unknown or
+    /// homebrew code is behavior-preserving rather than silently retuning audio.
     #[must_use]
     pub const fn from_destination_code(code: u8) -> Self {
         match code {
@@ -191,7 +191,7 @@ pub struct Audio {
     /// `AI_STATUS` `COUNT`/`WC` readback without threading the clock into reads).
     last_tick: u64,
     /// Last emitted sample, held and decayed on underrun so the DAC does not
-    /// hard-stop (matches ares' decay-to-silence behaviour).
+    /// hard-stop (matches ares' decay-to-silence behavior).
     dac_hold: StereoSample,
     /// Count of buffer starvations (a transfer drained with none queued behind
     /// it) — observable so a resampler cannot silently paper over underrun.
@@ -561,7 +561,7 @@ mod tests {
     }
 
     /// **The destination code selects the region (T-71-005).** The characters are
-    /// the N64brew ROM-header table; the three judgement calls are pinned here so
+    /// the N64brew ROM-header table; the three judgment calls are pinned here so
     /// a later reader sees them as decisions rather than accidents.
     #[test]
     fn destination_code_selects_the_region() {
@@ -604,7 +604,7 @@ mod tests {
             Ntsc,
             "\"All\" takes the default"
         );
-        // An unknown/homebrew byte must be behaviour-preserving, not retune audio.
+        // An unknown/homebrew byte must be behavior-preserving, not retune audio.
         assert_eq!(
             Region::from_destination_code(0),
             Ntsc,

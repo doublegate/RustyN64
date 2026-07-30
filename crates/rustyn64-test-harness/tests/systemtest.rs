@@ -14,7 +14,7 @@
 //! # Why `#[ignore]`
 //!
 //! A full run is ~600 million retired instructions and takes roughly two minutes
-//! in `--release` (much longer unoptimised). That is far too slow for the default
+//! in `--release` (much longer unoptimized). That is far too slow for the default
 //! `cargo test` path, which contributors run constantly. Run it explicitly:
 //!
 //! ```text

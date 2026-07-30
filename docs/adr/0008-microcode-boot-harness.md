@@ -25,7 +25,7 @@ Two constraints from the owner fix the design:
    `ref-proj/README.md`). The claim that it is the *only* vendorable real N64
    graphics microcode is **reasoned, not exhaustively surveyed**: the stock
    Nintendo microcodes (F3DEX and kin) are proprietary and cannot be committed,
-   and `ref-proj/README.md`'s licence table lists no other permissively-licensed
+   and `ref-proj/README.md`'s license table lists no other permissively-licensed
    graphics microcode. If a second one surfaces this line is what to revisit.
 2. **The golden reference is grounded in hardware documentation / datasheets /
    errata — never another emulator's output.** We do not diff against ares,
@@ -48,7 +48,7 @@ Two constraints from the owner fix the design:
 - the RSP idles/BREAKs when the queue drains.
 
 Normally libdragon's **C side** (`rspq_init`, `rdpq_init`, overlay registration)
-initialises the DMEM state — queue pointers, the RDP output-buffer pointers, the
+initializes the DMEM state — queue pointers, the RDP output-buffer pointers, the
 overlay tables — before the RSP ever runs. Reproducing enough of that state is
 the load-bearing research task, and it is why this is staged rather than a single
 PR.
@@ -95,7 +95,7 @@ Concretely:
 - **Golden:** the expected RDP command bytes, derived from the **documented RDP
   command encoding** — N64brew *Reality Display Processor/Commands* plus
   libdragon's `rdpq_macros.h` field layouts. Committed as a golden vector with a
-  provenance note; changed only on an intentional, reviewed behaviour change
+  provenance note; changed only on an intentional, reviewed behavior change
   (`Golden-Vector Parity`, module 20).
 - **Witness execution** before trusting a match: assert the microcode actually
   ran (IMEM executed, the output buffer is non-empty, `DPC_END` advanced) so an
@@ -126,10 +126,10 @@ Concretely:
   the test suite.
 - The DPC register file (#44) is the seam the emitted commands flow through; this
   harness is its first real exercise and will likely surface the next slice of DP
-  behaviour to model (the FIFO drain, `CURRENT` advance, `SYNC_FULL` → DP
+  behavior to model (the FIFO drain, `CURRENT` advance, `SYNC_FULL` → DP
   interrupt) — tracked as it arrives, not pre-built.
 - **v0.3.0 is not cut until this passes.** It is additive and behind the test
-  harness, so it does not touch shipped behaviour or determinism.
+  harness, so it does not touch shipped behavior or determinism.
 
 ## Staged implementation plan
 

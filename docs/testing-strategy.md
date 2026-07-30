@@ -18,11 +18,11 @@ self-validating oracle analogous to blargg/kevtris/AccuracyCoin for the NES
 | **n64-systemtest** | Rust | CPU / COP0 / TLB / RSP, hardware-verified, self-judging | "Failed: 0" (strict) |
 | **ParaLLEl-RDP fuzz** | — | RDP bit-exactness vs Angrylion (~150 tests) | exact match (strict) |
 | **Dillonb n64-tests** | C/asm | targeted CPU/RSP, hardware-verified | result-code pass |
-| **PeterLemon/N64** | asm | bare-metal CPU/RSP/RDP/audio demos | visual/behavioural regression |
+| **PeterLemon/N64** | asm | bare-metal CPU/RSP/RDP/audio demos | visual/behavioral regression |
 | **Commercial dumps** | — | custom-microcode + game regression | screenshot/`.snap` (gitignored ROMs) |
 
 The first four suites are cloned for study under `ref-proj/` (gitignored; see
-`ref-proj/README.md` for per-repo licence terms before copying anything — the
+`ref-proj/README.md` for per-repo license terms before copying anything — the
 Angrylion reference is non-commercial MAME-licensed despite shipping no
 `LICENSE` file, so it is compare-outputs-only). The commercial corpus is staged
 locally at `tests/roms/external/commercial/` — see **Layer 5** below.
@@ -34,7 +34,7 @@ git tree) and an **external tier** (gitignored, local only). Promotion to the
 committed tier is a licensing decision, not a convenience — full rules and
 provenance in `tests/roms/README.md`.
 
-| Corpus | Licence (verified) | Tier | Staged |
+| Corpus | License (verified) | Tier | Staged |
 | --- | --- | --- | --- |
 | `n64-systemtest/` | MIT | **committed** | 1 ROM, 2.7 MB — built from source |
 | `external/krom/` | Unlicense (public domain) | external (size) | 196 ROMs, 182 MB |
@@ -42,7 +42,7 @@ provenance in `tests/roms/README.md`.
 | `external/commercial/` | copyrighted | external (never) | 66 ROMs, 1.5 GB |
 | `external/240p/` | GPL-2.0-or-later | external (copyleft) | 1 ROM, 12 MB — built from source |
 
-Absence of a licence is **not** public domain — it means no grant, so
+Absence of a license is **not** public domain — it means no grant, so
 `dillon-n64-tests` is run-only and never redistributed. `krom` is public domain
 and *could* be committed; it stays external purely on footprint.
 
@@ -120,7 +120,7 @@ baselines are committed. The RDP/VI bit-exactness is graded here against an
 Angrylion reference scan-out.
 
 The **first golden frame** is live (`--test golden_frame`, T-31-005): a synthetic
-RDP FILL command list is decoded, rasterised into a framebuffer, and scanned out
+RDP FILL command list is decoded, rasterized into a framebuffer, and scanned out
 by the VI to RGBA8, then pinned byte-exact against a committed FNV-1a hash. It
 drives the core through its public API — the command list is written into
 `Bus::rdram`, the DP FIFO is pointed with `bus.rdp.dpc_write`, the VI is
@@ -159,7 +159,7 @@ cartridge dumps. **Never committed** — see the guards below. The full per-ROM
 manifest, with the rationale for every title, is in that directory's
 `README.md`.
 
-Organised by **save type**, one folder per cart backend, because ADR 0003
+Organized by **save type**, one folder per cart backend, because ADR 0003
 defines the N64 cart as "one cart model parameterized by save type + CIC +
 region" — so save type is what `rustyn64-cart` actually implements, and it is
 mutually exclusive (a ROM has exactly one save backend):
@@ -191,7 +191,7 @@ backends:
   space at both ends.
 
 Save types are **not guessed**. Each ROM is hashed and matched by MD5 against
-the mupen64plus catalogue
+the mupen64plus catalog
 (`ref-proj/simple64/mupen64plus-core/data/mupen64plus.ini`), and re-hashed after
 extraction to confirm the staged copy is byte-identical.
 

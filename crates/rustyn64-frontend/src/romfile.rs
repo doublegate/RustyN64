@@ -5,7 +5,7 @@
 //! and returns the ROM bytes, transparently unwrapping a zip container.
 //!
 //! **Byte order is not this module's problem.** `.z64` (big-endian), `.n64`
-//! (little-endian) and `.v64` (byte-swapped) are normalised downstream by
+//! (little-endian) and `.v64` (byte-swapped) are normalized downstream by
 //! `rustyn64_cart`'s `RomFormat` detection, which sniffs the header magic rather
 //! than trusting a file extension. This module only has to produce the bytes.
 //!
@@ -20,7 +20,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// Extensions recognised as a ROM image inside an archive. Matched
+/// Extensions recognized as a ROM image inside an archive. Matched
 /// case-insensitively; the *outer* file is identified by magic, not extension.
 const ROM_EXTENSIONS: [&str; 3] = ["z64", "n64", "v64"];
 
@@ -86,7 +86,7 @@ impl From<std::io::Error> for RomFileError {
 /// The container is identified by **magic, not extension**: a zip named
 /// `game.z64` is still unwrapped, and a raw ROM named `game.zip` is still read
 /// verbatim. That matters because ROM sets are inconsistently named, and trusting
-/// the extension would turn a mislabelled file into a confusing parse error much
+/// the extension would turn a mislabeled file into a confusing parse error much
 /// further downstream.
 ///
 /// # Errors
@@ -282,10 +282,10 @@ mod tests {
     #[test]
     fn the_container_is_detected_by_magic_not_extension() {
         let body = [0x80, 0x37, 0x12, 0x40, 1, 2, 3, 4];
-        let zipped = scratch("mislabelled.z64", &zip_with(&[("real.z64", &body)]));
+        let zipped = scratch("mislabeled.z64", &zip_with(&[("real.z64", &body)]));
         assert_eq!(read_rom(&zipped).expect("zip named .z64"), body);
 
-        let bare = scratch("mislabelled.zip", &body);
+        let bare = scratch("mislabeled.zip", &body);
         assert_eq!(read_rom(&bare).expect("ROM named .zip"), body);
     }
 
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn an_oversized_plain_image_is_refused() {
         let path = scratch("huge.z64", &[]);
-        // Extend to one byte past the cap without materialising it in memory.
+        // Extend to one byte past the cap without materializing it in memory.
         let f = std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
@@ -403,7 +403,7 @@ mod tests {
 
     /// **An oversized DECLARED size is refused before the stream is read.** The
     /// cheap first gate: the reader here would panic if touched, so this fails if
-    /// the declared-size check is ever removed in favour of the read cap alone.
+    /// the declared-size check is ever removed in favor of the read cap alone.
     #[test]
     fn an_oversized_declared_size_is_refused_without_reading() {
         struct Exploding;

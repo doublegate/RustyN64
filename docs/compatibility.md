@@ -18,7 +18,7 @@ the AI video-clock divisor differ:
 
 | Region | Field rate | Lines/field | AI video clock | Notes |
 | --- | --- | --- | --- | --- |
-| NTSC | 60 Hz | ~262.5 | 48_681_812 Hz | 14.31818 MHz crystal, 3.579545 MHz colour-burst |
+| NTSC | 60 Hz | ~262.5 | 48_681_812 Hz | 14.31818 MHz crystal, 3.579545 MHz color-burst |
 | PAL | 50 Hz | ~312.5 | 49_656_530 Hz | PAL VI timing tables differ; the AI clock detunes the same DACRATE |
 
 The **AI video clock** (Hz) is the divisor for the DAC rate (`sample_rate =
@@ -30,7 +30,7 @@ The `Region` defaults to NTSC and is wired from the ROM region byte at load.
 Carry per-region constants (field rate, line count, VI timing, AI video-clock) in
 a small data table selected from the ROM region byte (`docs/cartridge-format.md`
 §Region byte), so one core runs all regions deterministically. Dendy-equivalent
-behaviour, if needed, is another row — not a fork.
+behavior, if needed, is another row — not a fork.
 
 ## Memory configuration
 
@@ -39,7 +39,7 @@ behaviour, if needed, is another row — not a fork.
   allocates the full 8 MiB backing store (`RDRAM_SIZE`); games that require the
   Expansion Pak (e.g. Donkey Kong 64, Majora's Mask) detect it via RDRAM probing.
 - **9 bits per byte** — the hidden 9th bit is RDP/VI-only (AA coverage / Z),
-  modelled as a parallel coverage plane (`docs/rdp.md`,
+  modeled as a parallel coverage plane (`docs/rdp.md`,
   `ref-docs/research-report.md` §8).
 
 ## Save + CIC per game

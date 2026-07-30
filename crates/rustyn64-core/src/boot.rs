@@ -1,7 +1,7 @@
 //! Retail cartridge boot — the console boot a real N64 performs, moved here from
 //! the test harness so the frontend can boot a game too (both consume it).
 //!
-//! Two paths, both modelling real hardware (not a test shortcut):
+//! Two paths, both modeling real hardware (not a test shortcut):
 //!
 //! - [`hle_boot`] — the copyright-clean default. It seeds the state IPL3 expects,
 //!   copies the cart's real IPL3 into RSP DMEM, and jumps to it, skipping only the
@@ -25,7 +25,7 @@ pub enum BootError {
     /// The image is shorter than the `0x1000` boot header + IPL3, so there is
     /// nothing to boot. (Also covers a PIF ROM shorter than its window.)
     TooSmall,
-    /// The cartridge image could not be parsed (unrecognised byte order or a
+    /// The cartridge image could not be parsed (unrecognized byte order or a
     /// truncated header) — the underlying [`crate::cart::CartError`].
     Cart(crate::cart::CartError),
 }
@@ -50,8 +50,8 @@ pub const fn cic_seed(cic: crate::cart::Cic) -> u32 {
 /// The AI's video clock — and so its sample rate for a given `AI_DACRATE` —
 /// differs between NTSC and PAL consoles. The machinery existed but nothing drove
 /// it, so a PAL cartridge played at the NTSC rate; this is the selector
-/// (`T-71-005`). An unrecognised code maps to NTSC, so the default is
-/// behaviour-preserving.
+/// (`T-71-005`). An unrecognized code maps to NTSC, so the default is
+/// behavior-preserving.
 ///
 /// The classification and its provenance limits live on
 /// [`rustyn64_audio::Region::from_destination_code`].
@@ -378,7 +378,7 @@ mod tests {
             ntsc, pal,
             "a PAL cartridge must boot with a different AI rate than an NTSC one"
         );
-        // And an unknown code keeps the NTSC default (behaviour-preserving).
+        // And an unknown code keeps the NTSC default (behavior-preserving).
         assert_eq!(
             rate_for(b'?'),
             ntsc,

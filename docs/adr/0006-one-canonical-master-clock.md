@@ -63,9 +63,9 @@ currently happens to keep them in step.
 That project measured the outcome, and the honest reading is mixed rather than triumphant. Its
 direct A/B — same host, same session — put the one-clock model **6–8% slower in end-to-end frame
 time**, buying 94.24% → 100.00% accuracy. Its *isolated CPU loop* got ~35% faster; the cost is
-entirely bus-side. Later model-independent optimisation (LTO, lookup tables) brought the
+entirely bus-side. Later model-independent optimization (LTO, lookup tables) brought the
 one-clock build below the legacy build's original absolute time, but legacy was never
-re-measured with those same optimisations, so the widely-quoted "faster overall" comparison is
+re-measured with those same optimizations, so the widely-quoted "faster overall" comparison is
 apples-to-oranges and is not repeated here.
 
 **Treat the throughput cost as real and bounded at single-digit percent, not as refuted.** That
@@ -109,7 +109,7 @@ The per-domain offset is **not optional bookkeeping** — without it the seeded 
 that ADR 0004 requires would be destroyed by this ADR. If both domains keyed off the same
 absolute counter (CPU on even ticks, RCP on multiples of 3), their interleaving would be
 byte-identical for every seed from tick 6 onward, and a different seed would only truncate the
-first partial period. ADR 0004's "hardware indeterminacy modelled as a *parameter*" would become
+first partial period. ADR 0004's "hardware indeterminacy modeled as a *parameter*" would become
 vacuous while `reset_preserves_phase` still passed, testing nothing.
 
 So each domain carries an immutable phase constant, seeded at power-on from the SplitMix64 PRNG
@@ -184,7 +184,7 @@ sibling's five-counter model.
   6-tick integer period. Rejected because it inverts the hardware derivation, because the
   accumulator state makes cross-domain event ordering a state question rather than an integer
   comparison, and because it does not extend to SI/PIF without more remainders.
-- **Barrier-synchronised threads with a hard-coded per-iteration ratio** (CEN64,
+- **Barrier-synchronized threads with a hard-coded per-iteration ratio** (CEN64,
   `ref-proj/cen64/device/device.c`): the VR4300 and the RSP/VI run on **two OS threads** that
   rendezvous every 6250 RCP cycles, and within the CPU thread 3 `vr4300_cycle` calls alternate
   with 2 AI/PI cycles — so the 3:2 emerges from 9375:6250 across the barrier, not from an

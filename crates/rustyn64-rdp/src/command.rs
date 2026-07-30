@@ -32,7 +32,7 @@ pub const fn opcode_of(word0_hi: u32) -> u8 {
 ///
 /// Every other opcode — including the no-operation ranges (`0x00`–`0x07`,
 /// `0x10`–`0x23`, `0x31`) and any not-yet-handled command — is a single word,
-/// so an unrecognised command consumes exactly its header and the FIFO keeps
+/// so an unrecognized command consumes exactly its header and the FIFO keeps
 /// its alignment.
 #[must_use]
 pub const fn command_len_words(opcode: u8) -> u32 {

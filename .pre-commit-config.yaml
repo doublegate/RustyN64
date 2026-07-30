@@ -22,6 +22,15 @@ repos:
         language: system
         pass_filenames: true
 
+      # Fast local echo of the `en-US spelling` CI job. CI is the real gate
+      # (unskippable); this only shortens the feedback loop. It scans the whole
+      # tracked tree rather than the staged list, so it is the same check.
+      - id: en-us-spelling
+        name: block en-GB spellings
+        entry: scripts/check_en_us.sh
+        language: system
+        pass_filenames: false
+
       # A `|||||||` diff3 marker once reached a commit and would have shipped
       # into the release notes. A stray marker line is valid Markdown and valid
       # in a comment, so nothing downstream complains -- it needs its own check.

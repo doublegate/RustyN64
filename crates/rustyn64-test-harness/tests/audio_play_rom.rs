@@ -8,7 +8,7 @@
 //! audio microcode** — the de-risking rung that proves the AI against a real ROM
 //! before the mixer-microcode gate.
 //!
-//! Nothing here is synthesised: the CPU executes the ROM's own instructions,
+//! Nothing here is synthesized: the CPU executes the ROM's own instructions,
 //! which generate the PCM waveform and program the AI registers; the scheduler's
 //! `audio_tick` then drains the buffer at the derived DAC rate.
 #![allow(

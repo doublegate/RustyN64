@@ -128,7 +128,7 @@ impl EmuCore {
     ///
     /// # Errors
     /// Returns [`rustyn64_core::boot::BootError`] on a too-small image or a cart
-    /// the loader cannot parse (unrecognised byte order / truncated header).
+    /// the loader cannot parse (unrecognized byte order / truncated header).
     pub fn load_rom(&mut self, raw: &[u8]) -> Result<(), rustyn64_core::boot::BootError> {
         // A warm reset first so a re-load starts from a clean power-on timeline;
         // `hle_boot` then installs the cart and seeds the boot state + entry PC.
@@ -139,7 +139,7 @@ impl EmuCore {
         Ok(())
     }
 
-    /// Serialise the whole machine to a save-state blob.
+    /// Serialize the whole machine to a save-state blob.
     ///
     /// The cartridge ROM is excluded (it is immutable and up to 64 MiB); it is
     /// re-attached on [`EmuCore::restore`] from the loaded image. Save-states,
@@ -151,7 +151,7 @@ impl EmuCore {
     /// bincode encoding of an in-memory value cannot fail.
     #[must_use]
     pub fn snapshot(&self) -> Vec<u8> {
-        bincode::serialize(&self.system).expect("System is serde-serialisable")
+        bincode::serialize(&self.system).expect("System is serde-serializable")
     }
 
     /// Restore a save-state blob over the current machine, re-attaching the
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn bare_metal_demo_boots_and_frame_rgba_is_exact_size() {
-        // The committed licence-clean homebrew the wasm demo blits: it CPU-fills a
+        // The committed license-clean homebrew the wasm demo blits: it CPU-fills a
         // framebuffer and programs the VI, so a frame renders through the LLE path.
         // The VI becoming programmed (w,h > 0) transitively proves the loader set
         // the entry PC and copied the payload — the code only runs if both are right.

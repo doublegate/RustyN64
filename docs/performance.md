@@ -55,7 +55,7 @@ cycle-accurate. What is known:
   widely regarded as too slow, from a stalled project benchmarked on 2013-era
   hardware. It never bought full accuracy for the price it paid.
 - ares is fast because it is cycle-*approximate*: no pipeline, no interlocks,
-  instruction-granular latencies from a table, deferred synchronisation.
+  instruction-granular latencies from a table, deferred synchronization.
 - A sibling project's canonical-clock rewrite cost **6–8%** in end-to-end frame
   time while its isolated CPU loop got ~35% faster — so the timebase model itself
   is a single-digit-percent tax, and the cost lands bus-side.
@@ -63,7 +63,7 @@ cycle-accurate. What is known:
 None of that establishes the goal is reachable; none of it establishes it is not.
 It is an **open engineering risk with a measurement gate**, and the consequence is
 that performance is a design input from the first line of Phase 1 rather than a
-later optimisation pass.
+later optimization pass.
 
 ### The budget
 
@@ -103,7 +103,7 @@ gap that remains.
 - **RDP backend ordering** — can the software RDP hit interactive native-res
   speed, or must the wgpu-compute backend come sooner
   (`ref-docs/research-report.md` §Open questions 3; `docs/rdp.md`)?
-- **Bus-arbitration cost** — how much CPU/RSP/RDP/DMA contention modelling is
+- **Bus-arbitration cost** — how much CPU/RSP/RDP/DMA contention modeling is
   needed before it becomes a measurable cost (`docs/scheduler.md` open question).
 - **Dynarec backend** — `cranelift` vs hand-rolled x86_64/aarch64 for the RSP/CPU
   recompilers (`ref-docs/research-report.md` §External dependencies).

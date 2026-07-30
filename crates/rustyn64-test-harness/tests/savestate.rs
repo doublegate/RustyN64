@@ -1,11 +1,11 @@
 //! Save-state bit-identical restore (Phase 6, Sprint 2 — ADR 0004).
 //!
-//! Serialising the whole `System` and restoring it must produce a run that
+//! Serializing the whole `System` and restoring it must produce a run that
 //! continues **bit-identically**. This is the two-run trace compare the Phase 6
-//! plan calls for: run A snapshots, continues, and its serialised state is
+//! plan calls for: run A snapshots, continues, and its serialized state is
 //! captured; run B restores the snapshot, continues the same number of frames,
-//! and its serialised state is captured — and the two must be byte-identical. A mismatch means a piece
-//! of machine state was left out of the serialiser (the silent-divergence hazard
+//! and its serialized state is captured — and the two must be byte-identical. A mismatch means a piece
+//! of machine state was left out of the serializer (the silent-divergence hazard
 //! ADR 0004 exists to prevent), which no other test would catch.
 
 use rustyn64_core::System;
@@ -18,9 +18,9 @@ const RENDER_FILL_Z64: &[u8] = include_bytes!("../../../tests/roms/homebrew/rend
 
 const TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
 
-/// The canonical serialised state — the **whole** machine, every serialised
+/// The canonical serialized state — the **whole** machine, every serialized
 /// field. Comparing these bytes (rather than a partial hash) makes the oracle
-/// exact: a divergence in *any* serialised field changes the bytes, and there is
+/// exact: a divergence in *any* serialized field changes the bytes, and there is
 /// no hash collision to hide behind. bincode is deterministic, so equal state
 /// ⇒ equal bytes. (The ROM is `#[serde(skip)]`'d, so it is excluded on both
 /// sides — which is correct, it is identical anyway.)
@@ -49,7 +49,7 @@ fn a_snapshot_restores_and_continues_bit_identically() {
 
     // Run A: continue from the live machine. Even after the fill completes the
     // CPU keeps executing (pc/retired advance), so a missing CPU-state field
-    // diverges here; the whole serialised state is compared below.
+    // diverges here; the whole serialized state is compared below.
     run(&mut sys, 6);
     let bytes_a = state_bytes(&sys);
 
@@ -61,7 +61,7 @@ fn a_snapshot_restores_and_continues_bit_identically() {
     assert_eq!(
         bytes_a, bytes_b,
         "a restored snapshot must continue bit-identically; a mismatch means a \
-         state field diverged (the whole serialised machine is compared)"
+         state field diverged (the whole serialized machine is compared)"
     );
 }
 
@@ -106,8 +106,8 @@ fn a_commercial_rom_snapshot_restores_bit_identically() {
 }
 
 /// A no-op restore (snapshot then immediately restore, both continue) must also
-/// match — a guard that serialisation itself is deterministic and that the
-/// serialiser round-trips the *initial* boot state, not just steady state.
+/// match — a guard that serialization itself is deterministic and that the
+/// serializer round-trips the *initial* boot state, not just steady state.
 #[test]
 fn a_freshly_booted_snapshot_round_trips() {
     let entry = rom::entry_point(RENDER_FILL_Z64).expect("entry point");
@@ -119,6 +119,6 @@ fn a_freshly_booted_snapshot_round_trips() {
     assert_eq!(
         state_bytes(&sys),
         state_bytes(&restored),
-        "a fresh boot must round-trip through serialisation unchanged"
+        "a fresh boot must round-trip through serialization unchanged"
     );
 }

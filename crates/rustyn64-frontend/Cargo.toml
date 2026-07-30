@@ -42,7 +42,7 @@ workspace = true
 
 [dependencies]
 rustyn64-core = { path = "../rustyn64-core", version = "0.8.0" }
-# Save-state (de)serialisation: the whole `System` is serde-serialisable, and the
+# Save-state (de)serialization: the whole `System` is serde-serializable, and the
 # frontend picks the wire format (compact, deterministic) — ADR 0004 puts
 # save-states, rewind, and run-ahead here, never in the core.
 bincode = "1"

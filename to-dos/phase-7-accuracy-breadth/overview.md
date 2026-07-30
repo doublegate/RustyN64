@@ -43,7 +43,7 @@ In-scope:
 
 Out-of-scope:
 
-- Per-game hacks. If a title needs one, that is a modelling failure recorded in the ledger, not
+- Per-game hacks. If a title needs one, that is a modeling failure recorded in the ledger, not
   a fix.
 - The sub-cycle bus-timing refactor. Residuals that genuinely require it are deferred to
   ADR 0005, beyond v1.0.
@@ -70,7 +70,7 @@ all.
   special-case than to model. Mitigated by ADR 0003's position that the N64 has one cart model,
   and by requiring a ledger entry instead of a branch.
 - **The battery can be gamed** — probes authored after seeing our own output measure agreement
-  with ourselves. Mitigated by deriving probes from hardware behaviour and reference emulators,
+  with ourselves. Mitigated by deriving probes from hardware behavior and reference emulators,
   not from our captures.
 - **A GPU backend can quietly become the oracle** — once the accelerator is faster and looks
   right, it is tempting to grade against it. Mitigated by ADR 0002: the software reference stays

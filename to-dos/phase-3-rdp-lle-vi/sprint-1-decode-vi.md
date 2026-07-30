@@ -2,7 +2,7 @@
 
 **Phase:** Phase 3 — RDP LLE + VI
 **Sprint goal:** the shortest honest path from an RSP-produced command list to a visible frame —
-decode the command stream, rasterise the fill pipeline, and scan the framebuffer out through the
+decode the command stream, rasterize the fill pipeline, and scan the framebuffer out through the
 VI.
 **Estimated duration:** 3 weeks
 
@@ -15,7 +15,7 @@ dispatching each command with its correct word length even where the handler is 
 
 **Acceptance criteria:**
 
-- [x] Every opcode 0x00-0x3F is recognised with the right length, so the stream never desyncs.
+- [x] Every opcode 0x00-0x3F is recognized with the right length, so the stream never desyncs.
 - [x] The no-operation ranges (0x00-0x07, 0x10-0x23, 0x31) are consumed correctly.
 - [x] An unimplemented command consumes its words and is counted, rather than derailing the FIFO.
 - [x] The FIFO drains under the scheduler, not in one burst.
@@ -26,7 +26,7 @@ dispatching each command with its correct word length even where the handler is 
 
 ---
 
-### T-31-002 — The synchronisation commands and the DP interrupt
+### T-31-002 — The synchronization commands and the DP interrupt
 
 **Description:** implement `Sync Load` (0x26), `Sync Pipe` (0x27), `Sync Tile` (0x28), and
 `Sync Full` (0x29), with the last raising the DP interrupt through the MI.
@@ -53,7 +53,7 @@ address.
 
 **Acceptance criteria:**
 
-- [x] The colour image address, format, and width are honoured.
+- [x] The color image address, format, and width are honored.
 - [x] `Fill Rectangle` writes exactly the scissored region, at every supported bit depth.
 - [x] The scissor rectangle clips correctly at all four edges.
 - [x] A unit test fills a known rectangle and verifies the RDRAM contents byte for byte.
@@ -77,7 +77,7 @@ scan the framebuffer out to a presentable buffer.
       yet full hardware semantics, only store-and-read-back.
 - [x] `VI_V_CURRENT` advances with the scan position and is readable mid-frame.
 - [x] The VI interrupt fires at the `VI_V_INTR` scanline and drives the MI.
-- [x] Scan-out honours origin and width. **The X/Y_SCALE resampling and the AA/divot/de-dither
+- [x] Scan-out honors origin and width. **The X/Y_SCALE resampling and the AA/divot/de-dither
       filters are NOT implemented** — scan-out is a 1:1 copy (ledger R-5); geometry is correct
       only when the source matches the display resolution.
 - [x] The frame is emitted to the harness so `frame_hash` has something real to hash.

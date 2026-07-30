@@ -123,7 +123,7 @@ pub trait Bus {
     ///
     /// The CPU cannot narrow the value itself, because whether narrowing is
     /// correct is a property of the *target*, not of the instruction. RDRAM
-    /// honours the byte enables and stores exactly `width` bytes; every device
+    /// honors the byte enables and stores exactly `width` bytes; every device
     /// on the RCP's internal bus ignores the access size entirely and latches
     /// the whole 32-bit word the VR4300 placed on `SysAD` — including the bits
     /// of the source register that a narrow store was never meant to send
@@ -177,7 +177,7 @@ pub trait Bus {
 
     /// `EMUX xioctl(EXIT)`: the guest has asked the emulator to terminate.
     ///
-    /// Default: ignore. A harness that honours it gets a definite end-of-run
+    /// Default: ignore. A harness that honors it gets a definite end-of-run
     /// signal instead of a tick budget, which is the difference between "the
     /// suite finished" and "we stopped watching".
     fn emux_exit(&mut self) {}

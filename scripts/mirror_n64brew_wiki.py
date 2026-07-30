@@ -6,7 +6,7 @@ Background
 ==========
 
 RustyN64 uses the `N64brew Wiki <https://n64brew.dev/wiki/Main_Page>`_ as its
-primary hardware-behaviour reference (alongside the immutable
+primary hardware-behavior reference (alongside the immutable
 ``ref-docs/research-report.md``). This script produces a gitignored offline
 mirror at ``n64brew_wiki/`` so chip work can be done without round-tripping to
 the live site, and so agent/grep passes can search the corpus as plain text.
@@ -218,7 +218,7 @@ def rewrite_links(body: str, rel_stem: str, title_to_path: dict[str, str],
             return None
         path = title_to_path.get(target)
         if path is None:
-            # Try first-letter capitalisation (MediaWiki's "first-letter" case).
+            # Try first-letter capitalization (MediaWiki's "first-letter" case).
             path = title_to_path.get(target[:1].upper() + target[1:])
         return path
 

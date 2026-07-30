@@ -14,7 +14,7 @@ every 3rd (ADR 0006, superseding ADR 0001's fractional accumulator). ADR 0007 ad
 the SysAD command/data split at SClock (62.5 MHz). Note that SClock is *coarser* than a PClock,
 so none of that provides sub-PClock resolution — this ADR remains a separate, later question.
 
-Some hardware behaviour is finer-grained than one VR4300 cycle. If a test ROM or a commercial
+Some hardware behavior is finer-grained than one VR4300 cycle. If a test ROM or a commercial
 title turns out to observe it, whole-tick lockstep cannot represent it, and the scheduler needs a
 finer timebase.
 
@@ -40,20 +40,20 @@ The N64's genuine sub-cycle concerns are these, and they are what this ADR is ac
    simple addressed read: `SYSCMD` carries the command, and `Pvalid` / `Evalid` / `EoK` sequence
    the transaction across multiple cycles while the buses go high-Z in between. A cached
    256-bit instruction read and a non-cached word write occupy the bus very differently
-   (`n64brew_wiki/markdown/SysAD Interface.md`). Modelling a memory access as instantaneous at
+   (`n64brew_wiki/markdown/SysAD Interface.md`). Modeling a memory access as instantaneous at
    tick granularity elides that structure.
 2. **RDRAM bank state, refresh, and latency.** The RI exposes `RI_LATENCY`, `RI_REFRESH`, and
    `RI_BANK_STATUS`, and the wiki documents explicit bank-status tracking. Access cost depends on
    whether the target bank is already open, and a refresh cycle can intrude
    (`n64brew_wiki/markdown/RDRAM Interface.md`).
 3. **Arbitration between four bus masters.** The CPU, RSP, RDP, and the DMA engines all contend
-   for one memory pool. How precisely that arbitration must be modelled is already an open
+   for one memory pool. How precisely that arbitration must be modeled is already an open
    question in `docs/architecture.md`, and it is the most likely source of a residual that
    whole-tick resolution cannot express.
 
 The reference implementation to study for all three is **CEN64**, which models the machine at bus
 level and is BSD-3-Clause, so it is readable *and* permissively licensed. That is the correct
-analogue to what "Mesen2-style" was gesturing at for the other consoles.
+analog to what "Mesen2-style" was gesturing at for the other consoles.
 
 ## Decision
 
@@ -71,7 +71,7 @@ analogue to what "Mesen2-style" was gesturing at for the other consoles.
   events on the same clock is invariant under any uniform change to when a subsystem is serviced
   within the step — finer resolution cannot move it, and the real cause is a wrong duration, a
   wrong divisor, or a missing event. A sibling project implemented and rolled back five successive
-  re-phasings of one timing track before recognising the whole family was immune. Differential
+  re-phasings of one timing track before recognizing the whole family was immune. Differential
   residuals do not count as evidence for this refactor; recording that classification is the
   cheapest possible screen and costs one line in the ledger.
 - When it does land, treat it as a **major version** (`v2.0.0`), because it is expected to break
@@ -108,5 +108,5 @@ chips, so that increasing resolution is a change to one component and not to eve
   ADR and does not exist**. The sibling projects have a version-numbering history showing how
   easily these get merged in prose. All three senses are named explicitly here and in
   `docs/scheduler.md`.
-- **Scope creep into a rewrite.** Bus-accurate modelling can absorb unlimited effort. The gate is
+- **Scope creep into a rewrite.** Bus-accurate modeling can absorb unlimited effort. The gate is
   a named failing test, not an aspiration to be maximally accurate.

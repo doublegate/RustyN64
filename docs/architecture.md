@@ -98,12 +98,12 @@ list to a faithful rasterizer. Audio falls out for free — the RSP audio microc
 runs on the same LLE RSP core, so there is no per-game audio HLE. An HLE fast path
 may exist later behind an off-by-default flag, never as the default. The RSP and
 RDP `tick` methods now **execute** — the RSP runs real microcode and the RDP
-rasterises its command list (Phases 2–3); the AI `tick` remains a stub
+rasterizes its command list (Phases 2–3); the AI `tick` remains a stub
 (`docs/STATUS.md`).
 
 ### 5. Board logic lives in the cart crate
 
-Cartridge / board behaviour — PI/SI-mediated reads and writes, the CIC handshake,
+Cartridge / board behavior — PI/SI-mediated reads and writes, the CIC handshake,
 save backing — lives behind the `rustyn64_cart::Cartridge` trait, not in the CPU.
 All hooks default to no-op so a board implements only what it uses. Unlike the
 NES (hundreds of mappers), the N64 has essentially one cart model parameterized
@@ -194,7 +194,7 @@ These are surfaced from `ref-docs/research-report.md` §Open questions and gate
 deeper planning:
 
 1. **RDRAM/bus contention depth** — how precisely must CPU/RSP/RDP/DMA bus
-   arbitration be modelled for commercial-game correctness vs only
+   arbitration be modeled for commercial-game correctness vs only
    n64-systemtest? Needs a prototype to find the cost/accuracy knee.
 2. **Boot strategy** — stub IPL3 (HLE boot, documented) vs run the real PIF/IPL
    ROMs. Likely stub-first with an optional real-IPL mode. See `docs/cart.md`.

@@ -14,7 +14,7 @@ The N64 test-ROM oracle. Two tiers, governed by `docs/testing-strategy.md`:
   `git check-ignore tests/roms/external/anything`.
 
 Licensing below was verified by reading each upstream's actual `LICENSE` (or
-confirming its absence through the GitHub licence API), not by trusting a badge.
+confirming its absence through the GitHub license API), not by trusting a badge.
 
 ## How the tiers are enforced
 
@@ -36,7 +36,7 @@ corpora do not get a negation, however convenient that would be.
 
 ## Committed corpora (permissive — in the git tree)
 
-| Corpus | Upstream | Licence (verified) | Contents | Footprint |
+| Corpus | Upstream | License (verified) | Contents | Footprint |
 |---|---|---|---|---|
 | `n64-systemtest/` | [lemmy-64/n64-systemtest](https://github.com/lemmy-64/n64-systemtest) | **MIT** (`LICENSE`, "Copyright (c) 2021 lemmy-64") | `n64-systemtest.z64` + `LICENSE` | 2.7 MB |
 
@@ -75,10 +75,10 @@ different ROM; the committed one is the default set.
 
 ## External corpora (gitignored — local only)
 
-| Corpus | Upstream | Licence (verified) | Why external | Footprint |
+| Corpus | Upstream | License (verified) | Why external | Footprint |
 | --- | --- | --- | --- | --- |
 | `external/krom/` | [PeterLemon/N64](https://github.com/PeterLemon/N64) | Unlicense (public domain) | Permissive, but upstream is 2.0 GB; even this curated subset is 182 MB | 182 MB, 196 ROMs |
-| `external/dillon-n64-tests/` | [Dillonb/n64-tests](https://github.com/Dillonb/n64-tests) | **NONE** — no licence file, no README statement | No licence means no grant to redistribute | 38 MB, 26 ROMs |
+| `external/dillon-n64-tests/` | [Dillonb/n64-tests](https://github.com/Dillonb/n64-tests) | **NONE** — no license file, no README statement | No license means no grant to redistribute | 38 MB, 26 ROMs |
 | `external/commercial/` | personal cartridge dumps | copyrighted | Never redistributable | 1.5 GB, 66 ROMs |
 | `external/240p/` | [ArtemioUrbina/240pTestSuite](https://github.com/ArtemioUrbina/240pTestSuite) | **GPL-2.0-or-later** | Copyleft, incompatible with the committed tier's permissive rule | 12 MB, 1 ROM |
 
@@ -94,7 +94,7 @@ directories only, leaving ~1.8 GB of graphics demos in
 | `CPUTest/` | 114 | VR4300 instructions, COP0, PI DMA alignment |
 | `RSPTest/` | 56 | RSP scalar + vector ISA |
 | `CP1/` | 12 | FPU / COP1 |
-| `EMU/` | 7 | emulator-behaviour probes |
+| `EMU/` | 7 | emulator-behavior probes |
 | `Interrupt/` | 3 | MI interrupt lines |
 | `RDPTest/` | 2 | RDP rasterizer |
 | `RDRAMTest/` | 1 | RDRAM addressing |
@@ -109,7 +109,7 @@ Targeted CPU/RSP tests, hardware-verified, prebuilt. Fetched from the upstream
 built, since building needs the ARM9 `bass` assembler fork plus libdragon's
 `chksum64`.
 
-**Run-only.** With no licence there is no grant to redistribute these: using them
+**Run-only.** With no license there is no grant to redistribute these: using them
 locally as an oracle is fine, committing or shipping them is not.
 
 ### 240p Test Suite
@@ -122,12 +122,12 @@ external tier regardless of size and **must never be committed**. It is
 *and* the size ceiling, and deliberately absent from `ALLOW_RE`.
 
 Useful for RustyN64 because the N64 build drives the VI hard: it is the
-reference for scan-out timing, 240p/480i modes, and colour/signal correctness —
+reference for scan-out timing, 240p/480i modes, and color/signal correctness —
 the Layer 5 territory where a framebuffer can be bit-correct while the VI
 presentation is wrong.
 
 Built from source; upstream ships no prebuilt ROM and no GitHub releases (the
-itch.io binaries need an interactive download). The build is containerised
+itch.io binaries need an interactive download). The build is containerized
 because it needs a MIPS cross-toolchain, libdragon's `preview` branch, and
 Tiny3D — none of which are packaged for Arch:
 
@@ -166,10 +166,10 @@ because the ROM is ever redistributed from this repo.
 
 ## Adding a corpus
 
-1. Verify the licence by reading the upstream `LICENSE`. Absence of a licence is
+1. Verify the license by reading the upstream `LICENSE`. Absence of a license is
    **not** public domain — it means no grant.
 2. Permissive (MIT / BSD / Zlib / CC0 / public domain) → committed tier: add a
    `.gitignore` re-include, add the path to `ALLOW_RE` in
    `scripts/check_no_roms.sh`, and commit the upstream `LICENSE` beside the ROM.
 3. Anything else → `external/`, and record it in the table above.
-4. Update the licence table in `docs/testing-strategy.md` in the same change.
+4. Update the license table in `docs/testing-strategy.md` in the same change.

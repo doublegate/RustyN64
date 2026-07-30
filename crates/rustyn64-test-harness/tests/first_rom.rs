@@ -5,7 +5,7 @@
 //!
 //! # Why this SKIPS rather than fails when the ROM is absent
 //!
-//! Dillon's n64-tests carries **no licence** (`tests/roms/README.md`), so it
+//! Dillon's n64-tests carries **no license** (`tests/roms/README.md`), so it
 //! cannot be committed and lives in the gitignored external tier. CI has no copy.
 //! A missing ROM is therefore a normal condition, not a failure — treating it as
 //! one would make the suite red for every contributor who has not staged the
@@ -38,7 +38,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
     const SUBROUTINES: core::ops::Range<u64> = 0xFFFF_FFFF_8000_12E8..0xFFFF_FFFF_8000_2000;
 
     let Some(image) = load() else {
-        eprintln!("SKIP: {BASIC_Z64} not staged (external tier, no licence)");
+        eprintln!("SKIP: {BASIC_Z64} not staged (external tier, no license)");
         return;
     };
 
@@ -86,7 +86,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
 
     assert!(
         entered_subroutines,
-        "r30 signalled completion but execution never reached the test \
+        "r30 signaled completion but execution never reached the test \
          subroutines at {SUBROUTINES:#X?} -- this is a vacuous pass"
     );
     assert!(
@@ -99,7 +99,7 @@ fn basic_z64_runs_and_reports_a_real_result() {
         CompletionStatus::Passed => {}
         CompletionStatus::Failed(n) => panic!("basic.z64 failed its test {n} (r30 = {n})"),
         CompletionStatus::Timeout => panic!(
-            "basic.z64 never signalled completion within {BUDGET_TICKS} master ticks \
+            "basic.z64 never signaled completion within {BUDGET_TICKS} master ticks \
              (pc = {:#X}, retired = {})",
             sys.cpu.pc, sys.cpu.retired
         ),

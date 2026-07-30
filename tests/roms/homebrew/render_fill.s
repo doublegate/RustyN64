@@ -11,7 +11,7 @@
 # test corpus — the assembled `.z64` is committable. It boots only through the
 # harness direct-load path (`rom::load_direct`, which copies the payload to
 # 0x8000_1000 and jumps there); it carries no real IPL3, so it does not boot on
-# hardware. That is deliberate: it is a rasteriser/scan-out fixture, not a game.
+# hardware. That is deliberate: it is a rasterizer/scan-out fixture, not a game.
 #
 # Registers (o32): VI base 0xA440_0000 (KSEG1, uncached). Framebuffer 0xA020_0000
 # (KSEG1 -> physical 0x0020_0000, which VI_ORIGIN points at). 32*24 = 768 pixels.
@@ -35,7 +35,7 @@ _start:
         ori     $t4, $zero, 2           # TYPE=2 -> 16-bit RGBA5551 (also VI-on)
         sw      $t4, 0x00($t0)          # VI_CTRL
 
-        # Fill 768 pixels with a gradient: pixel i takes colour
+        # Fill 768 pixels with a gradient: pixel i takes color
         #   ((i & 0x1F) << 11) | 0x0001   -> red ramps 0..31 across each row of 32,
         # so the frame is a repeating horizontal red gradient with alpha=1. The
         # per-pixel arithmetic makes the golden prove the CPU actually ran (a

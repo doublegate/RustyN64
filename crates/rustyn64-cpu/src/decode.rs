@@ -1,7 +1,7 @@
 //! MIPS III instruction decode (T-11-002).
 //!
 //! Word in, [`Decoded`] out. Pure and total: **every** 32-bit pattern decodes to
-//! something, with anything unrecognised becoming [`Op::Reserved`] rather than a
+//! something, with anything unrecognized becoming [`Op::Reserved`] rather than a
 //! panic or a silent no-op. A guest can execute arbitrary bytes, so decode must
 //! not be able to fail.
 //!
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// The decoded operation. Only the integer subset so far; see the module docs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Op {
-    /// Not (yet) a recognised encoding — raises a reserved-instruction
+    /// Not (yet) a recognized encoding — raises a reserved-instruction
     /// exception rather than behaving as a `NOP`.
     #[default]
     Reserved,
@@ -177,11 +177,11 @@ pub enum Op {
     /// `SD rt, off(base)`.
     Sd,
 
-    // --- the synchronisation pair (UM §16, pp. 453 and 487)
+    // --- the synchronization pair (UM §16, pp. 453 and 487)
     //
     // The VR4300 is not a multiprocessor, but it implements these "in order to
     // maintain compatibility with VR4400 and VR4200" (UM §3.1), so they are real
-    // instructions with observable behaviour, not reserved encodings.
+    // instructions with observable behavior, not reserved encodings.
     /// `LL rt, off(base)` — load word, sign-extend, set `LLbit` and `LLAddr`.
     Ll,
     /// `LLD rt, off(base)` — the doubleword form.
@@ -293,7 +293,7 @@ pub enum Op {
     // and lumping them in would make `Op` claim support this crate lacks.
     /// `CACHE op, off(base)` — a cache maintenance operation.
     ///
-    /// Operates on **modelled cache state** as of T-11-003: both primary caches
+    /// Operates on **modeled cache state** as of T-11-003: both primary caches
     /// hold real tags and data, so invalidate, write-back and the tag moves all
     /// act. This doc said "executed as an address-translating no-op" until the
     /// caches landed, which was true under ledger **D-5** and is not any more —
@@ -325,7 +325,7 @@ pub enum Op {
     /// `.text`, and faulted there instead.
     ///
     /// Recorded as an **inference** in the accuracy ledger (C-8), not a manual
-    /// citation -- the writeback behaviour of the target GPR is untested.
+    /// citation -- the writeback behavior of the target GPR is untested.
     Cop0Extension,
     /// `CFC1 rt, fs` — read a COP1 **control** register.
     Cfc1,
@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     /// Decode is **total**: no 32-bit pattern may panic, and anything
-    /// unrecognised becomes `Reserved` rather than silently acting as a `NOP`.
+    /// unrecognized becomes `Reserved` rather than silently acting as a `NOP`.
     /// A guest can execute arbitrary bytes.
     #[test]
     fn decode_is_total_over_every_opcode_and_funct() {
@@ -1352,7 +1352,7 @@ mod tests {
     /// destination. The unit tests in `pipeline` construct `MemOp` directly and
     /// therefore cannot catch a decode that drops it — this one can.
     #[test]
-    fn the_synchronisation_pair_decodes_with_rt_as_the_destination() {
+    fn the_synchronization_pair_decodes_with_rt_as_the_destination() {
         // opcode, rs=1 (base), rt=9, imm=0x20
         let enc = |opcode: u32| (opcode << 26) | (1 << 21) | (9 << 16) | 0x20;
 

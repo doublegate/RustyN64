@@ -9,7 +9,7 @@
 //!
 //! It also *reports* the non-black pixel count for information, but does
 //! **not** assert on it — and that count is NOT evidence of rendering, because
-//! uninitialised RDRAM is non-black (ledger R-18). Reaching a rendered title
+//! uninitialized RDRAM is non-black (ledger R-18). Reaching a rendered title
 //! frame depends on the retail
 //! OS-boot runtime (the VI vblank interrupt loop, the RI/RDRAM interface, and
 //! F3DEX graphics microcode) that is out of scope for the Phase 5 cart boundary
@@ -103,7 +103,7 @@ struct BootResult {
     /// Non-black pixels on the final scanned-out frame.
     ///
     /// **Named for what it measures, not what it was mistaken for.** It is NOT
-    /// evidence of rendering — uninitialised RDRAM is non-black, and two titles
+    /// evidence of rendering — uninitialized RDRAM is non-black, and two titles
     /// scored 90%+ here while producing pure noise (ledger R-18). A diagnostic;
     /// never assert on it.
     ///
@@ -201,7 +201,7 @@ fn a_commercial_rom_boots_and_executes() {
         match boot_and_run(&rom_path, 120) {
             Some(r) => {
                 eprintln!(
-                    // Diagnostic only, never a pass condition — uninitialised
+                    // Diagnostic only, never a pass condition — uninitialized
                     // RDRAM is non-black too (ledger R-18).
                     "[{folder}] {name}: retired={}, pc={:#010x}, rdram_nonzero={}, \
                      scanout={}x{}, non-black pixels (NOT proof of rendering)={}/{}",

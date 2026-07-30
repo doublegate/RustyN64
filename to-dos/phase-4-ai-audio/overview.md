@@ -4,7 +4,7 @@
 > (Sprint 1); the real libdragon mixer microcode runs on the LLE RSP and produces verified PCM,
 > and a bare-metal ROM plays PCM through the AI (Sprint 2); the frontend drains + resamples the
 > stream to the host device (Sprint 3). Exit criteria marked below; the one that needs a real
-> *game* through the full path (`recognisable audio through the frontend ring`) is honestly
+> *game* through the full path (`recognizable audio through the frontend ring`) is honestly
 > carried to Phase 5/6, which provide cart boot and the playable shell.
 
 ## Goal
@@ -27,9 +27,9 @@ the timing, not the synthesis (ADR 0002).
       observable and documented upstream. *(Named test fails if "fixed".)*
 - [x] The AI interrupt fires when a transfer **starts** (corrected from "on drain") and drives the
       MI line, so the game's audio loop advances.
-- [x] Underrun behaviour is **defined** (hold-and-decay + observable count); hardware equivalence
+- [x] Underrun behavior is **defined** (hold-and-decay + observable count); hardware equivalence
       of the decay curve is unverified (ledger R-17).
-- [~] A real ROM produces recognisable audio through the frontend ring without underrun. **Split:**
+- [~] A real ROM produces recognizable audio through the frontend ring without underrun. **Split:**
       a bare-metal ROM plays PCM through the AI end to end (`audio_play_rom.rs`), and the frontend
       resampler + drain are wired and unit-tested — but a real *game* through the full ring needs
       cart boot (Phase 5) + the playable shell (Phase 6). Carried there.

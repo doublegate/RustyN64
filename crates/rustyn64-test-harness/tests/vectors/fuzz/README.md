@@ -34,9 +34,9 @@ RUSTYN64_FUZZ_DIR=/tmp/cand cargo test -p rustyn64-test-harness \
 
 | Prefix | Family | Seed | Count | Notes |
 | --- | --- | --- | --- | --- |
-| `fz_fill_` | FILL-mode `Fill Rectangle` (16-bit) | `0x1234` | 48 | Sweeps fill colour, image size, and rectangle position (scissor is the full image). Found the R-3 inclusive-lower-right edge bug. Generator family `fillrect`. |
+| `fz_fill_` | FILL-mode `Fill Rectangle` (16-bit) | `0x1234` | 48 | Sweeps fill color, image size, and rectangle position (scissor is the full image). Found the R-3 inclusive-lower-right edge bug. Generator family `fillrect`. |
 | `fz_scis_` | FILL `Fill Rectangle` + independent scissor sub-rect (16-bit) | `0x5c15` | 48 | Varies the scissor so it clips the rectangle on each edge. Found the R-15 asymmetric scissor clip (inclusive X, exclusive Y, `allover` guard). Generator family `scissor`. |
-| `fz_tri_` | FILL-mode `Fill Triangle` (16-bit) | `0x7213` | 48 | Integer-vertex two-edge triangles (a vertical major edge + a minor edge widening by an integer px/row slope; `flip` picks the major side), varying size, apex, slope, and colour. Exercises the edge-walk. Generator family `filltri`. |
+| `fz_tri_` | FILL-mode `Fill Triangle` (16-bit) | `0x7213` | 48 | Integer-vertex two-edge triangles (a vertical major edge + a minor edge widening by an integer px/row slope; `flip` picks the major side), varying size, apex, slope, and color. Exercises the edge-walk. Generator family `filltri`. |
 
 Regenerating any batch from its `(family, seed, count)` is byte-identical to
 what is committed here.

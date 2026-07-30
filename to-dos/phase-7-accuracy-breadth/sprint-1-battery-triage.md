@@ -9,7 +9,7 @@ and every commercial title in the corpus is run and classified — fixed, ledger
 
 ### T-71-001 — Author the accuracy battery probes
 
-**Description:** replace the stubbed `AccuracyScorer` with named probes covering the behaviours
+**Description:** replace the stubbed `AccuracyScorer` with named probes covering the behaviors
 the test ROMs and hardware documentation define, reporting a real `AccuracyReport`.
 
 **Acceptance criteria:**

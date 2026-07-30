@@ -312,16 +312,16 @@ impl System {
         // The chips each see only their narrow trait of `self.bus`.
         // The LLE RSP runs the microcode scalar+vector stream (Phase 2).
         self.bus.rsp_tick();
-        // The RDP consumes the DPC command stream and rasterises the implemented
+        // The RDP consumes the DPC command stream and rasterizes the implemented
         // commands (FILL, triangles, texture rects, sync); the live path is still
-        // incomplete — remaining opcodes are recognised-not-dispatched (T-31-004)
+        // incomplete — remaining opcodes are recognized-not-dispatched (T-31-004)
         // and per-command timing is deferred. See ledger R-18 for the end-to-end
         // commercial-video gap.
         self.bus.rdp_tick();
         // AI / interface sub-clock advance — derives sample emission off the
         // canonical `master_ticks` (ADR 0006), like the VI scan below.
         self.bus.audio_tick(self.master_ticks);
-        // The PI's asynchronous direct-I/O write finalises on this clock.
+        // The PI's asynchronous direct-I/O write finalizes on this clock.
         self.bus.pi_tick();
         // The VI scan position advances off `master_ticks` (the one fractional
         // domain, ADR 0006 / `docs/scheduler.md`); a `VI_V_INTR` crossing raises

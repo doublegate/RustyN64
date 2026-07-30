@@ -42,10 +42,10 @@ deltas. What it gives today is a fast, non-hanging, falsifiable target that Stag
 instructions, no hang — the point) but its slower FPU battery needs a larger budget
 to draw its full verdict, wired in Stage-D follow-up.
 
-## Provenance & licence
+## Provenance & license
 
 - Source: `PeterLemon/N64` — `CPUTest/CPU/TIMINGNTSC/` and `CPUTest/CP1/TIMINGNTSC/`.
-- Licence: **The Unlicense** (public domain) — see `LICENSE` in this directory,
+- License: **The Unlicense** (public domain) — see `LICENSE` in this directory,
   copied verbatim from upstream. Public-domain, so committable as a fixture (the
   "commit permissive/public-domain fixtures" rule; module 20).
 - The files are byte-identical to upstream, renamed from `.N64` to `.z64` (they

@@ -54,8 +54,8 @@ corrected.
 | ---------- | ---------- |
 | [`../ref-docs/`](../ref-docs/) | Immutable primary research — never rewritten in place; corrections land as new dated supplemental files. |
 | `../n64brew_wiki/` | Gitignored offline mirror of the N64brew Wiki (324 pages, 96 media) — the primary hardware reference. Search `markdown/`, browse `html/`, rebuild with `scripts/mirror_n64brew_wiki.py`. CC BY-SA 4.0. |
-| `../ref-proj/` | Gitignored study clones of reference emulators and test suites. **Licences vary and several forbid copying** — read `ref-proj/README.md` before lifting anything. |
-| [`../tests/roms/README.md`](../tests/roms/README.md) | The test-ROM corpus tiers, their verified licences, and the three-layer commercial-ROM guard. |
+| `../ref-proj/` | Gitignored study clones of reference emulators and test suites. **Licenses vary and several forbid copying** — read `ref-proj/README.md` before lifting anything. |
+| [`../tests/roms/README.md`](../tests/roms/README.md) | The test-ROM corpus tiers, their verified licenses, and the three-layer commercial-ROM guard. |
 | [`../to-dos/ROADMAP.md`](../to-dos/ROADMAP.md) | The phase spine, Phase 0 through Phase 8 — the planning entry point. |
 | [`../to-dos/VERSION-PLAN.md`](../to-dos/VERSION-PLAN.md) | The named release ladder that sequences the phase spine into tags, `v0.1.0` through `v1.0.0` and beyond. |
 | [`../to-dos/LOCKSTEP-CHECKLIST.md`](../to-dos/LOCKSTEP-CHECKLIST.md) | The pass run when scoping each release, to track the two sibling projects' continuing development. |

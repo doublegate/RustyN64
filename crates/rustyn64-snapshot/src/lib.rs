@@ -1,15 +1,15 @@
-//! serde helpers for save-state serialisation (Phase 6, ADR 0004).
+//! serde helpers for save-state serialization (Phase 6, ADR 0004).
 //!
 //! `serde` derives cover almost every field of the emulator's state, and
 //! `serde-big-array` covers plain fixed arrays larger than 32 (`[Line; 512]`,
 //! `[u8; 64]`, …). What it does **not** cover is the emulator's `Box<[u8; N]>`
 //! backing stores — RSP DMEM/IMEM, RDP TMEM, the PIF boot ROM — which are boxed
 //! *arrays* (not slices), too large for serde's built-in array impls. These
-//! `#[serde(with = "…")]` helpers serialise those as byte sequences and rebuild
+//! `#[serde(with = "…")]` helpers serialize those as byte sequences and rebuild
 //! the boxed array on the way back.
 //!
 //! Keeping the field types (`Box<[u8; N]>`) unchanged means the hot-path
-//! indexing code is untouched; only the serialisation attribute is added.
+//! indexing code is untouched; only the serialization attribute is added.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -20,7 +20,7 @@ extern crate alloc;
 /// serde `with` module for a `Box<[u8; N]>`.
 ///
 /// `#[serde(with = "rustyn64_snapshot::boxed_bytes")]` on a `Box<[u8; N]>` field.
-/// (De)serialisation delegates to [`serde_big_array::BigArray`], which reads
+/// (De)serialization delegates to [`serde_big_array::BigArray`], which reads
 /// **exactly `N`** elements as a fixed tuple — no length-prefixed `Vec` that a
 /// malformed / hostile save-state could use to trigger an unbounded allocation
 /// before the length check (CWE-400). The `[u8; N]` lands on the stack and is
@@ -31,7 +31,7 @@ pub mod boxed_bytes {
     use serde::{Deserializer, Serializer};
     use serde_big_array::BigArray;
 
-    /// Serialise the boxed array as a fixed-length array (bounded, no length
+    /// Serialize the boxed array as a fixed-length array (bounded, no length
     /// prefix an attacker could inflate).
     ///
     /// # Errors
@@ -47,7 +47,7 @@ pub mod boxed_bytes {
         BigArray::serialize(value.as_ref(), serializer)
     }
 
-    /// Deserialise exactly `N` bytes back into a `Box<[u8; N]>` (bounded).
+    /// Deserialize exactly `N` bytes back into a `Box<[u8; N]>` (bounded).
     ///
     /// # Errors
     /// A [`serde::de::Error`] if the input is not exactly `N` elements.
@@ -60,7 +60,7 @@ pub mod boxed_bytes {
 }
 
 /// serde `with` module for an `Option<Box<[u8; N]>>`: `None` stays `None`, `Some`
-/// (de)serialises through the bounded fixed-array path of [`boxed_bytes`].
+/// (de)serializes through the bounded fixed-array path of [`boxed_bytes`].
 ///
 /// `#[serde(with = "rustyn64_snapshot::opt_boxed_bytes")]` on the field.
 pub mod opt_boxed_bytes {
@@ -71,7 +71,7 @@ pub mod opt_boxed_bytes {
     use serde::{Deserializer, Serialize, Serializer};
     use serde_big_array::BigArray;
 
-    /// A borrowed `[u8; N]` that serialises via [`BigArray`] (for `Some`).
+    /// A borrowed `[u8; N]` that serializes via [`BigArray`] (for `Some`).
     struct BorrowBig<'a, const N: usize>(&'a [u8; N]);
     impl<const N: usize> Serialize for BorrowBig<'_, N> {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -79,7 +79,7 @@ pub mod opt_boxed_bytes {
         }
     }
 
-    /// An owned `Box<[u8; N]>` that deserialises via [`BigArray`] (bounded).
+    /// An owned `Box<[u8; N]>` that deserializes via [`BigArray`] (bounded).
     struct OwnBig<const N: usize>(Box<[u8; N]>, PhantomData<()>);
     impl<'de, const N: usize> Deserialize<'de> for OwnBig<N> {
         fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -88,7 +88,7 @@ pub mod opt_boxed_bytes {
         }
     }
 
-    /// Serialise `Option<Box<[u8; N]>>`, preserving absence.
+    /// Serialize `Option<Box<[u8; N]>>`, preserving absence.
     ///
     /// # Errors
     /// Propagates the serializer's error.
@@ -102,7 +102,7 @@ pub mod opt_boxed_bytes {
             .serialize(serializer)
     }
 
-    /// Deserialise `Option<Box<[u8; N]>>` (bounded fixed-array when present).
+    /// Deserialize `Option<Box<[u8; N]>>` (bounded fixed-array when present).
     ///
     /// # Errors
     /// A [`serde::de::Error`] if a present value is not exactly `N` elements.

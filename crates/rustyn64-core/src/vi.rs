@@ -34,10 +34,10 @@ pub const VI_V_INTR: u32 = 3;
 /// software-latched (it reflects the scan position, set by the scheduler once
 /// that lands).
 pub const VI_V_CURRENT: u32 = 4;
-/// `VI_BURST` (0x14): colour-burst timing.
+/// `VI_BURST` (0x14): color-burst timing.
 pub const VI_BURST: u32 = 5;
 /// `VI_V_TOTAL` (0x18): total half-lines per frame; bit 0 selects
-/// interlaced/progressive `VI_V_INTR` behaviour.
+/// interlaced/progressive `VI_V_INTR` behavior.
 pub const VI_V_TOTAL: u32 = 6;
 /// `VI_H_TOTAL` (0x1C): total pixels (quarter-precision) per line.
 pub const VI_H_TOTAL: u32 = 7;
@@ -47,7 +47,7 @@ pub const VI_H_TOTAL_LEAP: u32 = 8;
 pub const VI_H_VIDEO: u32 = 9;
 /// `VI_V_VIDEO` (0x28): active video vertical start/end.
 pub const VI_V_VIDEO: u32 = 10;
-/// `VI_V_BURST` (0x2C): vertical colour-burst start/end.
+/// `VI_V_BURST` (0x2C): vertical color-burst start/end.
 pub const VI_V_BURST: u32 = 11;
 /// `VI_X_SCALE` (0x30): horizontal scale factor (framebuffer → screen).
 pub const VI_X_SCALE: u32 = 12;

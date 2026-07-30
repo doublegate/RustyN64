@@ -6,7 +6,7 @@ interface); Dillonb `n64-resources/rsp.md` (cited there); ADR 0002;
 `docs/audio.md`.
 
 This doc is the SPEC, not history — update it in the same PR as the code. Pin
-behaviour against **n64-systemtest's RSP category** and Dillonb's hardware-
+behavior against **n64-systemtest's RSP category** and Dillonb's hardware-
 verified RSP tests FIRST.
 
 ## Purpose
@@ -28,7 +28,7 @@ pub const SP_MEM_SIZE: usize = 4 * 1024; // DMEM and IMEM each
 pub trait RspBus {
     fn rdram_read(&self, addr: u32) -> u8;        // SP-DMA source/target
     fn rdram_write(&mut self, addr: u32, val: u8);
-    fn raise_sp_interrupt(&mut self);             // microcode signalled $MI
+    fn raise_sp_interrupt(&mut self);             // microcode signaled $MI
 }
 
 pub struct Rsp {
@@ -58,7 +58,7 @@ The
 struct fields of those names are **never written**. They are retained solely
 because removing them changes the save-state layout (ADR 0005 reserves that for
 an announced release). They remain **`pub` but `#[deprecated]`** — not private,
-since privatising them would itself be a breaking API change — so any read is a
+since privatizing them would itself be a breaking API change — so any read is a
 hard error under the workspace's warnings-as-errors.
 
 This is not a stylistic preference. Sampling the fields reports *"halted forever
@@ -81,7 +81,7 @@ diverge the moment either side writes, and nothing detects it.
 8 KiB **repeats** for the whole range up to `0x0404_0000`, where the SP registers
 begin (n64-systemtest `sp_memory::SW (out of bounds)` writes at `0x3E000` and
 reads the result back at offset 0). Folding the offset is therefore the
-behaviour, not a bounds-check standing in for one — recorded with its provenance
+behavior, not a bounds-check standing in for one — recorded with its provenance
 as accuracy ledger **C-30**, since the N64brew wiki documents only the first
 8 KiB and the mirroring rests on the oracle. Each bank wraps within its own
 4 KiB; nothing ever spills from one into the other.
@@ -453,7 +453,7 @@ DMEM index folds in the element field, the store's does not (ares SHV vs LHV).
 
 `LTV`/`STV` are the **transpose**: they touch a whole group of eight registers
 (`vt & ~7`), moving one lane into or out of each with a rotating byte offset and
-wraparound inside the 16-byte window, forming a diagonal. Modelled in a scratch
+wraparound inside the 16-byte window, forming a diagonal. Modeled in a scratch
 script and cross-checked before implementation.
 
 `LFV` is the "complicated" fractional load, and the one place ares and the suite

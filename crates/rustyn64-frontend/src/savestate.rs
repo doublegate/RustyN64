@@ -7,7 +7,7 @@
 //! default** — with it off the emulator is byte-identical to one built without
 //! it (the byte-identity contract).
 //!
-//! - [`EmuCore::snapshot`]/[`EmuCore::restore`] are the serialise/restore
+//! - [`EmuCore::snapshot`]/[`EmuCore::restore`] are the serialize/restore
 //!   primitives (bincode over the whole `System`; the ROM is re-attached).
 //! - [`RewindRing`] keeps a bounded ring of recent snapshots so the player can
 //!   step backwards.

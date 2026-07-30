@@ -26,7 +26,7 @@ could not run a cartridge at all.
 The "boot is a harness facility" rule conflated two different things:
 
 1. **The retail boot** — what a real N64 actually does at power-on (seed the IPL3 state or
-   run IPL1/IPL2, then jump into the cart's IPL3). This is emulation behaviour, and it is
+   run IPL1/IPL2, then jump into the cart's IPL3). This is emulation behavior, and it is
    deterministic (fixed, cited seeds; ledger C-32/C-33). Every consumer needs it.
 2. **The ELF direct-load** — a genuine *test shortcut*: n64-systemtest ships an ELF payload
    with no IPL3, so the harness places its program segments directly and seeds the handoff.
@@ -60,10 +60,10 @@ needing no `std` and no host time / RNG, so the determinism contract is intact.
   "frontend boot" and a "harness boot".
 - The `docs/engineering-lessons.md` §3.4 rule ("the core must not acquire a test load-path
   dependency") is **preserved and sharpened**: it applies to the ELF direct-load (a test
-  shortcut), not to the retail boot (real console behaviour). The earlier blanket "boot is a
+  shortcut), not to the retail boot (real console behavior). The earlier blanket "boot is a
   harness facility" phrasing is superseded by this ADR.
 - `rustyn64_core::boot::BootError` carries the cart parse error (`BootError::Cart`) so the
   frontend can report *why* a ROM failed to load, not just "too small".
-- No behaviour change to any existing test: the harness `hle_boot` wrapper reproduces the old
+- No behavior change to any existing test: the harness `hle_boot` wrapper reproduces the old
   dispatch exactly, and n64-systemtest (the ELF path) is unaffected (still `Failed: 0` on the
   Phase-1 categories; suite-wide count unchanged).

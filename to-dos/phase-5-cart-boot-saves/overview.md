@@ -13,7 +13,7 @@ and all four save backends. This is the phase after which the commercial corpus 
       `PI_STATUS`, and the per-domain `PI_BSD_DOMn_LAT`/`PWD`/`PGS`/`RLS` timing registers.
 - [ ] PI DMA is correct for both directions, including the alignment rules and the transfer
       length semantics, with the domain timing affecting duration.
-- [ ] Open-bus behaviour on unmapped PI reads matches hardware.
+- [ ] Open-bus behavior on unmapped PI reads matches hardware.
 - [ ] The SI registers behave: `SI_DRAM_ADDR`, `SI_PIF_AD_RD64B`, `SI_PIF_AD_WR4B`,
       `SI_PIF_AD_WR64B`, `SI_PIF_AD_RD4B`, and `SI_STATUS`.
 - [ ] The joybus protocol is implemented: `0xFF` reset/info, `0x00` info, `0x01` controller
@@ -72,7 +72,7 @@ so this phase is far easier to verify after Phase 3.
   already staged (Paper Mario, Majora's Mask, Pokemon Stadium) rather than synthetic writes.
 - **Save-type misdetection corrupts saves silently** — writing SRAM semantics into an EEPROM
   game destroys the file without an error. Mitigated by the per-game database resolution already
-  used to organise the corpus, with the heuristic fallback logged loudly.
+  used to organize the corpus, with the heuristic fallback logged loudly.
 - **PI domain timing looks ignorable** — it affects DMA duration, which affects the games that
   poll rather than wait for the interrupt. Mitigated by implementing the timing registers as
   timing, not as storage.

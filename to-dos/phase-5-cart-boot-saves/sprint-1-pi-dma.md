@@ -27,7 +27,7 @@ code reaches the CPU the way hardware delivers it.
 
 ### T-51-002 — PI DMA in both directions
 
-**Description:** implement cart-to-RDRAM and RDRAM-to-cart transfers, honouring the length
+**Description:** implement cart-to-RDRAM and RDRAM-to-cart transfers, honoring the length
 semantics and the alignment rules, and raising the PI interrupt on completion.
 
 **Acceptance criteria:**
@@ -35,7 +35,7 @@ semantics and the alignment rules, and raising the PI interrupt on completion.
 - [ ] Both directions transfer the correct bytes for every legal length.
 - [ ] The length-plus-one and alignment rules match hardware, including the misaligned cases.
 - [ ] The PI interrupt fires on completion and drives the MI.
-- [ ] Transfers occupy realistic time, so code that polls rather than waits behaves correctly.
+- [ ] Transfers occupy realiztic time, so code that polls rather than waits behaves correctly.
 
 **Dependencies:** T-51-001
 **Reference:** `n64brew_wiki/markdown/Peripheral Interface.md` §The PI Bus
@@ -43,10 +43,10 @@ semantics and the alignment rules, and raising the PI interrupt on completion.
 
 ---
 
-### T-51-003 — Domain timing and open-bus behaviour
+### T-51-003 — Domain timing and open-bus behavior
 
 **Description:** implement the per-domain `PI_BSD_DOMn_LAT`, `PWD`, `PGS`, and `RLS` timing
-registers so they affect transfer duration, and reproduce open-bus behaviour on unmapped reads.
+registers so they affect transfer duration, and reproduce open-bus behavior on unmapped reads.
 
 **Acceptance criteria:**
 

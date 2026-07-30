@@ -6,7 +6,33 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **The repo is now written in en-US throughout** — 1,505 spelling replacements
+  across 131 files, covering **51 word stems**: the `-our`/`-or`,
+  `-ise`/`-ize`, `-isation`/`-ization`, `-re`/`-er` and doubled-`-lled`
+  families, plus a dozen individual words. Prose, doc comments, assertion
+  messages, and private test-function names; **no public item was renamed**, so
+  there is no API change. Verified in advance that no CI job filters on an
+  affected test name and that no verbatim external quotation was altered.
+
+  Excluded, and why: `ref-docs/` (immutable research corpus — corrections land
+  as new dated files, never in-place rewrites), `n64brew_wiki/` (a CC BY-SA
+  mirror, quoted verbatim by design), `ref-proj/` (study clones),
+  `third_party/` (vendored libdragon — not our prose to edit). Two literals are
+  preserved because they are values rather than words: `lightgrey` in a
+  shields.io badge URL, and GitHub Actions' own `cancelled` run status.
+
 ### Added
+
+- `scripts/check_en_us.sh` plus an **`en-US spelling` CI job**, because a
+  one-off sweep decays — nothing fails when a single en-GB form returns, so it
+  survives review and the next one has precedent. This repo already has evidence
+  of that pattern: markdownlint runs in pre-commit only, and an MD040 violation
+  consequently sat unnoticed on `main`. The gate is mutation-checked in both
+  directions (it fails on the unswept tree and passes on the swept one), strips
+  allowed literals rather than skipping their whole line, and offers a
+  documented per-line `spell-exempt` escape hatch for quoted external values.
 
 - Two Angrylion conformance vectors closing out the RDP side of the mirrored-text
   hunt (R-18), taking the accuracy battery from 54 probes to **56 (43 RDP + 13
@@ -27,7 +53,7 @@ All notable changes to RustyN64 are documented here. The format is based on
 ### Fixed
 
 - Corrected two vector comments in `vectors-gen/driver.c` that described
-  `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel colour ramp.
+  `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel color ramp.
   Their goldens are solid texel 0: `dx.S = 1` is 1/32 of a texel per pixel in
   the s10.5 domain, so S never leaves the first texel. The vectors pass and
   still cover what they cover — but they never pinned a gradient, and nothing
@@ -60,7 +86,7 @@ not the RDP, where R-18 had been looking for months.
   whatever a machine happens to hold, so a percentage from it would describe a
   ROM collection while looking like an accuracy metric.
 - Both terms are load-bearing: Rayman 2 and Namco Museum 64 report **zero** RDP
-  commands with 123,540 and 137,681 lit pixels — uninitialised RDRAM, which a
+  commands with 123,540 and 137,681 lit pixels — uninitialized RDRAM, which a
   lit-pixel-only metric would score as a success.
 
 ### Added — Super Mario 64 renders its title screen (R-18 capstone)
@@ -69,7 +95,7 @@ not the RDP, where R-18 had been looking for months.
   tiled *SUPER MARIO 64* background. **125,278 RDP commands**, 138,474/148,125
   pixels lit at 625x237, through the full LLE path.
 - Banjo-Kazooie also renders real 3D geometry (**0 → 133,625** commands),
-  committed as a known-imperfect frame: geometry and textures right, colours
+  committed as a known-imperfect frame: geometry and textures right, colors
   carry a blue/yellow cast (open combiner/texel-format issue).
 
 ### Fixed — the PIF answered as a controller on every joybus channel (R-18)
@@ -117,13 +143,13 @@ not the RDP, where R-18 had been looking for months.
   boot, the game's own code, its graphics microcode on the LLE RSP, the DPC seam,
   the LLE RDP, and `Bus::scanout_scaled`. Committed as
   `screenshots/paper-mario-first-commercial-frame.png`.
-- **87 distinct RGBA5551 values** in the colour image, and the frame is fully
+- **87 distinct RGBA5551 values** in the color image, and the frame is fully
   lit on both scan-out paths — **75,840 / 75,840** at 320x237 through the 1:1
   `Bus::scanout`, **148,125 / 148,125** at 625x237 through the presented
   `Bus::scanout_scaled`. Held stably from frame 120 through 270 of a 300-frame
   run.
 - This falsifies R-18's headline claim. The earlier conclusion that "the RDP
-  rasterises real geometry to black" was **title-specific, not a pipeline
+  rasterizes real geometry to black" was **title-specific, not a pipeline
   defect** — the remaining gap is per-title coverage (Ocarina 27,651 commands but
   98% black clear; World Driver Championship 45 commands and one distinct value;
   Super Mario 64 and Banjo-Tooie zero commands).
@@ -145,13 +171,13 @@ not the RDP, where R-18 had been looking for months.
   lookup keyed off the tile's *format* field. That is wrong in both directions: a
   CI tile with `tlut_en` clear was still palette-mapped, and a non-CI tile with it
   set was not.
-- The oracle settled the `tlut_en = 0` behaviour instead of it being guessed:
+- The oracle settled the `tlut_en = 0` behavior instead of it being guessed:
   `ci4_tlut_disabled_16` is byte-identical to `tex_tri_ci4_tlut_16` apart from
   that one bit, and the goldens are **the full palette versus all black**.
 - `tlut_en` and `tlut_type` (bit 46) are now decoded and the lookup is gated.
   IA16 palettes remain **deferred** — the flag is decoded so it is no longer
   silently ignored, but the lookup still assumes RGBA16 and implementing IA16
-  without a vector would be inventing behaviour.
+  without a vector would be inventing behavior.
 - Battery is now **53 probes** (40 RDP + 13 VI); mutation-checked by removing the
   gate.
 
@@ -177,9 +203,9 @@ not the RDP, where R-18 had been looking for months.
 ### Fixed — "lit pixels" is not evidence of rendering (ledger R-18)
 
 - **No title produces a picture yet, and earlier entries here implied otherwise.**
-  The lit-pixel count reports non-black scanned-out pixels, and *uninitialised
+  The lit-pixel count reports non-black scanned-out pixels, and *uninitialized
   RDRAM is non-black*. Rogue Squadron and Jet Force Gemini score 90-92% lit with
-  4,790 and 6,203 distinct colours; rendered to PNG and **actually viewed, both
+  4,790 and 6,203 distinct colors; rendered to PNG and **actually viewed, both
   are pure noise**, and neither runs microcode at all.
 - This is the `retired > 1_000_000` failure repeated: a metric a broken machine
   satisfies as easily as a working one. It was quoted for weeks because nobody
@@ -187,18 +213,18 @@ not the RDP, where R-18 had been looking for months.
 - Video evidence now means one of two things only: a byte-comparison against a
   committed golden frame, or someone actually viewing the output. The capstone
   still reports the count as a diagnostic, never as a pass condition.
-- `screenshots/` stays empty, and the video gap is now **localised by census**.
+- `screenshots/` stays empty, and the video gap is now **localized by census**.
   Ocarina of Time's framebuffer is uniformly `0x0001` (RGBA5551 black + coverage),
   so the VI presents a genuinely black buffer and `scanout` is correct. A
   DPC-seam opcode census shows the real F3DEX stream arriving — **7,412
   Z-buffered `TRIANGLE`s**, 1,630 `TEXTURE_RECTANGLE`, 4,374 `LOAD_BLOCK`, 7,705
   `SET_TILE` and 1,589 `SET_COMBINE`, of 74,508 commands. Geometry and textures reach the RDP and the
-  frame still ends as the clear colour: **the RDP rasterises real geometry to
+  frame still ends as the clear color: **the RDP rasterizes real geometry to
   black**. Narrowed further by inspecting the RDP state: the **Z path is
   refuted** (`z_compare_en=false`), and the combiner decodes to
-  `(0 - 0) x 0 + TEXEL0` — a pure texture pass-through, so the pixel colour *is* the
+  `(0 - 0) x 0 + TEXEL0` — a pure texture pass-through, so the pixel color *is* the
   texel and a black frame means the **texel fetch resolves to 0**. The tiles are
-  `fmt=2, size=0` = **CI4** (colour-indexed via TLUT); both TMEM halves are
+  `fmt=2, size=0` = **CI4** (color-indexed via TLUT); both TMEM halves are
   populated (1,508/2,048 texture bytes, 760/2,048 TLUT bytes) and TLUT entry 0
   reads `0x0000`. That probe has been run and its result is **provisional**:
   replaying a CI4-with-TLUT vector, RustyN64 produced the full authored palette
@@ -206,13 +232,13 @@ not the RDP, where R-18 had been looking for months.
   Angrylion is the oracle, so the disagreement means the authored `Load Tlut`
   encoding is wrong — not that our decoder is right. The vector was deliberately
   **not committed**, since that golden would pin an authoring error as the spec.
-  CI4 was therefore weakly de-prioritised — **and is now genuinely eliminated**:
+  CI4 was therefore weakly de-prioritized — **and is now genuinely eliminated**:
   the `Load Tlut` encoding was verified against N64brew §0x30 (two errors found:
   `lower_right.s` is bits 23:12, and the TLUT tile must be 4-bit, not 16-bit),
   the vector re-authored, and **RustyN64 now matches Angrylion byte-for-byte**.
   `tex_tri_ci4_tlut_16` is committed (38 RDP vectors, 51 battery probes) and
   mutation-checked — the
-  colour-indexed path finally has oracle coverage it never had.
+  color-indexed path finally has oracle coverage it never had.
 - **A separate, independently real defect:** `Set Other Modes.tlut_en` — bit 47,
   N64brew *Reality Display Processor/Commands* §0x2F, with `tlut_type` at bit 46
   — is **not decoded at all**. Our TLUT lookup is driven purely by the tile's
@@ -250,7 +276,7 @@ not the RDP, where R-18 had been looking for months.
   (236), World Driver Championship (148).
 - No microcode-specific code path exists anywhere in the tree — F3DEX and its
   vendor variants run for the same reason libdragon's `rdpq` does. The
-  licence-clean CI-gated counterpart remains `tests/microcode.rs`.
+  license-clean CI-gated counterpart remains `tests/microcode.rs`.
 - Mutation-checked: stubbing `Rsp::tick` turns the witness red.
 
 ### Fixed — retail games now boot into their own code (ledger R-18)
@@ -296,18 +322,18 @@ not the RDP, where R-18 had been looking for months.
   wrote the `Set Fill Color` register whatever the cycle type. Only FILL and COPY
   do that on hardware; in 1-/2-cycle mode the rectangle is an ordinary primitive.
 - Established against the Angrylion oracle, not guessed: new vector
-  `fill_rect_1cycle_16` gives the rectangle a prim colour and a *deliberately
-  different* fill register, and the golden is the **prim** colour in all 64
+  `fill_rect_1cycle_16` gives the rectangle a prim color and a *deliberately
+  different* fill register, and the golden is the **prim** color in all 64
   pixels. Mutation-checked — reverting the guard reproduces the fill register
   against the golden, and only that vector regresses.
 - **Six existing tests were passing on this bug.** The five `fill_rectangle_*`
   unit tests and the `golden_frame` end-to-end test were named for FILL-mode
-  behaviour but never selected FILL mode; they now emit a `Set Other Modes` with
+  behavior but never selected FILL mode; they now emit a `Set Other Modes` with
   `cycle_type = FILL` and test what their names claim.
 - A second vector `fill_rect_2cycle_16` pins the **2-cycle** branch, which the
   1-cycle vector cannot reach: there `combine()` runs cycle 0 first and feeds its
   output to cycle 1 as `COMBINED`. Its combine makes each candidate outcome a
-  different colour, so the result is diagnostic rather than merely pass/fail.
+  different color, so the result is diagnostic rather than merely pass/fail.
 - Still open in R-21: the same question for a *flat* `Fill Triangle` (0x08), which
   selects the combiner on the presence of a shade/texture block rather than on the
   cycle type. No vector exercises it yet.
@@ -326,7 +352,7 @@ not the RDP, where R-18 had been looking for months.
   candidates**, because picking "the first" or "the largest" would silently boot a
   game the user did not choose.
 - Byte order is unaffected: extracted bytes go through the existing
-  `RomFormat::detect`, so a `.v64` inside a zip normalises identically.
+  `RomFormat::detect`, so a `.v64` inside a zip normalizes identically.
 - Treated as untrusted input — declared sizes are checked against a 64 MiB
   cartridge-space cap **before** allocating, the read is **independently**
   hard-capped so a lying header cannot exhaust memory, and nothing is written to
@@ -339,28 +365,28 @@ not the RDP, where R-18 had been looking for months.
   `#[ignore]`d test reads genuine ROM-set zips and asserts byte-identity with
   separately-extracted copies of the same games.
 
-### Added — the real microcode's command list now RASTERISES end to end (ADR 0002)
+### Added — the real microcode's command list now RASTERIZES end to end (ADR 0002)
 
 - **microcode → RDP → framebuffer, closed.** Every earlier microcode test stopped
   at "the microcode emitted the right bytes". The new
-  `the_microcode_generated_list_rasterises_to_the_expected_picture` runs the real
+  `the_microcode_generated_list_rasterizes_to_the_expected_picture` runs the real
   libdragon `rdpq` microcode on the LLE RSP, has it generate a complete RDP
   command list, then **executes that generated list on RustyN64's own RDP** and
   asserts the framebuffer. No hand-written RDP command takes part in the drawing.
-- This is the **licence-clean form** of the `v0.8.0` "custom-microcode families
+- This is the **license-clean form** of the `v0.8.0` "custom-microcode families
   render" goal: F3DEX and kin are proprietary and ship inside commercial ROMs, so
   they can never be committed or CI-gated (ADR 0008); `rdpq` is the only
   vendorable real N64 graphics microcode and is therefore the proxy.
-- Two `rdpq` behaviours in the emitted list were **predicted from the vendored
+- Two `rdpq` behaviors in the emitted list were **predicted from the vendored
   source before being observed**: `SetOtherModes` re-emits a `SET_SCISSOR` when
   the cycle type changes, and `SetColorImage` appends a `SET_FILL_COLOR` from its
   cached `RDPQ_FILL_COLOR`. The test asserts the exact 8-command count.
 - Mutation-checked: skipping the RDP execution leaves the red pre-fill sentinel
-  and fails; changing the queue's fill colour changes the picture and fails.
+  and fails; changing the queue's fill color changes the picture and fails.
 
 ### Added — AI bit-clock (`BC`) readback (ledger R-16)
 
-- **`AI_STATUS` `BC` (bit 16) is now modelled.** `AI_BITRATE` is documented as
+- **`AI_STATUS` `BC` (bit 16) is now modeled.** `AI_BITRATE` is documented as
   "half of bit clock period", and the bit clock as "the Video clock, divided by
   two, divided by one more than this number" — so a half-period is `BITRATE + 1`
   video clocks and BCLK toggles once per half-period. `BC` derives from the same
@@ -370,7 +396,7 @@ not the RDP, where R-18 had been looking for months.
   "(probably)" toggled per bit and "is believed" to be the BCLK line, because the
   CPU "cannot reliably sample it rapidly enough" — it is not CPU-observable. That
   is a limit on *software* sampling, not a claim that BC is unpinnable in
-  principle: an external logic-analyser probe could establish it. What is claimed
+  principle: an external logic-analyzer probe could establish it. What is claimed
   is only that no public capture is known and none is asserted. Two
   mutation-checked tests pin the documented relation and the stopped-clock case.
 
@@ -383,18 +409,18 @@ not the RDP, where R-18 had been looking for months.
   the ROM header's destination code (byte `0x3E`), and both boot paths apply it.
 - Three cases are decided **explicitly** rather than guessed, and pinned by name in
   the tests: `B` Brazil → NTSC (PAL-**M** is a 60 Hz standard), `C` China → NTSC (no
-  known retail N64), `A` "All" → NTSC. Every unrecognised byte also stays NTSC, so
-  unknown and homebrew codes are behaviour-preserving.
-- **Ungated, and labelled as such:** the destination characters are the N64brew ROM
+  known retail N64), `A` "All" → NTSC. Every unrecognized byte also stays NTSC, so
+  unknown and homebrew codes are behavior-preserving.
+- **Ungated, and labeled as such:** the destination characters are the N64brew ROM
   Header table, but the 50/60 Hz classification is the broadcast standard rather
   than an N64-documented fact, and no test ROM checks region detection — so this is
-  modelled and ledgered in the same posture as R-16/R-17, not claimed as verified.
+  modeled and ledgered in the same posture as R-16/R-17, not claimed as verified.
 
 ### Added — the accuracy battery is real (gap-analysis Stage C, `T-71-001`/`T-HARNESS-03`)
 
 - **`AccuracyScorer::default_battery_stub` → `default_battery`.** The battery no
   longer returns an empty probe set: it scores every committed Angrylion RDP
-  conformance vector across **two** oracle suites — 35 RDP rasteriser vectors
+  conformance vector across **two** oracle suites — 35 RDP rasterizer vectors
   (`rdp-conformance/<vector>`) and 13 VI scan-out vectors
   (`vi-conformance/<vector>`) — replayed through RustyN64 and compared against the
   oracle's golden output. Every expected value is externally defined — never
@@ -423,7 +449,7 @@ not the RDP, where R-18 had been looking for months.
   LOD pins the level to `max_level`, the pair straddles the mip boundary and
   collapses where there is nothing to blend toward, `detail_tex_en` shifts both one
   level finer, and indices wrap mod 8 (port of the tile-selection tail of Angrylion
-  `tclod_2cycle`). `lod_frac_of` is generalised to `lod_signals`, returning all four
+  `tclod_2cycle`). `lod_frac_of` is generalized to `lod_signals`, returning all four
   Angrylion outputs instead of discarding three. Validated byte-for-byte by
   `tex_tri_mip_tile_16` (three 1-texel tiles; the LOD selects tile 2, so the pixel is
   blue — green if the selection is ignored, mutation-verified), plus a hand-computed
@@ -451,8 +477,8 @@ not the RDP, where R-18 had been looking for months.
 ### Added — RDP mid-texel filter (gap-analysis Stage D, ledger R-13)
 
 - **`mid_texel` (Set Other Modes bit 44).** When set and a bilinear sample lands
-  exactly on the texel centre (`sfrac == tfrac == 0x10`), `bilinear_3point` now
-  averages the four neighbours (`t3 + ((((t1+t2)<<6) − (t3<<7) + ((!t3+t0)<<6) +
+  exactly on the texel center (`sfrac == tfrac == 0x10`), `bilinear_3point` now
+  averages the four neighbors (`t3 + ((((t1+t2)<<6) − (t3<<7) + ((!t3+t0)<<6) +
   0xc0) >> 8)`, Angrylion `tex.c` `center` case) instead of the 3-point triangle
   pick. Validated byte-for-byte against Angrylion by `tex_tri_mid_texel_16` over a
   non-planar checkerboard (a smooth gradient is planar, so bit 44 would be
@@ -477,23 +503,23 @@ not the RDP, where R-18 had been looking for months.
 - **`key_en` (Set Other Modes bit 40) chroma-keying.** `Set Key GB`/`R` now also
   store the per-channel `key_width`, and when `key_en` is set `Rdp::combine` takes
   the Angrylion `combiner_1cycle` key path: the RGB output is the sub-A chromabypass
-  colour and the pixel alpha is `chroma_key_min` over the pre-`>>8` 17-bit combined
-  colour and the key widths. The new behaviour is gated on `key_en`, so the common
+  color and the pixel alpha is `chroma_key_min` over the pre-`>>8` 17-bit combined
+  color and the key widths. The new behavior is gated on `key_en`, so the common
   combiner path is byte-identical (all 31 prior RDP conformance vectors unchanged).
   Validated byte-for-byte against Angrylion by `tex_tri_chromakey_alpha_16` (golden
-  `0x4321`, non-vacuous — clearing `key_en` outputs the combined colour) plus
+  `0x4321`, non-vacuous — clearing `key_en` outputs the combined color) plus
   mutation-checked unit tests. n64-systemtest impact: none. Still deferred under
   R-10: noise (un-oracled), the derivative `lod_frac`, and the YUV `K0`–`K3` convert.
 
 ### Added — RDP chroma-key combiner inputs (gap-analysis Stage D, ledger R-10)
 
 - **`Set Key GB` (0x2A) / `Set Key R` (0x2B) now decode** the per-channel chroma-key
-  centre and scale (bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`), and they
-  route through the combiner as **KeyCentre** (RGB sub-B select 6) and **KeyScale**
+  center and scale (bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`), and they
+  route through the combiner as **KeyCenter** (RGB sub-B select 6) and **KeyScale**
   (RGB mul-select 6) instead of reading zero. The key *width* (used only by the
   deferred chroma-key alpha compare) is not stored, matching the `min_level`
   precedent. Two mutation-checked unit tests pin the decode field positions
-  (`set_key_decodes_centre_and_scale_per_channel`) and the mux routing
+  (`set_key_decodes_center_and_scale_per_channel`) and the mux routing
   (`combine_cycle_routes_chroma_key`), and the `tex_tri_chromakey_16` conformance
   vector validates the path byte-for-byte end-to-end against Angrylion (RGBA5551
   `0x3b1f`, black if unwired). n64-systemtest impact: none (no RDP-combiner
@@ -533,7 +559,7 @@ not the RDP, where R-18 had been looking for months.
   machinery is now format-generic: a new primitive `Bus::vi_read_cov(x, y, bpp)`
   returns raw RGB8 + 3-bit coverage — 32-bit from alpha bits 7:5, **16-bit** from the
   9th-bit **hidden plane** (`((px & 1) << 2) | rdram_hidden`) — and the de-dither,
-  AA-edge, and divot filters (now `bpp`-parameterised) run identically on the
+  AA-edge, and divot filters (now `bpp`-parameterized) run identically on the
   5-bit→8-bit-unpacked channels. The 32-bit path is byte-identical (all prior vectors
   stay green). The hidden read reuses the existing `Bus::rdram_hidden` plane.
 - **`.vivec` format version 2** carries a trailing hidden-bits plane (one byte per
@@ -547,9 +573,9 @@ not the RDP, where R-18 had been looking for months.
 ### Added — VI divot median filter, slice 4e (gap-analysis Stage D, ledger R-5)
 
 - **The divot median filter** in `Bus::scanout_scaled`: with `divot_enable` (VI_CTRL
-  bit 4), a pixel whose 3 horizontal neighbours are not all fully covered takes the
+  bit 4), a pixel whose 3 horizontal neighbors are not all fully covered takes the
   per-channel median of the post-de-dither/AA-edge values of itself and its left/right
-  neighbours (Angrylion `divot_filter`); it passes through where all three are fully
+  neighbors (Angrylion `divot_filter`); it passes through where all three are fully
   covered. The coverage-exposing `vi_fetch32_cov` feeds it. Validated by `vi_divot_32`
   (`VI_STATUS = 0x00000013`) RGB byte-for-byte vs Angrylion, mutation-checked.
   n64-systemtest impact: not measured (`scanout_scaled` has no runtime driver). The
@@ -560,9 +586,9 @@ not the RDP, where R-18 had been looking for months.
 - **The AA edge filter** in `Bus::scanout_scaled`: a partial-coverage 32-bit pixel
   (`cvg < 7` under `aa_mode` 0/1) takes Angrylion's `video_filter32` — it gathers the
   fully-covered pixels among its 6 diagonal/two-away taps, takes the per-channel
-  penultimate min/max (`vi_video_max`, ported verbatim), and pulls the centre toward
+  penultimate min/max (`vi_video_max`, ported verbatim), and pulls the center toward
   their midpoint weighted by `(7 - cvg)/8`. Validated by `vi_aa_edge_32`
-  (`VI_STATUS = 0x00000003`, every 4th source column partial, coloured so interior
+  (`VI_STATUS = 0x00000003`, every 4th source column partial, colored so interior
   pixels distinguish filtering from a raw fetch) RGB byte-for-byte vs Angrylion,
   mutation-checked. n64-systemtest impact: not measured (`scanout_scaled` has no
   runtime driver). The divot median and 16-bit coverage path remain later slices.
@@ -572,8 +598,8 @@ not the RDP, where R-18 had been looking for months.
 - **Per-pixel coverage read + the de-dither filter** in `Bus::scanout_scaled`: under
   `aa_mode` 0/1 a 32-bit pixel's coverage comes from its alpha bits 7:5, and a
   fully-covered pixel (`cvg == 7`) with `dither_filter_enable` (VI_CTRL bit 16) takes
-  Angrylion's `restore_filter32` — an 8-tap (3×3 minus centre) ±1 nudge toward each
-  neighbour's top-5-bit channel value. Validated by `vi_dedither_32`
+  Angrylion's `restore_filter32` — an 8-tap (3×3 minus center) ±1 nudge toward each
+  neighbor's top-5-bit channel value. Validated by `vi_dedither_32`
   (`VI_STATUS = 0x00010003`, all `cvg == 7`, 1:1 scale) RGB byte-for-byte vs Angrylion,
   mutation-checked. The AA-edge (`cvg < 7`) and divot filters, and the 16-bit coverage
   path, remain later slices.
@@ -611,7 +637,7 @@ not the RDP, where R-18 had been looking for months.
 
 - **A hardware-accurate VI scan-out with `VI_X_SCALE`/`VI_Y_SCALE` resampling**,
   `Bus::scanout_scaled`, replacing the 1:1 copy's geometry. Slice 1 covers the
-  nearest-neighbour path (`aa_mode = REPLICATE`): the 2.10 fixed-point accumulator
+  nearest-neighbor path (`aa_mode = REPLICATE`): the 2.10 fixed-point accumulator
   (`line_x = x_offs >> 10`, source index `stride*srcY + srcX`), the NTSC 108-px
   horizontal overscan (`h_start -= 108`) with the `minhpass`/`maxhpass` crop and the
   `PRESCALE 640×625` clamp, and the truncating RGBA5551→8 conversion the VI uses
@@ -628,7 +654,7 @@ not the RDP, where R-18 had been looking for months.
 ### Added — register-sourced exotic combiner inputs (gap-analysis Stage D, ledger R-10)
 
 - **`PRIM_LOD_FRAC` and the `Set Convert` `K4`/`K5` constants now route through the
-  colour combiner** instead of reading zero. `Set Prim Color` extracts
+  color combiner** instead of reading zero. `Set Prim Color` extracts
   `prim_lod_frac` from its word-0 low byte (`min_level`, bits 12:8, stays deferred —
   it lands with its LOD consumer); the new `Set Convert`
   (`0x2C`) dispatch extracts `K4`/`K5` (raw 9-bit, `lo[17:9]`/`lo[8:0]`). The
@@ -643,7 +669,7 @@ not the RDP, where R-18 had been looking for months.
   (`combine_cycle_routes_prim_lod_frac`, `combine_cycle_routes_convert_k4_k5`). Still
   open (read as zero until their
   machinery exists): noise, the derivative-computed `lod_frac`, the chroma-key
-  centre/scale, and the YUV convert `K0`–`K3` coefficients.
+  center/scale, and the YUV convert `K0`–`K3` coefficients.
 
 ### Added — 2-cycle second texel (`tile+1`) (gap-analysis Stage D, ledger R-13)
 
@@ -659,11 +685,11 @@ not the RDP, where R-18 had been looking for months.
 
 ### Added — bilinear mask-wrap seam (gap-analysis Stage D, ledger R-13)
 
-- **The bilinear neighbour texel now handles the mask-wrap seam** (`sdiff`/`tdiff`).
+- **The bilinear neighbor texel now handles the mask-wrap seam** (`sdiff`/`tdiff`).
   It was a hardcoded `base + 1`; `mask_coupled` ports Angrylion `tcmask_coupled`:
   `+1` normally, `0` at a wrap seam (the "duplicate the last texel" quirk), `-base`
-  at a mirror-off period end (the neighbour wraps to 0), `-1` in a mirrored half —
-  the neighbour is `base + diff`, not re-masked. `sample_axis` now returns the diff;
+  at a mirror-off period end (the neighbor wraps to 0), `-1` in a mirrored half —
+  the neighbor is `base + diff`, not re-masked. `sample_axis` now returns the diff;
   the point sampler is unaffected (it drops it). Validated byte-for-byte against
   Angrylion by `tex_tri_bilinear_wrap_16` (a 2-texel `mask_s = 1` tile whose seam
   column blends the *wrapped* texel, not an unloaded one) plus a mutation-checked
@@ -671,7 +697,7 @@ not the RDP, where R-18 had been looking for months.
 
 ### Added — 3-point bilinear texture filter (gap-analysis Stage D, ledger R-13)
 
-- **The N64's characteristic 3-point (triangular) bilinear filter is modelled**
+- **The N64's characteristic 3-point (triangular) bilinear filter is modeled**
   (`Set Other Modes.sample_type`, bit 45). `bilinear_3point` blends the four texels
   `(s,t)/(s+1,t)/(s,t+1)/(s+1,t+1)` by `upper = (sfrac+tfrac) & 0x20`: the lower-left
   triangle uses `t0,t1,t2`, the upper-right `t3,t2,t1` with inverted fractions, each
@@ -699,7 +725,7 @@ not the RDP, where R-18 had been looking for months.
   `tex_tri_clamp_16` (`clamp_s`, `S` past `SH` → the last texel repeats) and
   `tex_tri_wrap_16` (`mask_s = 2` → the texture wraps) — plus a mutation-checked
   `sample_coord` unit test. A self-asserted unit test that had baked in the
-  transform-less behaviour (no tile size) was corrected to set a valid `SH`/`TH`.
+  transform-less behavior (no tile size) was corrected to set a valid `SH`/`TH`.
 
 ### Added — 4-bit (I4) textures oracle-validated (gap-analysis Stage D, ledger R-7)
 
@@ -739,7 +765,7 @@ not the RDP, where R-18 had been looking for months.
   documented two-regime model plus an honest provisional charge.
 - **I-cache fill = 46 PClocks = `M_DCACHE_FILL + 6`**, the UM's 8-word I-line vs
   2-word D critical-doubleword (Table 11-2 − 11-1). `M_ICACHE_FILL` is *defined* as
-  that expression, so the two constants cannot desynchronise. Both charges verified by
+  that expression, so the two constants cannot desynchronize. Both charges verified by
   first-party cached-miss microbenches (D 39.99, I 46.05 PClocks). The I-cache
   stall is charged behind a `#[cfg(not(test))]` seam — active in real execution
   and integration tests, skipped in the CPU crate's own pipeline units (an
@@ -783,7 +809,7 @@ not the RDP, where R-18 had been looking for months.
 
 ### Changed — documentation reconciliation (gap-analysis Stage A)
 
-- **Reconciled the status docs to the v0.7.0 state** (no behaviour change).
+- **Reconciled the status docs to the v0.7.0 state** (no behavior change).
   Corrected stale "stub" claims for subsystems that now execute: the RSP module
   doc (`rustyn64-rsp` — the vector unit runs), the scheduler comments
   (`Rsp::tick`/`Rdp::tick`), and `docs/STATUS.md` (the "What is stubbed" table,
@@ -815,7 +841,7 @@ the committed homebrew ROMs through the real LLE VI/AI/SI paths, and save-state
 restore is bit-identical (proven on a booted **commercial** ROM). A commercial
 title does **not** yet reach a rendered frame — it boots and executes real code
 but scans out nothing, the cross-subsystem VI-vblank / RI-registers / F3DEX
-gap tracked as accuracy-ledger **R-18**, deferred to the Phase 3/7 rasteriser +
+gap tracked as accuracy-ledger **R-18**, deferred to the Phase 3/7 rasterizer +
 microcode work. This ships on the demonstrated-playable path plus an honest
 ledgered gap, not a faked commercial pass.
 
@@ -823,7 +849,7 @@ ledgered gap, not a faked commercial pass.
 
 - **The emulator runs in a browser** (`src/wasm.rs`, `#[wasm_bindgen(start)]`,
   built with `trunk` from `web/index.html`). A 2D-canvas demo boots a committed
-  licence-clean homebrew ROM (`render_fill.z64`), runs one emulated frame per
+  license-clean homebrew ROM (`render_fill.z64`), runs one emulated frame per
   `requestAnimationFrame`, and blits the VI scan-out to a `<canvas>` through
   `web-sys` `ImageData` (`EmuCore::frame_rgba`) — proving the LLE core runs and
   renders in the browser. `EmuCore::load_bare_metal_demo` cold-loads the ROM
@@ -847,9 +873,9 @@ ledgered gap, not a faked commercial pass.
   byte-identical. Hotkeys: **F2** save, **F4** load, **Backspace** rewind;
   `Config` gains `rewind` + `run_ahead`.
 
-### Added — save-state serialisation (Phase 6, Sprint 2)
+### Added — save-state serialization (Phase 6, Sprint 2)
 
-- **The whole machine state is now serde-serialisable** (ADR 0004): `serde`
+- **The whole machine state is now serde-serializable** (ADR 0004): `serde`
   `Serialize`/`Deserialize` derives across every state type in `rustyn64-cpu`,
   `-rsp`, `-rdp`, `-audio`, `-cart`, and `-core` (`System`/`Bus`/`Vi`), so a
   `System` round-trips through any serde format. The chip crates stay `#![no_std]`
@@ -859,8 +885,8 @@ ledgered gap, not a faked commercial pass.
   boxed *arrays* serde's built-in impls don't cover — keeping the field types and
   hot-path indexing unchanged.
 - **The cartridge ROM is excluded from snapshots** (`#[serde(skip)]`): it is
-  immutable and up to 64 MiB, so serialising it in every snapshot would make the
-  rewind ring enormous. A restore deserialises an empty ROM and the caller
+  immutable and up to 64 MiB, so serializing it in every snapshot would make the
+  rewind ring enormous. A restore deserializes an empty ROM and the caller
   re-attaches the loaded image via `Cart::reattach_rom` (a save-state is valid
   alongside the same ROM — the normal emulator contract).
 - **Bit-identical restore is proven by a two-run trace compare**
@@ -875,7 +901,7 @@ ledgered gap, not a faked commercial pass.
   `real_pif_boot`, `cic_seed`, and a `BootError` are now core APIs the frontend and the test
   harness both consume. Only the ELF direct-load (an n64-systemtest test shortcut) stays in
   the harness, which keeps a thin `hle_boot` wrapper for the ELF dispatch and re-exports the
-  rest — no behaviour change to any existing test (n64-systemtest Phase-1 categories still
+  rest — no behavior change to any existing test (n64-systemtest Phase-1 categories still
   `Failed: 0`).
 - **`EmuCore::load_rom` now HLE-boots the ROM**, so the shell actually runs a game. Before
   this it did `Cart::load` + `reset`, leaving the CPU at the PIF reset vector `0xBFC0_0000`
@@ -930,7 +956,7 @@ accuracy-ledger **R-18**, deferred to a later phase and outside the Phase 5 cart
 failing-assertion count from **93 → 90** (−3), measured with the committed runner
 (`cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`; 917 tests
 started, 90 failing; Phase-1 categories still `Failed: 0`). The commercial-boot capstone is
-characterised honestly: a commercial ROM **boots and executes** real code (hundreds of millions
+characterized honestly: a commercial ROM **boots and executes** real code (hundreds of millions
 of retired instructions) but does not yet reach video — a cross-subsystem VI/RI/F3DEX gap ledgered
 as **R-18**, deferred to a later phase, and outside the Phase 5 cart boundary (ADR 0003).
 
@@ -947,9 +973,9 @@ as **R-18**, deferred to a later phase, and outside the Phase 5 cart boundary (A
   N64brew *PIF-NUS* table) use the **corrected** IPL2-seed byte, which the real IPL2 consumes.
 - **The PIF-SM5 boot command handshake** (`Pif::boot_command`): the seed hand-off, the `0x10`
   ROM lockout, and the `0x20`/`0x40` checksum acquire/ack/run, with an NMI freeze on a genuine
-  mismatch (`Bus::boot_nmi_halt`, gated in the scheduler). Modelled behaviourally from the
+  mismatch (`Bus::boot_nmi_halt`, gated in the scheduler). Modeled behaviorally from the
   documented protocol; the SM5 firmware is not run and the 6105 X105 running challenge is not
-  modelled (neither is needed to boot). Ledgered as **C-33**.
+  modeled (neither is needed to boot). Ledgered as **C-33**.
 - **Validated locally:** every save-type representative (6102/6103/6105 CICs) boots through the
   real IPL1→IPL2→IPL3 chain to game execution in RDRAM, with the IPL2 checksum matching the
   hardware-documented CIC value — off by default, local-only, never CI-gated (the PIF ROM is
@@ -1015,7 +1041,7 @@ a pre-v0.4.0 world. No code changed; the emulator behaves identically to v0.4.0.
 
 - **`docs/STATUS.md`**: the RDP is no longer described as a stub — the "other chip crates are
   LLE-shaped stubs" line, the DPC-registers row, and the `RDP LLE` roadmap row now record the
-  working rasteriser; the release-infrastructure lines record `v0.1.0`–`v0.4.0` as tagged and
+  working rasterizer; the release-infrastructure lines record `v0.1.0`–`v0.4.0` as tagged and
   released rather than "no tag has been cut".
 - **`README.md`**: the Compatibility & Accuracy table adds the two passing Phase 3 gates (RDP
   conformance vs Angrylion, real-ROM golden frame) and reclassifies real-game visual goldens to
@@ -1024,7 +1050,7 @@ a pre-v0.4.0 world. No code changed; the emulator behaves identically to v0.4.0.
 - **`to-dos/ROADMAP.md`**: the phase matrix marks Phase 2 (v0.3.0) and Phase 3 (v0.4.0) COMPLETE,
   the Status block advances to Phase 4, and the v1.0.0 milestone records the tags cut so far.
 - **`to-dos/VERSION-PLAN.md`**: records four releases cut, with the RDP now executing.
-- **`docs/rdp.md`** and **`docs/architecture.md`**: the rasteriser / RDP `tick` are marked
+- **`docs/rdp.md`** and **`docs/architecture.md`**: the rasterizer / RDP `tick` are marked
   implemented rather than stubbed.
 - **Phase 0–3 plan files**: completion banners added; Phase 2's nine met exit criteria and the
   Sprint 1/Sprint 4 checklists are checked off (the SU/VU dual-issue timing box stays honestly
@@ -1032,7 +1058,7 @@ a pre-v0.4.0 world. No code changed; the emulator behaves identically to v0.4.0.
   and the superseded ADR 0001 3:2-clock criterion is annotated; Phase 3's exit criteria and
   Sprint 3 review checklist are reconciled with their ledgered residuals (R-9/R-10/R-11).
 
-## [0.4.0] - 2026-07-23 "Rasteriser"
+## [0.4.0] - 2026-07-23 "Rasterizer"
 
 The first release that produces a picture. The LLE RDP renders through the per-pixel
 pipeline and the VI scans it out. **Both cut criteria are met** ([`to-dos/VERSION-PLAN.md`](to-dos/VERSION-PLAN.md)
@@ -1051,7 +1077,7 @@ real-ROM frame, and cartridge boot.
 - **Textured triangles now match Angrylion**, closing the long-`#[ignore]`d
   `tex_tri_16` divergence. Two root causes, both fixed together: (1) the texture
   triangle vectors used `Set Other Modes` with `bi_lerp0 = 0`, which selects the
-  RDP's YUV colour-convert texture path — with the convert coefficients unset it
+  RDP's YUV color-convert texture path — with the convert coefficients unset it
   zeroes an RGBA texel, so Angrylion rendered an all-black triangle (a vector bug,
   not a core gap); the vectors now set `bi_lerp0 = 1`. (2) RustyN64's
   `interpolate_st` used the interpolated coordinate `v >> 16` directly as the texel
@@ -1104,7 +1130,7 @@ real-ROM frame, and cartridge boot.
 ### Fixed — FILL Fill Rectangle lower-right edge is inclusive (Phase 3, R-3)
 
 - **`Fill Rectangle` now draws its lower-right boundary pixel**, matching the
-  Angrylion oracle. The rasteriser previously used a half-open span with a
+  Angrylion oracle. The rasterizer previously used a half-open span with a
   `(coord + 3) >> 2` ceil on the lower-right, which dropped the final row and
   column of a rectangle whose lower-right lands on an integer pixel boundary. The
   RDP convention is **inclusive** of the pixel containing the lower-right
@@ -1122,7 +1148,7 @@ real-ROM frame, and cartridge boot.
   `curate_fuzz_candidates` dev-tool (replays a candidate batch and partitions it
   into pass/fail) plus a `fuzz_corpus_matches_angrylion` gate that replays every
   committed vector under `tests/vectors/fuzz/`. Only candidates that already match
-  the oracle are committed, so an unmodelled corner is dropped rather than baked
+  the oracle are committed, so an unmodeled corner is dropped rather than baked
   in. Three families are committed (**144 vectors**): **48 FILL rectangles** (seed
   `0x1234`, full-image scissor — surfaced the R-3 rectangle-edge bug), **48
   scissor-clip rectangles** (seed `0x5c15`, an independent scissor sub-rect —
@@ -1134,14 +1160,14 @@ real-ROM frame, and cartridge boot.
   floors, and the `--fuzz` arguments are validated (a malformed seed/count fails
   loudly rather than emitting nothing).
 
-### Added — combiner primitive-colour mux conformance vector (Phase 3)
+### Added — combiner primitive-color mux conformance vector (Phase 3)
 
-- **The combiner primitive-colour mux is now validated against Angrylion.** A new
-  `prim_combiner_32` conformance vector sets the primitive colour (`Set Prim Color`,
-  RGBA `0x224466FF`) and routes it through the colour combiner (`rgb_d = a_d = prim`)
+- **The combiner primitive-color mux is now validated against Angrylion.** A new
+  `prim_combiner_32` conformance vector sets the primitive color (`Set Prim Color`,
+  RGBA `0x224466FF`) and routes it through the color combiner (`rgb_d = a_d = prim`)
   while filling a triangle over a 32-bit RGBA8 target, with a *distinct* flat vertex
   shade (`0x112233`) that must NOT appear in the output. Because the golden frame shows
-  the primitive colour and not the shade, the vector discriminates the prim mux from the
+  the primitive color and not the shade, the vector discriminates the prim mux from the
   shade path, closing an already-implemented but never-oracle-validated combiner input.
   RustyN64 matches the Angrylion golden byte-for-byte; no core change was required. The
   passing corpus grows to 18 vectors (+1 ignored WIP).
@@ -1153,7 +1179,7 @@ real-ROM frame, and cartridge boot.
   rectangle, `composite_frame.rs` drives a small scene — a FILL-mode blue background
   plus a 1-cycle red shaded triangle drawn over it — through the RDP and the VI
   scan-out, and pins the 8×8 RGBA8 result against a committed golden hash. It
-  exercises the Sprint-3 rasteriser features (FILL, cycle-type switching, the
+  exercises the Sprint-3 rasterizer features (FILL, cycle-type switching, the
   combiner, sub-pixel-coverage shaded triangles) composed into one frame, asserts
   the frame contains both background and foreground pixels (a genuine picture, not a
   flat fill), and renders the scene twice to prove bit-identical output
@@ -1163,7 +1189,7 @@ real-ROM frame, and cartridge boot.
 
 ### Added — cvg_dest = full coverage write-back (Phase 3, R-9)
 
-- **The `cvg_dest = full` coverage write-back mode is now modelled.** `pixel_coverage`
+- **The `cvg_dest = full` coverage write-back mode is now modeled.** `pixel_coverage`
   stores full coverage (`7`) when `Set Other Modes` `cvg_dest = 2`, instead of the
   clamp `(count - 1) & 7`, so a partially-covered edge pixel gets the full RGBA5551
   alpha bit. Validated byte-for-byte against Angrylion by a new `cvg_dest_full_16`
@@ -1179,7 +1205,7 @@ real-ROM frame, and cartridge boot.
   the no-Z and depth shaded/textured triangle paths. `alpha_compare_passes` kills a
   pixel whose combiner output alpha is below the `Set Blend Color` alpha threshold
   (evaluated before coverage overwrites the alpha byte; `>=` passes). On the depth
-  path the gate `continue`s before both the colour write and the z-write — observably
+  path the gate `continue`s before both the color write and the z-write — observably
   equivalent to the RDP's pre-depth ordering because the compare is depth-independent.
   Validated byte-for-byte against Angrylion by two conformance vectors:
   `alpha_compare_16` (a flat-red triangle whose shade alpha ramps across X,
@@ -1206,7 +1232,7 @@ real-ROM frame, and cartridge boot.
 - **The copy-mode Texture Rectangle path is now validated against Angrylion.** A new
   `tex_rect_copy_16` vector preloads a 4×2 16-bit texture (v2 `.rvec` preload), loads
   it into TMEM with `Load Tile`, and blits it 1:1 (`DsDx = 4.0`, `DtDy = 1.0`) into a
-  4×2 colour image with `Set Other Modes` cycle type = COPY. Copy mode blits texels
+  4×2 color image with `Set Other Modes` cycle type = COPY. Copy mode blits texels
   straight from TMEM to the framebuffer — **no combiner, no 1-cycle texel pipeline** —
   so it sidesteps the gaps exposed by the currently ignored `tex_tri_16` triangle
   vector, and RustyN64 matches Angrylion byte-for-byte. This is the **first texture path checked
@@ -1214,7 +1240,7 @@ real-ROM frame, and cartridge boot.
   round-trip). A second copy vector, `tex_rect_offset_16`, blits the same texture
   to an **offset** sub-rectangle (2,2)..(5,3) of an 8×8 image (the rest background),
   exercising the `XH`/`YH` destination positioning and the surrounding-pixel
-  behaviour. A third, `tex_rect_8x8_16`, blits a full **8×8** gradient texture
+  behavior. A third, `tex_rect_8x8_16`, blits a full **8×8** gradient texture
   (64 texels, tile stride `line = 2`, all eight rows) 1:1 into an 8×8 image,
   exercising the copy load + blit at a larger scale. 13 conformance vectors now
   pass (+ 1 ignored WIP).
@@ -1236,19 +1262,19 @@ real-ROM frame, and cartridge boot.
   a coordinate-scale claim, then a "malformed vector" claim that came from reading an
   earlier *shade* vector's debug output). The vector is well-formed: Angrylion
   configures the tile, advances the S coordinate, and fetches texel 0 = red
-  correctly — but its output differs because of two RDP behaviours RustyN64 omits:
+  correctly — but its output differs because of two RDP behaviors RustyN64 omits:
   the **1-cycle TEXEL0 pipeline** (a `texel0/texel1` swap before the combine, so a
   1-cycle `TEXEL0` passthrough is pipelined, not the just-fetched texel) and the
   **s10.5 texel-coordinate scale** (Angrylion point-samples texel 0 across the
   triangle while RustyN64's `v >> 16` advances a texel per pixel). See ledger R-13;
-  modelling these is the follow-up. A `TEX_BLOCK` generator macro joins `SHADE_BLOCK`
+  modeling these is the follow-up. A `TEX_BLOCK` generator macro joins `SHADE_BLOCK`
   / `Z_SUFFIX`.
 
 ### Added — conformance corpus: Gouraud-gradient vector + generator macros (Phase 3, T-33-005)
 
 - **The conformance corpus grows to 10 vectors, and the generator is hardened
   against the short-block bug.** A new `shade_grad_tri_32` vector is the first to
-  exercise shade *interpolation* (not a flat colour): a Gouraud gradient with a
+  exercise shade *interpolation* (not a flat color): a Gouraud gradient with a
   per-x red delta (`dx.R = -0x10`/pixel) and a per-major-edge green delta
   (`de.G = +0x08`/scanline). It passes byte-for-byte against Angrylion, validating
   `interpolate_shade` (base + dx + de, i16 snap) against the oracle for the first
@@ -1260,7 +1286,7 @@ real-ROM frame, and cartridge boot.
 
 ### Added — ordered RGB dither (Phase 3, T-33-004 2c)
 
-- **The rasteriser now applies the RDP's ordered RGB dither.** After the combiner
+- **The rasterizer now applies the RDP's ordered RGB dither.** After the combiner
   (and blender), each pixel's RGB is dithered by the 4×4 ordered matrix selected by
   `Set Other Modes` — magic (mode 0, the hardware default), bayer (mode 1), or off
   (mode 3, "constant 7"). `apply_rgb_dither` is a bit-exact port of Angrylion
@@ -1292,7 +1318,7 @@ real-ROM frame, and cartridge boot.
 
 ### Added — sub-pixel coverage on 1-/2-cycle triangles (Phase 3, T-33-004 2c)
 
-- **1-cycle/2-cycle triangles now rasterise with sub-pixel coverage.** The
+- **1-cycle/2-cycle triangles now rasterize with sub-pixel coverage.** The
   edge-walk computes per-Y-subpixel `s.3` edges (`quantize_x`), and each pixel's
   coverage is evaluated with `compute_coverage`: with anti-aliasing off a pixel
   draws only when its top-left sub-sample is inside the span (so a fractional
@@ -1328,7 +1354,7 @@ real-ROM frame, and cartridge boot.
 
 ### Added — the RDP conformance gate + a bug it immediately caught (Phase 3, T-33-005)
 
-- **The ParaLLEl-RDP / Angrylion conformance gate is live.** A licence-clean
+- **The ParaLLEl-RDP / Angrylion conformance gate is live.** A license-clean
   golden-vector pipeline: a standalone driver (`crates/rustyn64-test-harness/vectors-gen/`,
   our own MIT code) runs the **Angrylion** software RDP (the non-commercial
   study oracle, fetched into gitignored `ref-proj/`, never vendored) over
@@ -1337,7 +1363,7 @@ real-ROM frame, and cartridge boot.
   freely committable. `tests/rdp_conformance.rs` replays each command stream
   through RustyN64's own RDP and asserts a byte-for-byte match. A FILL-rectangle
   vector passes (proving the pipeline and byte order end to end).
-- **The gate immediately found a real rasteriser bug.** Its second vector — a
+- **The gate immediately found a real rasterizer bug.** Its second vector — a
   flat Fill Triangle — exposed that `triangle_fill` multiplies the per-pixel edge
   slope (`DxHDy`/`DxMDy`/`DxLDy`) by the sub-scanline offset in **quarter-pixel**
   units without the compensating `>> 2`, so every triangle edge advances **4× too
@@ -1363,7 +1389,7 @@ real-ROM frame, and cartridge boot.
   masks, the sticky bit, negative-coordinate shift) derived from the oracle's
   arithmetic — **not** from this implementation's own output.
 - **Scope (ledger R-9):** these are the pure, oracle-verified primitives; the
-  rasteriser still unions the four sub-scanlines into a whole-pixel bounding span,
+  rasterizer still unions the four sub-scanlines into a whole-pixel bounding span,
   so `compute_coverage` has **no runtime caller yet**. Wiring it in changes every
   triangle's edge pixels (the exact top-left-sample rule kills a degenerate top row
   the union approximation drew), so the pixel-inclusion rewrite — and its re-derived
@@ -1375,10 +1401,10 @@ real-ROM frame, and cartridge boot.
 
 - **The RDP blends translucent triangles against the framebuffer.** `depth_span`
   now reads the destination pixel (`read_pixel`, the inverse of `write_pixel` for
-  both RGBA8888 and RGBA5551) and routes the combiner colour through `blend` when
+  both RGBA8888 and RGBA5551) and routes the combiner color through `blend` when
   the depth test enables blending — gated on `Set Other Modes` `force_blend`, which
   mirrors the reference blender's `!blend_en` fast-path so opaque pixels keep the
-  combiner colour and only translucent (or, later, AA-edge) pixels blend with memory.
+  combiner color and only translucent (or, later, AA-edge) pixels blend with memory.
   This gives `blend` its first runtime caller (closing part of ledger R-11). Verified
   by a translucent-triangle integration test: a shaded triangle (combiner → red,
   alpha `0x80`) over a green background blends 50/50 to `0x7F7F00`, proving the
@@ -1392,7 +1418,7 @@ real-ROM frame, and cartridge boot.
   (bit 51) is set, `interpolate_st` now interpolates `S`/`T`/`W` and runs the
   hardware perspective divide — a faithful port of ParaLLEl-RDP's `perspective_divide`
   (`perspective.h`): the 64-entry reciprocal LUT (`perspective_get_lut`), the
-  normalisation shift, the `temp_mask` out-of-bounds saturation, the `w <= 0` carry,
+  normalization shift, the `temp_mask` out-of-bounds saturation, the `w <= 0` carry,
   and the 17-bit clamp. `TexSetup` gains the `W` channel and `decode_texture` reads
   it; `OtherModes` gains `persp_tex_en`. Validated by a hand-computed
   `perspective_divide` test (the LUT reciprocal/shift at `w = 0x4000`/`0x2000`, the
@@ -1417,17 +1443,17 @@ real-ROM frame, and cartridge boot.
 
 ### Added — the first shaded triangle (Phase 3, T-33-004 PR-B part 2b)
 
-- **The RDP renders shaded triangles through the colour combiner.** `Fill Shaded
+- **The RDP renders shaded triangles through the color combiner.** `Fill Shaded
   Triangle` (opcode bit 58) now decodes the 8-word shade coefficient block
   (`decode_shade`: RGBA base + per-x/per-major-edge deltas, `s15.16`), and each
-  pixel's colour comes from the combiner fed the interpolated shade
+  pixel's color comes from the combiner fed the interpolated shade
   (`interpolate_shade`, a port of ParaLLEl-RDP's `interpolate_rgba` snap) rather
-  than the FILL register — the combiner's first runtime caller. The colour is packed
+  than the FILL register — the combiner's first runtime caller. The color is packed
   to the framebuffer format (`write_pixel`: RGBA8888 direct, RGBA5551 for 16-bit).
   This works standalone and combined with the depth test. Verified by a
-  `decode_shade`/`interpolate_shade` unit test (hand-computed base colour) and a
+  `decode_shade`/`interpolate_shade` unit test (hand-computed base color) and a
   shaded-triangle integration test that renders the combiner output, not the FILL
-  colour. Scope: this closes the R-9 flat-fill for shaded triangles; texture
+  color. Scope: this closes the R-9 flat-fill for shaded triangles; texture
   (texel0/1) and the memory-read blender are the next 2b/2c slices, and the `dz`
   and sub-pixel coverage remain first-cut. Oracle stays 93.
 
@@ -1439,12 +1465,12 @@ real-ROM frame, and cartridge boot.
   depth test/update, run the real per-pixel path: `interpolate_z` computes each
   pixel's 18-bit depth (a faithful port of ParaLLEl-RDP's `interpolate_z` snap for
   the full-coverage case), `depth_test` compares it against the Z buffer, and only
-  passing pixels write colour (`zbuffer_write` stores the new depth when `z_update`
+  passing pixels write color (`zbuffer_write` stores the new depth when `z_update`
   is set). This gives the depth machinery and Z-buffer storage built earlier their
   first runtime caller. Verified by an occluding-triangles test — a nearer triangle
   draws, a farther one is rejected, a nearer-still one overwrites (both the accept
   and reject paths), plus a hand-computed `interpolate_z` unit test. Scope (ledger
-  R-9/R-12): the colour still comes from the FILL register (the combiner/blender
+  R-9/R-12): the color still comes from the FILL register (the combiner/blender
   routing and sub-pixel edge coverage are parts 2b/2c); `dz` derivation is a first
   cut. `Set Combine Mode`/non-Z triangles are unaffected. Oracle stays 93 (no
   systemtest ROM drives rendering yet).
@@ -1494,7 +1520,7 @@ real-ROM frame, and cartridge boot.
   to the 5-bit blend weights (the `+ 1` on the `M` term is real hardware). 1-cycle
   mode uses blend cycle 0 alone; 2-cycle feeds cycle 0's RGB forward as cycle 1's
   pixel input. `Set Blend Color` (0x39) and `Set Fog Color` (0x38) latch the
-  colour registers. Cross-verified against the wiki and ParaLLEl-RDP (MIT) and
+  color registers. Cross-verified against the wiki and ParaLLEl-RDP (MIT) and
   unit-tested bit-for-bit on hand-computed values. Scope (ledger R-11): the
   anti-aliased-edge divider LUT, memory-alpha blend-shift, alpha-compare, dither,
   `color_on_cvg`, and coverage write-back are decoded but unused until the pixel
@@ -1502,30 +1528,30 @@ real-ROM frame, and cartridge boot.
   `blend` gains that runtime caller in the 2b-blend entry above; the oracle stays
   93 (no systemtest drives the render path).
 
-### Added — the colour combiner (Phase 3, T-33-002)
+### Added — the color combiner (Phase 3, T-33-002)
 
-- **The RDP evaluates the colour combiner.** `Set Combine Mode` (0x3C) decodes
+- **The RDP evaluates the color combiner.** `Set Combine Mode` (0x3C) decodes
   the 16 RGB/alpha `A/B/C/D` input selects for both cycles, and `combine`
   evaluates `(A − B) * C + D` per channel with the RDP's fixed-point rules — the
   asymmetric 9-bit `special_expand` for `A/B/D`, a plain 9-bit `C`, a `+0x80`
   rounding bias before the `>> 8`, `D` added unscaled, and the 9-bit clamp fold.
   1-cycle mode uses only cycle 1; 2-cycle chains cycle 0 into cycle 1's
   `Combined`. `Set Prim Color` (0x3A) and `Set Env Color` (0x3B) latch the
-  constant-colour registers. Cross-verified against the wiki and ParaLLEl-RDP
+  constant-color registers. Cross-verified against the wiki and ParaLLEl-RDP
   (MIT) and unit-tested bit-for-bit on hand-computed values. Scope (ledger R-10):
   the common inputs are wired; the exotic inputs (noise, LOD fraction, key/convert
   constants) read as zero until that state lands. `combine` gains its runtime
   caller in the shaded/textured-triangle entries above; the oracle stays 93 (no
   systemtest drives the render path).
 
-### Added — the flat-fill triangle rasteriser (Phase 3, T-33-001)
+### Added — the flat-fill triangle rasterizer (Phase 3, T-33-001)
 
-- **The RDP rasterises triangles.** `Fill Triangle` (0x08) and its shade/texture/Z
+- **The RDP rasterizes triangles.** `Fill Triangle` (0x08) and its shade/texture/Z
   variants (0x09–0x0F) are decoded and flat-filled: the three edges (major `H`
   yh→yl, minor `M` yh→ym, minor `L` ym→yl) are walked per sub-scanline
   (`s11.2` Y, `s11.16` X, `s13.16` slopes), the span between the major edge and
   the active minor edge is reduced to whole pixels and scissor-clipped, and the
-  FILL-mode colour is written — the foundation every later per-pixel ticket
+  FILL-mode color is written — the foundation every later per-pixel ticket
   renders through. `lmajor`/flip selects the fill direction. The edge-walk and
   the fixed-point decode are cross-verified against the N64brew wiki and
   ParaLLEl-RDP (MIT) and pinned by a right-triangle golden. Scope (ledger R-9):
@@ -1537,13 +1563,13 @@ real-ROM frame, and cartridge boot.
 ### Added — the first textured picture: copy-mode Texture Rectangle (Phase 3, T-32-004)
 
 - **The RDP draws a texture.** `Texture Rectangle` (0x24) blits a tile into the
-  colour image in copy mode — the first textured picture and the close of Sprint
+  color image in copy mode — the first textured picture and the close of Sprint
   2's texture path. `wrap_coord` turns a raw `s10.5` coordinate into a
   tile-relative texel via shift → subtract-`SL` → mirror → mask (the copy-mode
   order, no clamp), matched to the ParaLLEl-RDP layout. The rectangle steps `S`
   across X (scaled by the 4-pixels-per-cycle factor so a 1:1 blit's `DsDx = 4.0`
   is one texel/pixel) and `T` down Y, copying the raw 16-bit texel into the
-  colour image, scissor-clipped. This is the first **two-word** command: `tick`
+  color image, scissor-clipped. This is the first **two-word** command: `tick`
   now passes the command's RDRAM base to `dispatch` so multi-word handlers read
   their later words. Validated by a round-trip identity test (a `Load Tile`
   texture blitted back reproduces the source byte-for-byte) plus a `wrap_coord`
@@ -1564,7 +1590,7 @@ real-ROM frame, and cartridge boot.
   routing. YUV16 and 4-bit *loading* remain deferred (R-7); 4-bit *fetch* is done.
   The `Load TLUT` base is written wherever `tmem_addr` points (the upper-half /
   alignment rule is a programmer requirement, not a hardware rejection — enforcing
-  one would invent behaviour). Oracle unchanged at 93 (`fetch_texel` gains its
+  one would invent behavior). Oracle unchanged at 93 (`fetch_texel` gains its
   runtime callers in the texture-rectangle and textured-triangle entries; no
   systemtest drives the render path).
 
@@ -1603,7 +1629,7 @@ real-ROM frame, and cartridge boot.
   frame is byte-exact and its FNV-1a hash matches a committed golden
   (`compare_to_golden`) — so any regression in the command decoder, the FILL
   pipeline, or the VI scan-out changes the frame and fails the test.
-  Mutation-checked (changing the fill colour fails it). The frame comes from a
+  Mutation-checked (changing the fill color fails it). The frame comes from a
   synthetic command stream rather than a commercial ROM (cartridge boot is Phase
   5); the path from the DP FIFO onward is identical.
 
@@ -1667,9 +1693,9 @@ real-ROM frame, and cartridge boot.
 
 - **The RDP writes solid rectangles into the framebuffer.** `Set Color Image`
   (0x3F), `Set Fill Color` (0x37), `Set Scissor` (0x2D), and `Fill Rectangle`
-  (0x36) now dispatch, so a FILL-mode rectangle writes the fill colour into RDRAM,
-  clipped to the scissor. Per pixel size: 32-bit writes the whole colour, 16-bit
-  alternates the colour's halves (even = upper, odd = lower), 8-bit writes byte
+  (0x36) now dispatch, so a FILL-mode rectangle writes the fill color into RDRAM,
+  clipped to the scissor. Per pixel size: 32-bit writes the whole color, 16-bit
+  alternates the color's halves (even = upper, odd = lower), 8-bit writes byte
   `x & 3` — i.e. the 32-bit fill value repeated verbatim. A 4-bit target is
   skipped (it crashes the real RDP). Byte-for-byte unit-tested at 8/16/32-bit and
   for four-edge scissor clipping; the clip and half-selection are mutation-checked.
@@ -1682,11 +1708,11 @@ real-ROM frame, and cartridge boot.
 ### Added — the DP FIFO command decoder (Phase 3, T-31-001)
 
 - **`Rdp::tick` drains the DP FIFO.** It decodes the command at `DPC_CURRENT`,
-  recognises every opcode `0x00`–`0x3F` from the N64brew command map, and
+  recognizes every opcode `0x00`–`0x3F` from the N64brew command map, and
   advances the pointer by each command's **full length** — one command per
   scheduler tick — so a multi-word primitive (a triangle, a texture rectangle)
   is consumed whole and the stream never desyncs. No opcode is rasterized yet:
-  each command is recognised, its length consumed, and a retired-work counter
+  each command is recognized, its length consumed, and a retired-work counter
   (`commands_processed`) incremented; dispatch and the fill pipeline follow.
 - **Length rules** (`rustyn64_rdp::command`): one 64-bit word for every command
   except the variable-length **Fill Triangle** forms (`0x08`–`0x0F`, a 4-word
@@ -1708,13 +1734,13 @@ real-ROM frame, and cartridge boot.
   mask) is covered by a core integration test that drives a real `Sync Full`
   command through `rdp_tick`.
 - **`Sync Load`/`Pipe`/`Tile` (0x26/0x27/0x28) stall the pipeline** for their
-  documented fixed, unconditional GCLK counts (25/50/33), modelled by a `stall`
+  documented fixed, unconditional GCLK counts (25/50/33), modeled by a `stall`
   countdown that holds the FIFO until it expires (one `tick` = one GCLK). These
   are documented constants (N64brew command map), cited in code rather than
   fitted — no accuracy-ledger entry.
 - **Oracle effect:** n64-systemtest failing-assertion count unchanged at 93
   suite-wide (same as `v0.3.0`) — sync dispatch flips no assertion, as the
-  remaining failures need the RDP rasteriser (Phase 3) or cart/PIF (Phase 5).
+  remaining failures need the RDP rasterizer (Phase 3) or cart/PIF (Phase 5).
 
 ## [0.3.0] — 2026-07-22 — "Microcode"
 
@@ -1736,7 +1762,7 @@ cargo test -p rustyn64-test-harness --test microcode
 
 Phase 1's criteria remain met (CPU/COP0/TLB/COP1 `Failed: 0` and the ares
 golden-log 0-diff). The 93 assertions that still fail suite-wide are cart/PIF
-(Phase 5) and the RDP rasteriser (Phase 3), each that phase's criterion.
+(Phase 5) and the RDP rasterizer (Phase 3), each that phase's criterion.
 
 ### Added — the LLE RSP scalar + vector units (#35–#43)
 
@@ -1912,7 +1938,7 @@ signal: the flag is now decided in one place instead of being re-derived per exi
 
 `EntryHi`'s tag keeps every bit `PageMask` does **not** cover. It was stored as `VA / pair_size`,
 which clears the tag's *low* bits — right for all six legal page sizes, since those are contiguous
-runs from bit 13, and wrong once a canonicalised mask has a hole. `0b11_11_11_11_00` covers bits
+runs from bit 13, and wrong once a canonicalized mask has a hole. `0b11_11_11_11_00` covers bits
 22:15 and leaves 14:13 alone; division cannot express that.
 
 The tag is now held **in place**, masked rather than divided, so `vpn2_of` and the read-back agree by
@@ -1929,7 +1955,7 @@ becomes `0b11` and `0b01` is discarded.
 
 The natural implementation — keep the value, mask to 24:13 — is wrong in both directions and
 silently so: it accepts page sizes the hardware has no encoding for, and reports back a mask that
-was never stored. Canonicalisation happens on **write**, which is where the information is actually
+was never stored. Canonicalization happens on **write**, which is where the information is actually
 lost. Mutation-checked: replacing it with the plain mask turns the new test red.
 
 **Phase 1's categories: 7 → 6.**
@@ -1948,7 +1974,7 @@ not exist.
 
 **Phase 1's categories: 11 → 7.**
 
-### Fixed — integer-to-float conversion honours `FCSR.RM`
+### Fixed — integer-to-float conversion honors `FCSR.RM`
 
 `CVT.S.W`, `CVT.S.L`, `CVT.D.W` and `CVT.D.L` were each a Rust `as` cast plus a round-trip inexact
 check. `as` rounds to nearest-even *unconditionally*, so the mode was ignored — while the round-trip
@@ -2148,7 +2174,7 @@ one. The previous model assembled a value from two registers' low halves — whi
 perfectly through `DMTC1`/`DMFC1` and is still wrong, because hardware never touches the odd
 register.
 
-Two more behaviours fell out of the same tests: a single-precision **arithmetic** result *clears*
+Two more behaviors fell out of the same tests: a single-precision **arithmetic** result *clears*
 the other half of its destination while `MTC1`/`LWC1` *preserve* it (now `write_s_arith` vs
 `write_s`), and `MOV.S` moves **all 64 bits** rather than the formatted half.
 
@@ -2181,7 +2207,7 @@ and the root is exact precisely when `q * q == n`, so that comparison **is** the
 ### Added — the unmaskable unimplemented-operation cause for subnormals
 
 The VR4300 has no subnormal datapath: rather than producing a subnormal it raises `FCSR.Cause.E`
-(bit 17) and traps. Now modelled for a subnormal operand, a subnormal result with `FCSR.FS` clear,
+(bit 17) and traps. Now modeled for a subnormal operand, a subnormal result with `FCSR.FS` clear,
 a subnormal result with `FS` set but underflow/inexact enabled, and an MSB-clear NaN operand. With
 `FS` set and those enables clear it flushes — to `±0` under nearest and toward-zero, but to the
 smallest **normal** of that sign under a mode that rounds away from zero.
@@ -2193,10 +2219,10 @@ zero failures; the `CVT.W`/`CVT.L` families fell off the list. Accuracy ledger *
 
 ### Fixed — `ABS`/`NEG` are not sign flips, and are not `MOV`
 
-They classify their operand — Invalid on a signalling NaN, unimplemented on a subnormal or
+They classify their operand — Invalid on a signaling NaN, unimplemented on a subnormal or
 MSB-clear NaN — and they **replace** `FCSR.Cause`, whereas `MOV` transports the bits and leaves
 `FCSR` untouched. Treating all three alike was worth 52 assertions. The earlier finding that `MOV`
-must not touch `Cause` stands; it just does not generalise to its neighbours.
+must not touch `Cause` stands; it just does not generalize to its neighbors.
 
 ### Added — the COP1 compares and conversions, and a corrected NaN convention
 
@@ -2213,13 +2239,13 @@ wrong would be invisible whenever `RM` happened to match.
 
 ### Fixed — the VR4300 NaN convention is inverted from IEEE-754:2008
 
-A NaN is **signalling** when its significand's MSB is **set** — the legacy MIPS convention, the
+A NaN is **signaling** when its significand's MSB is **set** — the legacy MIPS convention, the
 opposite of IEEE-754:2008. `0x7FC0_0000`, which Rust produces as `f32::NAN` and everything else
 calls quiet, raises Invalid on this processor.
 
 Established from the oracle's own expectations, which name their constants the IEEE way and then
-assert the opposite behaviour; corroborated independently by the fact that the VR4300's default
-NaN *result* is `0x7FBF_FFFF` (MSB clear), which under IEEE would be a signalling NaN that
+assert the opposite behavior; corroborated independently by the fact that the VR4300's default
+NaN *result* is `0x7FBF_FFFF` (MSB clear), which under IEEE would be a signaling NaN that
 re-traps on first use, and under this convention is an ordinary quiet one.
 
 **n64-systemtest: 1,468 → 1,098**, taking the compare block from 42 failures apiece to **zero
@@ -2407,8 +2433,8 @@ The suite expects `Context = 0x0052_0000` for `BadVAddr = 0xA400_1A42`, exactly
 `(BadVAddr >> 13) << 4`. `EntryHi` stays TLB-gated — it is the TLB's own match register, and
 writing it on an address error would corrupt the entry a later `TLBWR` installs.
 
-**4. `SP_STATUS` was unmodelled and read as zero**, claiming a running RSP. The RSP comes out of
-reset **halted**; only that power-on `halt` bit is modelled, which is honest about the RSP still
+**4. `SP_STATUS` was unmodeled and read as zero**, claiming a running RSP. The RSP comes out of
+reset **halted**; only that power-on `halt` bit is modeled, which is honest about the RSP still
 being an LLE-shaped stub while no longer asserting something false.
 
 With these, `StartupTest` and the whole unaligned-access group pass, and the suite proceeds through
@@ -2434,7 +2460,7 @@ after a `0x10`-byte transfer it expects `PI_CART_ADDR` to have moved by `0x10`, 
 length of 1 (a two-byte transfer) by `0x2`. Failure count 2,909 to 2,907.
 
 **8. SP DMA was entirely unimplemented.** `SP_RD_LEN`/`SP_WR_LEN` now move data between RDRAM and
-SPMEM, honouring the packed length word — bits 11:0 bytes-per-row minus one, 19:12 rows minus one,
+SPMEM, honoring the packed length word — bits 11:0 bytes-per-row minus one, 19:12 rows minus one,
 31:20 the RDRAM-side inter-row skip. Treating the word as a plain byte count transfers megabytes
 for a routine 8-byte copy; reading only bits 11:0 silently drops every row after the first, which
 is the failure mode for anything doing a 2D block copy. `SP_MEM_ADDR` bit 12 selects IMEM, and the
@@ -2506,8 +2532,8 @@ return a value **and the `FCSR` flags they raised** — rather than mutating `FC
 
 Three distinctions that are easy to collapse, each pinned:
 
-- **Signalling vs quiet NaN.** Only a signalling NaN raises Invalid. IEEE puts the quiet bit at the
-  top of the mantissa, so `is_nan()` cannot tell them apart, and treating every NaN as signalling
+- **Signaling vs quiet NaN.** Only a signaling NaN raises Invalid. IEEE puts the quiet bit at the
+  top of the mantissa, so `is_nan()` cannot tell them apart, and treating every NaN as signaling
   raises Invalid on ordinary quiet-NaN propagation. The bit sits at a different position for `f64`,
   so the double case is not a free consequence of the single one.
 - **`x/0` vs `0/0`.** `DivByZero` and Invalid are different flags and a handler distinguishes them;
@@ -2522,13 +2548,13 @@ writing only one leaves software unable to distinguish "raised now" from "raised
 **`C.cond.fmt` derives all sixteen conditions from the bit encoding** rather than enumerating
 mnemonics. The 4-bit field is systematic (UM Table 7-11): bit 3 raises Invalid when unordered, and
 bits 2/1/0 select less / equal / unordered. So `C.EQ` is 2, `C.OLT` is 4, `C.OLE` is 6, and every
-signalling variant is its ordinary form plus 8. Sixteen hand-written cases invites getting one
+signaling variant is its ordinary form plus 8. Sixteen hand-written cases invites getting one
 wrong; deriving them makes all sixteen correct or none.
 
 Two things that fall out of the encoding and are worth stating: **`Greater` matches no bit** —
 `fs > ft` is "none of less, equal or unordered", which is why three condition bits suffice — and
-**the signalling forms raise Invalid on a merely quiet NaN**, which is the entire difference
-between `C.EQ` and `C.SEQ` and means the quiet/signalling test used elsewhere is not sufficient
+**the signaling forms raise Invalid on a merely quiet NaN**, which is the entire difference
+between `C.EQ` and `C.SEQ` and means the quiet/signaling test used elsewhere is not sufficient
 here on its own.
 
 **Conversions** (`CVT`, and the shared rounding the `ROUND`/`TRUNC`/`CEIL`/`FLOOR` forms use)
@@ -2538,7 +2564,7 @@ carry one VR4300-specific rule worth calling out. UM §7.5.2:
 > (`CVT.[S,D].L`), bits 63:55 of the 64-bit integer must be all zeroes or ones, otherwise the
 > VR4300 processor raises a floating-point instruction exception."*
 
-That is a **hardware limitation, not IEEE behaviour** — the value is representable and the
+That is a **hardware limitation, not IEEE behavior** — the value is representable and the
 processor simply declines. Converting it anyway produces a *correct* number where hardware traps,
 so software's fixup path never runs and the divergence surfaces far downstream from its cause. It
 raises `Unimplemented` (`FCSR` bit 17), which is deliberately **not** Invalid: "this processor
@@ -2554,15 +2580,15 @@ Two implementation notes that bit during development:
   implement and that no MIPS mode selects. This crate is `no_std`, so `trunc`/`floor`/`ceil`/
   `round_ties_even` are implemented here rather than pulling in `libm` for four functions.
 
-**The FP multiplication erratum is modelled, deliberately not reproduced.** `fpu::Stepping` says
+**The FP multiplication erratum is modeled, deliberately not reproduced.** `fpu::Stepping` says
 which console this is, and `mul_erratum_triggers` says when the erratum would fire — but selecting
 the affected stepping changes **no arithmetic**, because *what wrong value the erratum produces
-has never been characterised*. The trigger is documented, the affected steppings are documented,
+has never been characterized*. The trigger is documented, the affected steppings are documented,
 the output is not; it sits in the timing supplement's undocumented-constants list.
 
 Inventing a plausible wrong value would be exactly the fitted-constant failure the ledger's
 preamble forbids — every later result built on it would stop being evidence. Recorded as ledger
-**U-7**. The switch exists now so that when the output *is* characterised it goes in one place
+**U-7**. The switch exists now so that when the output *is* characterized it goes in one place
 rather than being threaded through afterwards.
 
 Four of five mutations fail the suite. The fifth — `ABS` written as `f32::abs` rather than an
@@ -2592,7 +2618,7 @@ progressing):
 | `ISViewer` | 6,000,000+ | no exceptions, **no output yet** |
 
 The suite therefore still does not report a count: it runs cleanly but does not reach its
-reporting stage, which points at further unimplemented hardware (VI/RSP initialisation) rather
+reporting stage, which points at further unimplemented hardware (VI/RSP initialization) rather
 than at the channel. Recorded as a measurement rather than a claim of progress toward `Failed: 0`.
 
 ### Added — the PI DMA engine (T-14-001), pulled forward from Phase 5
@@ -2609,7 +2635,7 @@ bite both pinned:
   corrupts the *last* byte of every block — which presents as memory corruption rather than as a
   DMA bug, and so gets debugged in the wrong place.
 - **`RD`/`WR` are named from the cartridge's point of view**, so `PI_WR_LEN` — the one everything
-  actually uses — moves data **cart → RDRAM**. Reversed, the first ROM load writes uninitialised
+  actually uses — moves data **cart → RDRAM**. Reversed, the first ROM load writes uninitialized
   RDRAM over the ROM image.
 
 **Review found four defects in the first version, two of them serious**, and all four are now
@@ -2725,7 +2751,7 @@ it. Caught in review, where the first version's *comment* described the distinct
 ignored it and the test asserted the wrong side of it.
 
 **The cache depth question is answered explicitly, and the answer is zero.** Phase 1 listed
-"how exact must the cache model be" as an open question. Cache *contents* are not modelled at all,
+"how exact must the cache model be" as an open question. Cache *contents* are not modeled at all,
 so invalidate and write-back have nothing to act on — which is observationally sound **only**
 because no cache state exists to become stale. Recorded as ledger **D-5**, together with the point
 it stops being sound: Phase 5, when cart/RSP DMA writes land in RDRAM behind a cache games
@@ -2751,7 +2777,7 @@ without `CU0` still raises.
 
 A valid-but-unimplemented COP1 encoding decodes to `Cop1Unimplemented`, **not** `Reserved`, and
 does not raise when `CU1` is set. That makes Sprint 3's arithmetic an addition rather than a
-behaviour change; raising here would look correct until the FPU landed.
+behavior change; raising here would look correct until the FPU landed.
 
 All seven mutations were confirmed to fail the suite.
 
@@ -2759,7 +2785,7 @@ All seven mutations were confirmed to fail the suite.
 
 32 fully-associative joint-TLB entries mapping even/odd page pairs, plus the **two-entry
 instruction micro-TLB** in front of it. A micro-TLB miss is a **stall** (3 PCycles); a JTLB miss
-is an **exception**. Modelling only the JTLB would not approximate that cost — it deletes the
+is an **exception**. Modeling only the JTLB would not approximate that cost — it deletes the
 structure the cost occurs in.
 
 `KUSEG`, `KSSEG` and `KSEG3` are now genuinely TLB-mapped. Previously they were masked to their
@@ -2823,7 +2849,7 @@ and cannot drift from the master clock. `Cpu::tick_at` is the seam. The schedule
 doc comment predicted this exact split and is now correct rather than aspirational.
 
 **`IP7` is latched**, not a level: `Count == Compare` sets it and only a `Compare` write clears it
-(UM §6.4.18, p. 200). The first version of this modelled it as a level tied to the equality, which
+(UM §6.4.18, p. 200). The first version of this modeled it as a level tied to the equality, which
 looked tidier and was wrong — the existence of a *documented* clearing mechanism is itself the
 evidence that it latches, since a level would self-clear and need none. Worse, a level silently
 **drops** any timer interrupt raised while `EXL` is set, because the equality holds for one tick
@@ -2898,13 +2924,13 @@ CP0 bypass interlock in terms of a write reaching WB while the next instruction 
 Doing both in EX would make that interlock unexpressible — the same mistake ADR 0007 exists to
 prevent one level up.
 
-Undocumented behaviour is marked as such rather than invented: reserved registers 7/21–25/31
+Undocumented behavior is marked as such rather than invented: reserved registers 7/21–25/31
 (ledger U-1) and `PRId.Rev` (U-3) are explicit guesses with tests pinning the *choice*, not the
 hardware. All nine mutations of the mask and width tables were confirmed to fail the suite.
 
 ### Added — `LL` / `SC` / `LLD` / `SCD`, closing a Sprint 1 gap (T-11-003)
 
-The synchronisation pair was listed in T-11-003's acceptance criteria and in the Phase 1 exit
+The synchronization pair was listed in T-11-003's acceptance criteria and in the Phase 1 exit
 criteria, and had **not** been implemented — the four opcodes decoded to `Reserved`. Found while
 verifying Sprint 1's criteria against the code rather than against the ticket's own checkboxes.
 
@@ -2932,7 +2958,7 @@ these are in prose. CEN64's 2 is therefore corroboration rather than the origin.
 
 Ledger entries C-2 and C-3 are reclassified from *not yet measured* to documented-with-citation,
 C-7 is added for ITM, and the general lesson is recorded as `docs/engineering-lessons.md` §3.3b:
-*"undocumented" is a claim about a document, and unlike a claim about behaviour, nothing ever
+*"undocumented" is a claim about a document, and unlike a claim about behavior, nothing ever
 fails when it is wrong* — so it spreads between files and licenses fitted constants. The
 `ref-docs/` correction lands as a new dated supplement, since that corpus is immutable.
 
@@ -2972,7 +2998,7 @@ exhaustive and does not include stores: *"set by the LL instruction, cleared by 
 tested by the SC instruction"* (UM §3.1). `SC` is a **tester, not a clearer** — clearing it there
 looks right, matches other architectures, and makes the second iteration of an `LL`/`SC` retry
 loop fail forever. Now pinned by `sc_does_not_clear_the_link_bit`, and all five mutations of the
-new behaviour were checked to fail the suite before the tests were kept.
+new behavior were checked to fail the suite before the tests were kept.
 
 `ERET` is the one thing that does clear it, and it arrives with the exception model in Sprint 2;
 until then nothing clears the bit, which `docs/cpu.md` now states rather than leaving implied.
@@ -3019,10 +3045,10 @@ ADR 0004 said "same seed + ROM ⇒ bit-identical output" and nothing checked it.
 - **Reset is reproducible** regardless of what ran before it.
 - **A source-level guard** rejects `std::time`, `SystemTime`, `Instant::now`, `getrandom`,
   `thread::spawn`, `HashMap` and `HashSet` anywhere in the core crates. Deliberately *not*
-  behavioural: such dependencies are intermittent, so a run-twice test can pass for months
+  behavioral: such dependencies are intermittent, so a run-twice test can pass for months
   before the first divergence. This fails on the commit that introduces one, naming file and line.
 
-The content hash is FNV-1a rather than `DefaultHasher`, whose output is randomised per process
+The content hash is FNV-1a rather than `DefaultHasher`, whose output is randomized per process
 — using it would have made the determinism test itself nondeterministic.
 
 Mutation-tested: ignoring the seed fails the second test, and naming a banned construct in any
@@ -3031,7 +3057,7 @@ core crate fails the fourth.
 ### Added — the documented errata are recorded and pinned (T-11-005)
 
 `docs/cpu.md` gains a **"reproduced, not corrected"** section stating each VR4300 erratum as
-intended behaviour, with the manual-vs-hardware divergence spelled out and the pinning test
+intended behavior, with the manual-vs-hardware divergence spelled out and the pinning test
 named. The manual documents none of these; the wiki is the only source.
 
 - `SRA`/`SRAV` leak the upper 32 bits — **all consoles**, never known to be fixed.
@@ -3046,7 +3072,7 @@ All four errata guards are **mutation-tested**: "correcting" `sra` per the manua
 **The FP multiplication bug is deferred to Sprint 3** and recorded rather than silently dropped.
 It needs COP1, and it is the only erratum that is *not* universal — NUS-01/02/03 only — so it
 also needs the console revision as a machine parameter. Its exact corrupted output is
-undocumented and will have to be characterised against hardware.
+undocumented and will have to be characterized against hardware.
 
 ### Added — the first ROM actually runs (T-11-006)
 
@@ -3075,7 +3101,7 @@ the sentinel. The test therefore also asserts the PC entered the test subroutine
 plausible number of instructions retired. Mutation-tested: pointing the subroutine address
 somewhere unreachable fails it with "this is a vacuous pass".
 
-The test **skips rather than fails** when the ROM is absent — Dillon's suite has no licence, so
+The test **skips rather than fails** when the ROM is absent — Dillon's suite has no license, so
 it is external-tier and CI has no copy. A gate that is red by default stops being read.
 
 ### Added — branches, jumps, and the trap family (T-11-004)
@@ -3085,7 +3111,7 @@ The full control-flow set: `J`/`JAL`/`JR`/`JALR`, every conditional branch inclu
 
 **The delay slot now does real work**, and the reverse cascade turns out to make it fall out
 cleanly. By the time `EX` resolves a branch, `IC` has already fetched the delay slot — that *is*
-the architectural delay slot, not a modelling artefact. Because `EX` runs before `IC` in the same
+the architectural delay slot, not a modeling artifact. Because `EX` runs before `IC` in the same
 cycle, writing the target to `next_pc` in `EX` makes the very next fetch land on it with exactly
 one delay slot in between. No wrong-path fetch needs squashing.
 
@@ -3135,7 +3161,7 @@ have cost real debugging time, and a dependency the plan had wrong.
   the T-11-004 branch/jump family. The n64-systemtest goal moves to T-11-009 in Sprint 2.
 - Two prerequisites nobody had written down are now acceptance criteria: **KSEG0/KSEG1 segment
   stripping** (nothing does it today, so no ROM can execute) and a **direct-load path**. Also
-  recorded that Dillon's suite has no licence, so its test must **skip** rather than fail when
+  recorded that Dillon's suite has no license, so its test must **skip** rather than fail when
   the ROM is absent.
 - T-11-008 notes that fitting `M` needs a ROM that runs long enough to measure — realistically
   n64-systemtest's default-off `timing` set, which is Sprint 2. The transaction model is Sprint
@@ -3168,7 +3194,7 @@ never fire, which is what the integration test caught. Mutation-tested.
 The pipeline stops moving empty latches and starts running programs.
 
 - `decode.rs` — MIPS III decode for the integer subset. **Total**: every 32-bit pattern decodes
-  to something, with anything unrecognised becoming `Op::Reserved` rather than panicking. A guest
+  to something, with anything unrecognized becoming `Op::Reserved` rather than panicking. A guest
   can execute arbitrary bytes. Unimplemented opcodes decode to `Reserved` (which raises a
   reserved-instruction exception) rather than to a `NOP`, so a missing opcode is loud instead of
   silently producing wrong results.
@@ -3207,7 +3233,7 @@ T-11-002 and follow separately.
   MIPS III and the most common source of emulator bugs in it, since it stays invisible until
   software inspects the upper half.
 - The `MFHI`/`MFLO` hazard is recorded as a **non-interlocked** two-instruction window producing
-  hardware's wrong result — modelling it as a stall would add timing hardware does not have *and*
+  hardware's wrong result — modeling it as a stall would add timing hardware does not have *and*
   hide the value software can observe.
 
 **Two errata reproduced rather than corrected**, each pinned by a test that fails if it is
@@ -3218,7 +3244,7 @@ T-11-002 and follow separately.
 - `MULT` acts as a 64-bit by **35-bit** signed multiply (second operand sign-extended on bit 34).
   Invisible for well-formed inputs, which is why ordinary compiler output never trips it.
 
-Two behaviours are **guesses and are recorded as such** in `docs/accuracy-ledger.md` (C-5, C-6)
+Two behaviors are **guesses and are recorded as such** in `docs/accuracy-ledger.md` (C-5, C-6)
 rather than left looking authoritative: the `DIV` quotient when divisor bits 63 and 31 differ
 (N64brew calls this "currently unclear"), and the architecturally-undefined divide-by-zero
 values. What is tested and non-negotiable is that neither panics — a guest can do both at will.
@@ -3226,7 +3252,7 @@ values. What is tested and non-negotiable is that neither panics — a guest can
 ### Fixed — rustdoc gets its own CI job
 
 `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` was the **last step of the
-`test` job**, after the slow test run. Two consequences, both observed rather than theorised:
+`test` job**, after the slow test run. Two consequences, both observed rather than theorized:
 
 - It was the most likely thing to be lost to `cancel-in-progress`. A commit with a broken
   intra-doc link (public docs linking to a private item) went through with its run marked
@@ -3268,7 +3294,7 @@ which is the part that cannot be retrofitted without rewriting every consumer.
   if the previous `PCycle` was a run cycle (§4.7.1). Exactly one recognition predicate exists.
 - `load_interlocks` reproduces the hardware's documented **imprecision** — matching on the `rs`
   *or* `rt` encoded field whether or not it is used as a source, exempting `$zero`, and not
-  crossing the GPR/FPR boundary. Emulating precise behaviour here would be the bug.
+  crossing the GPR/FPR boundary. Emulating precise behavior here would be the bug.
 
 Seven pipeline tests, two of which are the structural guards and both **mutation-tested**:
 
@@ -3335,7 +3361,7 @@ not a guard.
   — `ref-docs/` is an immutable corpus, so corrections to `research-report.md` land as a dated
   supplement rather than an in-place edit. Records the IC/RF/EX/DC/WB stage-name correction, the
   MClock-is-primary clock derivation, the documented cycle-cost tables, the errata with exact
-  behaviour, the SysAD block-ordering rules, and an explicit list of what is *not* documented.
+  behavior, the SysAD block-ordering rules, and an explicit list of what is *not* documented.
 - `docs/glossary.md` gains a **Clocks** section, because "master clock" is overloaded three ways
   and the primary sources own one of them (MasterClock = 62.5 MHz).
 - `docs/performance.md` states the project goal plainly — sustained fully cycle-accurate
@@ -3392,14 +3418,14 @@ Everything moved to the newest mutually-compatible versions available.
 - Rust toolchain 1.96 → **1.97.1** (`rust-toolchain.toml`, workspace `rust-version`, and the
   `dtolnay/rust-toolchain` pin in all three workflows).
 - egui / egui-wgpu / egui-winit 0.34 → **0.35** (MSRV 1.92, satisfied). `Panel::show_inside` is
-  deprecated in favour of `Panel::show`; both call sites in `ui_shell` updated.
+  deprecated in favor of `Panel::show`; both call sites in `ui_shell` updated.
 - `directories` 5 → **6**, `pollster` 0.4 → **1.0**, plus patch/minor moves across `winit`,
   `cpal`, `gilrs`, `rfd`, `bytemuck`, `thiserror`, `bitflags`, and `insta` via `cargo update`.
 - GitHub Actions: `checkout` v4 → **v7**, `upload-artifact` v4 → **v7**, `download-artifact`
   v4 → **v8**, `configure-pages` v5 → **v6**, `upload-pages-artifact` v3 → **v5**,
   `deploy-pages` v4 → **v5**. `Swatinem/rust-cache` stays on the floating `v2` (currently 2.9.1).
 - `markdownlint-cli` v0.39.0 → **v0.49.1**, which adds MD060 (table-column-style). Delimiter
-  rows are normalised to padded form across 15 documents, and MD060 is pinned to
+  rows are normalized to padded form across 15 documents, and MD060 is pinned to
   `style: "padded"` rather than the default per-table inference — inference classified two
   single-row tables with 300-character cells as "aligned" and demanded header padding that
   cannot be met.
@@ -3414,7 +3440,7 @@ dependency itself, with `cargo tree -p wgpu -d` given as the check.
 ### Added
 
 - [`docs/engineering-lessons.md`](docs/engineering-lessons.md) — failure patterns carried over
-  from two prior cycle-accurate emulators, generalised to this machine rather than copied.
+  from two prior cycle-accurate emulators, generalized to this machine rather than copied.
   Ordered by when each lesson must be acted on: structural decisions that are cheap now and
   expensive-to-impossible later, then what "green" is permitted to mean, then debugging
   discipline. Phase-specific entries are also filed as risks in the relevant phase overview.
@@ -3447,7 +3473,7 @@ dependency itself, with `cargo tree -p wgpu -d` given as the check.
 ## [0.1.0] "Foundation" — 2026-07-20
 
 The architectural skeleton. The workspace compiles, CI is green across three platforms, the
-reference corpus is acquired and licence-classified — and **no chip executes an instruction yet**.
+reference corpus is acquired and license-classified — and **no chip executes an instruction yet**.
 This tag exists so the foundation is a fixed, citable point rather than an ever-growing
 `[Unreleased]` section.
 
@@ -3459,7 +3485,7 @@ This tag exists so the foundation is a fixed, citable point rather than an ever-
   N64 VI dimensions with the N64 controller input map (digital + analog stick).
 - Release automation: a `v*` tag now publishes a GitHub Release with per-target archives
   (Linux x86_64, macOS aarch64, Windows x86_64) containing the `rustyn64` binary, both
-  licences, `NOTICE`, `README`, and `CHANGELOG`, plus a `SHA256SUMS` manifest. The tag is
+  licenses, `NOTICE`, `README`, and `CHANGELOG`, plus a `SHA256SUMS` manifest. The tag is
   checked against the workspace version before anything is published.
 - Documentation site: pushes to `main` publish the rustdoc API reference to GitHub Pages
   under `/api/`, with `/` reserved for the wasm demo that lands in Phase 6.
@@ -3471,7 +3497,7 @@ This tag exists so the foundation is a fixed, citable point rather than an ever-
   - **committed** — `n64-systemtest` (MIT), the self-judging CPU/COP0/TLB/RSP gate, built
     from source since upstream publishes no prebuilt ROM;
   - **external** — PeterLemon/`krom` (196 ROMs), Dillon's n64-tests (26), the 240p Test
-    Suite (built from source in a container), and a commercial regression corpus organised
+    Suite (built from source in a container), and a commercial regression corpus organized
     by save type.
 - `scripts/check_no_roms.sh` plus a `no-commercial-roms` CI job: commercial ROMs are blocked
   by three independent guards (`.gitignore`, a pre-commit hook over the staged file list,
@@ -3488,7 +3514,7 @@ This tag exists so the foundation is a fixed, citable point rather than an ever-
   cross-cutting references, subdirectories, and the material outside `docs/`.
 - Reference emulators and test suites cloned for study under the gitignored `ref-proj/`
   (ares, cen64, gopher64, simple64, parallel-rdp, parallel-rsp, angrylion-rdp-plus,
-  n64-systemtest, n64-tests, libdragon, PeterLemon/N64). Per-repo licences are verified and
+  n64-systemtest, n64-tests, libdragon, PeterLemon/N64). Per-repo licenses are verified and
   recorded in `ref-proj/README.md`, which classifies each as vendor-ok or study-only.
 
 ### Changed
@@ -3506,7 +3532,7 @@ This tag exists so the foundation is a fixed, citable point rather than an ever-
   would misrepresent progress.
 - `docs/testing-strategy.md` documents the corpus tiers, the commercial-ROM guards, and the
   per-corpus licensing that decides which tier a corpus lands in.
-- `README.md` rebuilt to the structure RustyNES and RustySNES share — centred title block with a
+- `README.md` rebuilt to the structure RustyNES and RustySNES share — centered title block with a
   three-row badge set, Overview, Why RustyN64, Highlights, Features, Quick Start, Default
   Controls, Architecture with crate and layout tables, Compatibility and Accuracy, Performance,
   Platform Support, Documentation, Current Release, Roadmap, Contributing, License,

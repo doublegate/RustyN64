@@ -49,7 +49,7 @@ pub struct StepResult {
     /// Three states rather than two, because the RSP acknowledges its **own**
     /// interrupt by writing `CLR_INTR` through `MTC0` — with a plain `bool`,
     /// "clear the line" and "this step said nothing about the line" are the
-    /// same value, and the acknowledgement is silently dropped.
+    /// same value, and the acknowledgment is silently dropped.
     pub interrupt_change: Option<bool>,
     /// An `MTC0` to a DP command register (`c8`–`c15`), reported as a
     /// **DPC word offset** `0`–`7` (`0`=`DP_START`, `1`=`DP_END`,
@@ -635,7 +635,7 @@ mod tests {
     ///
     /// `MTC0 SP_STATUS` with `CLR_INTR` must reach the MI as a *clear*. With a
     /// plain `bool` on [`StepResult`], "clear the line" and "this step said
-    /// nothing about the line" are the same value, so the acknowledgement is
+    /// nothing about the line" are the same value, so the acknowledgment is
     /// dropped and the CPU's `IP2` stays asserted for ever. The three cases are
     /// asserted separately because that is exactly what a two-state flag cannot
     /// express.

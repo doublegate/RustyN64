@@ -11,7 +11,7 @@
 //! Neither reference emulator does. CEN64 completes the whole access atomically
 //! in zero emulated time and charges a flat constant (its own source says
 //! `// Currently using fixed values....`); ares charges different constants. They
-//! disagree on the value and neither derived it from a spec. Modelling the split
+//! disagree on the value and neither derived it from a spec. Modeling the split
 //! is where this project can be better rather than equal — and it is what makes
 //! the bus access a point the scheduler can interleave the RCP around, which is
 //! the whole reason ADR 0007 models a pipeline.
@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// - UM §12.11.1: *"During address cycles \[`SysCmd4` = 0\] … contains a System
 ///   interface command"*, and *"During data cycles \[`SysCmd4` = 1\]"*.
-/// - The wiki table gives read/write **requests** bit 4 = 0 (labelled "Data
-///   req") and data-carrying cycles bit 4 = 1 (labelled "Command").
+/// - The wiki table gives read/write **requests** bit 4 = 0 (labeled "Data
+///   req") and data-carrying cycles bit 4 = 1 (labeled "Command").
 ///
 /// So a request always has bit 4 clear and a data beat always has it set, in both
 /// sources. The wiki simply uses "Command" for the cycle the manual calls a data
@@ -135,7 +135,7 @@ pub const fn block_order(width: Width, addr: u32) -> BlockOrder {
 
 /// A bus transaction in progress.
 ///
-/// Modelled as a small state machine rather than an atomic operation, so the
+/// Modeled as a small state machine rather than an atomic operation, so the
 /// scheduler can advance the RCP *between* the address and data phases — the
 /// property that makes a device able to observe the bus mid-transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

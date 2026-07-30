@@ -7,7 +7,7 @@
 //! per-pixel pipeline (the ParaLLEl-RDP / angrylion reference), not a
 //! triangle-list HLE.
 //!
-//! [`Rdp::tick`] decodes the DP FIFO — recognising every command `0x00`–`0x3F`
+//! [`Rdp::tick`] decodes the DP FIFO — recognizing every command `0x00`–`0x3F`
 //! and consuming each one's full length (via [`command`]) so the stream stays
 //! aligned — and dispatches the sync commands and the **FILL pipeline** (Set
 //! Color Image, Set Fill Color, Set Scissor, Fill Rectangle), which writes solid
@@ -263,7 +263,7 @@ fn interpolate_z(
     snapped.clamp(0, 0x3_FFFF)
 }
 
-/// Interpolate the per-pixel shade colour for pixel `(x, y)` from a triangle's
+/// Interpolate the per-pixel shade color for pixel `(x, y)` from a triangle's
 /// shade coefficients — a port of ParaLLEl-RDP's `interpolate_rgba`
 /// (`interpolation.h`) for the full-coverage case. `base`/`dx`/`de` are the `s15.16`
 /// RGBA base and its per-x / per-major-edge deltas; `base_x` is the major-edge x
@@ -363,8 +363,8 @@ fn sample_coord(
     lo: u16,
     hi: u16,
 ) -> u32 {
-    // Point sampling discards the sub-texel fraction and the neighbour diff, so the
-    // `is_t` argument (which only affects the T-axis neighbour diff) is irrelevant
+    // Point sampling discards the sub-texel fraction and the neighbor diff, so the
+    // `is_t` argument (which only affects the T-axis neighbor diff) is irrelevant
     // here — `false` is safe for both axes. The base texel is exactly the bilinear
     // base (`sample_axis`), so the point and bilinear paths never disagree.
     sample_axis(coord, shift, mask, mirror, clamp_en, lo, hi, false).0 as u32
@@ -376,7 +376,7 @@ fn sample_coord(
 /// The left shift wraps in 16-bit space — a result that overflows `i16` stays
 /// truncated + sign-extended (`SIGN16`), matching `coord <<= (16-shifter);
 /// coord = SIGN16(coord)` (equivalent because the low 16 bits of `coord << n`
-/// depend only on `coord`'s low 16 bits). This is the hardware behaviour, NOT a
+/// depend only on `coord`'s low 16 bits). This is the hardware behavior, NOT a
 /// bug: widening to `i32` before the shift would give a different result.
 fn tile_shift(coord: i32, shift: u8) -> i32 {
     let shift = shift.min(15); // the hardware shift field is 4 bits
@@ -387,9 +387,9 @@ fn tile_shift(coord: i32, shift: u8) -> i32 {
     }
 }
 
-/// Mask/mirror + neighbour-diff step (`tcmask_coupled`): returns the masked base
-/// texel and the increment (`sdiff`/`tdiff`) to reach the bilinear neighbour. The
-/// neighbour is `base + diff` and is **NOT** re-masked — `diff` is chosen so a plain
+/// Mask/mirror + neighbor-diff step (`tcmask_coupled`): returns the masked base
+/// texel and the increment (`sdiff`/`tdiff`) to reach the bilinear neighbor. The
+/// neighbor is `base + diff` and is **NOT** re-masked — `diff` is chosen so a plain
 /// add lands on the correct wrapped/mirrored texel: `+1` normally, `0` at a wrap
 /// **seam** (the "duplicate the last texel" quirk), `-base` at a mirror-off period
 /// end (wrap to 0), `-1` on a mirrored half. `mask == 0` ⇒ identity base, `diff = 1`.
@@ -404,7 +404,7 @@ fn mask_coupled(mut s: i32, mask: u8, mirror: bool, is_t: bool) -> (i32, i32) {
         let wrap = (s >> mask) & 1; // wrapthreshold = mask (mask <= 10)
         s = (s ^ -wrap) & maskbits; // -wrap = all-ones in the mirrored half → invert
         let diff = if (s - wrap) & maskbits == maskbits {
-            0 // seam: the neighbour duplicates the last texel
+            0 // seam: the neighbor duplicates the last texel
         } else {
             1 - (wrap << 1) // +1 in the forward half, -1 in the mirrored half
         };
@@ -412,7 +412,7 @@ fn mask_coupled(mut s: i32, mask: u8, mirror: bool, is_t: bool) -> (i32, i32) {
     } else {
         s &= maskbits;
         let diff = if s == maskbits {
-            if is_t { -(s & 0xFF) } else { -s } // period end: wrap the neighbour to 0
+            if is_t { -(s & 0xFF) } else { -s } // period end: wrap the neighbor to 0
         } else {
             1
         };
@@ -425,7 +425,7 @@ fn mask_coupled(mut s: i32, mask: u8, mirror: bool, is_t: bool) -> (i32, i32) {
 /// ParaLLEl-RDP sampler order; ledger R-13). `frac` is the 5-bit sub-texel weight
 /// the bilinear filter uses; per `tcclamp_cycle` it is **zeroed when the coordinate
 /// clamps** (high, or negative), so the filter degenerates to the edge texel there.
-/// `diff` (from [`mask_coupled`]) is the increment to the bilinear neighbour texel.
+/// `diff` (from [`mask_coupled`]) is the increment to the bilinear neighbor texel.
 /// The point sampler ([`sample_coord`]) drops both `frac` and `diff`.
 ///
 /// `lo`/`hi` are the tile's `SL`/`SH` (or `TL`/`TH`) `Set Tile Size` fields
@@ -485,7 +485,7 @@ fn sample_axis(
 /// channel is a `+0x10 >> 5` round of a convex combination, so it stays in `0..=255`.
 ///
 /// When `mid_texel` (Set Other Modes bit 44) is set **and** the sample lands
-/// exactly on the texel centre (`sfrac == tfrac == 0x10`), the RDP replaces the
+/// exactly on the texel center (`sfrac == tfrac == 0x10`), the RDP replaces the
 /// triangle pick with a **four-texel average** (Angrylion `tex.c` `center` case:
 /// `t3 + ((((t1+t2)<<6) − (t3<<7) + ((!t3+t0)<<6) + 0xc0) >> 8)`).
 #[allow(
@@ -504,7 +504,7 @@ fn bilinear_3point(
 ) -> [u8; 4] {
     let (sf, tf) = (sfrac as i32, tfrac as i32);
     let upper = (sfrac + tfrac) & 0x20 != 0;
-    // The exact-centre four-texel average, active only under `mid_texel`.
+    // The exact-center four-texel average, active only under `mid_texel`.
     let center = mid_texel && sfrac == 0x10 && tfrac == 0x10;
     let mut out = [0u8; 4];
     for x in 0..4 {
@@ -515,7 +515,7 @@ fn bilinear_3point(
             i32::from(t3[x]),
         );
         let v = if center {
-            // Four-neighbour average (`!c3` = C `~t3`, i.e. `-c3 - 1`).
+            // Four-neighbor average (`!c3` = C `~t3`, i.e. `-c3 - 1`).
             c3 + ((((c1 + c2) << 6) - (c3 << 7) + ((!c3 + c0) << 6) + 0xc0) >> 8)
         } else if upper {
             c3 + (((0x20 - sf) * (c2 - c3) + (0x20 - tf) * (c1 - c3) + 0x10) >> 5)
@@ -678,7 +678,7 @@ fn lod_mip_tiles(
 
 /// The RDP's perspective-divide reciprocal LUT (ParaLLEl-RDP `perspective.h`,
 /// transcribed in its `(base, slope · 4)` source form). Indexed by the top 6 bits
-/// of the normalised `W`; `(base, slope)` give `rcp = ((slope · wnorm) >> 10) + base`.
+/// of the normalized `W`; `(base, slope)` give `rcp = ((slope · wnorm) >> 10) + base`.
 #[rustfmt::skip]
 const PERSPECTIVE_TABLE: [(i16, i16); 64] = [
     (0x4000, -252 * 4), (0x3f04, -244 * 4), (0x3e10, -238 * 4), (0x3d22, -230 * 4),
@@ -699,7 +699,7 @@ const PERSPECTIVE_TABLE: [(i16, i16); 64] = [
     (0x2108,  -67 * 4), (0x20c5,  -67 * 4), (0x2082,  -65 * 4), (0x2041,  -65 * 4),
 ];
 
-/// The reciprocal and shift for a normalised `W` (ParaLLEl-RDP `perspective_get_lut`).
+/// The reciprocal and shift for a normalized `W` (ParaLLEl-RDP `perspective_get_lut`).
 #[allow(
     clippy::cast_sign_loss,
     reason = "normout & 0x3fff >> 8 is 0..=63, a valid table index"
@@ -781,7 +781,7 @@ fn clamp_9bit(color: i32) -> u8 {
 /// The combiner equation's **pre-`>>8` 17-bit** result — what the chroma-key alpha
 /// compare consumes (Angrylion `color_combiner_equation`). Same terms as
 /// [`combine_channel`] but returning `((A − B) * C + (D << 8) + 0x80) & 0x1ffff`
-/// rather than the `>> 8`'d colour.
+/// rather than the `>> 8`'d color.
 const fn combine_channel_17bit(a: i32, b: i32, c: i32, d: i32) -> i32 {
     (((special_expand(a) - special_expand(b)) * sext9(c)) + (special_expand(d) << 8) + 0x80)
         & 0x1_FFFF
@@ -790,7 +790,7 @@ const fn combine_channel_17bit(a: i32, b: i32, c: i32, d: i32) -> i32 {
 /// The chroma-key alpha (Angrylion `chroma_key_min`): per channel, fold the sign of
 /// the 17-bit combined value into a distance, offset by the programmed half-width,
 /// take the minimum across R/G/B, and clamp to `[0, 0xff]`. `col17` is the pre-`>>8`
-/// combined colour ([`combine_channel_17bit`]); `width` is the 12-bit `Set Key` width
+/// combined color ([`combine_channel_17bit`]); `width` is the 12-bit `Set Key` width
 /// per channel.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn chroma_key_min(col17: [i32; 3], width: [u16; 3]) -> u8 {
@@ -836,7 +836,7 @@ fn rgb_input_b(sel: u8, inp: &CombinerInputs, ch: usize) -> i16 {
         3 => i16::from(inp.prim[ch]),
         4 => i16::from(inp.shade[ch]),
         5 => i16::from(inp.env[ch]),
-        6 => i16::from(inp.key_center[ch]), // Chroma-key centre (Set Key R/GB)
+        6 => i16::from(inp.key_center[ch]), // Chroma-key center (Set Key R/GB)
         7 => inp.k4, // Convert K4 (raw 0..511; combine_channel's special_expand sign-extends)
         _ => 0,      // 8+ Zero (no R-10-deferred select remains for B; both 6 and 7 wired)
     }
@@ -911,9 +911,9 @@ fn alpha_input_c(sel: u8, inp: &CombinerInputs) -> i16 {
     }
 }
 
-/// The blender's `P`/`M` colour select: which RGB triple feeds one blend term
+/// The blender's `P`/`M` color select: which RGB triple feeds one blend term
 /// (N64brew *…/Blender*). 0 = pixel (combiner output), 1 = memory (framebuffer),
-/// 2 = blend-colour register, 3 = fog-colour register.
+/// 2 = blend-color register, 3 = fog-color register.
 fn blend_rgb_input(sel: u8, inp: &BlendInputs) -> [u8; 3] {
     let [r, g, b, _] = match sel & 0x3 {
         1 => inp.memory,
@@ -1040,15 +1040,15 @@ const OP_SET_TEXTURE_IMAGE: u8 = 0x3D;
 const OP_SET_DEPTH_IMAGE: u8 = 0x3E;
 const OP_SET_COLOR_IMAGE: u8 = 0x3F;
 
-/// One cycle of the blender: the `P`/`M` colour selects and the `A`/`B` alpha
+/// One cycle of the blender: the `P`/`M` color selects and the `A`/`B` alpha
 /// selects for `P * A + M * (B + 1)` (`Set Other Modes`, 0x2F). Each is 2-bit.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlendCycle {
-    /// `P` (1a) colour select: 0 pixel, 1 memory, 2 blend, 3 fog.
+    /// `P` (1a) color select: 0 pixel, 1 memory, 2 blend, 3 fog.
     pub p: u8,
     /// `A` (1b) alpha select: 0 pixel-alpha, 1 fog-alpha, 2 shade-alpha, 3 zero.
     pub a: u8,
-    /// `M` (2a) colour select (same table as `P`).
+    /// `M` (2a) color select (same table as `P`).
     pub m: u8,
     /// `B` (2b) alpha select: 0 `1−A`, 1 memory-alpha, 2 one, 3 zero.
     pub b: u8,
@@ -1079,7 +1079,7 @@ pub struct OtherModes {
     pub blend: [BlendCycle; 2],
     /// Force the no-divide blend form even on the final cycle.
     pub force_blend: bool,
-    /// Read the framebuffer (memory) colour into the blend.
+    /// Read the framebuffer (memory) color into the blend.
     pub image_read_en: bool,
     /// Coverage write-back mode: 0 clamp, 1 wrap, 2 full, 3 save.
     pub cvg_dest: u8,
@@ -1091,7 +1091,7 @@ pub struct OtherModes {
     pub z_mode: u8,
     /// Alpha-compare enable (gates the pixel write; R-11).
     pub alpha_compare_en: bool,
-    /// Chroma-key enable (bit 40): the combiner outputs the sub-A colour and derives
+    /// Chroma-key enable (bit 40): the combiner outputs the sub-A color and derives
     /// the pixel alpha from the key window (`chroma_key_min`). R-10.
     pub key_en: bool,
     /// Perspective-correct texturing (bit 51): divide the interpolated `S`/`T` by `W`.
@@ -1133,32 +1133,32 @@ pub struct OtherModes {
     ///   palette-mapped, though hardware would sample it through the TLUT. No
     ///   vector covers that case, and the RGBA/IA/I formats index the palette
     ///   differently enough that implementing it from the prose alone would be
-    ///   inventing behaviour. It stays wrong-but-honest until a vector defines it,
+    ///   inventing behavior. It stays wrong-but-honest until a vector defines it,
     ///   the same posture as `tlut_type`'s IA16 palettes below.
     pub tlut_en: bool,
     /// TLUT texel format (bit 46): `false` = RGBA16, `true` = IA16
     /// (N64brew *…/Commands* §0x2F). Decoded so it is available and so the flag
     /// is not silently ignored; **IA16 palettes are still deferred** — the lookup
     /// assumes RGBA16, and implementing IA16 without a vector would be inventing
-    /// behaviour rather than emulating it.
+    /// behavior rather than emulating it.
     pub tlut_type: bool,
     /// Mid-texel filter (bit 44, R-13): when set and the bilinear sample lands
-    /// exactly on the texel centre (`sfrac == tfrac == 0x10`), the four neighbours
+    /// exactly on the texel center (`sfrac == tfrac == 0x10`), the four neighbors
     /// are averaged instead of the 3-point triangle pick (Angrylion `tex.c`, the
     /// `center`/`centerrg` case). Only meaningful with `sample_type`.
     pub mid_texel: bool,
 }
 
-/// The resolved per-pixel blender input colours (each RGBA8888).
+/// The resolved per-pixel blender input colors (each RGBA8888).
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlendInputs {
-    /// The combiner's output ("pixel colour").
+    /// The combiner's output ("pixel color").
     pub pixel: [u8; 4],
-    /// The framebuffer's current colour (memory), with coverage in its alpha.
+    /// The framebuffer's current color (memory), with coverage in its alpha.
     pub memory: [u8; 4],
-    /// The blend-colour register (`Set Blend Color`, 0x39).
+    /// The blend-color register (`Set Blend Color`, 0x39).
     pub blend_color: [u8; 4],
-    /// The fog-colour register (`Set Fog Color`, 0x38).
+    /// The fog-color register (`Set Fog Color`, 0x38).
     pub fog: [u8; 4],
     /// The interpolated shade alpha.
     pub shade_alpha: u8,
@@ -1217,7 +1217,7 @@ struct ZTriSetup {
 }
 
 /// The decoded per-triangle shade setup for the per-pixel path: the `s15.16` RGBA
-/// base colour (at the top vertex) and its per-x (`dx`) and per-major-edge (`de`)
+/// base color (at the top vertex) and its per-x (`dx`) and per-major-edge (`de`)
 /// deltas. The per-scanline `dy` term (sub-pixel snap) is part 2c.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 struct ShadeSetup {
@@ -1245,7 +1245,7 @@ const fn unpack_rgba(w: u32) -> [u8; 4] {
     w.to_be_bytes()
 }
 
-/// Pack an RGBA8888 colour into a 16-bit RGBA5551 framebuffer pixel
+/// Pack an RGBA8888 color into a 16-bit RGBA5551 framebuffer pixel
 /// (`R[15:11] G[10:6] B[5:1] A[0]`).
 const fn pack_rgba5551(rgba: [u8; 4]) -> u16 {
     ((rgba[0] as u16 >> 3) << 11)
@@ -1293,7 +1293,7 @@ fn max4(v: &[i32; COVERAGE_SUBPIXELS]) -> i32 {
     v[0].max(v[1]).max(v[2]).max(v[3])
 }
 
-/// Quantise a signed edge X to the 3-fraction-bit sub-pixel domain used by
+/// Quantize a signed edge X to the 3-fraction-bit sub-pixel domain used by
 /// [`compute_coverage`], with the RDP sticky bit.
 ///
 /// Any discarded fraction bit forces the low output bit set, so a
@@ -1302,13 +1302,13 @@ fn max4(v: &[i32; COVERAGE_SUBPIXELS]) -> i32 {
 /// [`compute_coverage`] bit-exact (parallel-rdp `span_setup.comp:60-66`).
 ///
 /// **Fixed-point domain.** parallel-rdp's `setup.xh` is `s.15` (its `base_x =
-/// xh >> 15`), so it quantises with `>> 12` to reach the `s.3` coverage domain.
+/// xh >> 15`), so it quantizes with `>> 12` to reach the `s.3` coverage domain.
 /// Our edge values are the raw command `s.16` (`major >> 16` is the pixel), one
 /// fraction bit wider, so we shift `>> 13` and take the sticky bit over the low
 /// 13 discarded bits — the same 3-fraction-bit result.
 ///
 /// This and [`compute_coverage`] are the sub-pixel coverage primitives (T-33-004
-/// slice 2c); the rasteriser's edge-walk still unions the four sub-scanlines into
+/// slice 2c); the rasterizer's edge-walk still unions the four sub-scanlines into
 /// a whole-pixel bounding span (**open residual R-9**) until the coverage
 /// integration lands, so these have no runtime caller yet.
 #[must_use]
@@ -1395,7 +1395,7 @@ fn rgb_dither_value(mode: u8, x: u32, y: u32) -> i32 {
     }
 }
 
-/// Apply the RDP's ordered RGB dither to a colour (`dither.c` `rgb_dither`): each
+/// Apply the RDP's ordered RGB dither to a color (`dither.c` `rgb_dither`): each
 /// channel rounds up to the next 5-bit level `(c & 0xf8) + 8` (saturating at 255)
 /// **iff** the dither value is less than the channel's low 3 bits, else it is left
 /// unchanged. Alpha is untouched. `dith` is the shared 3-bit value (matrix cell).
@@ -1413,7 +1413,7 @@ fn apply_rgb_dither(rgb: [u8; 4], dith: i32) -> [u8; 4] {
     [channel(rgb[0]), channel(rgb[1]), channel(rgb[2]), rgb[3]]
 }
 
-/// One cycle of the colour combiner.
+/// One cycle of the color combiner.
 ///
 /// The four RGB input selects and the four alpha input selects for
 /// `(A − B) * C + D` (`Set Combine Mode`, 0x3C). A/B/D RGB are 4-bit (D 3-bit),
@@ -1438,7 +1438,7 @@ pub struct CombineCycle {
     pub a_d: u8,
 }
 
-/// The two-cycle colour-combiner configuration (`Set Combine Mode`, 0x3C).
+/// The two-cycle color-combiner configuration (`Set Combine Mode`, 0x3C).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CombineMode {
     /// Cycle-0 selects (the first stage in 2-cycle mode).
@@ -1450,9 +1450,9 @@ pub struct CombineMode {
 /// The resolved per-pixel combiner input signals (each RGBA8888).
 ///
 /// The combiner muxes these by the [`CombineCycle`] selects. The register-sourced
-/// exotic inputs (prim-LOD-frac, the convert `K4`/`K5`, the chroma-key centre/scale)
+/// exotic inputs (prim-LOD-frac, the convert `K4`/`K5`, the chroma-key center/scale)
 /// are wired; the rest (noise, the derivative `lod_frac`, the YUV `K0`–`K3` convert)
-/// are not modelled yet (**open residual R-10**) and read as zero.
+/// are not modeled yet (**open residual R-10**) and read as zero.
 ///
 /// This is **transient** per-pixel state — built in `combined_color`, consumed by
 /// `combine`, and discarded — never stored in `System`. It is therefore `pub(crate)`
@@ -1467,11 +1467,11 @@ pub(crate) struct CombinerInputs {
     pub texel0: [u8; 4],
     /// Texel from tile 1.
     pub texel1: [u8; 4],
-    /// The primitive colour (`Set Prim Color`, 0x3A).
+    /// The primitive color (`Set Prim Color`, 0x3A).
     pub prim: [u8; 4],
-    /// The interpolated shade colour.
+    /// The interpolated shade color.
     pub shade: [u8; 4],
-    /// The environment colour (`Set Env Color`, 0x3B).
+    /// The environment color (`Set Env Color`, 0x3B).
     pub env: [u8; 4],
     /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — combiner mul
     /// input (RGB select 14, alpha select 6). `0..=255` (R-10).
@@ -1491,7 +1491,7 @@ pub(crate) struct CombinerInputs {
     /// **raw 0..511** value; `combine_channel` sign-extends it via `sext9`
     /// (Angrylion `SIGNF(c, 9)`). Stored raw, like `k4`. R-10.
     pub k5: i16,
-    /// Chroma-key centre `[r, g, b]` (`Set Key R`/`GB`) — the combiner RGB sub-B
+    /// Chroma-key center `[r, g, b]` (`Set Key R`/`GB`) — the combiner RGB sub-B
     /// input (select 6), fed as an 8-bit value like `prim`/`env`. R-10.
     pub key_center: [u8; 3],
     /// Chroma-key scale `[r, g, b]` (`Set Key R`/`GB`) — the combiner RGB mul input
@@ -1599,7 +1599,7 @@ pub struct Rdp {
     pub prim_z: u16,
     /// Primitive `dz` (`Set Primitive Depth`, 0x2E), the raw 16-bit field.
     pub prim_dz: u16,
-    /// FILL-mode colour register (`Set Fill Color`, 0x37): a 32-bit value written
+    /// FILL-mode color register (`Set Fill Color`, 0x37): a 32-bit value written
     /// verbatim to the color image. Its interpretation depends on the pixel size
     /// — one RGBA32, two RGBA16 (even pixel = upper half, odd = lower), or four
     /// 8-bit values repeating every four pixels.
@@ -1641,11 +1641,11 @@ pub struct Rdp {
     pub tex_image_addr: u32,
     /// The eight tile descriptors (`Set Tile` / `Set Tile Size` / the loaders).
     pub tiles: [TileDescriptor; 8],
-    /// The colour-combiner configuration (`Set Combine Mode`, 0x3C).
+    /// The color-combiner configuration (`Set Combine Mode`, 0x3C).
     pub combine: CombineMode,
     /// The render-mode / blender configuration (`Set Other Modes`, 0x2F).
     pub other_modes: OtherModes,
-    /// The primitive colour, RGBA8888 (`Set Prim Color`, 0x3A).
+    /// The primitive color, RGBA8888 (`Set Prim Color`, 0x3A).
     pub prim_color: u32,
     /// Primitive LOD fraction (`Set Prim Color` word-0 low byte) — a combiner mul
     /// input (R-10).
@@ -1663,7 +1663,7 @@ pub struct Rdp {
     pub k4: i16,
     /// `Set Convert` `K5` (see `k4`).
     pub k5: i16,
-    /// Chroma-key **centre** per channel `[r, g, b]` (`Set Key R` 0x2B / `Set Key GB`
+    /// Chroma-key **center** per channel `[r, g, b]` (`Set Key R` 0x2B / `Set Key GB`
     /// 0x2A) — the combiner RGB sub-B input (select 6). `0..=255`. R-10.
     pub key_center: [u8; 3],
     /// Chroma-key **scale** per channel `[r, g, b]` (`Set Key R`/`GB`) — the combiner
@@ -1673,11 +1673,11 @@ pub struct Rdp {
     /// half-width of the key window, consumed by the `key_en` chroma-key alpha compare
     /// (`chroma_key_min`), not the combiner mux. R-10.
     pub key_width: [u16; 3],
-    /// The environment colour, RGBA8888 (`Set Env Color`, 0x3B).
+    /// The environment color, RGBA8888 (`Set Env Color`, 0x3B).
     pub env_color: u32,
-    /// The blend colour, RGBA8888 (`Set Blend Color`, 0x39).
+    /// The blend color, RGBA8888 (`Set Blend Color`, 0x39).
     pub blend_color: u32,
-    /// The fog colour, RGBA8888 (`Set Fog Color`, 0x38).
+    /// The fog color, RGBA8888 (`Set Fog Color`, 0x38).
     pub fog_color: u32,
     /// On-chip texture memory (4 KiB). **Lazily allocated**: `None` until the
     /// first byte is written, and read as all-zero while `None`. This keeps
@@ -1697,7 +1697,7 @@ impl Rdp {
 
     /// Read a DP command register by word offset within the `0x0410_0000`
     /// block: 0 `DPC_START`, 1 `DPC_END`, 2 `DPC_CURRENT`, 3 `DPC_STATUS`. The
-    /// clock/busy/counter registers (4..=7) are not modelled and read zero.
+    /// clock/busy/counter registers (4..=7) are not modeled and read zero.
     #[must_use]
     pub const fn dpc_read(&self, offset: u32) -> u32 {
         match offset & 7 {
@@ -1745,7 +1745,7 @@ impl Rdp {
     }
 
     /// Apply a `DPC_STATUS` write, whose bits are set/clear *commands* rather
-    /// than the status layout read back. Only XBUS and FREEZE are modelled; the
+    /// than the status layout read back. Only XBUS and FREEZE are modeled; the
     /// FLUSH/TMEM/PIPE/CMD/CLOCK-counter commands come with the FIFO drain.
     // TODO(T-RDP-01): when `SET_FLUSH` (pipeline flush) lands here, it must also
     // clear `self.stall` — a flush discards in-flight pipeline work, so a
@@ -1778,7 +1778,7 @@ impl Rdp {
     /// (`DPC_CURRENT >= DPC_END`) or the DP is frozen (`DPC_STATUS.FREEZE`).
     ///
     /// The command length comes from [`command::command_len_words`], which
-    /// recognises every opcode `0x00`–`0x3F`; consuming the exact length is what
+    /// recognizes every opcode `0x00`–`0x3F`; consuming the exact length is what
     /// keeps a multi-word primitive from desyncing the pointer. Today the
     /// decoder only advances and counts — no primitive is rasterized yet.
     ///
@@ -1791,7 +1791,7 @@ impl Rdp {
     ///
     /// Dispatch so far (`dispatch`) covers the four sync commands and the FILL
     /// pipeline (Set Color Image, Set Fill Color, Set Scissor, Fill Rectangle).
-    /// Everything else is still recognised-and-consumed only.
+    /// Everything else is still recognized-and-consumed only.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
@@ -1830,7 +1830,7 @@ impl Rdp {
     }
 
     /// Act on a just-consumed command. Only the sync commands are handled so
-    /// far; every other opcode is a recognised no-op until its handler lands.
+    /// far; every other opcode is a recognized no-op until its handler lands.
     ///
     /// - `Sync Load`/`Pipe`/`Tile` (0x26/0x27/0x28) each stall the pipeline for
     ///   a fixed, unconditional number of GCLK cycles (25/50/33) — the RDP waits
@@ -1839,13 +1839,13 @@ impl Rdp {
     /// - `Sync Full` (0x29) **raises the DP interrupt** (`raise_dp_interrupt`) —
     ///   the only part of the command implemented. On hardware it first waits for
     ///   all staged pipeline/memory work and halts the pipeline counter; neither
-    ///   is modelled (there is no asynchronous pipeline work yet, and no pipeline
+    ///   is modeled (there is no asynchronous pipeline work yet, and no pipeline
     ///   counter), so the interrupt is raised as soon as the command is
     ///   dispatched. A *preceding* sync stall still delays this dispatch via the
     ///   `stall` gate above (checked before a command is dispatched), so a queued
     ///   stall drains before the interrupt fires.
     ///
-    /// On stall resolution: per-command *execution* cost is not modelled yet —
+    /// On stall resolution: per-command *execution* cost is not modeled yet —
     /// every command is consumed in a single placeholder `tick` — so the `stall`
     /// set here is the documented pipeline stall *layered on top of* that one
     /// consume tick, not a claim about total command latency (the next command
@@ -1890,7 +1890,7 @@ impl Rdp {
             }
             OP_SET_KEY_GB => {
                 // word 0 (hi): width_g[23:12], width_b[11:0]; word 1 (lo):
-                // centre_g[31:24], scale_g[23:16], centre_b[15:8], scale_b[7:0]
+                // center_g[31:24], scale_g[23:16], center_b[15:8], scale_b[7:0]
                 // (Angrylion `rdp_set_key_gb`). Widths feed the `key_en` alpha compare.
                 self.key_width[1] = ((hi >> 12) & 0xFFF) as u16;
                 self.key_width[2] = (hi & 0xFFF) as u16;
@@ -1900,7 +1900,7 @@ impl Rdp {
                 self.key_scale[2] = lo as u8;
             }
             OP_SET_KEY_R => {
-                // word 1 (lo): width_r[27:16] (12-bit), centre_r[15:8], scale_r[7:0]
+                // word 1 (lo): width_r[27:16] (12-bit), center_r[15:8], scale_r[7:0]
                 // (Angrylion `rdp_set_key_r`, `(args[1] >> 16) & 0xfff`).
                 self.key_width[0] = ((lo >> 16) & 0xFFF) as u16;
                 self.key_center[0] = (lo >> 8) as u8;
@@ -1920,7 +1920,7 @@ impl Rdp {
             OP_SET_SCISSOR => {
                 // upper-left x/y = hi 23:12 / 11:0, lower-right x/y = lo 23:12 /
                 // 11:0 (all u10.2). The field/odd interlace bits (lo 25/24) are
-                // not modelled yet.
+                // not modeled yet.
                 self.scissor_ulx = ((hi >> 12) & 0xFFF) as u16;
                 self.scissor_uly = (hi & 0xFFF) as u16;
                 self.scissor_lrx = ((lo >> 12) & 0xFFF) as u16;
@@ -1947,12 +1947,12 @@ impl Rdp {
             // the triangle for now (the shade/texture/Z coefficient blocks and the
             // combiner/blender come later in Sprint 3).
             0x08..=0x0F => self.triangle_fill(hi, lo, cmd_base, bus),
-            // TODO(T-31-004): remaining opcodes are recognised and
+            // TODO(T-31-004): remaining opcodes are recognized and
             // length-consumed by `tick`, but not yet dispatched — an
             // intentional, documented no-op at this stage, not a silent discard.
             // Handlers arrive per ticket (VI scan-out, then texture / combiner /
             // blender), and `docs/rdp.md` is the authoritative list of what is
-            // dispatched versus recognised-only, so a later missing arm is caught
+            // dispatched versus recognized-only, so a later missing arm is caught
             // against that spec rather than passing silently here.
             _ => {}
         }
@@ -1981,7 +1981,7 @@ impl Rdp {
     ///
     /// FILL mode "repeats the 32-bit value verbatim out to memory", which
     /// resolves per pixel by size (N64brew *…/Commands* §Set Fill Color):
-    /// 32-bit writes the whole colour; 16-bit takes the upper half for even
+    /// 32-bit writes the whole color; 16-bit takes the upper half for even
     /// pixels and the lower half for odd; 8-bit takes byte `x & 3`. Coordinates
     /// are `u10.2`; FILL mode floors the upper-left and draws through the pixel
     /// **containing** the lower-right coordinate (inclusive), with `yl | 3` forcing
@@ -2038,7 +2038,7 @@ impl Rdp {
         // draws the partially-covered row while an integer `lry` drops it whole.
         let sy1 = (u32::from(self.scissor_lry) + 3) >> 2;
         // Intersection of rectangle and scissor (half-open), then a hard clip to the
-        // colour-image width: a pixel at or past the stride would spill into the next
+        // color-image width: a pixel at or past the stride would spill into the next
         // row, so the inclusive X bounds never write beyond the framebuffer.
         let x0 = rx0.max(sx0);
         let y0 = ry0.max(sy0);
@@ -2054,7 +2054,7 @@ impl Rdp {
         // inputs (prim/env/…) and the fill register is never consulted. Confirmed
         // against the Angrylion oracle (ledger R-21, vector `fill_rect_1cycle_16`):
         // a 1-cycle rectangle with a green fill register and a *distinct* prim
-        // colour renders the **prim** colour in all 64 pixels.
+        // color renders the **prim** color in all 64 pixels.
         if matches!(
             self.other_modes.cycle_type,
             CYCLE_TYPE_COPY | CYCLE_TYPE_FILL
@@ -2073,7 +2073,7 @@ impl Rdp {
         // key/convert registers and the interpolation origin
         // (`major_x`/`line`/`y_base`/`x`) is unused — hence the zeros. Evaluating
         // it once per rectangle rather than once per pixel is not a speculative
-        // optimisation but a statement of that invariance: if this ever needs to
+        // optimization but a statement of that invariance: if this ever needs to
         // move back inside the loop, something has started varying per pixel and
         // the change deserves the scrutiny.
         let (base, _shade_alpha) = self.combined_color(None, None, 0, 0, 0, 0, 0);
@@ -2096,18 +2096,18 @@ impl Rdp {
     }
 
     /// Apply a `Texture Rectangle` (0x24) / `Flip` (0x25) in **COPY mode**: blit a
-    /// tile into the colour image. Word 0 carries the screen rectangle (`u10.2`)
+    /// tile into the color image. Word 0 carries the screen rectangle (`u10.2`)
     /// and the tile; word 1 (read from `cmd_base`) carries the texture start
     /// (`S`/`T`, `s10.5`) and the per-pixel increments (`DsDx`/`DtDy`, `s5.10`).
     ///
     /// COPY mode is a raw texel blit — no combiner or blender. The lower-right
-    /// screen bound is inclusive. For a 16-bit colour image the texel bits are
+    /// screen bound is inclusive. For a 16-bit color image the texel bits are
     /// copied verbatim (a direct 16-bit copy). `S` steps across X and `T` down Y
     /// (`Flip` swaps them); the horizontal step is scaled by the 4-pixels-per-cycle
     /// factor (`>> (5 + dx_shift)`) so a 1:1 blit's `DsDx = 4.0` advances one texel
     /// per pixel.
     ///
-    /// Scope (**open residual R-8**): wired for a **16-bit tile → 16-bit colour
+    /// Scope (**open residual R-8**): wired for a **16-bit tile → 16-bit color
     /// image** (the first-picture path). `Flip`, the 8/32-bit and TLUT copy paths,
     /// non-1:1 sub-texel selection, and the copy alpha-compare are deferred to the
     /// ParaLLEl-RDP fuzz validation (Sprint 3); an unsupported configuration draws
@@ -2115,7 +2115,7 @@ impl Rdp {
     // The coordinate/address arithmetic casts here (screen/texel coords to `i32`
     // and back to `u32` offsets) wrap deliberately: a degenerate coordinate wraps
     // into the framebuffer/TMEM space rather than trapping. `bus` IS used mutably
-    // (`rdram_write` in the inner loop); `needless_pass_by_ref_mut` mis-analyses the
+    // (`rdram_write` in the inner loop); `needless_pass_by_ref_mut` mis-analyzes the
     // mutable trait call nested past the early-return guard (a known false positive).
     #[allow(
         clippy::cast_sign_loss,
@@ -2202,7 +2202,7 @@ impl Rdp {
         }
     }
 
-    /// Write the FILL-mode colour to one pixel of the colour image (shared by the
+    /// Write the FILL-mode color to one pixel of the color image (shared by the
     /// fill rectangle and the flat-fill triangle). `bpp` is 1/2/4; the 16-bit case
     /// takes the upper half of the fill register for even `x` and the lower for
     /// odd, and the 8-bit case cycles the four bytes — as `Set Fill Color` defines.
@@ -2228,8 +2228,8 @@ impl Rdp {
     /// Flat-fill a `Fill Triangle` (0x08) or one of its shade/texture/Z variants
     /// (0x09–0x0F). Decode the three edges (major `H` yh→yl, minor `M` yh→ym, minor
     /// `L` ym→yl), walk each scanline's span between the major edge and the active
-    /// minor edge, and write the FILL-mode colour into the span — the FILL-cycle
-    /// path (a 1-/2-cycle triangle is coloured by the combiner/blender, which is
+    /// minor edge, and write the FILL-mode color into the span — the FILL-cycle
+    /// path (a 1-/2-cycle triangle is colored by the combiner/blender, which is
     /// later in Sprint 3, so the shade/texture/Z coefficient words are ignored
     /// here, only length-consumed).
     ///
@@ -2240,7 +2240,7 @@ impl Rdp {
     /// (native scaling — no upscale sub-pixel bit); the bit-exact sub-pixel
     /// coverage (`quantize_x` sticky bit) and attribute interpolation are deferred
     /// to the fuzz-validated pipeline (**open residual R-9**).
-    // `bus` IS used mutably (`fill_pixel` → `rdram_write`); the lint mis-analyses the
+    // `bus` IS used mutably (`fill_pixel` → `rdram_write`); the lint mis-analyzes the
     // call nested past the early returns. `xl`/`xh`/`xm` etc. are the hardware edge names.
     #[allow(
         clippy::cast_sign_loss,
@@ -2250,7 +2250,7 @@ impl Rdp {
     )]
     #[allow(
         clippy::too_many_lines,
-        reason = "the rasteriser's edge decode, span walk, and the flat/shaded/depth render paths are one tightly-coupled unit; splitting further would fragment the shared setup"
+        reason = "the rasterizer's edge decode, span walk, and the flat/shaded/depth render paths are one tightly-coupled unit; splitting further would fragment the shared setup"
     )]
     fn triangle_fill<B: VideoBus>(&mut self, hi: u32, lo: u32, cmd_base: u32, bus: &mut B) {
         let Some(bpp) = self.color_image_bpp() else {
@@ -2333,7 +2333,7 @@ impl Rdp {
         } else {
             None
         };
-        // Shade block (bit 58): when present, the pixel colour comes from the
+        // Shade block (bit 58): when present, the pixel color comes from the
         // combiner fed the interpolated shade, not the FILL register (T-33-004
         // PR-B 2b — the first shaded triangle).
         let shade_setup = Self::decode_shade(hi, cmd_base, bus);
@@ -2343,7 +2343,7 @@ impl Rdp {
         let has_color = shade_setup.is_some() || tex_setup.is_some();
         let y_base = yh >> 2;
 
-        // 1-/2-cycle mode rasterises with sub-pixel coverage; FILL/COPY mode
+        // 1-/2-cycle mode rasterizes with sub-pixel coverage; FILL/COPY mode
         // (`cycle_type >= 2`) rounds to whole pixels (N64brew *…/Commands*: FILL is
         // "without subpixel accuracy"), which the union span already models exactly.
         let subpixel = self.other_modes.cycle_type < 2;
@@ -2384,7 +2384,7 @@ impl Rdp {
                 span_l = span_l.min(xl_i);
                 span_r = span_r.max(xr_i);
                 // Sub-pixel edges (`s.3`, sticky-bit snapped) for the coverage path:
-                // quantise the `s.16` major/minor and clamp to the scissor.
+                // quantize the `s.16` major/minor and clamp to the scissor.
                 let (raw_l, raw_r) = if flip { (major, minor) } else { (minor, major) };
                 #[allow(clippy::cast_possible_truncation)]
                 let el = quantize_x(sext(raw_l as u32, 27)).clamp(sc_lo, sc_hi);
@@ -2434,7 +2434,7 @@ impl Rdp {
                     bus,
                 );
             } else if has_color {
-                // The no-Z path (a triangle with no z-suffix): the combiner colour.
+                // The no-Z path (a triangle with no z-suffix): the combiner color.
                 // In 1-/2-cycle mode each pixel's sub-pixel coverage gates the write
                 // and is stored in the pixel alpha (the AA/`cvg_dest` write-back); the
                 // memory-read blender still lives only on the depth path (R-9/R-11).
@@ -2552,7 +2552,7 @@ impl Rdp {
         Some(shade)
     }
 
-    /// Write one RGBA8888 pixel to the colour image at `(row_addr, x)`: direct for a
+    /// Write one RGBA8888 pixel to the color image at `(row_addr, x)`: direct for a
     /// 32-bit image, packed to RGBA5551 for a 16-bit one (matching `fill_pixel`'s
     /// addressing). Other sizes are unsupported and write nothing.
     fn write_pixel<B: VideoBus>(row_addr: u32, x: u32, bpp: u32, rgba: [u8; 4], bus: &mut B) {
@@ -2572,11 +2572,11 @@ impl Rdp {
         }
     }
 
-    /// Read the current colour-image pixel at `(row_addr, x)` as RGBA8888 — the
+    /// Read the current color-image pixel at `(row_addr, x)` as RGBA8888 — the
     /// blender's `memory_color`. The inverse of [`Self::write_pixel`]: direct for a
     /// 32-bit image, RGBA5551 widened (5→8 bits) for a 16-bit one.
     ///
-    /// An 8-bit colour image (`bpp == 1`, a legal but unsupported render target —
+    /// An 8-bit color image (`bpp == 1`, a legal but unsupported render target —
     /// [`Self::color_image_bpp`] returns `Some(1)` for it) reads as transparent
     /// black, mirroring [`Self::write_pixel`]'s silent no-op for the same size (the
     /// blended result is discarded there anyway, so no draw happens either way). It
@@ -2645,7 +2645,7 @@ impl Rdp {
     /// texels at `(s,t)/(s+1,t)/(s,t+1)/(s+1,t+1)`, and blends with
     /// [`bilinear_3point`]. The four texels share the one base clamp/mask; the exact
     /// mask-wrap-seam `sdiff`/`tdiff` (`0`/`-1` at the wrap edge) is deferred — the
-    /// neighbour is the base plus one, correct except across a mask seam.
+    /// neighbor is the base plus one, correct except across a mask seam.
     #[allow(
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap,
@@ -2693,13 +2693,13 @@ impl Rdp {
             tile.th,
             true,
         );
-        // The neighbour is the masked base plus the mask-coupled diff (+1 / 0 / -1 /
+        // The neighbor is the masked base plus the mask-coupled diff (+1 / 0 / -1 /
         // wrap), NOT re-masked — `mask_coupled` chose `diff` for exactly this. The
-        // diff keeps the neighbour non-negative (the -1 case only fires when base>=1,
+        // diff keeps the neighbor non-negative (the -1 case only fires when base>=1,
         // the wrap case lands on 0), so the `as u32` never wraps to a huge value.
         debug_assert!(
             sb + sdiff >= 0 && tb + tdiff >= 0,
-            "neighbour texel is non-negative"
+            "neighbor texel is non-negative"
         );
         let (s0, t0) = (sb as u32, tb as u32);
         let (s1, t1) = ((sb + sdiff) as u32, (tb + tdiff) as u32);
@@ -2714,7 +2714,7 @@ impl Rdp {
         )
     }
 
-    /// Compute a pixel's colour through the combiner from the interpolated shade
+    /// Compute a pixel's color through the combiner from the interpolated shade
     /// and/or sampled texel (plus the prim/env registers). `shade`/`tex` are the
     /// decoded setups, `None` when that attribute is absent. The two-cycle mode
     /// comes from `Set Other Modes`. Texture uses the interpolated coordinate
@@ -2743,7 +2743,7 @@ impl Rdp {
             prim: unpack_rgba(self.prim_color),
             env: unpack_rgba(self.env_color),
             // R-10 register-sourced exotic combiner inputs: prim-LOD-frac, the Set
-            // Convert K4/K5, and the chroma-key centre/scale. Still deferred (read as
+            // Convert K4/K5, and the chroma-key center/scale. Still deferred (read as
             // zero): noise, the derivative-computed lod_frac, and the YUV K0..K3 convert.
             prim_lod_frac: i16::from(self.prim_lod_frac),
             k4: self.k4,
@@ -2763,9 +2763,9 @@ impl Rdp {
             // The derivative-computed LOD fraction (R-13). Gated two ways: on
             // Angrylion's `dolod` (something actually consumes the fraction), so
             // the common path pays neither the two extra perspective divides nor
-            // any behaviour change; and on **2-cycle** mode, because only the
-            // 2-cycle LOD form is modelled — the 1-cycle form needs span-edge
-            // signals the rasteriser does not have, so it stays deferred and
+            // any behavior change; and on **2-cycle** mode, because only the
+            // 2-cycle LOD form is modeled — the 1-cycle form needs span-edge
+            // signals the rasterizer does not have, so it stays deferred and
             // reads zero rather than being approximated with the wrong formula.
             // The primitive's base tile comes from the triangle command (bits 50:48,
             // `(ewdata[0] >> 16) & 7` — Angrylion `rasterizer.c`); the sampler reads
@@ -2777,9 +2777,9 @@ impl Rdp {
             if self.other_modes.cycle_type == CYCLE_TYPE_2CYCLE && self.lod_active() {
                 // The 2-cycle LOD (R-13). Gated on Angrylion's `dolod` — something
                 // consumes it — so the common path pays neither the two extra
-                // perspective divides nor any behaviour change; and on 2-cycle mode,
-                // because only the 2-cycle LOD form is modelled (the 1-cycle form
-                // needs span-edge signals the rasteriser does not have, so it stays
+                // perspective divides nor any behavior change; and on 2-cycle mode,
+                // because only the 2-cycle LOD form is modeled (the 1-cycle form
+                // needs span-edge signals the rasterizer does not have, so it stays
                 // deferred rather than being approximated with the wrong formula).
                 let sig = self.lod_2cycle(tex, stw, persp, [s105, t105]);
                 inp.lod_frac = sig.frac;
@@ -2810,7 +2810,7 @@ impl Rdp {
     /// Angrylion `other_modes.f.dolod` gate (`rdp.c`): either `tex_lod_en` is on,
     /// or the combiner actually selects `LODFrac` as a mul input (RGB select 13 /
     /// alpha select 0) in either cycle. When false the fraction is unread, so
-    /// skipping it is behaviour-preserving as well as cheaper.
+    /// skipping it is behavior-preserving as well as cheaper.
     fn lod_active(&self) -> bool {
         let uses = |c: &CombineCycle| c.rgb_c == 13 || c.a_c == LOD_FRAC_ALPHA_MUL_SELECT;
         self.other_modes.tex_lod_en || uses(&self.combine.cyc0) || uses(&self.combine.cyc1)
@@ -2828,7 +2828,7 @@ impl Rdp {
     /// Scope: this is the **2-cycle** form. The 1-cycle form
     /// (`tclod_1cycle_current_simple`) differs — it compares the `x+1` and `x+2`
     /// taps and needs the span-edge signals (`endspan`/`longspan`/`midspan`,
-    /// `validline`) that the rasteriser does not model — so it stays deferred
+    /// `validline`) that the rasterizer does not model — so it stays deferred
     /// under R-13 rather than being approximated with the 2-cycle formula.
     #[allow(
         clippy::similar_names,
@@ -2902,7 +2902,7 @@ impl Rdp {
         })
     }
 
-    /// Apply the ordered RGB dither to a combined pixel colour in place, mirroring
+    /// Apply the ordered RGB dither to a combined pixel color in place, mirroring
     /// Angrylion's `rgb_dither`. Dither is part of the 1-/2-cycle pixel pipeline
     /// only (FILL/COPY bypass the combiner), and RGB dither mode 3 is "off" — both
     /// return early. Alpha is untouched. `(x, y)` index the 4×4 dither matrix
@@ -2934,7 +2934,7 @@ impl Rdp {
 
     /// Render one scanline's span with the per-pixel depth test (T-33-004 PR-B 2a):
     /// for each pixel, interpolate the depth, test it against the Z buffer, and —
-    /// only if it passes — write the colour and (when `z_update`) the depth.
+    /// only if it passes — write the color and (when `z_update`) the depth.
     ///
     /// In 1-/2-cycle mode `cov` carries the per-Y-subpixel edges: each pixel is gated
     /// by [`Self::pixel_coverage`] (an uncovered pixel is skipped before the depth
@@ -2945,7 +2945,7 @@ impl Rdp {
     /// path is the deferred R-9/R-12 residual.
     #[allow(
         clippy::too_many_arguments,
-        reason = "an internal rasteriser span helper; a struct would only relocate the parameters"
+        reason = "an internal rasterizer span helper; a struct would only relocate the parameters"
     )]
     #[allow(
         clippy::cast_sign_loss,
@@ -2999,7 +2999,7 @@ impl Rdp {
             };
             let dr = Self::depth_test(z_px, z.dz, z.dz_compressed, 8, &dinp);
             if dr.depth_pass {
-                // Shaded/textured triangles take the combiner colour; else the FILL register.
+                // Shaded/textured triangles take the combiner color; else the FILL register.
                 if shade.is_some() || tex.is_some() {
                     let (mut color, shade_alpha) =
                         self.combined_color(shade, tex, base_tile, major_x, line, y_base, x);
@@ -3012,7 +3012,7 @@ impl Rdp {
                         continue;
                     }
                     // The blender runs only when the depth test enabled it (translucent /
-                    // AA-edge pixels); an opaque pixel keeps the combiner colour, matching
+                    // AA-edge pixels); an opaque pixel keeps the combiner color, matching
                     // the reference's `!blend_en` fast-path. The full opaque-alpha fast path
                     // and coverage-driven alpha are R-11.
                     if dr.blend_en {
@@ -3078,13 +3078,13 @@ impl Rdp {
         };
     }
 
-    /// Evaluate the colour combiner for one cycle, returning the RGBA8888 output.
+    /// Evaluate the color combiner for one cycle, returning the RGBA8888 output.
     ///
     /// Muxes the [`CombinerInputs`] by the cycle's selects into `(A − B) * C + D`
     /// per channel (`combine_channel`), clamps to `[0, 255]` (`clamp_9bit`), and
     /// does the same for alpha. The RGB and alpha combiners use different
     /// input tables (N64brew *…/Commands* §0x3C). The register-sourced exotic inputs
-    /// (prim-LOD-frac, the convert `K4`/`K5`, and the chroma-key centre/scale) are
+    /// (prim-LOD-frac, the convert `K4`/`K5`, and the chroma-key center/scale) are
     /// wired; the remaining exotic inputs (noise, the derivative `lod_frac`, and the
     /// YUV `K0`–`K3` convert) are **open residual R-10** and read as zero.
     #[must_use]
@@ -3128,9 +3128,9 @@ impl Rdp {
         let cyc = self.combine.cyc1;
         if self.other_modes.key_en {
             // Chroma-key alpha compare (Angrylion `combiner_1cycle` key_en path, R-10):
-            // the RGB output is the sub-A "chromabypass" colour (clamped), and the pixel
+            // the RGB output is the sub-A "chromabypass" color (clamped), and the pixel
             // alpha is derived from the key window over the pre-`>>8` 17-bit combined
-            // colour. Gated on `key_en` so the common path (below) is byte-identical.
+            // color. Gated on `key_en` so the common path (below) is byte-identical.
             let mut col17 = [0i32; 3];
             let mut rgb = [0u8; 3];
             for (ch, (c17, out)) in col17.iter_mut().zip(rgb.iter_mut()).enumerate() {
@@ -3200,7 +3200,7 @@ impl Rdp {
     /// `a1 = B >> 3` map the 8-bit alpha selects to the 5-bit blend weights, and
     /// the `+ 1` on the `M` term is real hardware, not a rounding fudge.
     ///
-    /// The colour selects (`P`, `M`) pick an RGB triple; the alpha selects (`A`,
+    /// The color selects (`P`, `M`) pick an RGB triple; the alpha selects (`A`,
     /// `B`) pick a scalar weight — `B`'s `1 − A` case complements the resolved `A`
     /// weight, so `A` is computed first and handed to `blend_b_input`. The result
     /// is masked to 8 bits, **not** clamped: the reference casts through `u8` and
@@ -3226,7 +3226,7 @@ impl Rdp {
     }
 
     /// Evaluate the whole blender for a pixel: blend cycle 0 alone in 1-cycle
-    /// mode, or cycle 0's RGB fed back as the pixel colour into cycle 1 in
+    /// mode, or cycle 0's RGB fed back as the pixel color into cycle 1 in
     /// 2-cycle mode (N64brew *…/Blender*).
     ///
     /// Only `pixel.rgb` chains between cycles — **`pixel.a` is deliberately left
@@ -3364,7 +3364,7 @@ impl Rdp {
 
     /// Byte address of the 16-bit Z-buffer entry for pixel `(x, y)`: entries are
     /// 16-bit, based at `z_image`. The row stride reuses `color_image_width` — the
-    /// N64 RDP addresses the depth buffer with the *colour* buffer's width (there is
+    /// N64 RDP addresses the depth buffer with the *color* buffer's width (there is
     /// no separate depth-image width register), so the two buffers share a geometry.
     fn zbuffer_addr(&self, x: u32, y: u32) -> u32 {
         let index = y
@@ -3616,7 +3616,7 @@ impl Rdp {
     /// a hardware rejection** — the ParaLLEl-RDP reference writes to the addressed
     /// location and the sampler reads the palette from the upper half, so a
     /// misplaced TLUT is simply not found rather than refused. Enforcing a
-    /// rejection here would invent behaviour the hardware does not have.
+    /// rejection here would invent behavior the hardware does not have.
     fn load_tlut<B: VideoBus>(&mut self, hi: u32, lo: u32, bus: &B) {
         let sl = ((hi >> 12) & 0xFFF) >> 2;
         let sh = ((lo >> 12) & 0xFFF) >> 2;
@@ -3711,7 +3711,7 @@ impl Rdp {
                 let v = widen4(u32::from(self.nibble_at((off4 ^ swap) as usize, s)));
                 [v, v, v, v]
             }
-            // The colour-index formats resolve through the palette **only when
+            // The color-index formats resolve through the palette **only when
             // `Set Other Modes.tlut_en` is set** (bit 47) — the format field alone
             // does not enable it (N64brew *…/Commands* §0x2F). With the flag clear
             // the oracle renders a CI tile entirely black, which
@@ -4237,21 +4237,21 @@ mod tests {
         assert_eq!(rdp.color_image, 0x0010_0000);
     }
 
-    /// **`Set Key GB`/`Set Key R` decode the chroma-key centre/scale/width per channel
+    /// **`Set Key GB`/`Set Key R` decode the chroma-key center/scale/width per channel
     /// (R-10).** Pins the bit-layout ported from Angrylion `rdp_set_key_gb`/`_r`: GB
-    /// word-0 is `width_g[23:12] width_b[11:0]`, word-1 `centre_g[31:24] scale_g[23:16]
-    /// centre_b[15:8] scale_b[7:0]`; R word-1 is `width_r[27:16] centre_r[15:8]
+    /// word-0 is `width_g[23:12] width_b[11:0]`, word-1 `center_g[31:24] scale_g[23:16]
+    /// center_b[15:8] scale_b[7:0]`; R word-1 is `width_r[27:16] center_r[15:8]
     /// scale_r[7:0]`. Distinct per-channel values (incl. distinct 12-bit widths) so a
     /// field-swap or wrong extraction in the decode is caught.
     #[test]
-    fn set_key_decodes_centre_scale_and_width_per_channel() {
+    fn set_key_decodes_center_scale_and_width_per_channel() {
         let (rdp, _) = run_commands(&[
             // Set Key GB: wg=0x111 wb=0x222; cg=0x40 sg=0x80 cb=0x60 sb=0xC0.
             (0x2A11_1222, 0x4080_60C0),
             // Set Key R: wr=0x333; cr=0x20 sr=0x40.
             (0x2B00_0000, 0x0333_2040),
         ]);
-        assert_eq!(rdp.key_center, [0x20, 0x40, 0x60], "centre [r, g, b]");
+        assert_eq!(rdp.key_center, [0x20, 0x40, 0x60], "center [r, g, b]");
         assert_eq!(rdp.key_scale, [0x40, 0x80, 0xC0], "scale [r, g, b]");
         assert_eq!(rdp.key_width, [0x333, 0x111, 0x222], "width [r, g, b]");
     }
@@ -4267,10 +4267,10 @@ mod tests {
         assert_eq!(rdp.scissor_lry, 7 << 2);
     }
 
-    /// **A 32-bit FILL writes the whole colour to every pixel**, four bytes
+    /// **A 32-bit FILL writes the whole color to every pixel**, four bytes
     /// each, big-endian — the memory is the fill value repeated verbatim.
     #[test]
-    fn fill_rectangle_32bpp_writes_the_colour_verbatim() {
+    fn fill_rectangle_32bpp_writes_the_color_verbatim() {
         let (_, bus) = run_commands(&[
             set_cycle_fill(),
             set_color_image(0, 3, 4, 0), // 32-bit, width 4, base 0
@@ -4285,7 +4285,7 @@ mod tests {
         assert_eq!(bus.mem[32], 0, "nothing written past the rectangle");
     }
 
-    /// **A 16-bit FILL alternates the colour's halves per pixel** — even pixels
+    /// **A 16-bit FILL alternates the color's halves per pixel** — even pixels
     /// take the upper 16 bits, odd pixels the lower — so memory is still the
     /// 32-bit value repeated.
     #[test]
@@ -4304,7 +4304,7 @@ mod tests {
         );
     }
 
-    /// **An 8-bit FILL writes one of the four colour bytes per pixel**, cycling
+    /// **An 8-bit FILL writes one of the four color bytes per pixel**, cycling
     /// every four pixels.
     #[test]
     fn fill_rectangle_8bpp_cycles_four_bytes() {
@@ -5218,7 +5218,7 @@ mod tests {
     /// **`sample_axis` captures the sub-texel fraction and zeroes it on clamp
     /// (R-13 bilinear).** The base agrees with `sample_coord` (point); the extra
     /// outputs are the 5-bit `frac` the 3-point filter weights by and the `diff` to
-    /// the neighbour texel (here always `+1`, in-range with no seam).
+    /// the neighbor texel (here always `+1`, in-range with no seam).
     #[test]
     fn sample_axis_returns_fraction_zeroed_on_clamp() {
         let sh = 7u16 << 2; // 8-texel tile
@@ -5244,17 +5244,17 @@ mod tests {
         );
     }
 
-    /// **`mask_coupled` derives the neighbour `sdiff`/`tdiff` (R-13 seam).** `+1`
+    /// **`mask_coupled` derives the neighbor `sdiff`/`tdiff` (R-13 seam).** `+1`
     /// normally; `0` at a wrap seam (duplicate); `-base` at a mirror-off period end
-    /// (wrap the neighbour to 0); `-1` in a mirrored half. A mutation to any case
+    /// (wrap the neighbor to 0); `-1` in a mirrored half. A mutation to any case
     /// (drop the seam, wrong mirror sign) fails a row.
     #[test]
-    fn mask_coupled_derives_the_neighbour_diff() {
+    fn mask_coupled_derives_the_neighbor_diff() {
         // mask == 0: identity base, +1.
         assert_eq!(mask_coupled(5, 0, false, false), (5, 1));
         // Mirror off, mid-period (mask=2 → 4 texels): base 1, +1.
         assert_eq!(mask_coupled(1, 2, false, false), (1, 1));
-        // Mirror off, period END (base == maskbits = 3): neighbour wraps to 0 (-3).
+        // Mirror off, period END (base == maskbits = 3): neighbor wraps to 0 (-3).
         assert_eq!(mask_coupled(3, 2, false, false), (3, -3));
         // Mirror off, T period end uses -(base & 0xff) — same as -base for base 3.
         assert_eq!(mask_coupled(3, 2, false, true), (3, -3));
@@ -5317,13 +5317,13 @@ mod tests {
         );
     }
 
-    /// **`mid_texel` averages all four texels at the exact centre (R-13).** At
+    /// **`mid_texel` averages all four texels at the exact center (R-13).** At
     /// `sfrac == tfrac == 0x10` the 3-point filter picks the UPPER triangle and
-    /// ignores `t0`; `mid_texel` instead averages all four neighbours (Angrylion
+    /// ignores `t0`; `mid_texel` instead averages all four neighbors (Angrylion
     /// `tex.c` `center` case). `t0` is placed off the gradient plane so the two
-    /// disagree — a mutation that drops the centre branch returns the 3-point value.
+    /// disagree — a mutation that drops the center branch returns the 3-point value.
     #[test]
-    fn bilinear_mid_texel_averages_the_four_texels_at_the_centre() {
+    fn bilinear_mid_texel_averages_the_four_texels_at_the_center() {
         let (t0, t1, t2, t3) = ([200, 0, 0, 0], [32, 0, 0, 0], [64, 0, 0, 0], [96, 0, 0, 0]);
         // 3-point UPPER ignores t0: 96 + ((16·(64−96) + 16·(32−96) + 16) >> 5) = 48.
         assert_eq!(
@@ -5338,11 +5338,11 @@ mod tests {
             98,
             "mid_texel averages all four"
         );
-        // Off-centre, `mid_texel` has no effect (the centre condition is false).
+        // Off-center, `mid_texel` has no effect (the center condition is false).
         assert_eq!(
             bilinear_3point(t0, t1, t2, t3, 0x10, 0, true),
             bilinear_3point(t0, t1, t2, t3, 0x10, 0, false),
-            "mid_texel only fires at the exact centre"
+            "mid_texel only fires at the exact center"
         );
     }
 
@@ -5472,7 +5472,7 @@ mod tests {
 
     /// **A copy-mode Texture Rectangle round-trips a texture.** `Load Tile` loads a
     /// 4×2 16-bit texture into TMEM; a 1:1 `Texture Rectangle` (copy mode) blits it
-    /// into a 16-bit colour image. Because the load and the copy fetch share the
+    /// into a 16-bit color image. Because the load and the copy fetch share the
     /// odd-row swap, the framebuffer must equal the source texture exactly — the
     /// first textured picture, end to end.
     #[test]
@@ -5502,7 +5502,7 @@ mod tests {
         rdp.tiles[0].size = 2;
         rdp.tiles[0].line = 1;
         rdp.load_tile(0x0000_0000, 0x0000_C004, &bus); // SL0 TL0 SH3 TH1 -> 4x2
-        // Colour image: 16-bit, width 4, at 0x200.
+        // Color image: 16-bit, width 4, at 0x200.
         rdp.color_image_size = 2;
         rdp.color_image_width = 4;
         rdp.color_image = 0x200;
@@ -5517,7 +5517,7 @@ mod tests {
             0x300,
             &mut bus,
         );
-        // The colour image equals the source texture, texel for texel.
+        // The color image equals the source texture, texel for texel.
         for (i, &v) in tex.iter().enumerate() {
             let hi = bus.mem[0x200 + i * 2];
             let lo = bus.mem[0x200 + i * 2 + 1];
@@ -5530,7 +5530,7 @@ mod tests {
     }
 
     /// **`Texture Rectangle Flip` and unsupported sizes draw nothing** (R-8): the
-    /// copy path is wired only for a 16-bit tile into a 16-bit colour image.
+    /// copy path is wired only for a 16-bit tile into a 16-bit color image.
     #[test]
     fn texture_rectangle_unsupported_configs_draw_nothing() {
         let mut mem = alloc::vec![0u8; 0x400];
@@ -5557,7 +5557,7 @@ mod tests {
             bus.mem[0x200..0x210].iter().all(|&b| b == 0),
             "Flip draws nothing"
         );
-        // 8-bit colour image (unsupported) -> draws nothing.
+        // 8-bit color image (unsupported) -> draws nothing.
         rdp.color_image_size = 1;
         rdp.dispatch(
             OP_TEXTURE_RECTANGLE,
@@ -5572,12 +5572,12 @@ mod tests {
         );
     }
 
-    // ---- T-33-001: flat-fill triangle rasteriser ----
+    // ---- T-33-001: flat-fill triangle rasterizer ----
 
     /// **`Fill Triangle` (0x08) flat-fills a right triangle.** A left-major triangle
     /// with a vertical left edge at x=2 and a hypotenuse widening 1 pixel per row
     /// fills the staircase {row0:x2, row1:x2-3, row2:x2-4, row3:x2-5} — verified
-    /// pixel-for-pixel against a 32-bit colour image, which pins the edge-walk and
+    /// pixel-for-pixel against a 32-bit color image, which pins the edge-walk and
     /// the s11.2/s11.16 fixed-point decode. This exact staircase is oracle-confirmed:
     /// `fill_tri_wide_16` (T-33-005) renders the same geometry byte-for-byte in Angrylion.
     #[test]
@@ -5665,7 +5665,7 @@ mod tests {
         assert!(filled(&bus, 3, 3), "x=3 row 3 kept (at the scissor edge)");
     }
 
-    // ---- T-33-002: the colour combiner ----
+    // ---- T-33-002: the color combiner ----
 
     /// **`(A − B) * C + D` matches the hand-computed RDP arithmetic.** The `+0x80`
     /// rounding before `>> 8`, C's plain 9-bit sign, and D added unscaled.
@@ -5791,19 +5791,19 @@ mod tests {
         assert_eq!(Rdp::combine_cycle(cfg, &inp), [48, 48, 48, 255]);
     }
 
-    /// **Chroma-key centre/scale reach the combiner as RGB sub-B select 6 and RGB
-    /// mul-select 6 (`Set Key R`/`GB`, R-10).** `A = One`, `B = KeyCentre`,
-    /// `C = KeyScale`, `D = Zero`, so RGB is `(One − centre) * scale >> 8`. Per-channel
-    /// centre `[32, 64, 96]` and scale `[64, 128, 192]` give distinct results
+    /// **Chroma-key center/scale reach the combiner as RGB sub-B select 6 and RGB
+    /// mul-select 6 (`Set Key R`/`GB`, R-10).** `A = One`, `B = KeyCenter`,
+    /// `C = KeyScale`, `D = Zero`, so RGB is `(One − center) * scale >> 8`. Per-channel
+    /// center `[32, 64, 96]` and scale `[64, 128, 192]` give distinct results
     /// (`(256−32)*64 = 56`, `(256−64)*128 = 96`, `(256−96)*192 = 120`, each `+ 0x80 >> 8`),
     /// so a channel-swap on either input is caught. Alpha is a fixed `One` (keys are
-    /// RGB-only). Mutation guard: an unwired `KeyCentre` (→ 0) gives `[64, 128, 192]`-ish
+    /// RGB-only). Mutation guard: an unwired `KeyCenter` (→ 0) gives `[64, 128, 192]`-ish
     /// and an unwired `KeyScale` (→ 0) gives `[0, 0, 0]` — either changes the result.
     #[test]
     fn combine_cycle_routes_chroma_key() {
         let cfg = CombineCycle {
             rgb_a: 6, // One
-            rgb_b: 6, // KeyCentre (sub-B)
+            rgb_b: 6, // KeyCenter (sub-B)
             rgb_c: 6, // KeyScale (mul)
             rgb_d: 7, // Zero
             a_a: 7,   // Zero
@@ -5999,7 +5999,7 @@ mod tests {
     /// - Cell 0 (magic `(3,3)`): 0 < 1,2,3 → all round → `0x182838`.
     ///
     /// A mutation of the round-up predicate or the matrix contents changes at least
-    /// one of these, so the test fails without the exact Angrylion behaviour.
+    /// one of these, so the test fails without the exact Angrylion behavior.
     #[test]
     fn rgb_dither_matches_angrylion_magic_matrix() {
         // The magic matrix is indexed `(y & 3) * 4 + (x & 3)`.
@@ -6052,8 +6052,8 @@ mod tests {
     /// threshold every pixel is rejected, so the Z buffer stays at its cleared value;
     /// **above** the threshold the pixels draw and write Z. A mutant that drops the
     /// alpha-compare `continue` in `depth_span` (Z-writing rejected pixels) fails the
-    /// first assertion — the check the colour-only `alpha_compare_z_16` vector cannot
-    /// make (it reads only the colour framebuffer).
+    /// first assertion — the check the color-only `alpha_compare_z_16` vector cannot
+    /// make (it reads only the color framebuffer).
     #[test]
     fn alpha_compare_suppresses_zwrite_on_depth_path() {
         let render = |shade_alpha: u32| -> u16 {
@@ -6440,7 +6440,7 @@ mod tests {
     /// The first-ever depth-tested rendering: three overlapping right triangles into
     /// a Z buffer pre-cleared to the far plane, with flat depths `z_px` 0x4000 (near),
     /// 0x8000 (far), 0x2000 (nearer). The near draws (vs the cleared buffer), the far
-    /// is **rejected** (stays the near colour), and the nearer **overwrites** — so the
+    /// is **rejected** (stays the near color), and the nearer **overwrites** — so the
     /// test discriminates both the accept and reject paths of `depth_test`.
     #[test]
     fn depth_tested_triangle_occludes_farther_and_yields_to_nearer() {
@@ -6481,7 +6481,7 @@ mod tests {
         };
 
         // 1-cycle sub-pixel coverage excludes the degenerate top vertex (2,0); check the
-        // drawn pixel (2,1). The no-shade fill path writes the FILL colour verbatim (no
+        // drawn pixel (2,1). The no-shade fill path writes the FILL color verbatim (no
         // coverage-alpha), so the full 32-bit value is asserted.
         draw(&mut bus, &mut rdp, 0x600, 0x0800_0000, 0x1111_1111); // near  (z_px 0x4000)
         assert_eq!(px(&bus, 2, 1), 0x1111_1111, "near draws vs cleared buffer");
@@ -6518,7 +6518,7 @@ mod tests {
     // ---- T-33-004 PR-B 2b: shade interpolation ----
 
     /// **`decode_shade` assembles the RGBA base and `interpolate_shade` yields the
-    /// byte colours.** The shade block's int-base word packs `R.i`/`G.i` in the hi
+    /// byte colors.** The shade block's int-base word packs `R.i`/`G.i` in the hi
     /// u32 (bits 56:48 / 40:32) and `B.i`/`A.i` in the lo u32; a flat base (no
     /// deltas) of `(100, 150, 200, 255)` interpolates to exactly those bytes.
     #[test]
@@ -6538,14 +6538,14 @@ mod tests {
         assert_eq!(
             interpolate_shade(&shade.base, &shade.dx, &shade.de, 0, 0, 0, 0),
             [100, 150, 200, 255],
-            "flat base interpolates to the byte colour"
+            "flat base interpolates to the byte color"
         );
     }
 
-    /// **A shaded triangle renders the interpolated colour through the combiner.**
+    /// **A shaded triangle renders the interpolated color through the combiner.**
     /// A flat-shaded triangle (base `(0x11, 0x22, 0x33, 0xFF)`) with a shade-
     /// passthrough combiner (`D = shade`, `A = B` so `(A−B)·C = 0`) writes that
-    /// colour — not the FILL register — into the 32-bit colour image, proving the
+    /// color — not the FILL register — into the 32-bit color image, proving the
     /// decode → interpolate → combine → write path.
     #[test]
     fn shaded_triangle_renders_combined_shade() {
@@ -6572,7 +6572,7 @@ mod tests {
             a_d: 4,
         };
         // Staircase triangle (as the flat-fill test) with the shade flag (bit 58 ->
-        // hi bit 26), flat base colour (0x11, 0x22, 0x33, 0xFF).
+        // hi bit 26), flat base color (0x11, 0x22, 0x33, 0xFF).
         let base = 0x600usize;
         bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
         bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
@@ -6602,7 +6602,7 @@ mod tests {
 
     /// **A combined shaded + depth-tested triangle (0x0D) decodes both blocks at the
     /// right offsets.** With the shade block at `+0x20` and the z block at `+0x60`
-    /// (past the 8-word shade block), the pixel must be the shade colour *and* the
+    /// (past the 8-word shade block), the pixel must be the shade color *and* the
     /// stored depth must be the z-block's value — if `decode_triangle_z` misread the
     /// shade block as z, the stored `compressed_z` would differ.
     #[test]
@@ -6637,7 +6637,7 @@ mod tests {
         bus.mem[base + 0x10..base + 0x14].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xh
         bus.mem[base + 0x18..base + 0x1C].copy_from_slice(&0x0002_0000u32.to_be_bytes()); // xm
         bus.mem[base + 0x1C..base + 0x20].copy_from_slice(&0x0000_4000u32.to_be_bytes()); // dxmdy
-        // Shade block int-base at +0x20 (colour 0x1122_33FF).
+        // Shade block int-base at +0x20 (color 0x1122_33FF).
         bus.mem[base + 0x20..base + 0x24].copy_from_slice(&((0x11u32 << 16) | 0x22).to_be_bytes());
         bus.mem[base + 0x24..base + 0x28].copy_from_slice(&((0x33u32 << 16) | 0xFF).to_be_bytes());
         // Z block at +0x60 (past the 8-word shade block): z_base -> z_px 0x4000.
@@ -6653,7 +6653,7 @@ mod tests {
         assert_eq!(
             color & 0xFFFF_FF00,
             0x1122_3300,
-            "shade block decoded (colour)"
+            "shade block decoded (color)"
         );
         let (cz, _) = rdp.zbuffer_read(2, 1, &bus);
         assert_eq!(
@@ -6716,7 +6716,7 @@ mod tests {
         assert_eq!(
             px(&bus, 2, 3),
             0xFF00_00E0,
-            "textured red + full-coverage alpha, not the FILL colour"
+            "textured red + full-coverage alpha, not the FILL color"
         );
     }
 
@@ -6844,7 +6844,7 @@ mod tests {
             mem: alloc::vec![0u8; 0x1000],
             hidden: alloc::vec![0u8; 0x800],
         };
-        // Pre-fill the colour image with green (0x00FF00FF) and the Z buffer far.
+        // Pre-fill the color image with green (0x00FF00FF) and the Z buffer far.
         for row in 0..8 {
             for x in 0..8 {
                 let a = 0x200 + row * 32 + x * 4;
@@ -6926,7 +6926,7 @@ mod tests {
 
     /// **The blender also runs against a 16-bit RGBA5551 framebuffer.** The same
     /// red-over-green 50/50 blend as [`translucent_triangle_blends_with_framebuffer`]
-    /// but with a 16-bit colour image, exercising `read_pixel`'s RGBA5551 decode and
+    /// but with a 16-bit color image, exercising `read_pixel`'s RGBA5551 decode and
     /// `write_pixel`'s repack. Memory green `0x07C1` unpacks to `0x00FF00`; the blend
     /// `0x7F7F00` repacks to `0x7BC1` (`R,G = 0x7F>>3 = 0x0F`, alpha bit `0x80>>7 = 1`).
     #[test]
@@ -6935,7 +6935,7 @@ mod tests {
             mem: alloc::vec![0u8; 0x1000],
             hidden: alloc::vec![0u8; 0x800],
         };
-        // Pre-fill the 16-bit colour image with green (RGBA5551 0x07C1); Z buffer far.
+        // Pre-fill the 16-bit color image with green (RGBA5551 0x07C1); Z buffer far.
         for row in 0..8 {
             for x in 0..8 {
                 let a = 0x200 + row * 16 + x * 2;
@@ -7088,7 +7088,7 @@ mod tests {
     }
 
     /// **`compute_coverage` yields a full mask for an interior pixel and a partial
-    /// mask at an edge.** With the left edge quantised to sub-pixel `43` (between
+    /// mask at an edge.** With the left edge quantized to sub-pixel `43` (between
     /// X-samples 2 and 4), pixel 5's samples at offsets `{0, 2}` fall outside and
     /// `{4, 6}` inside, so the four Y-subpixels each cover their high sample only:
     /// mask `0xAA`, count 4. A fully-enclosed pixel is `0xFF` (8); a fully-excluded

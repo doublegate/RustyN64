@@ -13,7 +13,7 @@
 //! branches on the upper half.
 //!
 //! **The documented errata are reproduced, not corrected.** `SRA`/`SRAV` and the
-//! `MULT`/`DIV` sign-extension bugs are real hardware behaviour that software can
+//! `MULT`/`DIV` sign-extension bugs are real hardware behavior that software can
 //! observe and depend on. Implementing them "correctly" per the manual is the bug
 //! — see [`sra`] and [`mult`]. Each is pinned by a test that fails if it is
 //! "fixed", so the intent survives a well-meaning future reader.
@@ -314,7 +314,7 @@ pub const fn dmultu(a: u64, b: u64) -> HiLo {
 ///
 /// This implementation performs the 32×35 division in that case too, which is a
 /// **guess**, and it is recorded as such in `docs/accuracy-ledger.md`. It must be
-/// characterised against hardware rather than left to look authoritative.
+/// characterized against hardware rather than left to look authoritative.
 ///
 /// Divide-by-zero is architecturally *undefined* on MIPS; the values below follow
 /// the conventional interpretation and also need hardware confirmation.
@@ -324,7 +324,7 @@ pub const fn div(dividend: u64, divisor: u64) -> HiLo {
     // Sign-extend the divisor on bit 34 (a 35-bit signed value) -- the erratum.
     let d = ((divisor << 29) as i64) >> 29;
     if d == 0 {
-        // Undefined per the architecture; conventional emulator behaviour.
+        // Undefined per the architecture; conventional emulator behavior.
         return HiLo {
             lo: if n < 0 { 1 } else { u64::MAX },
             hi: sext32(n as u32),
@@ -441,7 +441,7 @@ pub enum MulDiv {
 /// *"The `mfhi` and `mflo` instructions will produce incorrect results if any of
 /// the two following instructions modify the `HI` and `LO` registers."*
 ///
-/// Modelling this as a stall would be wrong in both directions: it would add
+/// Modeling this as a stall would be wrong in both directions: it would add
 /// timing that hardware does not have, and it would hide the incorrect result
 /// that software can actually observe.
 pub const MFHI_MFLO_HAZARD_INSTRUCTIONS: u32 = 2;
@@ -561,7 +561,7 @@ mod tests {
         assert_ne!(
             sra(rt, 16),
             manual,
-            "the manual's behaviour is not hardware's"
+            "the manual's behavior is not hardware's"
         );
 
         // With a properly sign-extended input the erratum is invisible, which is
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn the_mfhi_mflo_hazard_is_two_instructions_and_not_a_stall() {
         // Documented as a non-interlocked hazard producing a wrong result, so the
-        // only thing to assert here is the window. Modelling it as a stall would
+        // only thing to assert here is the window. Modeling it as a stall would
         // add timing hardware does not have AND hide the observable wrong value.
         assert_eq!(MFHI_MFLO_HAZARD_INSTRUCTIONS, 2);
     }

@@ -1,7 +1,7 @@
-# Sprint 3 — The colour combiner, blender, Z/coverage, and the fuzz 0-diff
+# Sprint 3 — The color combiner, blender, Z/coverage, and the fuzz 0-diff
 
 **Phase:** Phase 3 — RDP LLE + VI
-**Sprint goal:** complete the per-pixel pipeline — edge-walked triangles, the colour combiner, the
+**Sprint goal:** complete the per-pixel pipeline — edge-walked triangles, the color combiner, the
 blender, and Z/coverage — and prove it bit-exact against Angrylion via the ParaLLEl-RDP conformance
 suite. This is the **v0.4.0 cut gate**: a real ROM renders a stable frame matching a committed
 golden, AND the fuzz suite bit-matches the reference (`to-dos/VERSION-PLAN.md` §v0.4.0).
@@ -12,13 +12,13 @@ golden, AND the fuzz suite bit-matches the reference (`to-dos/VERSION-PLAN.md` �
 Encodings and per-pixel arithmetic come from the N64brew wiki (`Reality Display Processor/`) and
 the ParaLLEl-RDP reference (MIT — `shaders/`, `rdp_device.cpp`, `rdp_renderer.cpp`). The
 conformance harness is `ref-proj/parallel-rdp/rdp_conformance.cpp` + `conformance_utils.hpp`.
-**Licence:** ParaLLEl-RDP is MIT (readable); its bundled `angrylion-rdp-plus` is **non-commercial
+**License:** ParaLLEl-RDP is MIT (readable); its bundled `angrylion-rdp-plus` is **non-commercial
 MAME-licensed — study outputs, never vendor its source** (`ref-proj/README.md`). See
 [[rdp-tmem-load-recipe]] and [[rdp-texture-rect-recipe]] for the texture path already built.
 
 ## Tickets
 
-### T-33-001 — The edge-walked triangle rasteriser
+### T-33-001 — The edge-walked triangle rasterizer
 
 **Description:** the triangle setup and span walk — `Fill Triangle` (0x08) and its shade/texture/Z
 variants (0x09–0x0F). Decode the edge coefficients (the three edges, `xh/xm/xl` + slopes, `yh/ym/yl`),
@@ -41,9 +41,9 @@ interpolated attributes. This is the foundation every later ticket renders throu
 
 ---
 
-### T-33-002 — The colour combiner (`Set Combine Mode`, 0x3C)
+### T-33-002 — The color combiner (`Set Combine Mode`, 0x3C)
 
-**Description:** the two-cycle colour/alpha mux. Decode the sub-A/B/C/D selects for colour and alpha
+**Description:** the two-cycle color/alpha mux. Decode the sub-A/B/C/D selects for color and alpha
 in both cycles, and evaluate `(A − B) * C + D` per pixel from the combiner inputs (combined, texel0/1,
 shade, primitive, environment, …).
 
@@ -54,7 +54,7 @@ shade, primitive, environment, …).
       inputs are wired; the **exotic** inputs (noise, LOD frac, key/convert) are deferred to
       ledger **R-10** (they need the LOD/key/convert state) and read as zero.
 - [x] `(A − B) * C + D` is evaluated with the correct clamping/rounding per cycle, asserted by the
-      **observable output colour** for known inputs (a texel passthrough, a lerp, and the clamp
+      **observable output color** for known inputs (a texel passthrough, a lerp, and the clamp
       fold) computed by hand — not a self-reported flag.
 - [x] 1-cycle and 2-cycle modes both work — 2-cycle chaining (cycle 0 → cycle 1's `Combined`) is
       unit-tested. Wiring the combiner into the triangle pipeline (with the `Set Other Modes`
@@ -75,7 +75,7 @@ alpha-compare, and the dither modes.
 - [x] `Set Other Modes` (0x2F) fields decode (cycle type, the two blend cycles' `P/A/M/B` selects,
       `force_blend`, coverage-dest, `image_read_en`, alpha-compare, Z enables/mode) — unit-tested
       with distinct per-field values so a swapped bit range surfaces. `Set Blend Color` (0x39) /
-      `Set Fog Color` (0x38) latch the colour registers.
+      `Set Fog Color` (0x38) latch the color registers.
 - [x] The blend equation writes the correct value — the RDP's divide-free `(P * a0 + M * (a1 + 1)) >> 5`
       (with `a0 = A >> 3`, `a1 = B >> 3`), asserted **value-for-value** by hand-computed muxed inputs
       and by a 2-cycle chain whose result differs from cycle 0 alone (so a no-op cannot pass). The
@@ -104,7 +104,7 @@ storage + coverage + per-pixel pipeline routing), per the split-large-tickets ru
 
 - [x] **PR-A.** Z encode/decode matches the hardware format (exact inverses of ParaLLEl-RDP
       `z_encode.h`, validated by boundary values + a `z_compress ∘ z_decompress` round-trip); the Z
-      test honours the Z mode, asserted by **observable occluding-vs-occluded pairs** per mode (opaque,
+      test honors the Z mode, asserted by **observable occluding-vs-occluded pairs** per mode (opaque,
       transparent, decal, and `z_compare` off) at the `depth_test` function level — a pixel that must
       and must not pass. `Set Depth Image` (0x3E) and `Set Primitive Depth` (0x2E) latch. Six new tests.
 - [~] **PR-B.** The Z-buffer **RDRAM read/write** (the 18-bit-per-pixel hidden-bit storage) actually
@@ -114,7 +114,7 @@ storage + coverage + per-pixel pipeline routing), per the split-large-tickets ru
       per pixel), which also closes the R-9 flat-fill. Ledger **R-12**.
       - [x] **part 1** — Z-buffer RDRAM read/write + hidden bits (`RdramBus` methods + lazy Bus store),
             round-trip tested (PR #75).
-      - [x] **part 2a** — per-pixel depth test + Z-write in the rasteriser (`decode_triangle_z`,
+      - [x] **part 2a** — per-pixel depth test + Z-write in the rasterizer (`decode_triangle_z`,
             `interpolate_z`, `depth_span`); occluding-triangle pair proves accept+reject (PR #77).
       - [x] **part 2b** — combiner→blender routing: shade (`interpolate_shade`), texture
             (`interpolate_st` + `fetch_texel`, non-perspective and perspective divide), and the
@@ -126,7 +126,7 @@ storage + coverage + per-pixel pipeline routing), per the split-large-tickets ru
             - [x] **2c-coverage primitives** — `compute_coverage` (4×2 diamond-sample 8-bit mask) +
                   `quantize_x` (`s.16`→`s.3` sticky snap) + `aa_enable` decode, a bit-exact port of
                   `coverage.h`/`span_setup.comp`, pinned by hand-computed unit tests. No runtime
-                  caller yet (rasteriser still unions sub-scanlines) — the exact-inclusion rewrite
+                  caller yet (rasterizer still unions sub-scanlines) — the exact-inclusion rewrite
                   changes every triangle's edge pixels, so its re-derived goldens are validated
                   against the T-33-005 conformance vectors, not hand-derived expectations.
             - [ ] **inclusion rewrite** — replace the union-bbox span with per-Y-subpixel edges +
@@ -140,7 +140,7 @@ storage + coverage + per-pixel pipeline routing), per the split-large-tickets ru
 
 ### T-33-005 — The ParaLLEl-RDP conformance 0-diff (the cut gate)
 
-**Description:** the bit-exactness gate. **Licence-clean approach:** run ParaLLEl-RDP's conformance
+**Description:** the bit-exactness gate. **License-clean approach:** run ParaLLEl-RDP's conformance
 harness (`rdp_conformance.cpp`, which drives Angrylion as the reference) **externally** to generate
 `(command-stream → golden-framebuffer)` vectors, commit **both halves of each vector** — the RDP
 command stream (the input) and the golden framebuffer (the output) — and have the RustyN64 harness
@@ -151,7 +151,7 @@ committable, keeping Angrylion an external output oracle (`ref-proj/README.md`; 
 golden-vector rule) and never a vendored dependency.
 
 **Fixed vectors, not live fuzzing.** The gate replays a **committed, deterministic** corpus so CI is
-reproducible; the *generation* uses the conformance harness's randomised command synthesis, but the
+reproducible; the *generation* uses the conformance harness's randomized command synthesis, but the
 committed vectors are frozen (a seed + generator version is recorded so the corpus can be
 regenerated/expanded, but CI never runs Angrylion live). A future live-fuzz mode is out of scope for
 the cut gate.
@@ -161,7 +161,7 @@ the cut gate.
 directly** — a standalone ~200-line MIT driver (`crates/rustyn64-test-harness/vectors-gen/driver.c`)
 that links only Angrylion's CPU-only `n64video.c` + `parallel.cpp` (no Vulkan/OpenGL/Granite), pokes a
 command list into RDRAM, calls `n64video_process_list()`, and reads the framebuffer back. Vectors are
-hand-authored command lists (deterministic, `parallel=false`), not randomised. The `.rvec` container
+hand-authored command lists (deterministic, `parallel=false`), not randomized. The `.rvec` container
 lives under `tests/vectors/` in two layouts (see `vectors-gen/README.md`): **v1** is a 9×u32 BE header
 followed by the command bytes and the golden framebuffer; **v2** adds two header words (`preload_addr`,
 `preload_len` → 11 u32) plus a **preload region** (a texture written to RDRAM before the command list,
@@ -184,7 +184,7 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       WIP)**, via TWO paths. (The other half of the cut criterion — a real-ROM golden frame, T-33-006 —
       is still open.)
       **(a) Hand-authored** (18, listed below): individual `.rvec` vectors written to target a specific
-      RDP behaviour, committed directly under `tests/vectors/`.
+      RDP behavior, committed directly under `tests/vectors/`.
       **(b) Seeded-fuzz** (144, under `tests/vectors/fuzz/`): a reproducible generator
       (`vectors-gen/driver.c --fuzz <dir> <seed> <count> [family]`, SplitMix64) grows the corpus
       mechanically. Candidates are replayed by the `curate_fuzz_candidates` dev-tool and only
@@ -199,7 +199,7 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       size/apex/slope/flip). NOTE: the corpus is **FILL-mode-heavy** — textured / shaded / blended /
       Z-tested triangles need the R-13 texel pipeline and the 1-/2-cycle paths before they can be fuzzed.
       The 18 hand-authored:
-      `prim_combiner_32` (the combiner **primitive-colour mux** — Set Prim
+      `prim_combiner_32` (the combiner **primitive-color mux** — Set Prim
       Color routed through `rgb_d = a_d = prim`, with a *distinct* flat shade that must NOT appear, so
       the vector discriminates prim from shade; validates an already-implemented mux path against the
       oracle, no new code),
@@ -208,13 +208,13 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       `cvg_dest_full_16` (**cvg_dest = full** coverage write-back, R-9 — partial edge stores full cov),
       `tex_rect_copy_16` + `tex_rect_offset_16` +
       `tex_rect_8x8_16` + `tex_rect_mag_16` (COPY-mode Texture Rectangle — 1:1 origin/offset/full-8×8
-      blits **and** the non-1:1 **4-pixels-per-cycle** magnify (`DsDx=2.0`, modelled + validated, R-8) —
+      blits **and** the non-1:1 **4-pixels-per-cycle** magnify (`DsDx=2.0`, modeled + validated, R-8) —
       the **first texture path validated against Angrylion**, clean because copy mode bypasses the
       combiner/texel pipeline; Flip 0x25 / 8-32bit copy still need RustyN64 impl),
       `fill_rect_16`, `fill_tri_16`, `fill_tri_wide_16`, `fill_tri_neg_16`,
       `fill_tri_frac_16` (FILL rounds), `shade_tri_frac_16` (1-cycle sub-pixel coverage),
       `shade_depth_tri_frac_16` (the depth path applies the same coverage), `shade_tri_32` (32-bit
-      RGBA8888 colour path, dither off), `dither_tri_32` (the default **magic** dither over a flat
+      RGBA8888 color path, dither off), `dither_tri_32` (the default **magic** dither over a flat
       `0x112233` shade), `shade_grad_tri_32` (a **Gouraud gradient** — dx.R and de.G non-zero — the
       first to validate `interpolate_shade` against the oracle). The generator now has **command-block
       macros** (`SHADE_BLOCK`/`SHADE_BLOCK_FLAT`/`Z_SUFFIX`) that expand to the exact word count, so
@@ -225,10 +225,10 @@ Angrylion revision could shift the goldens, so that commit is the recorded prove
       R-13, settled by Angrylion instrumentation after two retracted mis-diagnoses): the vector is
       well-formed (tile configured, S advances, texel 0 fetched as red), but Angrylion's output differs
       because of the **1-cycle TEXEL0 pipeline** (`texel0/texel1` swap) and the **s10.5 coordinate
-      scale**, neither modelled yet. The v2 preload plumbing itself is verified (all-white → white).
+      scale**, neither modeled yet. The v2 preload plumbing itself is verified (all-white → white).
       **Dither is now implemented** (`apply_rgb_dither`, a bit-exact port of
       Angrylion `dither.c` `rgb_dither`): the default **dither is ON** (RGB dither mode 0 = "magic"),
-      so non-extreme colours round up per pixel where the 4×4 matrix cell is below the channel's low 3
+      so non-extreme colors round up per pixel where the 4×4 matrix cell is below the channel's low 3
       bits; earlier vectors that predate this disabled dither (Set Other Modes hi bits 7:4 = `1111` →
       `0x2F0000F0`). The 2c sub-pixel coverage is wired for both the shaded/textured **and depth**
       1-/2-cycle paths (inclusion + coverage write-back), and the ordered RGB dither is wired on both;
@@ -263,10 +263,10 @@ microcode already boots on the RSP and emits a command list, Phase 2).
   — our own license-clean MIPS assembly (source + build script committed) — boots through the harness
   direct-load path, and the **real VR4300** executes its instructions to program the VI and CPU-fill a
   32×24 framebuffer with a per-pixel gradient; the **real VI** scans it out to the exact expected RGBA8
-  frame, deterministically. Nothing is synthesised — this is the CPU → RDRAM → VI scan-out path driven by
+  frame, deterministically. Nothing is synthesized — this is the CPU → RDRAM → VI scan-out path driven by
   a real ROM's own code, which is the T-33-006 "real ROM renders a stable frame" milestone.
 - [~] **Still open — an RDP-driven real-ROM frame.** `render_fill.z64` renders via the CPU, not the RDP,
-  so it does not yet exercise the LLE rasteriser end-to-end from a ROM. A ROM that drives the RDP (via
+  so it does not yet exercise the LLE rasterizer end-to-end from a ROM. A ROM that drives the RDP (via
   the rdpq microcode on the RSP, or direct DPC command lists from the CPU) is the natural follow-up, and
   needs the texture path (ledger R-13) for anything textured.
 
@@ -282,7 +282,7 @@ microcode already boots on the RSP and emits a command list, Phase 2).
 
 ## Sprint review checklist
 
-**Status: COMPLETE (v0.4.0 "Rasteriser", 2026-07-23).**
+**Status: COMPLETE (v0.4.0 "Rasterizer", 2026-07-23).**
 
 - [x] All tickets checked off or explicitly deferred (with reason) — attribute interpolation
       (R-9), exotic combiner inputs (R-10), and coverage/AA/alpha-compare/dither (R-11) are

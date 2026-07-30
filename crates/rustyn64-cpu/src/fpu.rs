@@ -10,7 +10,7 @@
 //! `FCSR.RM` selects the mode (UM §7.2.4): 0 nearest-even, 1 toward zero,
 //! 2 toward +∞, 3 toward −∞.
 //!
-//! **Every operation here honours it**, arithmetic included. The four
+//! **Every operation here honors it**, arithmetic included. The four
 //! arithmetic operations are adapters over [`crate::softfloat`], which takes
 //! the mode as a parameter and rounds exactly once; the conversions take a
 //! [`Rounding`] directly.
@@ -18,7 +18,7 @@
 //! This paragraph has been wrong in both directions and is worth reading
 //! carefully before it is edited again. It first claimed the modes applied
 //! throughout while the arithmetic ignored them; it was then corrected to say
-//! the arithmetic could not honour them, which became false when the soft-float
+//! the arithmetic could not honor them, which became false when the soft-float
 //! path landed. See `docs/engineering-lessons.md` §3.3c — the rule is that a
 //! comment asserting *what the code does* goes stale silently, because no test
 //! fails when it is wrong.
@@ -31,10 +31,10 @@
 //! make every multiply on every console wrong.
 
 // Two lints are allowed for this module, both because the thing they warn about
-// is the thing being modelled:
+// is the thing being modeled:
 //
 //   * `cast_precision_loss` -- an FPU's conversion instructions exist precisely
-//     to lose precision in a defined way. The loss is the behaviour, and it is
+//     to lose precision in a defined way. The loss is the behavior, and it is
 //     reported through the Inexact flag rather than avoided.
 //   * `float_cmp` -- `C.EQ` is IEEE equality and the exactness checks are exact
 //     by definition. An epsilon here would make the emulator report relations
@@ -45,8 +45,8 @@ use serde::{Deserialize, Serialize};
 
 /// Which VR4300 stepping a console carries.
 ///
-/// The only behaviour that currently depends on it is the **FP multiplication
-/// erratum**, and that dependency is why this is modelled as console state
+/// The only behavior that currently depends on it is the **FP multiplication
+/// erratum**, and that dependency is why this is modeled as console state
 /// rather than folded into `mul`: an unconditional erratum would make every
 /// multiply on *every* console wrong, and most consoles do not have it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ impl Stepping {
     /// *"may produce unexpected results"*. GCC's `-mfix4300` works around it by
     /// inserting two `nop`s after every `MUL.S`/`MUL.D`/`MULT`.
     ///
-    /// **What the corrupted output actually is has never been characterised** —
+    /// **What the corrupted output actually is has never been characterized** —
     /// our own `ref-docs/2026-07-20-vr4300-timing-supplement.md` lists it under
     /// undocumented constants, with only trigger conditions known. So the
     /// erratum can be *detected* here but not *reproduced*, and inventing a
@@ -81,7 +81,7 @@ impl Stepping {
     /// stop being evidence.
     ///
     /// Accuracy-ledger **U-7**. Selecting [`Stepping::Early`] therefore changes
-    /// nothing yet — it exists so that when the output *is* characterised, the
+    /// nothing yet — it exists so that when the output *is* characterized, the
     /// switch is already in the right place rather than threaded through
     /// afterwards.
     #[must_use]
@@ -93,7 +93,7 @@ impl Stepping {
 /// Would the erratum's trigger condition fire for this multiply?
 ///
 /// True when an operand of the **previous** multiply was a NaN, zero or
-/// infinity. Exposed so a future characterisation has a tested trigger to hang
+/// infinity. Exposed so a future characterization has a tested trigger to hang
 /// the corrupted output on, and so a trace can flag affected instructions today.
 #[must_use]
 pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
@@ -105,7 +105,7 @@ pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
 ///
 /// # Completeness
 ///
-/// All five are modelled for the four arithmetic operations, which compute
+/// All five are modeled for the four arithmetic operations, which compute
 /// through [`crate::softfloat`] and so have the exact pre-rounding result
 /// available. `inexact` and `underflow` were the two that previously never set
 /// for ordinary rounding — accuracy-ledger C-11 — and detecting them is
@@ -125,7 +125,7 @@ pub fn mul_erratum_triggers(prev_a: f64, prev_b: f64) -> bool {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Flags {
-    /// Invalid operation — a signalling NaN, or an undefined form like `0 × ∞`.
+    /// Invalid operation — a signaling NaN, or an undefined form like `0 × ∞`.
     pub invalid: bool,
     /// Division by zero, with a finite non-zero numerator.
     pub div_by_zero: bool,
@@ -240,29 +240,29 @@ impl<T> Outcome<T> {
     }
 }
 
-/// Is this `f32` a **signalling** NaN *as the VR4300 classifies one*?
+/// Is this `f32` a **signaling** NaN *as the VR4300 classifies one*?
 ///
 /// # The convention is inverted from IEEE-754:2008
 ///
 /// IEEE-754:2008 says the significand's MSB **set** means *quiet*. The VR4300
 /// predates that edition and uses the **legacy MIPS convention**, where the
-/// significand MSB **set** means *signalling*. So `0x7FC0_0000` — the pattern
+/// significand MSB **set** means *signaling*. So `0x7FC0_0000` — the pattern
 /// every modern language calls a quiet NaN, and what Rust's `f32::NAN` is — is
-/// a **signalling** NaN to this processor, and raises Invalid.
+/// a **signaling** NaN to this processor, and raises Invalid.
 ///
 /// # How this was established
 ///
 /// Not from a manual: from n64-systemtest's own expectations, which name their
-/// constants by the IEEE convention and then assert the opposite behaviour.
-/// For a non-signalling compare (`C.EQ`, `C.F`, …) it expects
+/// constants by the IEEE convention and then assert the opposite behavior.
+/// For a non-signaling compare (`C.EQ`, `C.F`, …) it expects
 /// `QUIET_NAN_START_32` (`0x7FC0_0000`, MSB set) to raise Invalid and
-/// `SIGNALLING_NAN_END_32` (`0x7FBF_FFFF`, MSB clear) to raise nothing. The
-/// signalling compare forms (`C.SF`, `C.SEQ`, …) raise Invalid for both, which
+/// `SIGNALING_NAN_END_32` (`0x7FBF_FFFF`, MSB clear) to raise nothing. The
+/// signaling compare forms (`C.SF`, `C.SEQ`, …) raise Invalid for both, which
 /// is the ordinary IEEE rule for those forms and so does not distinguish them.
 ///
 /// The corroboration that makes this more than a curve fit: the VR4300's own
 /// default NaN result is `0x7FBF_FFFF`, MSB **clear**. Under IEEE that would be
-/// a processor whose invalid-operation result is a *signalling* NaN — absurd,
+/// a processor whose invalid-operation result is a *signaling* NaN — absurd,
 /// since it would re-trap on first use. Under this convention it is exactly
 /// what it should be, a quiet one.
 ///
@@ -276,7 +276,7 @@ pub const fn is_snan_f32(v: f32) -> bool {
     b & 0x7F80_0000 == 0x7F80_0000 && b & 0x0040_0000 != 0
 }
 
-/// Is this `f64` a **signalling** NaN as the VR4300 classifies one?
+/// Is this `f64` a **signaling** NaN as the VR4300 classifies one?
 ///
 /// See [`is_snan_f32`] — the convention is inverted from IEEE-754:2008.
 #[must_use]
@@ -312,7 +312,7 @@ pub const fn is_subnormal_f64(v: f64) -> bool {
 /// arithmetic on it raises *unimplemented operation*.
 ///
 /// The complementary case is the opposite of what IEEE would lead you to
-/// expect: an MSB-**set** NaN is *signalling* here and raises the ordinary
+/// expect: an MSB-**set** NaN is *signaling* here and raises the ordinary
 /// Invalid, which [`is_snan_f32`] covers. Both NaN classes trap — they trap
 /// **differently**, and swapping them is invisible until `FCSR` is read back.
 #[must_use]
@@ -516,7 +516,7 @@ pub fn div_d(a: f64, b: f64, mode: Rounding) -> Outcome<f64> {
 /// **equivalent**, including for NaN payloads — mutation testing confirmed
 /// swapping them changes nothing — so this is a readability choice, not a
 /// correctness one: the hardware operation *is* a bit clear, and saying so makes
-/// the NaN-payload behaviour obvious instead of something to look up.
+/// the NaN-payload behavior obvious instead of something to look up.
 #[must_use]
 pub const fn abs_s(a: f32) -> f32 {
     f32::from_bits(a.to_bits() & 0x7FFF_FFFF)
@@ -566,13 +566,13 @@ pub enum Relation {
 ///
 /// | Bit | Meaning |
 /// | --- | --- |
-/// | 3 | raise Invalid when the operands are **unordered** (the signalling forms) |
+/// | 3 | raise Invalid when the operands are **unordered** (the signaling forms) |
 /// | 2 | true when `fs < ft` |
 /// | 1 | true when `fs == ft` |
 /// | 0 | true when the operands are **unordered** |
 ///
 /// So `C.EQ` is `cond = 2`, `C.OLT` is `4`, `C.OLE` is `6`, `C.UN` is `1`, and
-/// each signalling variant is its ordinary form plus 8. Writing the sixteen
+/// each signaling variant is its ordinary form plus 8. Writing the sixteen
 /// mnemonics as sixteen cases invites getting one wrong; deriving them from the
 /// bits makes all sixteen correct or none.
 ///
@@ -634,14 +634,14 @@ fn compare_result(rel: Relation, cond: u8, snan: bool) -> Outcome<bool> {
         || (unordered && cond & 0b001 != 0);
 
     let mut flags = Flags::NONE;
-    // Bit 3 selects the SIGNALLING forms, which raise Invalid on *any*
+    // Bit 3 selects the SIGNALING forms, which raise Invalid on *any*
     // unordered comparison -- including one caused by a merely quiet NaN. That
     // is the whole difference between `C.EQ` and `C.SEQ`, and it is why the
-    // quiet/signalling test used elsewhere is not sufficient on its own here.
+    // quiet/signaling test used elsewhere is not sufficient on its own here.
     if unordered && cond & 0b1000 != 0 {
         flags.invalid = true;
     }
-    // A signalling NaN operand raises Invalid whatever the condition.
+    // A signaling NaN operand raises Invalid whatever the condition.
     if snan {
         flags.invalid = true;
     }
@@ -663,7 +663,7 @@ pub const CAUSE_UNIMPLEMENTED: u32 = 1 << 17;
 /// > must be all zeroes or ones, otherwise the VR4300 processor raises a
 /// > floating-point instruction exception."* — UM §7.5.2
 ///
-/// This is a **VR4300-specific hardware limitation**, not IEEE behaviour: the
+/// This is a **VR4300-specific hardware limitation**, not IEEE behavior: the
 /// value is perfectly representable, the processor simply declines. An emulator
 /// that converts it anyway produces a *correct* number where hardware traps, so
 /// software's fixup path never runs and the difference surfaces far downstream.
@@ -763,7 +763,7 @@ fn round_ties_even(v: f64) -> f64 {
     } else if diff < 0.5 {
         f
     } else if (f as i64) % 2 == 0 {
-        // Exactly halfway: pick the even neighbour.
+        // Exactly halfway: pick the even neighbor.
         f
     } else {
         f + 1.0
@@ -876,11 +876,11 @@ pub const FMT_L: u8 = 21;
 /// produce holds the whole pipeline, so the consumer spends its own cycle after
 /// the stall drains and arrives at rate + 1 on its own.
 ///
-/// # Not modelled: the early exit
+/// # Not modeled: the early exit
 ///
 /// UM §7.5.6 and this table's own note 2 say a multicycle operation whose
 /// result is *obvious* — a zero or infinity operand, a power-of-two multiplier
-/// — completes in two cycles instead. That is documented behaviour we do not
+/// — completes in two cycles instead. That is documented behavior we do not
 /// yet reproduce, so trivial operands are charged the full rate and the model
 /// runs **slower** than hardware there. Accuracy ledger C-29.
 #[must_use]
@@ -951,7 +951,7 @@ mod tests {
     use super::*;
 
     /// **The VR4300 NaN convention is inverted from IEEE-754:2008**: the
-    /// significand MSB **set** means *signalling*, not quiet.
+    /// significand MSB **set** means *signaling*, not quiet.
     ///
     /// So `0x7FC0_0001` — what every modern language calls a quiet NaN, and
     /// what Rust produces — raises Invalid here, and `0x7F80_0001` does not.
@@ -959,12 +959,12 @@ mod tests {
     /// naming them the IEEE way is what made the original implementation
     /// backwards. Accuracy ledger C-12.
     #[test]
-    fn the_signalling_nan_is_the_one_with_the_significand_msb_set() {
+    fn the_signaling_nan_is_the_one_with_the_significand_msb_set() {
         let signals_here = f32::from_bits(0x7FC0_0001); // IEEE would call this quiet
-        let quiet_here = f32::from_bits(0x7F80_0001); // IEEE would call this signalling
+        let quiet_here = f32::from_bits(0x7F80_0001); // IEEE would call this signaling
         assert!(
             is_snan_f32(signals_here),
-            "MSB set is SIGNALLING on the VR4300"
+            "MSB set is SIGNALING on the VR4300"
         );
         assert!(!is_snan_f32(quiet_here), "MSB clear is quiet");
         assert!(!is_snan_f32(f32::INFINITY), "infinity is not a NaN");
@@ -975,7 +975,7 @@ mod tests {
             "a quiet NaN propagates quietly"
         );
 
-        // Rust's own NaN is signalling to this processor. Stated explicitly
+        // Rust's own NaN is signaling to this processor. Stated explicitly
         // because it is the case most likely to be reintroduced by someone
         // "fixing" the convention back to IEEE.
         assert!(is_snan_f32(f32::NAN), "even f32::NAN signals here");
@@ -984,7 +984,7 @@ mod tests {
     /// The same, for doubles — the bit sits at a different position, so this is
     /// not a free consequence of the `f32` case.
     #[test]
-    fn the_double_precision_signalling_bit_is_at_bit_51() {
+    fn the_double_precision_signaling_bit_is_at_bit_51() {
         let signals_here = f64::from_bits(0x7FF8_0000_0000_0001);
         let quiet_here = f64::from_bits(0x7FF0_0000_0000_0001);
         assert!(is_snan_f64(signals_here));
@@ -1078,8 +1078,8 @@ mod tests {
     }
 
     /// `ABS`/`NEG` are **bit operations**, so they pass NaN payloads through
-    /// rather than canonicalising. `f32::abs` happens to agree, but specifying
-    /// it as a bit clear is what makes the NaN behaviour predictable.
+    /// rather than canonicalizing. `f32::abs` happens to agree, but specifying
+    /// it as a bit clear is what makes the NaN behavior predictable.
     #[test]
     fn abs_and_neg_are_bit_operations_that_preserve_nan_payloads() {
         let nan = f32::from_bits(0xFF80_1234); // negative NaN with a payload
@@ -1206,35 +1206,35 @@ mod tests {
         }
     }
 
-    /// **The signalling forms raise Invalid on any unordered compare**, even for
+    /// **The signaling forms raise Invalid on any unordered compare**, even for
     /// a *quiet* NaN. That is the entire difference between `C.EQ` and `C.SEQ`,
-    /// and it means the quiet/signalling test used elsewhere is not sufficient
+    /// and it means the quiet/signaling test used elsewhere is not sufficient
     /// on its own here.
     #[test]
-    fn the_signalling_compare_forms_raise_on_a_quiet_nan() {
+    fn the_signaling_compare_forms_raise_on_a_quiet_nan() {
         // Quiet **by the VR4300 convention**: significand MSB clear (C-12).
         let qnan = f32::from_bits(0x7F80_0001);
         assert!(!is_snan_f32(qnan), "it really is quiet");
 
         let out = compare_s(qnan, 1.0, 2); // C.EQ
         assert!(!out.value);
-        assert!(!out.flags.invalid, "the non-signalling form stays quiet");
+        assert!(!out.flags.invalid, "the non-signaling form stays quiet");
 
         let out = compare_s(qnan, 1.0, 10); // C.SEQ
         assert!(!out.value, "the comparison result is unchanged");
         assert!(out.flags.invalid, "only the exception differs");
     }
 
-    /// A **signalling** NaN raises Invalid whatever the condition, including the
-    /// non-signalling forms.
+    /// A **signaling** NaN raises Invalid whatever the condition, including the
+    /// non-signaling forms.
     #[test]
-    fn a_signalling_nan_operand_raises_for_every_condition() {
-        // Signalling **by the VR4300 convention**: significand MSB set (C-12).
+    fn a_signaling_nan_operand_raises_for_every_condition() {
+        // Signaling **by the VR4300 convention**: significand MSB set (C-12).
         let snan = f32::from_bits(0x7FC0_0001);
         for cond in 0..16u8 {
             assert!(
                 compare_s(snan, 1.0, cond).flags.invalid,
-                "cond {cond} must raise on a signalling NaN"
+                "cond {cond} must raise on a signaling NaN"
             );
         }
     }
@@ -1266,7 +1266,7 @@ mod tests {
 
     /// **The VR4300 long-conversion restriction** (UM §7.5.2): bits 63:55 must
     /// be all-zero or all-one. This is a *hardware limitation*, not IEEE
-    /// behaviour — the value is representable, the processor declines.
+    /// behavior — the value is representable, the processor declines.
     ///
     /// Converting it anyway produces a correct number where hardware traps, so
     /// software's fixup path never runs and the divergence surfaces far
@@ -1318,7 +1318,7 @@ mod tests {
     #[test]
     fn int_to_single_rounding_is_not_in_this_module() {
         // A value needing more than 24 significand bits, converted toward zero.
-        // Nearest-even would give 0x4E93_2C06; the mode must be honoured.
+        // Nearest-even would give 0x4E93_2C06; the mode must be honored.
         let r =
             crate::softfloat::from_int(1_234_567_891, crate::softfloat::F32, Rounding::TowardZero);
         assert_eq!(r.bits as u32, 0x4E93_2C05);
@@ -1430,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn the_multiplication_erratum_is_modelled_but_not_invented() {
+    fn the_multiplication_erratum_is_modeled_but_not_invented() {
         assert!(!Stepping::default().has_mul_erratum(), "fixed by default");
         assert!(Stepping::Early.has_mul_erratum());
 
@@ -1442,7 +1442,7 @@ mod tests {
     }
 
     /// The trigger is a property of the **previous** multiply's operands: a NaN,
-    /// zero or infinity. It is tested now so a future characterisation has
+    /// zero or infinity. It is tested now so a future characterization has
     /// somewhere correct to attach the output.
     #[test]
     fn the_erratum_trigger_keys_off_the_previous_multiplys_operands() {

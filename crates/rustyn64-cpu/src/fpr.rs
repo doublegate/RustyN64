@@ -26,7 +26,7 @@
 //! DMFC1(1) == 0x44445555_66667777   <- unchanged
 //! ```
 //!
-//! # Three write behaviours, not one
+//! # Three write behaviors, not one
 //!
 //! - [`Fpr::write_s`] — `MTC1`/`LWC1`: deposit 32 bits, **preserve** the other
 //!   half of the register.
@@ -207,7 +207,7 @@ impl Fpr {
     /// **Not for any instruction.** `DMFC1` looked like a user of this and is
     /// not: it is a *formatted* 64-bit access and goes through [`Fpr::read_d`]
     /// (accuracy ledger U-7). This exists for tests and for save-state
-    /// serialisation, which want the physical file.
+    /// serialization, which want the physical file.
     #[must_use]
     pub const fn read_raw(&self, n: u8) -> u64 {
         self.fgr[(n & 31) as usize]

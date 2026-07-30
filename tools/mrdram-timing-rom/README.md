@@ -108,7 +108,7 @@ The residual 0.09 over the charged 46 is fixed jal/jr/pipeline-fill overhead not
 captured by the `N × 1` base, diluted across 1024 fills; on hardware the block
 dominates identically, so the measured number is the real fill cost.
 
-## Licence
+## License
 
-Authored for RustyN64: MIT OR Apache-2.0 (the project's licence). Built with
+Authored for RustyN64: MIT OR Apache-2.0 (the project's license). Built with
 `bass` (ISC/public-domain lineage); no Nintendo code is included.
