@@ -234,7 +234,7 @@ impl Audio {
     /// Construct at power-on (NTSC, idle).
     #[must_use]
     pub const fn new() -> Self {
-        Self {
+        let mut ai = Self {
             dma_addr: [0; 2],
             dma_len: [0; 2],
             dma_count: 0,
@@ -243,18 +243,24 @@ impl Audio {
             dac_rate: 0,
             bit_rate: 0,
             video_clock: VIDEO_CLOCK_NTSC,
-            // Must match what `recompute_rate` yields for `dac_rate == 0`. Left
-            // at 0 here, the default would only take effect once something
-            // happened to call `recompute_rate` (a DACRATE or region write), so a
-            // machine that never programmed the AI would still have a stopped DAC
-            // — the exact state ledger R-16's livelock needs.
-            sample_rate: Self::DEFAULT_DAC_HZ,
+            // Placeholder only — `recompute_rate` below derives the real value.
+            sample_rate: 0,
             next_sample_tick: 0,
             last_tick: 0,
             dac_hold: StereoSample { left: 0, right: 0 },
             underruns: 0,
             sink: Vec::new(),
-        }
+        };
+        // Derive the power-on rate through the SAME function every later rate
+        // change uses, rather than repeating its `dac_rate == 0` decision here.
+        // The duplicate literal this replaces was only kept correct by a comment
+        // saying "must match `recompute_rate`" — precisely the comment-enforced
+        // invariant this project distrusts, and the drift would be silent: a
+        // constructor left at 0 puts the machine back in the stopped-DAC state
+        // ledger R-16's livelock needs, and no test of a *programmed* DAC would
+        // notice. Raised in review on #205.
+        ai.recompute_rate();
+        ai
     }
 
     /// Select the console region (sets the video clock and re-derives the rate).
@@ -447,6 +453,10 @@ impl Audio {
         // `video_clock / 1` ≈ 48 MHz — is what the old zero-gate was avoiding,
         // and it would flood the sink. A default rate avoids both failures.
         //
+        // TODO(T-AUDIO-01): separate an explicit `AI_DACRATE = 0` write from the
+        // unprogrammed reset state. Needs a `dac_rate_programmed` field, hence a
+        // save-state layout bump (ADR 0005) — deferred, see below and ledger R-16.
+        //
         // KNOWN SIMPLIFICATION, ledgered (R-16): this conflates "never
         // programmed" with "software explicitly wrote 0". ares keeps them apart —
         // `power()` sets 44100, while its `AI_DACRATE` write honors a literal
@@ -494,6 +504,11 @@ impl Audio {
             // set and an unprogrammed `AI_DACRATE` now yields
             // `DEFAULT_DAC_HZ`, not zero (ledger R-16). Kept as a guard against
             // a divide-by-zero rather than as a modeled DAC state.
+            //
+            // The assert makes that claim CHECKABLE instead of merely stated: a
+            // future change that reintroduces a zero rate is exactly the R-16
+            // defect, and a silent `return` is how it hid the first time.
+            debug_assert!(period > 0, "a constructed AI must never have a stopped DAC");
             return;
         }
         if self.next_sample_tick == 0 {
