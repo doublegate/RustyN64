@@ -100,12 +100,7 @@ The gate must therefore:
 
 The witness is asserted, not printed for a human to notice.
 
-### 3. A stray comma in 0011's save-state heading
-
-0011's save-state-compatibility heading carries a stray comma before "because". Noted
-only so a later quotation of that heading is not mistaken for a transcription error.
-
-### 4. The pointer line is the one part of an immutable ADR that still changes
+### 3. The pointer line is the one part of an immutable ADR that still changes
 
 0011 gains an `Amended by: ADR 0012` marker in its header, and nothing else. That is not a
 breach of its immutability: the header's `Superseded by:` field cannot be filled in by the
@@ -115,7 +110,7 @@ ADR 0006, which did not exist when 0001 was accepted. Immutability protects the
 **reasoning**, which is what later readers cite; a reader who arrives at 0011 and is not
 told 0012 exists has been misled by the omission, not protected by it.
 
-### 5. 0011's measured table is superseded by the paired re-measurement
+### 4. 0011's measured table is superseded by the paired re-measurement
 
 Every figure in 0011's *"The measurements this decision rests on"* was taken as a single
 run, and several were later found not to pair: its **7.7x** debug ratio divided a debug
@@ -168,7 +163,8 @@ permission to bail out to the accurate path for anything unhandled.
 
 ## Process note
 
-The generalizable lesson is recorded where this repository keeps them, as
-`docs/engineering-lessons.md` §4.4 — re-requesting a review and then checking once is not
-waiting for it. It is referenced rather than argued here so that this document stays a
-specification.
+The generalizable lesson is recorded where this repository keeps them, in
+`docs/engineering-lessons.md` under *"Re-requesting a review and then checking once is
+not waiting for it"* (§4.4 at the time of writing — cited by title, since a section
+number is the part that goes stale). It is referenced rather than argued here so that
+this document stays a specification.
