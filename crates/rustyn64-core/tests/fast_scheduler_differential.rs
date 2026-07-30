@@ -31,6 +31,21 @@ use rustyn64_core::scheduler::System;
 /// the two runs a real comparison rather than two runs of the same schedule.
 const SEED: u64 = 0x5265_616C_6974_7921;
 
+/// Enough seeds to exercise **every** power-on phase alignment.
+///
+/// `Phases::from_seed` derives `cpu ∈ 0..CPU_DIVIDER` and `rcp ∈ 0..RCP_DIVIDER`,
+/// so there are six distinct alignments and a single seed samples exactly one of
+/// them. That is not a theoretical gap: an early version of the fast path's
+/// replayed pattern was off by one, skipping the edge at `base + 1` — and whether
+/// tick 1 *is* an edge is a function of the phases, so the one-seed gate passed a
+/// fast path that was demonstrably wrong. ADR 0011 §6 asks for boundaries to be
+/// forced rather than hoped for; this is that, at the cheapest boundary there is.
+///
+/// Sixteen consecutive seeds rather than six hand-picked ones: `SplitMix64` maps
+/// them to alignments opaquely, so enumerating seeds is honest where enumerating
+/// alignments would mean hardcoding the mapping and re-deriving it on every change.
+const PHASE_SEEDS: core::ops::Range<u64> = 0..16;
+
 /// Long enough that both domains step many thousands of times and the CPU retires
 /// real work; short enough to stay in the default `cargo test` path.
 const TICKS: u64 = 400_000;
@@ -126,6 +141,46 @@ fn the_fast_path_lands_where_the_accurate_path_would() {
     assert!(a == f, "{}", describe_divergence(&a, &f));
 }
 
+/// **The same comparison, across every power-on phase alignment.**
+///
+/// The single-seed test above samples one of six alignments. That is not enough:
+/// which ticks are edges depends on the phases, so a fast path that mishandles one
+/// specific offset can be invisible at one seed and obvious at another. This ran
+/// green on a fast path whose replayed pattern was off by one — until it was given
+/// more than one seed.
+///
+/// A shorter run than the single-seed test, since the point here is breadth of
+/// alignment rather than depth of execution, and sixteen full-length runs would put
+/// this outside the default `cargo test` budget.
+#[test]
+fn the_fast_path_agrees_at_every_phase_alignment() {
+    const SHORT: u64 = 60_000;
+
+    for seed in PHASE_SEEDS {
+        let mut accurate = System::new(seed);
+        let mut fast = System::new(seed);
+        accurate.run_until(SHORT);
+        fast.run_until_fast(SHORT);
+
+        assert!(
+            accurate.cpu.retired > 0,
+            "seed {seed}: the accurate run retired nothing, so the comparison is vacuous"
+        );
+        assert_eq!(
+            fast.master_ticks(),
+            accurate.master_ticks(),
+            "seed {seed}: correct-but-late — the fast path finished at a different tick"
+        );
+        assert_eq!(
+            fast.cpu.retired, accurate.cpu.retired,
+            "seed {seed}: the two paths retired different instruction counts"
+        );
+
+        let (a, f) = (state_of(&accurate), state_of(&fast));
+        assert!(a == f, "seed {seed}: {}", describe_divergence(&a, &f));
+    }
+}
+
 /// The gate must be able to **fail**, which a comparison of two identical runs
 /// cannot demonstrate on its own.
 ///
@@ -149,5 +204,44 @@ fn the_gate_detects_a_one_tick_divergence() {
         state_of(&a) != state_of(&b),
         "the gate compared two demonstrably different machines as equal — it cannot \
          detect divergence and therefore grades nothing"
+    );
+}
+
+/// Timing probe for the fast path, `#[ignore]`d like the project's other probes.
+///
+/// Not a gate — it asserts nothing about speed, because a wall-clock threshold in
+/// CI is a flake generator. It exists so the PR that changes the block executor has
+/// a number to quote, measured through the scheduler alone rather than through a
+/// frame, which is the only way to see this change without the CPU and RDP burying
+/// it.
+///
+/// ```text
+/// cargo test -p rustyn64-core --release --features fast-scheduler \
+///   --test fast_scheduler_differential -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "timing probe, not a gate"]
+fn probe_scheduler_dispatch_cost() {
+    use std::time::Instant;
+
+    const TICKS: u64 = 60_000_000;
+    const REPS: u32 = 3;
+
+    let mut acc_best = f64::MAX;
+    let mut fast_best = f64::MAX;
+    for _ in 0..REPS {
+        let mut a = System::new(SEED);
+        let t = Instant::now();
+        a.run_until(TICKS);
+        acc_best = acc_best.min(t.elapsed().as_secs_f64());
+
+        let mut f = System::new(SEED);
+        let t = Instant::now();
+        f.run_until_fast(TICKS);
+        fast_best = fast_best.min(t.elapsed().as_secs_f64());
+    }
+    println!(
+        "accurate {acc_best:.4}s  fast {fast_best:.4}s  ratio {:.4}x  ({TICKS} ticks, best of {REPS})",
+        acc_best / fast_best
     );
 }

@@ -75,6 +75,54 @@ pub const CPU_DIVIDER: u64 = 2;
 /// Master ticks per RCP (`MClock`) cycle.
 pub const RCP_DIVIDER: u64 = 3;
 
+/// Ticks after which the whole edge schedule repeats: `lcm(CPU_DIVIDER,
+/// RCP_DIVIDER)`.
+///
+/// A domain steps when `(tick + phase) % divider == 0`, and the phases are
+/// power-on constants (ADR 0006), so *which* domains are due at a tick is a
+/// function of `tick mod` this period and nothing else. The `fast-scheduler`
+/// block is exactly one period: its shape is computed once and replayed, which is
+/// only sound because this really is the repeat length.
+///
+/// Written as an explicit LCM rather than the literal 6 so that changing a divider
+/// cannot leave a stale period behind — a period that is too short would replay a
+/// pattern that no longer aligns, silently stepping the wrong domains.
+pub const EDGE_PERIOD: u64 = {
+    // `lcm(a, b) = a / gcd(a, b) * b`, const-evaluated.
+    const fn gcd(a: u64, b: u64) -> u64 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    CPU_DIVIDER / gcd(CPU_DIVIDER, RCP_DIVIDER) * RCP_DIVIDER
+};
+
+const _: () = {
+    assert!(
+        EDGE_PERIOD.is_multiple_of(CPU_DIVIDER) && EDGE_PERIOD.is_multiple_of(RCP_DIVIDER),
+        "EDGE_PERIOD must be a common multiple of both dividers, or the \
+         fast-scheduler's replayed pattern drifts out of alignment"
+    );
+};
+
+/// [`EDGE_PERIOD`] as an array length.
+///
+/// The cast cannot truncate — it is the LCM of two single-digit divider constants,
+/// so it is 6 on every target — but clippy sees only `u64 as usize` and cannot know
+/// the value. The assertion below turns "cannot truncate" from a claim in this
+/// comment into something the compiler checks, which is the difference between a
+/// justified `allow` and a silenced lint.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "value-checked by the const assertion immediately below"
+)]
+const EDGE_PERIOD_LEN: usize = EDGE_PERIOD as usize;
+
+const _: () = {
+    assert!(
+        EDGE_PERIOD_LEN as u64 == EDGE_PERIOD,
+        "EDGE_PERIOD does not survive the round trip through usize on this target"
+    );
+};
+
 /// Master ticks per COP0 `Count` increment — `Count` runs at **half** `PClock`
 /// (46.875 MHz), per VR4300 User's Manual §6.3.3 Figure 6-3. Forgetting the
 /// halving is a documented source of 2x timing bugs.
@@ -261,17 +309,27 @@ impl System {
     /// sees it. Reversing this changes which engine observes whose write first
     /// and is a determinism-visible change.
     fn step_due_here(&mut self) {
+        let cpu = Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER);
+        let rcp = Self::is_edge(self.master_ticks, self.phases.rcp, RCP_DIVIDER);
+        self.step_domains(cpu, rcp);
+    }
+
+    /// Step the domains the caller has *already determined* are due here.
+    ///
+    /// Split out of [`System::step_due_here`] so the fast path can drive it from a
+    /// precomputed schedule instead of re-deriving the same two predicates on every
+    /// edge. The ordering rule above lives here, in the one place both callers
+    /// reach, so it cannot come apart between them.
+    fn step_domains(&mut self, cpu: bool, rcp: bool) {
         // A failed real-PIF boot checksum freezes the CPU via NMI until power-off
         // (`PIF-NUS.md`). Stop stepping it; the RCP keeps running, as on hardware.
-        if Self::is_edge(self.master_ticks, self.phases.cpu, CPU_DIVIDER)
-            && !self.bus.boot_nmi_halt()
-        {
+        if cpu && !self.bus.boot_nmi_halt() {
             // `count_ticks` is derived from `master_ticks`, never incremented,
             // and the CPU turns it into the guest-writable `Count` (ADR 0006).
             let count_now = self.count_ticks();
             self.cpu.tick_at(&mut self.bus, count_now);
         }
-        if Self::is_edge(self.master_ticks, self.phases.rcp, RCP_DIVIDER) {
+        if rcp {
             self.step_rcp();
         }
     }
@@ -332,6 +390,53 @@ impl System {
     /// while every step bails; the gate is here to keep it true when they stop.
     #[cfg(feature = "fast-scheduler")]
     pub fn run_until_fast(&mut self, target: u64) {
+        // The edge schedule is PERIODIC. A domain steps when
+        // `(tick + phase) % divider == 0`, so the pattern of which domains are due
+        // repeats every `lcm(CPU_DIVIDER, RCP_DIVIDER)` ticks — and the phases are
+        // constants fixed at power-on (ADR 0006), so it never changes mid-run
+        // either. The accurate loop re-derives it on every single edge anyway:
+        // `next_edge` for the position, then two `is_edge` tests to attribute it.
+        //
+        // So the block here is one period. Its shape is computed once and then
+        // replayed, which removes the per-edge arithmetic without changing which
+        // domains step, in what order, or at which `master_ticks` — the fast path
+        // is a different *enumeration* of the same edges, not a different schedule.
+        // That is why the bailout invariant (ADR 0011 §6) is satisfied by
+        // construction rather than by argument: there is nothing to resynchronize,
+        // because nothing ever diverged.
+        let mut pattern = [(0u64, false, false); EDGE_PERIOD_LEN];
+        for (i, slot) in pattern.iter_mut().enumerate() {
+            // Offsets are 1..=EDGE_PERIOD because `run_until` advances to the next
+            // edge *strictly after* the current tick; offset 0 is the position the
+            // machine already sits on and was already stepped.
+            let off = i as u64 + 1;
+            let t = self.master_ticks + off;
+            *slot = (
+                off,
+                Self::is_edge(t, self.phases.cpu, CPU_DIVIDER),
+                Self::is_edge(t, self.phases.rcp, RCP_DIVIDER),
+            );
+        }
+
+        // Whole periods only. `base` tracks the period boundary while
+        // `master_ticks` lands on each edge inside it, which is what keeps the
+        // pattern's alignment valid: `base` advances by exactly one period, so
+        // `(base + off + phase) % divider` is invariant across iterations.
+        let mut base = self.master_ticks;
+        while base + EDGE_PERIOD <= target {
+            for &(off, cpu, rcp) in &pattern {
+                if cpu || rcp {
+                    self.master_ticks = base + off;
+                    self.step_domains(cpu, rcp);
+                }
+            }
+            base += EDGE_PERIOD;
+        }
+
+        // The tail — a partial period, plus the `master_ticks = target` landing —
+        // goes through the accurate path. It is at most `EDGE_PERIOD` ticks, so the
+        // fallback costs nothing measurable, and reusing it means the two paths
+        // cannot disagree about the end of a run.
         self.run_until(target);
     }
 
