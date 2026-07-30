@@ -5,7 +5,7 @@ Expansion Pak), §6 (CIC / saves), §Scope; `docs/cart.md`; `docs/STATUS.md`.
 
 ## Purpose
 
-Which hardware revisions, regions, and software characteriztics are in scope, and
+Which hardware revisions, regions, and software characteristics are in scope, and
 how region/board variation is handled as **data**, not separate cores. The board
 matrix proper lives in `docs/STATUS.md`.
 

@@ -1177,7 +1177,7 @@ mod tests {
     /// The sign of a zero sum is mode-dependent, and it is the one place a
     /// rounding mode changes a result that is otherwise exact.
     #[test]
-    fn the_sign_of_a_cancelled_zero_follows_the_rounding_mode() {
+    fn the_sign_of_a_canceled_zero_follows_the_rounding_mode() {
         let r = add(b32(1.0), b32(-1.0), F32, Rounding::Nearest);
         assert_eq!(r.bits, 0, "+0 in round-to-nearest");
         let r = add(b32(1.0), b32(-1.0), F32, Rounding::TowardMinusInf);

@@ -365,7 +365,7 @@ faults again. A hot exception vector looks identical to a busy test suite from a
 alone; the thing that distinguishes them is whether `EPC` *moves*, and it never does.
 
 Recording the mistake because it is instructive: the histogram was real evidence and I drew an
-optimiztic conclusion from it that one more cheap measurement would have refuted. "Which
+optimistic conclusion from it that one more cheap measurement would have refuted. "Which
 instruction" was the question the whole session's method was built on, and I stopped one step
 short of asking it.
 

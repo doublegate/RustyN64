@@ -140,7 +140,7 @@ silently bury `sync` + the per-instruction error inside "`M`", producing a fudge
 later timing result then rests on. **To isolate `M` cleanly you need a differential-of-differentials**:
 a probe that measures the `Count` delta of a loop with `N` uncached reads for two values of `N`, so
 the *slope* `(delta(N₂) − delta(N₁)) / (N₂ − N₁)` is the per-read cost with the loop overhead
-cancelled — a first-party microbenchmark (the accuracy-battery / `T-71-001` shape), or the
+canceled — a first-party microbenchmark (the accuracy-battery / `T-71-001` shape), or the
 n64-systemtest `timing` set's targeted per-access tests (blocked on the post-917 hang, above). This
 oracle **signals** the gap and bounds it; it does not, by itself, *isolate* `M`.
 

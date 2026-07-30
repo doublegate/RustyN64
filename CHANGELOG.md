@@ -697,7 +697,7 @@ not the RDP, where R-18 had been looking for months.
 
 ### Added — 3-point bilinear texture filter (gap-analysis Stage D, ledger R-13)
 
-- **The N64's characteriztic 3-point (triangular) bilinear filter is modeled**
+- **The N64's characteristic 3-point (triangular) bilinear filter is modeled**
   (`Set Other Modes.sample_type`, bit 45). `bilinear_3point` blends the four texels
   `(s,t)/(s+1,t)/(s,t+1)/(s+1,t+1)` by `upper = (sfrac+tfrac) & 0x20`: the lower-left
   triangle uses `t0,t1,t2`, the upper-right `t3,t2,t1` with inverted fractions, each
@@ -3163,7 +3163,7 @@ have cost real debugging time, and a dependency the plan had wrong.
   stripping** (nothing does it today, so no ROM can execute) and a **direct-load path**. Also
   recorded that Dillon's suite has no license, so its test must **skip** rather than fail when
   the ROM is absent.
-- T-11-008 notes that fitting `M` needs a ROM that runs long enough to measure — realiztically
+- T-11-008 notes that fitting `M` needs a ROM that runs long enough to measure — realistically
   n64-systemtest's default-off `timing` set, which is Sprint 2. The transaction model is Sprint
   1 work; the measurement may not be.
 
@@ -3532,7 +3532,7 @@ This tag exists so the foundation is a fixed, citable point rather than an ever-
   would misrepresent progress.
 - `docs/testing-strategy.md` documents the corpus tiers, the commercial-ROM guards, and the
   per-corpus licensing that decides which tier a corpus lands in.
-- `README.md` rebuilt to the structure RustyNES and RustySNES share — centerd title block with a
+- `README.md` rebuilt to the structure RustyNES and RustySNES share — centered title block with a
   three-row badge set, Overview, Why RustyN64, Highlights, Features, Quick Start, Default
   Controls, Architecture with crate and layout tables, Compatibility and Accuracy, Performance,
   Platform Support, Documentation, Current Release, Roadmap, Contributing, License,
