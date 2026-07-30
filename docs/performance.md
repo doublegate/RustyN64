@@ -165,16 +165,37 @@ perf report -i perf_play.data -s srcline --full-source-path --no-children -g non
 
 ### Frame cost
 
+Every row below is a **paired** measurement: the before and after come from two runs
+each, back to back on an otherwise idle machine, in the same window and on the same
+host. Unpaired quantities that once appeared here — a debug figure from one window
+divided by a release figure from another — are marked as superseded rather than deleted,
+because the arithmetic that produced them is what makes them wrong.
+
+| quantity | before `646a3e0` | after `646a3e0` | kind |
+| --- | --- | --- | --- |
+| frame cost | 155.17 / 155.09 ms (6.44 FPS) | **139.34 / 139.28 ms (7.18 FPS)** | measured, ×2 runs |
+| `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | **21.64 / 21.64 ms (15.5%)** | measured, ×2 runs |
+| the VI tap fix's effect | — | **1.114x** on the frame, **-39.1%** on the scan-out | derived from the pair |
+
+Run-to-run spread in `--release` is **0.05%** across these pairs, well inside the ±0.5%
+the method claims, so a change under ~1% is still not a result.
+
+The 1.09x quoted in `646a3e0`'s own commit message came from comparing runs taken in
+different sessions (151.7 → 138.7). The paired figure above, 1.114x, is the one to cite;
+the difference between them is exactly the drift that pairing exists to remove.
+
 | quantity | value | kind |
 | --- | --- | --- |
-| frame cost, before the VI tap fix | 150.5-151.7 ms (6.59-6.64 FPS) | measured |
-| frame cost, after | **138.7 ms (7.21 FPS)** | measured |
-| `Bus::scanout_scaled`, before | 35.5-35.7 ms (23.6% of a frame) | measured |
-| `Bus::scanout_scaled`, after | **21.3 ms (15.4%)** | measured |
-| debug-build frame cost | 784.7 ms (1.27 FPS) | measured |
-| **debug vs release ratio** | **7.7x** | derived from the two above |
+| debug-build frame cost, same tree and window | 1.216 / 1.214 s (0.82 FPS) | measured, ×2 runs |
+| **debug vs release** | **8.7x** | paired, same tree |
 | 60 FPS budget | 16.7 ms | arithmetic (`1/60`) |
-| gap to 60 FPS | ~8.3x | derived |
+| **gap to 60 FPS from 139.3 ms** | **~8.3x** | derived |
+
+The **7.7x** debug ratio quoted in ADR 0011 is **superseded**. It was self-consistent —
+784.7 ms debug against 101.6 ms release — but both came from the pre-`#209` probe, which
+timed frames 37-66, i.e. before the VI is programmed. Against the VI-live window the
+paired ratio is 8.7x. The actionable rule is unchanged and is the only part worth
+remembering: **never quote a debug figure**, it is roughly an order of magnitude out.
 
 ### Render-phase attribution
 
@@ -226,10 +247,14 @@ measurements would overstate them:
 - **1.56 M CPU and 1.04 M RCP steps per emulated frame** — from `MASTER_HZ / 60`
   divided by the ADR 0006 divisors (2 and 3), not counted at runtime.
 - **~1.66x in-model ceiling** — Amdahl over the largest identified in-model targets as
-  they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 23.6%), i.e.
-  `1 / (1 - 0.40)`. It assumes both are eliminated *entirely*, so it is an upper bound
-  and not a forecast; part of it has since been collected (the scan-out is now 15.4%),
-  which is why the measured gain was 1.09x and not more.
+  they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
+  `1 / (1 - 0.39)`. It assumes both are eliminated *entirely*, so it is an upper bound
+  and not a forecast; part of it has since been collected (the scan-out is now 15.5% of
+  a frame), which is why the measured gain was 1.114x and not more.
+
+  Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
+  physical impossibility, since something has to produce the pixels — would leave
+  117.7 ms, or 8.5 FPS. The 16.7 ms budget is below the cost of the CPU pipeline alone.
 
 ### SM64's VI configuration (measured, not assumed)
 
@@ -237,7 +262,13 @@ measurements would overstate them:
 `divot` 1, `dither_filter` 1, gamma 0. `VI_X_SCALE` gives `x_add = 512` (a 2x
 horizontal upscale, so `xfrac` alternates zero / non-zero); `VI_Y_SCALE` gives
 `y_add = 1024` (so `yfrac` is constant). This is what made the zero-weight bilinear
-tap skip worth 40% of the scan-out.
+tap skip worth 39.1% of the scan-out, and the arithmetic checks out exactly: `yfrac` is
+always 0 and `xfrac` alternates 0 / 16, so the four-tap form averaged
+`(1 + 4) / 2 = 2.5` filter chains per output pixel and the skip brings that to
+`(1 + 2) / 2 = 1.5`. The predicted 1.67x on the scan-out against a measured 1.64x is as
+close as this kind of accounting gets, which is the reason to write it down: a
+speed-up that matches a mechanism is a result, and one that does not is a coincidence
+waiting to be explained.
 
 ### Ruled out by measurement — do not retry
 
