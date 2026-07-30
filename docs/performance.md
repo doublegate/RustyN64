@@ -357,6 +357,62 @@ always 0 and `xfrac` alternates 0 / 16, so the four-tap form averaged
 speed-up that matches a mechanism is a result, and one that does not is a coincidence
 waiting to be explained.
 
+### The latch copies, anatomized (open — the largest in-model target left)
+
+ADR 0011 recorded that "latch copy/zero instructions" were ~16% of runtime and that
+removing them is "not safely possible", from a `perf annotate` view. Per-**line**
+attribution of the post-`6a6adfa` render capture says where that 16% actually sits:
+
+| `crates/rustyn64-cpu/src/pipeline.rs` | what it is | share |
+| --- | --- | --- |
+| `:2061` `self.ex_dc = out;` | EX → DC store | 3.68% |
+| `:913` `self.dc_wb = out;` | DC → WB store | 2.87% |
+| `:1903` `let mut out = self.rf_ex;` | EX load | 2.58% |
+| `:2351` `self.ic_rf = Latch { … }` | IC store | 2.15% |
+| `:848` `let mut out = self.ex_dc;` | DC load | 2.10% |
+| `:2147` `self.rf_ex = out;` | RF store | 1.28% |
+| **six copy sites** | | **14.66%** |
+
+Plus 3.77% attributed to `pipeline.rs:0` (inlined, no line), so ~15-18% of the frame —
+about **19-22 ms of 125** — is moving `Latch` values. That is more than the entire VI
+scan-out cost after the memo.
+
+**`Latch` is 120 bytes and the fields do sum to exactly that** (measured with
+`size_of`, so ADR 0011's "zero-padding-optimal" claim holds):
+
+| field | bytes |
+| --- | --- |
+| `occupied`, `pc`, `word`, `in_delay_slot`, `rs_val`, `rt_val` | 30 |
+| `decoded: Decoded` | 16 |
+| `abort: Option<Exception>` | 2 |
+| `write_back: WriteBack` | 24 |
+| `mem: Option<MemOp>` | 24 |
+| `cop0: Option<Cop0Access>` | 24 |
+| **total** | **120** |
+
+**What the byte breakdown adds to 0011's analysis.** The last three fields — **72 of the
+120 bytes** — are *produced at `EX`*. In `ic_rf` and `rf_ex` they are structurally always
+`None`/`WriteBack::None`, so those two latches copy 72 bytes of provably-empty payload,
+twice each per cycle. That is the `:2351`, `:2147`, and `:1903` rows above — **6.01%** of
+the frame, moving nothing.
+
+This is **not** the hazard 0011 ruled out. That hazard is specific to the `DC` path:
+`dc_stage`'s error branch re-reads `self.ex_dc` *after* `abort_with` has stamped it, which
+entangles the `:848` / `:2061` / `:913` copies with abort propagation. The upstream pair
+carries no such entanglement.
+
+**Untested hypothesis, and it must stay labeled one until measured:** splitting `Latch`
+into a front half (`occupied`, `pc`, `word`, `in_delay_slot`, `abort`, `decoded`,
+`rs_val`, `rt_val` — 48 bytes) and an `EX`-onward payload would cut the two upstream
+copies by 60%. Upper bound if the 6.01% went entirely: **1.064x**. Real, and nowhere near
+the ~7.5x the frame budget needs — which is the point of recording it here rather than
+acting on it: it is worth doing *after* the dispatch question is settled, not instead of
+it.
+
+Any attempt carries this repository's worst failure mode — `docs/engineering-lessons.md`
+records four pipeline changes that compiled, passed every test, and did nothing — so it
+needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
+
 ### Ruled out by measurement — do not retry
 
 1. **Per-tick `u64` modulo in the scheduler** — divides are **< 2%** of the annotated
