@@ -498,6 +498,32 @@ impl Audio {
     /// Hot path — allocation into the sink is the only cost while playing.
     pub fn tick<B: AudioBus>(&mut self, now: u64, bus: &mut B) {
         self.last_tick = now;
+        // No sample is due, which is the overwhelmingly common case: at the usual
+        // ~32 kHz the period is ~5,859 master ticks and this runs every RCP step
+        // (every 3), so roughly 1,950 calls pass through here for each one that
+        // emits. Returning before `period_ticks` matters because that is a 64-bit
+        // divide, and computing it here is pure waste — the old order divided,
+        // then discovered the sample was not due and dropped the quotient. It was
+        // 3.67% of a rendering frame, the largest single line outside the CPU
+        // pipeline (`docs/performance.md`).
+        //
+        // Behavior-identical rather than approximately so: on this path the old
+        // code either returned at the `period == 0` guard or fell to a `while`
+        // whose condition is exactly the negation of the test above, and neither
+        // route touches any field. Deliberately not memoized in a field — the
+        // quotient is derived from `sample_rate`, and caching derived state in a
+        // serialized struct would change the save-state layout (ADR 0005) to buy
+        // what an ordering change buys for nothing.
+        if self.next_sample_tick != 0 && now < self.next_sample_tick {
+            // The R-16 guard still has to be checkable on the hot path, or it
+            // would only ever be evaluated on the ~0.05% of calls that emit.
+            // `debug_assert` compiles out of release, so this costs nothing.
+            debug_assert!(
+                self.sample_rate != 0,
+                "a constructed AI must never have a stopped DAC"
+            );
+            return;
+        }
         let period = self.period_ticks();
         if period == 0 {
             // Unreachable on a constructed machine: `video_clock` is always
@@ -954,6 +980,54 @@ mod tests {
         assert_ne!(ai.status() & (1 << 31), 0, "FULL");
         assert_ne!(ai.status() & 1, 0, "FULL mirror bit 0");
         assert_ne!(ai.status() & (1 << 25), 0, "ENABLED");
+    }
+
+    /// **A sample due exactly at `now` is emitted on that call, not the next one.**
+    ///
+    /// [`Audio::tick`] returns early — before computing the DAC period — when no
+    /// sample is due, which is what keeps a 64-bit divide off the hot path. The
+    /// boundary of that early-out is `now < next_sample_tick`, and an off-by-one
+    /// there defers every sample by one RCP step: audio that is *correct but late*,
+    /// with no wrong sample anywhere.
+    ///
+    /// Nothing else in this suite can see that. Mutating the test to `<=` leaves the
+    /// whole workspace green, because the other AI tests advance `now` in strides of
+    /// a full period or longer and so never land on the boundary. The gross failure
+    /// (never emitting at all) is caught seven times over; this one-tick case was
+    /// caught zero times, which is why it is pinned here rather than assumed.
+    ///
+    /// `next_sample_tick` is read directly instead of recomputing the anchor from
+    /// `period_ticks`, so the test asserts against where the DAC actually is rather
+    /// than against a second copy of the formula it is meant to check.
+    #[test]
+    fn a_sample_due_exactly_now_is_emitted_on_this_call() {
+        let mut ai = programmed();
+        let mut bus = TestBus::new(0x1_0000);
+        bus.write_word(0x100, 0x0001_0002);
+        bus.write_word(0x104, 0x0003_0004);
+        ai.write_reg(0, 0x100);
+        ai.write_reg(1, 8); // 8 bytes = 2 sample-pairs
+
+        ai.tick(1, &mut bus);
+        let due = ai.next_sample_tick;
+        assert!(
+            due > 1,
+            "the first tick must anchor the next sample ahead of now"
+        );
+        drop(ai.drain());
+
+        ai.tick(due - 1, &mut bus);
+        assert!(
+            ai.drain().is_empty(),
+            "no sample is due one tick before the boundary"
+        );
+
+        ai.tick(due, &mut bus);
+        assert_eq!(
+            ai.drain(),
+            [StereoSample { left: 1, right: 2 }],
+            "the sample due exactly at `now` must be emitted on this call"
+        );
     }
 
     #[test]
