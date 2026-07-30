@@ -761,7 +761,29 @@ remainder), wrapping at `VI_V_TOTAL + 1`, and raises `MI_INTR.vi` once per field
 when it lands on `VI_V_INTR` — the per-half-line step means a call spanning many
 half-lines cannot skip it, and a `VI_V_INTR` beyond the field never fires.
 `VI_CTRL.TYPE == 0` suppresses the interrupt, and the position is kept relative so
-a mid-run `VI_V_TOTAL` change re-bases without a scale jump. The field cadence is
+a mid-run `VI_V_TOTAL` change re-bases without a scale jump.
+
+**A global lower bound skips the period division on about half the calls.**
+`Vi::tick` runs every RCP step, and a call returns before the 64-bit divide when the
+accumulator is below `VI_MIN_TICKS_PER_HALFLINE` — the smallest
+period the whole programmable space admits, `MASTER_HZ / (60 * 1024) = 3051`, since
+`total_halflines()` is `(VI_V_TOTAL & 0x3FF) + 1` (so 1..=1024) and `field_hz()` is
+50 or 60. Below that bound the `while` provably cannot execute for **any** legal
+programming, so this is exact rather than approximate, and it adds no state (a cache
+would have changed the save-state layout, ADR 0005). A `const` assertion ties the
+bound to the `0x3FF` mask and to NTSC being the faster rate, because a bound that
+grew too large would swallow a half-line and delay the interrupt silently. Two tests
+pin it: one walks all 1,024 encodable `VI_V_TOTAL` values, and one drives the scan
+one master tick at a time and requires the same landing half-line as a single jump.
+
+**Being a global bound, it is loose for any particular field length**, and that is the
+cost of not adding state. NTSC programs a 5,952-tick half-line against the 3,051-tick
+bound, so calls with the accumulator between the two still divide even though they
+cannot advance: about **51%** of calls take the early-out, not almost all. Tightening
+it would mean remembering the current period across calls, which is a field, hence a
+save-state question (ADR 0005) rather than a free change.
+
+The field cadence is
 **region-aware** (R-6): `Vi::field_hz` picks the standard PAL **50 Hz** when the
 field is PAL-length (`VI_V_TOTAL > 550`) and NTSC **60 Hz** otherwise — the same
 `ispal` split the scan-out geometry uses, so cadence and geometry agree on the
