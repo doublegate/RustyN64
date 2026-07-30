@@ -1573,6 +1573,12 @@ pub struct TileDescriptor {
 ///
 /// The field is private and the type has no constructor, so it cannot be forged.
 ///
+/// **Dropping a token abandons that step's work.** The RDP will not have advanced,
+/// and the next `rdp_tick` starts the same step over — so nothing is corrupted, but a
+/// step is lost. (It does *not* leave a half-applied stall: the token is only handed
+/// out on the path where `stall` is already zero, so the decrement and the token are
+/// mutually exclusive.) `#[must_use]` is what makes ignoring one loud.
+///
 /// **`Copy` and `Clone` are deliberately not derived.** Either would let a caller keep
 /// a token past the step it authorized and present it again after the state it attested
 /// to had changed — the same hole as taking it by reference. `Debug` is derived because
@@ -1824,6 +1830,11 @@ impl Rdp {
 
     /// The part of a step that needs **no bus access**, returning `None` when it
     /// finished the step on its own and `Some(NeedsBus)` when work remains.
+    ///
+    /// **This advances state**, despite the `Option` return: on the stalling path it
+    /// burns one GCLK. It is named `tick_*` rather than `is_*` for that reason — in
+    /// this codebase `tick` means *advance by one step*, as in `Bus::rsp_tick` and
+    /// `Cpu::tick_at`.
     ///
     /// Split out so a caller can decide whether to pay for bus access *before*
     /// arranging it. `Bus::rdp_tick` moves this whole struct out of the Bus with
