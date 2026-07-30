@@ -718,8 +718,8 @@ Re-profiling after the AI work put **`crates/rustyn64-core/src/vi.rs:167` at 5.0
 single hottest line in the frame.** That line is
 `MASTER_HZ / (field_hz() * total_halflines())`, a 64-bit divide, and `Vi::tick` runs on
 every RCP step. A half-line is ~5,952 master ticks against a step every 3, so a half-line
-elapses on roughly **one call in 1,980** and the rest divide to compare against an
-accumulator that cannot have reached the period.
+elapses on roughly **one call in 1,984** and the rest divided to compare against an
+accumulator that had not reached the period.
 
 Fixed with a bound rather than a cache, so no state was added and the save-state layout is
 untouched (ADR 0005). `total_halflines()` is `(VI_V_TOTAL & 0x3FF) + 1`, so the field is
@@ -749,9 +749,28 @@ four A legs climb monotonically (96.5 → 98.1, a 1.6% upward drift over the seq
 the two B legs differ by 1.37%, both wider than the 0.05–0.13% back-to-back spread. What is
 solid is the *sign*: both A brackets sit entirely above both B legs. Taking the adjacent
 brackets (A2, A3) against B gives **~1.03x**; the conservative pairing, best A over worst B
-(`96.547 / 94.925`), gives **1.017x**. The 5.00% profile share would have predicted ~1.053x,
-so here the share **over**-predicted — the opposite direction from the two split-borrows,
-and a reminder that the share bounds rather than forecasts.
+(`96.547 / 94.925`), gives **1.017x**.
+
+**The result matches the model once the model is right, and getting there took a review.**
+The first version of this section said the bound skipped nearly every call, which would
+predict ~1.053x from a 5.00% share, and then explained the shortfall by saying the profile
+had over-predicted. Both halves were wrong. The bound is **global**, so it is loose for any
+particular field length: NTSC's period is 5,952 ticks against a 3,051-tick bound, and a call
+whose accumulator lies between the two still divides even though it cannot advance. So
+
+```text
+skip fraction = 3051 / 5952 = 51.3%
+expected      = 5.00% x 0.513 = 2.56%  ->  1.026x
+```
+
+against **~1.03x** measured. The share did not over-predict; the skip fraction was
+mis-modeled, and blaming the profiler was the easy answer that stopped the inquiry one step
+early. Recorded because "the profile over-predicted" is the kind of explanation that sounds
+like a finding and forecloses the arithmetic that would have refuted it.
+
+**Remaining headroom here is the other 48.7%**, and it is not free: tightening the bound
+means remembering the current period across calls, which is a field, hence a save-state
+question (ADR 0005). Not obviously worth it for ~2.4% — noted rather than pursued.
 
 **A dead guard and a wrong comment, found on the way.** `Vi::tick` returned early on
 `per_hl == 0` under the comment "no timing until `VI_V_TOTAL` is programmed". That branch is

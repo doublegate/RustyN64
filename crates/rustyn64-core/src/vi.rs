@@ -237,17 +237,34 @@ impl Vi {
         let per_hl = self.ticks_per_halfline();
         // Unreachable: `total_halflines()` is `(VI_V_TOTAL & 0x3FF) + 1`, so it is at
         // least 1, and `field_hz()` is 50 or 60 — the divisor is therefore at most
-        // 61,440 against a 187.5 MHz numerator and the quotient cannot be zero. Kept
-        // as a divide-by-zero guard rather than as modeled VI state, with an assert
-        // so the claim is checkable instead of merely asserted.
+        // 61,440 against a 187.5 MHz numerator and the quotient cannot be zero.
         //
-        // The comment this replaces said "no timing until `VI_V_TOTAL` is
-        // programmed", which misdescribed it: an unprogrammed `VI_V_TOTAL` is one
-        // half-line, giving a period of 3,750,000 ticks — very long, never zero.
+        // What it actually backstops is the `while` below, NOT a division: the divide
+        // has already happened by the time this runs, inside `ticks_per_halfline`. A
+        // zero period would make `self.acc >= per_hl` permanently true while
+        // `self.acc -= per_hl` made no progress — an infinite loop, not a trap. Two
+        // earlier comments here got this wrong in two different ways: the original
+        // called it "no timing until `VI_V_TOTAL` is programmed" (an unprogrammed
+        // `VI_V_TOTAL` is one half-line, a 3,750,000-tick period, never zero), and the
+        // first version of this rewrite called it a divide-by-zero guard, which it
+        // cannot be from this position. A review caught the second.
+        //
+        // It returns rather than `unreachable!()` deliberately. This runs inside the
+        // emulation core on every RCP step, and what it guards against would be
+        // produced by *emulated* register state; degrading to "no scan advance this
+        // step" keeps a malformed guest program from aborting the process, which a
+        // panic here would do in release. `debug_assert` gives the developer-facing
+        // signal without putting that risk in a shipped build.
         debug_assert!(per_hl > 0, "the VI period is bounded below by construction");
         if per_hl == 0 {
             return false;
         }
+        // Committed here, not beside the `let` above, so that the `per_hl == 0` path
+        // leaves `acc` exactly as the pre-split code did. That branch is unreachable,
+        // so hoisting the assignment would be *observably* identical — but only by
+        // way of the unreachability argument. Duplicating one store keeps this change
+        // behavior-identical without depending on that, which is the cheaper thing to
+        // be sure of.
         self.acc = acc;
         let halflines = self.total_halflines();
         let v_intr = self.regs[VI_V_INTR as usize] & 0x3FF;
@@ -325,10 +342,13 @@ mod tests {
     /// **Ticking one master tick at a time lands on exactly the same half-line as
     /// one big jump.** The skip must not lose an accumulated remainder.
     ///
-    /// The per-tick cadence is what the scheduler actually does, and it is the path
-    /// that takes the early-out thousands of times per half-line; the single jump
-    /// takes it never. Both are driven to the same `master_ticks`, so any tick the
-    /// fast path drops shows up as a different `VI_V_CURRENT`.
+    /// One call per master tick is **finer than the scheduler's own cadence**, which
+    /// is one RCP step every three (`RCP_DIVIDER`, ADR 0006) — deliberately so. This
+    /// is an equivalence oracle, not a reproduction of the real invocation pattern:
+    /// stepping in the smallest possible increment maximizes the number of times the
+    /// early-out runs between crossings, so a remainder the fast path loses shows up
+    /// as a different `VI_V_CURRENT`. The single jump takes the early-out never, so
+    /// the two paths agreeing is the property under test.
     #[test]
     fn stepping_one_tick_at_a_time_matches_one_jump() {
         let mut stepped = Vi::new();
@@ -343,7 +363,12 @@ mod tests {
 
         let mut stepped_fired = false;
         for now in 1..=target {
-            stepped_fired |= stepped.tick(now);
+            // Bound first: `tick` must run on *every* iteration, since advancing the
+            // scan is the point. Folding the call into `stepped_fired |= …` would
+            // still do that — `|=` on `bool` does not short-circuit — but it reads
+            // as if it might, and the test is worthless if any tick is skipped.
+            let fired = stepped.tick(now);
+            stepped_fired |= fired;
         }
         let jumped_fired = jumped.tick(target);
 
