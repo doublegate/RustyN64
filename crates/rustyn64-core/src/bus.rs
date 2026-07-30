@@ -2571,6 +2571,41 @@ mod tests {
         assert!(huge.cells.is_empty(), "and allocates nothing for it");
     }
 
+    /// The other side of the skip: when the RDP *does* have a queued command,
+    /// `rdp_tick` must still take the bus and retire it.
+    ///
+    /// The stall test above proves the skip path fires; on its own that is satisfied by
+    /// a predicate that always skips, which would be a dead RDP. This pins the positive
+    /// case end to end through `Bus::rdp_tick` — a `Sync Pipe` (0x27) placed in RDRAM,
+    /// consumed, `cmd_current` advanced past it, and the documented stall applied.
+    #[test]
+    fn a_queued_command_is_retired_through_the_bus_half() {
+        let mut bus = Bus::new();
+        let fifo = 0x1000u32;
+        // Sync Pipe: opcode 0x27 in the top byte, one 64-bit word, no operands.
+        bus.rdram[fifo as usize] = 0x27;
+        bus.rdp.cmd_current = fifo;
+        bus.rdp.cmd_end = fifo + 8;
+
+        let before = bus.rdp.commands_processed;
+        bus.rdp_tick();
+
+        assert_eq!(
+            bus.rdp.commands_processed,
+            before + 1,
+            "the command must be consumed, not skipped"
+        );
+        assert_eq!(
+            bus.rdp.cmd_current,
+            fifo + 8,
+            "and the FIFO pointer advanced past it"
+        );
+        assert!(
+            bus.rdp.stall > 0,
+            "Sync Pipe applies its documented pipeline stall"
+        );
+    }
+
     /// A stalling RDP still burns exactly one GCLK per RCP step through the skip path.
     ///
     /// The stall is the only thing the skip path **mutates**, so an ordering mistake

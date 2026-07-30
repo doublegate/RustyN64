@@ -1577,7 +1577,13 @@ pub struct TileDescriptor {
 /// and the next `rdp_tick` starts the same step over — so nothing is corrupted, but a
 /// step is lost. (It does *not* leave a half-applied stall: the token is only handed
 /// out on the path where `stall` is already zero, so the decrement and the token are
-/// mutually exclusive.) `#[must_use]` is what makes ignoring one loud.
+/// mutually exclusive.)
+///
+/// What makes ignoring one loud is the `#[must_use]` on
+/// [`Rdp::tick_without_bus`] **itself**, not the one on this type: an attribute on `T`
+/// does not propagate through `Option<T>`, and `Option` — unlike `Result` — is not
+/// `#[must_use]` either. Verified by discarding the call and watching the lint appear
+/// only once the attribute moved to the function.
 ///
 /// **`Copy` and `Clone` are deliberately not derived.** Either would let a caller keep
 /// a token past the step it authorized and present it again after the state it attested
@@ -1852,6 +1858,7 @@ impl Rdp {
     /// token is the only way to reach [`Rdp::tick_with_bus`], so the two halves cannot
     /// be called out of order — the preconditions are carried by the type rather than
     /// by a comment or an assertion.
+    #[must_use = "a `Some` means the step is unfinished and needs `tick_with_bus`"]
     pub fn tick_without_bus(&mut self) -> Option<NeedsBus> {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
