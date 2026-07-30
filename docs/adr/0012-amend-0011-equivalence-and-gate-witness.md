@@ -101,6 +101,27 @@ ADR 0006, which did not exist when 0001 was accepted. Immutability protects the
 **reasoning**, which is what later readers cite; a reader who arrives at 0011 and is not
 told 0012 exists has been misled by the omission, not protected by it.
 
+### 5. 0011's measured table is superseded by the paired re-measurement
+
+Every figure in 0011's *"The measurements this decision rests on"* was taken as a single
+run, and several were later found not to pair: its **7.7x** debug ratio divided a debug
+frame cost by a release figure from a **different window** (before the VI is programmed
+versus after). `docs/performance.md` §Measured now carries two-run paired figures for all
+of them, and it is authoritative where the two disagree:
+
+| 0011 says | paired measurement says |
+| --- | --- |
+| frame cost 150.5 ms → 6.6 FPS | 155.1 ms → 6.44 FPS (pre-fix), 139.3 ms → 7.18 FPS (post) |
+| scan-out 35.5 ms, 23.6% of a frame | 35.5 ms, 22.9% (pre-fix); 21.6 ms, 15.5% (post) |
+| debug is 7.7x slower | **8.7x**, paired on one tree and one window |
+| required speedup ~9x | ~8.3x from 139.3 ms |
+
+**The decision does not move.** That is the point of recording the drift rather than
+quietly correcting it: 0011's argument is that ~9x is unreachable inside a per-cycle model
+whose in-model ceiling is ~1.66x, and 8.3x against 1.66x is the same conclusion. A
+measurement that changes the numbers without changing the decision is worth writing down
+precisely because the reverse would have invalidated the ADR.
+
 ## Consequences
 
 ### Good
