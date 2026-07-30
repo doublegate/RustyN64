@@ -540,8 +540,9 @@ impl Bus {
     /// The `take` is how the RDP borrows its owner, and it is not free: `Rdp` is 344
     /// bytes, and `core::mem::take` reads them out *and* writes a fresh `Default` into
     /// the vacated slot, which the restore then overwrites — three touches of the whole
-    /// struct on **every RCP step**, about 1.07 GB a frame
-    /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame").
+    /// struct. This *used* to happen on **every RCP step**, about 1.07 GB a frame
+    /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame"); the point
+    /// of what follows is that it no longer does.
     ///
     /// So the step's bus-free half runs first. On most steps the RDP is frozen,
     /// stalling, or looking at an empty command FIFO, and answers the whole step from

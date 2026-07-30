@@ -585,6 +585,28 @@ Cumulatively the frame has gone **155.13 → 108.22 ms, 1.433x**, and the gap to
 instead of it — and the Angrylion `.rvec` vectors and
 the audio goldens are what would catch an idle predicate that is wrong.
 
+### A-B-A, when a session drifts under you
+
+Measuring `#[inline]` on `Rdp::tick_without_bus` — a cross-crate call on the hot path —
+produced this, in one sitting, minutes apart:
+
+| leg | | frame |
+| --- | --- | --- |
+| A | without `#[inline]` | 105.84 / 105.64 ms |
+| B | **with** `#[inline]` | 107.50 / 107.57 ms |
+| A | without, again | 107.35 / 107.45 ms |
+
+Two legs would have reported `#[inline]` as a **1.7% regression** and it is nothing of
+the kind: the third leg matches B, so the machine simply got ~1.7% slower partway through
+and stayed there. `#[inline]` is **neutral**, which is the expected answer under
+`lto = "fat"` — LLVM already has the callee's body across the crate boundary, so the hint
+adds nothing.
+
+**Repeat the baseline after the change, not just before it.** Back-to-back runs of one
+binary agree to 0.05-0.13%, but a session drifts by ~1-2% over tens of minutes, which is
+the same size as a real optimization. A before/after pair cannot tell those apart; A-B-A
+can.
+
 ### Ruled out by measurement — do not retry
 
 1. **Per-tick `u64` modulo in the scheduler** — divides are **< 2%** of the annotated
@@ -599,7 +621,11 @@ the audio goldens are what would catch an idle predicate that is wrong.
    `dc_stage`'s error branch re-reads `self.ex_dc` *after* `abort_with` has stamped it,
    and `Latch` is already zero-padding-optimal at 120 bytes. Upper bound 1.19x.
 4. **Inlining the VI leaf readers** — `#[inline]` declined by LLVM;
-   `#[inline(always)]` made the scan-out **36% worse** (35.5 → 48.4 ms).
+   `#[inline(always)]` made the scan-out **36% worse** (35.5 → 48.4 ms). Also
+   `#[inline]` on `Rdp::tick_without_bus`, a cross-crate call on the hot path:
+   **neutral**, by the A-B-A above. Under `lto = "fat"` an inline hint has nothing to
+   add — that is now two independent results, and the general form is *this workspace's
+   release profile has already done the inlining*.
 5. **Reordering `vi_divot`'s early-out to test coverage first** — **10% worse**, measured.
 
    The *explanation* offered for that regression — that `cvg == 7` is rare, so the
