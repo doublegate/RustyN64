@@ -170,11 +170,10 @@ impl ViSampler {
     /// (`y_add` is unsigned), so the lower row is the one that will not be asked for
     /// again. A wrong choice here would only cost hit rate, never correctness.
     ///
-    /// The comparison leans on `Option`'s derived ordering, which is worth spelling
-    /// out: `None < Some(_)` for every `Some`, and `Some(a) < Some(b)` exactly when
-    /// `a < b`. So `row_y[1] < row_y[0]` selects slot 1 when it is unused or holds the
-    /// lower row, and slot 0 otherwise — unused rows first, then the row further
-    /// behind the walk.
+    /// The choice is written as an explicit match rather than as a comparison of two
+    /// `Option`s, because the rule it encodes — unused rows first, then the row
+    /// further behind the walk — should be readable without knowing that `None` sorts
+    /// below every `Some`.
     fn row_slot(&mut self, y: i32) -> usize {
         if self.row_y[0] == Some(y) {
             return 0;
@@ -182,7 +181,13 @@ impl ViSampler {
         if self.row_y[1] == Some(y) {
             return 1;
         }
-        let victim = usize::from(self.row_y[1] < self.row_y[0]);
+        // Written out rather than leaning on `Option`'s derived `Ord`: an unused row
+        // goes first, then the row further behind the forward walk.
+        let victim = match (self.row_y[0], self.row_y[1]) {
+            (None, _) => 0,
+            (_, None) => 1,
+            (Some(y0), Some(y1)) => usize::from(y1 < y0),
+        };
         self.row_y[victim] = Some(y);
         let base = victim * self.span;
         self.cells[base..base + self.span].fill(None);
@@ -1102,7 +1107,10 @@ impl Bus {
         if s.cfg.aa_mode > 1 {
             return self.vi_sample_direct(s, x, y);
         }
-        let Ok(idx) = usize::try_from(x - s.x_lo) else {
+        // `checked_sub` rather than `-`: both operands trace back to guest-controlled
+        // VI registers, and the miss path is a fall-through, not an error — so an
+        // extreme pair should decline the memo, not panic a debug build.
+        let Some(Ok(idx)) = x.checked_sub(s.x_lo).map(usize::try_from) else {
             return self.vi_sample_direct(s, x, y);
         };
         if idx >= s.span {
