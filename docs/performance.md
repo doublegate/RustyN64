@@ -211,7 +211,8 @@ because the arithmetic that produced them is what makes them wrong.
 | --- | --- | --- | --- | --- |
 | frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.99 FPS)** | measured, ×2 runs |
 | `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
-| effect of that change | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
+| effect, **step over the previous column** | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
+| effect, **cumulative from the baseline** | — | 1.114x frame | **1.24x** frame, **-77.8%** scan-out | derived |
 
 `646a3e0` skips the zero-weight bilinear taps (PR #211); `6a6adfa` memoizes the filtered
 source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms**, a
@@ -295,7 +296,7 @@ measurements would overstate them:
 - **~1.64x in-model ceiling** — Amdahl over the largest identified in-model targets as
   they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
   `1 / (1 - 0.389)` = 1.637. It assumes both are eliminated *entirely*, so it is an
-  upper bound and not a forecast. **Most of the scan-out half has since been collected**
+  upper bound and not a forecast. **Most of the scan-out term has since been eliminated**
   — **35.5 ms down to 7.9 ms**, quoted as durations because the two percentages have
   different denominators (22.9% of the old frame, 6.3% of the new one) — and the
   cumulative gain is
