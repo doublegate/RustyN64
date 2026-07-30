@@ -207,14 +207,21 @@ host. Unpaired quantities that once appeared here — a debug figure from one wi
 divided by a release figure from another — are marked as superseded rather than deleted,
 because the arithmetic that produced them is what makes them wrong.
 
-| quantity | before `646a3e0` | after `646a3e0` | kind |
-| --- | --- | --- | --- |
-| frame cost | 155.17 / 155.09 ms (6.44 FPS) | **139.34 / 139.28 ms (7.18 FPS)** | measured, ×2 runs |
-| `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | **21.64 / 21.64 ms (15.5%)** | measured, ×2 runs |
-| the VI tap fix's effect | — | **1.114x** on the frame, **-39.1%** on the scan-out | derived from the pair |
+| quantity | before `646a3e0` | after `646a3e0` | after `6a6adfa` | kind |
+| --- | --- | --- | --- | --- |
+| frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.99 FPS)** | measured, ×2 runs |
+| `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
+| effect of that change | — | **1.114x** frame, **-39.1%** scan-out | **1.11x** frame, **-63.6%** scan-out | derived from each pair |
 
-Run-to-run spread in `--release` is **0.05%** across these pairs, well inside the ±0.5%
-the method claims, so a change under ~1% is still not a result.
+`646a3e0` skips the zero-weight bilinear taps (PR #211); `6a6adfa` memoizes the filtered
+source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms**, a
+**1.24x** speed-up, with the scan-out down from 22.9% of a frame to 6.3%.
+
+**Noise, measured rather than assumed.** Back-to-back runs of one binary agree to
+**0.05-0.13%**. The *same tree* measured about thirty minutes apart differed by **~1%**
+(123.5 against 125.2 ms) — machine state drifts across a session. So the ±0.5% in the
+method table is a **within-session** figure: pair a before and after in one sitting, and
+treat any cross-session comparison as ±1%.
 
 The 1.09x quoted in `646a3e0`'s own commit message came from comparing runs taken in
 different sessions (151.7 → 138.7). The paired figure above, 1.114x, is the one to cite;
@@ -225,7 +232,7 @@ the difference between them is exactly the drift that pairing exists to remove.
 | debug-build frame cost, same tree and window | 1.216 / 1.214 s (0.82 FPS) | measured, ×2 runs |
 | **debug vs release** | **8.7x** | paired, same tree |
 | 60 FPS budget | 16.7 ms | arithmetic (`1/60`) |
-| **gap to 60 FPS from 139.3 ms** | **~8.3x** | derived |
+| **gap to 60 FPS from 125.2 ms** | **~7.5x** | derived |
 
 The **7.7x** debug ratio quoted in ADR 0011 is **superseded**. It was self-consistent —
 784.7 ms debug against 101.6 ms release — but both came from the pre-`#209` probe, which
@@ -285,8 +292,15 @@ measurements would overstate them:
 - **~1.64x in-model ceiling** — Amdahl over the largest identified in-model targets as
   they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
   `1 / (1 - 0.389)` = 1.637. It assumes both are eliminated *entirely*, so it is an
-  upper bound and not a forecast; part of it has since been collected (the scan-out is
-  now 15.5% of a frame), which is why the measured gain was 1.114x and not more.
+  upper bound and not a forecast. **Most of the scan-out half has since been collected**
+  — it is 6.3% of a frame after `6a6adfa`, down from 22.9% — and the cumulative gain is
+  1.24x against that 1.64x bound, so what remains inside the model is the latch copying
+  and little else.
+
+  Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
+  physical impossibility, since something has to produce the pixels — would leave
+  117.4 ms, or 8.5 FPS. The 16.7 ms budget is below the cost of the CPU pipeline alone,
+  which is the whole argument for ADR 0011: no dispatch-preserving change reaches it.
 
   ADR 0011 quotes **1.66x** for this, from `1 / (1 - 0.396)` with the single-run 23.6%
   scan-out share. The paired share is 22.9%, so the ceiling is 1.64. The difference is
@@ -295,10 +309,6 @@ measurements would overstate them:
   the kind of thing that gets re-quoted, so it is corrected here; ADR 0011 is immutable,
   so its copy is marked superseded in ADR 0012, under *"0011's measured table is
   superseded by the paired re-measurement"*, which lands separately.
-
-  Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
-  physical impossibility, since something has to produce the pixels — would leave
-  117.7 ms, or 8.5 FPS. The 16.7 ms budget is below the cost of the CPU pipeline alone.
 
 ### SM64's VI configuration (measured, not assumed)
 
