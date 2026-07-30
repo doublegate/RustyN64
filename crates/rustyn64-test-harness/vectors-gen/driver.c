@@ -6,7 +6,7 @@
 // The RustyN64 test harness replays the same command list through its own RDP
 // and asserts a byte-for-byte match.
 //
-// LICENSE NOTE: Angrylion-rdp-plus is the non-commercial MAME-licensed study
+// LICENCE NOTE: Angrylion-rdp-plus is the non-commercial MAME-licensed study
 // oracle (ref-proj/, gitignored). This tool and its Angrylion build stay OUT of
 // the committed tree; only the *output* vectors (command stream + golden frame,
 // both freely committable) are checked in. See ref-proj/README.md.
@@ -319,7 +319,7 @@ static int emit_vector(const Vector *v, const char *out_dir) {
         0u, 0u,                             /* de  frac */                   \
         0u, 0u                              /* dy  frac */
 
-// A flat (constant-color) shade block: base only, no deltas.
+// A flat (constant-colour) shade block: base only, no deltas.
 #define SHADE_BLOCK_FLAT(r, g, b, a) SHADE_BLOCK(r, g, b, a, 0, 0, 0, 0, 0, 0, 0, 0)
 
 // A full 4-word z-suffix: z (s15.16, high word), then dzdx, dzde, dzdy (all 0).
@@ -432,7 +432,7 @@ static const uint32_t V5_FILL_TRI_FRAC_16[] = {
 // V6: a 1-CYCLE-mode shaded triangle with a fractional left edge (x=2.5). Unlike
 // FILL mode, 1-cycle mode renders with sub-pixel accuracy: with AA off, a pixel
 // draws only when its top-left sub-sample (integer x) is inside the span, so
-// column 2 (sample at 2.0 < 2.5) is EXCLUDED — columns 3-6 draw. The color is the
+// column 2 (sample at 2.0 < 2.5) is EXCLUDED — columns 3-6 draw. The colour is the
 // combiner output (a flat red shade), not the fill register. This drives the 2c
 // sub-pixel coverage rewrite (RustyN64's whole-pixel union wrongly includes col 2).
 static const uint32_t V6_SHADE_TRI_FRAC_16[] = {
@@ -451,7 +451,7 @@ static const uint32_t V6_SHADE_TRI_FRAC_16[] = {
 // V7: a 1-cycle shaded triangle with a z-suffix (z_update on, z_compare off) and
 // the same fractional edges as V6 (2.5/6.5). Angrylion applies the identical
 // sub-pixel coverage on the depth path — column 2 excluded, column 6 partial — so
-// the color output equals V6's. The z (0x0800_0000, near) writes the z buffer at
+// the colour output equals V6's. The z (0x0800_0000, near) writes the z buffer at
 // 0x1800; the depth test passes (z_compare off). Drives the depth-path coverage.
 static const uint32_t V7_SHADE_DEPTH_TRI_FRAC_16[] = {
     0x2F000000u, 0x00000020u, // Set Other Modes: 1-cycle, AA off, z_update_en (bit 5)
@@ -468,7 +468,7 @@ static const uint32_t V7_SHADE_DEPTH_TRI_FRAC_16[] = {
 };
 
 // V8: a 1-cycle 32-bit (RGBA8888) shaded triangle — the wide DxMDy=1.0 staircase,
-// flat shade R=0x11 G=0x22 B=0x33. Exercises the 32-bit color path; the stored
+// flat shade R=0x11 G=0x22 B=0x33. Exercises the 32-bit colour path; the stored
 // alpha byte holds sub-pixel coverage (cov<<5), so a fully-covered interior pixel
 // is 0x112233E0. (The full 16-u32 shade block is required — a short block would
 // misalign nothing here but shorten the command; see shade_depth_tri_frac_16.)
@@ -501,7 +501,7 @@ static const uint32_t V9_DITHER_TRI_32[] = {
 };
 
 // V10: a 32-bit Gouraud-gradient shaded triangle (dither off) — the FIRST vector
-// to exercise shade *interpolation* rather than a flat color. R has a per-x
+// to exercise shade *interpolation* rather than a flat colour. R has a per-x
 // gradient (dx.R = -0x10 per pixel, from base 0xF0) and G a per-major-edge
 // gradient (de.G = +0x08 per scanline, from base 0x40); B is flat 0x80. Angrylion
 // defines the golden, so this validates RustyN64's `interpolate_shade` (base + dx
@@ -539,7 +539,7 @@ static const uint32_t V10_SHADE_GRAD_TRI_32[] = {
 // comment would discard the round-trip coverage it does have.
 static const uint16_t TEX8_RAMP[8] = {
     0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, // red, green, blue, white
-    0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u, // magenta, cyan, yellow, gray
+    0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u, // magenta, cyan, yellow, grey
 };
 static const uint32_t V11_TEX_TRI_16[] = {
     0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
@@ -561,7 +561,7 @@ static const uint32_t V11_TEX_TRI_16[] = {
 // V22 (R-13 fix probe): tex_tri_16 but with Set Other Modes bi_lerp0 = 1 (bit 11,
 // 0x2F0000F0 -> 0x2F0008F0) and a CONSTANT coordinate (dsdx = 0, S = 0 -> texel 0
 // = red 0xF801). tex_tri_16 rendered black because bi_lerp0 = 0 selects the RDP's
-// YUV color-convert path (tex.c), which with unset convert coefficients zeroes an
+// YUV colour-convert path (tex.c), which with unset convert coefficients zeroes an
 // RGBA texel. With bi_lerp0 = 1 Angrylion does the normal RGBA fetch, so this
 // should render red -- a WORKING textured-triangle reference (the missing setup
 // that made every textured-triangle vector degenerate).
@@ -584,9 +584,9 @@ static const uint32_t V22_TEX_TRI_FIXED_16[] = {
 
 // V12: a COPY-mode Texture Rectangle (16-bit) — the first texture path validated
 // against Angrylion that does NOT go through the combiner or the 1-cycle texel
-// pipeline (copy mode blits texels straight from TMEM to the color image). A 4x2
+// pipeline (copy mode blits texels straight from TMEM to the colour image). A 4x2
 // texture of 8 byte-asymmetric texels is preloaded at 0x3000, loaded into TMEM by
-// Load Tile, and blitted 1:1 (DsDx = 4.0, DtDy = 1.0) into a 4x2 color image, so
+// Load Tile, and blitted 1:1 (DsDx = 4.0, DtDy = 1.0) into a 4x2 colour image, so
 // the framebuffer should equal the source texels verbatim. RustyN64 passes this as
 // an internal round-trip; this checks it against the oracle.
 static const uint16_t TEX4X2_RAMP[8] = {
@@ -607,7 +607,7 @@ static const uint32_t V12_TEX_RECT_COPY_16[] = {
 
 // V13: a COPY-mode Texture Rectangle blitted to an OFFSET position — the same 4x2
 // texture as V12, but 1:1-blitted into the (2,2)..(5,3) sub-rectangle of an 8x8
-// color image (the rest stays background 0). Exercises the destination positioning
+// colour image (the rest stays background 0). Exercises the destination positioning
 // (XH/YH != 0) and the scissor interaction that the origin blit did not. Still 1:1
 // (DsDx = 4.0, DtDy = 1.0) 16-bit, so RustyN64's supported copy path applies.
 static const uint32_t V13_TEX_RECT_OFFSET_16[] = {
@@ -623,7 +623,7 @@ static const uint32_t V13_TEX_RECT_OFFSET_16[] = {
 };
 
 // V14: a COPY-mode Texture Rectangle of a full **8x8** texture (64 texels, tile
-// line = 2 64-bit words per row) 1:1-blitted into an 8x8 color image. Exercises the
+// line = 2 64-bit words per row) 1:1-blitted into an 8x8 colour image. Exercises the
 // load + blit at a larger scale than the small vectors — the full tile stride, all
 // eight rows, and the odd-row TMEM swap across a bigger surface. The texture is an
 // RGBA5551 gradient (R = 4x, G = 4y) filled at run time into `tex8x8` (below).
@@ -642,7 +642,7 @@ static uint16_t tex8x8[64];
 // An 8x8 RGBA5551 CHECKERBOARD (bright red `0xF801` = R31 G0 B0 A1 / dark `0x0001`
 // = R0 G0 B0 A1, by `(x+y)&1`; the low bit is the 5551 alpha, set so both are opaque),
 // used by the mid-texel vector. A checkerboard is deliberately NON-planar: in every
-// 2x2 quad `t0 == t3` and `t1 == t2` are the opposite value, so the 3-point center
+// 2x2 quad `t0 == t3` and `t1 == t2` are the opposite value, so the 3-point centre
 // pick (which ignores `t0`) yields the opposite-parity value while the mid-texel
 // four-texel average yields the midpoint — the two differ, making the vector
 // non-vacuous where a smooth gradient (planar) would collapse them to the same value.
@@ -692,8 +692,8 @@ static const uint32_t V16_ALPHA_COMPARE_16[] = {
 // V17: alpha-compare on the DEPTH path — the same shade-alpha ramp + 0x80 threshold
 // as V16, but on a z-suffixed triangle (op 0x0D) with z_update on and z_compare off
 // (so every pixel passes the depth test and alpha-compare is the only gate). The
-// color output equals V16's: low-alpha columns are killed. Guards the alpha-compare
-// gate on `depth_span` (it must skip both the color write and the z-write).
+// colour output equals V16's: low-alpha columns are killed. Guards the alpha-compare
+// gate on `depth_span` (it must skip both the colour write and the z-write).
 static const uint32_t V17_ALPHA_COMPARE_Z_16[] = {
     0x2F0000F0u, 0x00000021u, // Set Other Modes: 1-cycle, dither off, alpha_compare (bit0) + z_update (bit5)
     0x3C000000u, 0x00000104u, // Set Combine Mode: shade passthrough
@@ -726,9 +726,9 @@ static const uint32_t V18_CVG_DEST_FULL_16[] = {
     SHADE_BLOCK_FLAT(0xFF, 0x00, 0x00, 0xFF), // flat red shade (16 words)
 };
 
-// V19: a 1-cycle 32-bit shaded triangle whose combiner outputs the PRIMITIVE color
+// V19: a 1-cycle 32-bit shaded triangle whose combiner outputs the PRIMITIVE colour
 // (rgb_d = a_d = prim, select 3), NOT the shade. The shade block is a DISTINCT
-// color (0x112233) so a combiner that wrongly emitted the shade would show
+// colour (0x112233) so a combiner that wrongly emitted the shade would show
 // 0x112233 instead of the prim 0x224466 — this discriminates the prim mux input
 // (Set Prim Color 0x3A) from the shade path. Validates the combiner prim input.
 static const uint32_t V19_PRIM_COMBINER_32[] = {
@@ -737,7 +737,7 @@ static const uint32_t V19_PRIM_COMBINER_32[] = {
     0x3C000000u, 0x000000C3u, // Set Combine: cyc1 rgb_d=(lo>>6)&7=3, a_d=lo&7=3 (both prim).
                               // 1-cycle mode evaluates the cyc1 selects (combine() at
                               // rdp/lib.rs applies cyc0 only in 2-cycle); this is the D (add)
-                              // input of (A-B)*C+D, so the pixel is the prim color.
+                              // input of (A-B)*C+D, so the pixel is the prim colour.
     0x3F180007u, 0x00001000u, // Set Color Image: 32-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
@@ -793,7 +793,7 @@ static const uint32_t V20_TEX_TRI_I4_16[] = {
 //   - WRAP (`mask_s = 2`, so the coordinate wraps mod 4): -> red, green, blue,
 //     white, red, green.
 // Distinct texels make each non-vacuous: a sampler that ignored the tile transform
-// (RustyN64's pre-R-13 behavior) would read texels 4,5 from unrelated TMEM (or
+// (RustyN64's pre-R-13 behaviour) would read texels 4,5 from unrelated TMEM (or
 // clamp-to-black), matching neither golden. Angrylion defines both.
 static const uint16_t TEX_CLAMP4[4] = {0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu}; // R,G,B,W
 static const uint32_t V21_TEX_TRI_CLAMP_16[] = {
@@ -831,9 +831,9 @@ static const uint32_t V21_TEX_TRI_WRAP_16[] = {
 // (ledger R-13). The 8x8 gradient texture `tex8x8` (R = 4x, G = 4y) is sampled with
 // S advancing 0.5 texel/column (dx.S = 0x10) and T 0.5 texel/row (de.T = 0x10), so
 // covered pixels land BETWEEN texels — each output is a 3-point blend of the four
-// neighbors. Both fractions vary across the triangle, so pixels exercise BOTH the
+// neighbours. Both fractions vary across the triangle, so pixels exercise BOTH the
 // lower-left (`sfrac+tfrac < 0x20`) and upper-right (`>= 0x20`) triangle branches.
-// The sampled range stays within S,T <= ~3.5 (base+neighbor in-bounds), avoiding
+// The sampled range stays within S,T <= ~3.5 (base+neighbour in-bounds), avoiding
 // the deferred mask-wrap seam. Point sampling would show hard texel steps; bilinear
 // smooths them — Angrylion defines the golden.
 static const uint32_t V23_TEX_TRI_BILINEAR_16[] = {
@@ -856,7 +856,7 @@ static const uint32_t V23_TEX_TRI_BILINEAR_16[] = {
 // V24: the bilinear MASK-WRAP SEAM (`sdiff`/`tdiff`, ledger R-13). A 2-texel tile
 // (`mask_s = 1`, so S wraps mod 2: red, green) is bilinear-sampled with S advancing
 // 0.5 texel/pixel. At S = 1.5 the base texel is 1 (the top of the wrap period), so
-// the bilinear NEIGHBOR must wrap back to texel 0 (red) — a mirror-OFF PERIOD-END
+// the bilinear NEIGHBOUR must wrap back to texel 0 (red) — a mirror-OFF PERIOD-END
 // wrap, where `tcmask_coupled` picks `sdiff = -base` (here -1, since base = 1), NOT a
 // mirror seam. The pre-fix sampler used a hardcoded `+1`, reading texel 2
 // (UNLOADED = black) instead, so the seam column blends green+red here vs green+black
@@ -962,18 +962,18 @@ static const uint32_t V28_TEX_TRI_CONVERT_KNEG_16[] = {
     SHADE_BLOCK_FLAT(0x40, 0x40, 0x40, 0xFF), // flat shade (ignored by the combine)
 };
 
-// V29: the chroma-key KeyCenter (RGB sub-B select 6) and KeyScale (RGB mul select 6)
+// V29: the chroma-key KeyCentre (RGB sub-B select 6) and KeyScale (RGB mul select 6)
 // combiner inputs from Set Key GB (0x2A) / Set Key R (0x2B) — ledger R-10. Per channel
-// center [0x20,0x40,0x60], scale [0x40,0x80,0xC0], so the combine `(One - center) *
-// scale >> 8` is [56,96,120] (a distinct RGB, quantized to RGBA5551). Without the inputs
+// centre [0x20,0x40,0x60], scale [0x40,0x80,0xC0], so the combine `(One - centre) *
+// scale >> 8` is [56,96,120] (a distinct RGB, quantised to RGBA5551). Without the inputs
 // wired both read 0 and the result is `(One - 0) * 0 = 0` (black) — non-vacuous. The Set
-// Combine word only differs from V27 in rgb_b (7->6, KeyCenter) and rgb_c (15->6,
+// Combine word only differs from V27 in rgb_b (7->6, KeyCentre) and rgb_c (15->6,
 // KeyScale); the alpha/cyc0 fields are identical (alpha = One).
 static const uint32_t V29_TEX_TRI_CHROMAKEY_16[] = {
     0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-cycle, dither off
     0x2A000000u, 0x408060C0u, // Set Key GB: cg=0x40 sg=0x80 cb=0x60 sb=0xC0
     0x2B000000u, 0x00002040u, // Set Key R:  wr=0 cr=0x20 sr=0x40
-    0x3C0000C6u, 0x061C01C6u, // Set Combine: rgb = (One - KeyCenter) * KeyScale + Zero; a=One
+    0x3C0000C6u, 0x061C01C6u, // Set Combine: rgb = (One - KeyCentre) * KeyScale + Zero; a=One
     0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x0C800020u, 0x00200000u, // op=0x0C (shade), lft=1, yl=32, ym=32, yh=0
@@ -986,18 +986,18 @@ static const uint32_t V29_TEX_TRI_CHROMAKEY_16[] = {
 // V30: the chroma-key ALPHA compare (key_en, Set Other Modes bit 40) — ledger R-10.
 // The key alpha (`chroma_key_min`) must be OBSERVABLE, so alpha-compare is enabled
 // (bit 0) with a Set Blend Color threshold of 0x80: the pixel is written only if the
-// key alpha >= 0x80. With rgb_a=rgb_b=Shade the 17-bit combined color is 0x80 (A−B=0
+// key alpha >= 0x80. With rgb_a=rgb_b=Shade the 17-bit combined colour is 0x80 (A−B=0
 // → 0x80 constant), so per channel `SIGN(0x80)=128` folds to `-128`, then `+width<<4`:
 // width_r=0x10 → 256−128 = 128 = 0x80 (the min across r/g/b), which meets the 0x80
 // threshold, so the Shade chromabypass triangle IS drawn. A broken `chroma_key_min`
 // (wrong sign/fold/width/min) shifts the key alpha below 0x80 → the triangle vanishes;
-// clearing key_en outputs the *combined* color (black, A−B=0) instead of Shade. Both
+// clearing key_en outputs the *combined* colour (black, A−B=0) instead of Shade. Both
 // make this non-vacuous — the golden's drawn Shade pixels observe the key alpha.
 static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
     0x2F0001F0u, 0x00000001u, // Set Other Modes: 1-cycle, KEY_EN (bit 40), ALPHA_COMPARE (bit 0)
     0x39000000u, 0x00000080u, // Set Blend Color: alpha threshold = 0x80
-    0x2A014018u, 0x00000000u, // Set Key GB: wg=0x14 wb=0x18 (center/scale unused here)
-    0x2B000000u, 0x00100000u, // Set Key R:  wr=0x10 (center/scale unused)
+    0x2A014018u, 0x00000000u, // Set Key GB: wg=0x14 wb=0x18 (centre/scale unused here)
+    0x2B000000u, 0x00100000u, // Set Key R:  wr=0x10 (centre/scale unused)
     0x3C000080u, 0x041C01C6u, // Set Combine: rgb_a=Shade rgb_b=Shade rgb_c=Combined rgb_d=Zero; a=One
     0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
@@ -1011,7 +1011,7 @@ static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
 // V31: PRIMITIVE BASE-TILE THREADING (R-13) — the triangle command's tile field
 // (bits 50:48 = `(ewdata[0] >> 16) & 7`, Angrylion rasterizer.c:1887) selects which
 // of the 8 tile descriptors the sampler reads. RustyN64 hardwired tiles[0]/tiles[1];
-// this vector proves the thread. The 8-color ramp (TEX8_RAMP, as V11) is loaded into
+// this vector proves the thread. The 8-colour ramp (TEX8_RAMP, as V11) is loaded into
 // **tile 3** at a NON-ZERO TMEM word (0x40 -> byte 0x200), and the triangle names
 // **tile 3** (op 0x0A830020). Tile 0 is set as RGBA16 over the UNLOADED low TMEM, so a
 // renderer that wrongly samples tile 0 reads zeros -> black. The golden is therefore the
@@ -1020,8 +1020,9 @@ static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
 // correct tile-3 selection of the tile-3 load.
 //
 // (This shares V11's `dx.S = 1`, so the picture is solid texel 0 — RED, not a ramp.
-// An earlier revision of this comment said "the colorful ramp"; see V11 for why that
-// was never true. The red-vs-black discrimination this vector rests on is unaffected.)
+// An earlier revision of this comment described the picture as a multi-texel ramp;
+// see V11 for why that was never true. The red-vs-black discrimination this vector
+// rests on is unaffected.)
 static const uint32_t V31_TEX_TRI_BASE_TILE_16[] = {
     0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
     0x3C000000u, 0x00000041u, // Set Combine: rgb_d=1 / a_d=1 (texel0 passthrough)
@@ -1042,12 +1043,12 @@ static const uint32_t V31_TEX_TRI_BASE_TILE_16[] = {
 
 // V32: the MID-TEXEL filter (Set Other Modes bit 44, ledger R-13). Same bilinear setup
 // as V23 (0.5 texel/column and /row, so odd-column/odd-row covered pixels sample the
-// exact texel center `sfrac == tfrac == 0x10`) but over the NON-planar CHECKERBOARD
-// texture `tex_chk8x8` and with `mid_texel` set. At the center the RDP replaces the
+// exact texel centre `sfrac == tfrac == 0x10`) but over the NON-planar CHECKERBOARD
+// texture `tex_chk8x8` and with `mid_texel` set. At the centre the RDP replaces the
 // 3-point triangle pick (which ignores `t0`) with a four-texel average (Angrylion
 // `tex.c` `center` case) — on a checkerboard the 3-point yields the opposite-parity
 // value while the average yields the midpoint, so bit 44 visibly changes those pixels.
-// The checkerboard is essential: a smooth gradient is planar, so its center average
+// The checkerboard is essential: a smooth gradient is planar, so its centre average
 // equals its 3-point pick and bit 44 would be invisible (a vacuous golden).
 static const uint32_t V32_TEX_TRI_MID_TEXEL_16[] = {
     0x2F0038F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, SAMPLE_TYPE=1 (bit 45), MID_TEXEL=1 (bit 44)
@@ -1107,7 +1108,7 @@ static const uint32_t V33_TEX_TRI_LODFRAC_16[] = {
 // `tex_lod_en` the sampler must therefore read tile `base + l_tile` = **tile 1**,
 // not the base tile 0 — and the second cycle reads tile 2.
 //
-// Three 1-texel tiles are loaded with DISTINCT colors (tile 0 red, tile 1 green,
+// Three 1-texel tiles are loaded with DISTINCT colours (tile 0 red, tile 1 green,
 // tile 2 blue) and the combiner passes TEXEL0 through, so the pixel names the tile
 // that was actually sampled. Mind the 2-cycle texel SWAP: `combine` exchanges
 // texel0/texel1 before cycle 1, so cycle 1's TEXEL0 is the pair's SECOND tile.
@@ -1118,7 +1119,7 @@ static const uint16_t TEX_MIP3[3] = {0xF801u, 0x07C1u, 0x003Fu}; // red, green, 
 static const uint32_t V34_TEX_TRI_MIP_TILE_16[] = {
     // NOTE both bi_lerp0 (bit 11) AND bi_lerp1 (bit 10) must be set: cycle 1 runs
     // `texture_pipeline_cycle(.., 1)`, whose filter is selected by bi_lerp1, and a
-    // clear bi_lerp1 sends cycle 1 down the YUV color-convert path (which, with
+    // clear bi_lerp1 sends cycle 1 down the YUV colour-convert path (which, with
     // unset convert coefficients, renders white here rather than the sampled texel).
     0x2F110CF0u, 0x00000000u, // Set Other Modes: 2-CYCLE, TEX_LOD_EN (bit 48), bi_lerp0/1, dither off
     0x3C000000u, 0x00008241u, // Set Combine: cyc0 D=texel0, cyc1 D=texel0 (passthrough)
@@ -1141,17 +1142,17 @@ static const uint32_t V34_TEX_TRI_MIP_TILE_16[] = {
     0x00020000u, 0x00000000u, // XH = 2.0
     0x00020000u, 0x00010000u, // XM = 2.0, DxMDy = 1.0
     // dx.S = 48, de = 0, dy.S = 112 -> LOD 112 -> l_tile 1. S/T stay at texel 0 of
-    // whichever tile is chosen (each tile holds a single texel), so the color is
+    // whichever tile is chosen (each tile holds a single texel), so the colour is
     // purely a report of WHICH tile the LOD selected.
     TEX_BLOCK_DY(0, 0, 1, 48, 0, 0, 0, 0, 0, 112, 0, 0),
 };
 
 // V35: FILL RECTANGLE in **1-CYCLE** mode (ledger R-21). `Fill Rectangle` (0x36)
 // writes the SET_FILL_COLOR register in FILL mode, but in 1-/2-cycle mode the
-// hardware rasterizes it like any other primitive — through the COMBINER. This
-// vector distinguishes the two: the combine emits the PRIM color (0x224466) while
+// hardware rasterises it like any other primitive — through the COMBINER. This
+// vector distinguishes the two: the combine emits the PRIM colour (0x224466) while
 // SET_FILL_COLOR is set to a clearly different green (0x07C1), so the rendered
-// color alone says which path the hardware took.
+// colour alone says which path the hardware took.
 //
 // The oracle answered PRIM, which is what established R-21 and drove the fix.
 // This vector is now the **regression guard** for it: revert the cycle-type gate
@@ -1160,14 +1161,14 @@ static const uint32_t V35_FILL_RECT_1CYCLE_16[] = {
     0x2F0000F0u, 0x00000000u, // Set Other Modes: 1-CYCLE (bits 21:20 = 0), dither off
     0x3A000000u, 0x224466FFu, // Set Prim Color: R=0x22 G=0x44 B=0x66 A=0xFF
     0x3C000000u, 0x000000C3u, // Set Combine: cyc1 rgb_d=prim(3), a_d=prim(3) — as V19
-    0x37000000u, 0x07C107C1u, // Set Fill Color: green — DIFFERENT from the prim color
+    0x37000000u, 0x07C107C1u, // Set Fill Color: green — DIFFERENT from the prim colour
     0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
     0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
     0x36020020u, 0x00000000u, // Fill Rectangle: (0,0)-(8,8)
 };
 
 // V37: a **CI4 texture resolved through a TLUT** (ledger R-18). No committed
-// vector exercised `Load Tlut` before this one, so the whole color-indexed path
+// vector exercised `Load Tlut` before this one, so the whole colour-indexed path
 // had zero oracle coverage — and Ocarina of Time renders every triangle through it
 // (tiles report `fmt=2 size=0`, combiner a pure TEXEL0 pass-through).
 //
@@ -1189,7 +1190,7 @@ static const uint16_t TEX_CI4_TLUT[12] = {
     0x0123u, 0x4567u,          // 0x3000: eight CI4 indices 0..7, two per byte
     0x0000u, 0x0000u,          // 0x3004: pad to the palette's 8-byte alignment
     0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, // 0x3008: TLUT 0-3  red, green, blue, white
-    0xFFC1u, 0x07FFu, 0xF83Fu, 0x8421u, //         TLUT 4-7  yellow, cyan, magenta, gray
+    0xFFC1u, 0x07FFu, 0xF83Fu, 0x8421u, //         TLUT 4-7  yellow, cyan, magenta, grey
 };
 // V39 (probe): the SAME CI4 tile as V37 but with **`tlut_en` CLEAR**.
 //
@@ -1420,17 +1421,17 @@ static const uint32_t V42_TEX_TRI_RIGHT_MAJOR_16[] = {
 // unpinned.
 //
 // The combine is built so the candidate outcomes are all distinguishable:
-//   cyc0 rgb_d = ENV(5), a_d = ENV(5)           -> cycle 0 emits the ENV color
+//   cyc0 rgb_d = ENV(5), a_d = ENV(5)           -> cycle 0 emits the ENV colour
 //   cyc1 rgb_d = COMBINED(0), a_d = COMBINED(0) -> cycle 1 passes it through
 // (Field positions: cyc0 rgb_d = lo bits 17:15, cyc0 a_d = lo 11:9, cyc1 rgb_d =
 // lo 8:6, cyc1 a_d = lo 2:0. A/B/C all select 0, so `(a-b)*c` vanishes and D alone
 // decides the output.)
 //
-// So the rendered color is diagnostic rather than merely pass/fail:
+// So the rendered colour is diagnostic rather than merely pass/fail:
 //   ENV   0x88AACC -> the 2-cycle chain ran (cycle 0 fed cycle 1)
 //   BLACK          -> cycle 0 was skipped, so COMBINED read as zero
 //   GREEN 0x07C1   -> the fill register was used: the R-21 bug
-// ENV, PRIM and the fill color are all deliberately different, so no two outcomes
+// ENV, PRIM and the fill colour are all deliberately different, so no two outcomes
 // can be confused.
 static const uint32_t V36_FILL_RECT_2CYCLE_16[] = {
     0x2F1000F0u, 0x00000000u, // Set Other Modes: 2-CYCLE (bits 21:20 = 1), dither off
@@ -1450,7 +1451,7 @@ static const uint32_t V36_FILL_RECT_2CYCLE_16[] = {
 // bit-for-bit (`./driver --fuzz <dir> <seed> <count>`). Only families whose RDP
 // paths RustyN64 already models byte-exactly are generated here; the Rust side
 // *curates* (replays each candidate and keeps only oracle-matching ones), so a
-// generated config that trips an unmodeled corner is dropped, never committed.
+// generated config that trips an unmodelled corner is dropped, never committed.
 // The generator stays deliberately conservative: correctness of the corpus is the
 // invariant, breadth is grown family by family.
 static uint64_t g_rng;
@@ -1466,11 +1467,11 @@ static uint32_t rng_range(uint32_t lo, uint32_t hi) {
     return lo + (uint32_t)(sm64() % (uint64_t)(hi - lo + 1u));
 }
 
-// FILL-mode Fill Rectangle family (16-bit): a random fill color, image size, and
-// aligned rectangle. FILL writes the color verbatim to covered pixels and leaves
+// FILL-mode Fill Rectangle family (16-bit): a random fill colour, image size, and
+// aligned rectangle. FILL writes the colour verbatim to covered pixels and leaves
 // the rest zero, which RustyN64 reproduces byte-exactly (ledger R-3), so every
 // member matches the oracle. Coordinates are integer (`* 4` into the .2 fixed
-// point) — no sub-pixel edge, which is the one FILL corner not yet modeled.
+// point) — no sub-pixel edge, which is the one FILL corner not yet modelled.
 static int fuzz_fill_rect(int idx, const char *out_dir) {
     uint32_t w = rng_range(4, 12), h = rng_range(4, 12);
     uint32_t rx0 = rng_range(0, w - 1), rx1 = rng_range(rx0 + 1, w);
@@ -1606,21 +1607,21 @@ typedef struct {
 // Non-monotonic fully-covered probe triplet for the divot vector (aa == 2). The
 // three columns x = PROBE_X-1 / PROBE_X / PROBE_X+1 are all fully covered (none is
 // an x%4==0 partial column), so the divot filter's all-fully-covered early-return
-// fires and the center must PASS THROUGH UNCHANGED. Because the values are
+// fires and the centre must PASS THROUGH UNCHANGED. Because the values are
 // non-monotonic (low / high / mid per channel), the per-channel median of the
-// three does NOT equal the center — so deleting the early-return and computing the
-// median instead would change the center pixel and fail the vector. This is what
+// three does NOT equal the centre — so deleting the early-return and computing the
+// median instead would change the centre pixel and fail the vector. This is what
 // makes the bypass observable (CodeRabbit #155). PROBE_X = 18 -> {17,18,19} are
 // all fully covered (none is an x%4==0 partial column), and all three lie inside
 // the scanned-out source window (columns 8..32 for this vector's 1:1 h-scale, so
 // the x=1..3 range is never sampled). x=18 maps to output column 10 with zero
-// x-fraction (nearest sample), so that output pixel IS the divot center. PROBE_Y
+// x-fraction (nearest sample), so that output pixel IS the divot centre. PROBE_Y
 // = 10 is an interior sampled row (source rows 0..15 are scanned out).
 #define VI_DIVOT_PROBE_X 18u
 #define VI_DIVOT_PROBE_Y 10u
 
 // A deterministic distinct source pixel (RGBA5551): encodes x and y into separate
-// channels so any mis-addressed sample lands on a visibly wrong color.
+// channels so any mis-addressed sample lands on a visibly wrong colour.
 static uint16_t vi_src_pixel(uint32_t x, uint32_t y) {
     return (uint16_t)(((x & 0x1f) << 11) | ((y & 0x1f) << 6) | (((x + y) & 0x1f) << 1) | 1u);
 }
@@ -1630,24 +1631,24 @@ static uint16_t vi_src_pixel(uint32_t x, uint32_t y) {
 static uint32_t vi_src_pixel32(uint32_t x, uint32_t y, uint32_t aa) {
     uint32_t r = (x * 4u) & 0xFFu, g = (y * 4u) & 0xFFu, b = ((x + y) * 4u) & 0xFFu;
     // aa: every 4th column is partial (cvg 0, alpha 0x00), so a partial pixel's 6 taps
-    // (all at x±1/x±2 columns) are fully covered and the AA edge filter has neighbors.
-    // A partial pixel is given a fixed DARK color (0x08) — deliberately NOT its
-    // neighbors' midpoint, unlike the smooth gradient — so `video_filter32` pulls it
+    // (all at x±1/x±2 columns) are fully covered and the AA edge filter has neighbours.
+    // A partial pixel is given a fixed DARK colour (0x08) — deliberately NOT its
+    // neighbours' midpoint, unlike the smooth gradient — so `video_filter32` pulls it
     // measurably brighter at INTERIOR pixels too, not just at the top boundary. With
-    // the gradient value the neighbor penultimate min/max are symmetric about the
-    // center and the filter would output the raw color, hiding a raw-fetch mutation.
+    // the gradient value the neighbour penultimate min/max are symmetric about the
+    // centre and the filter would output the raw colour, hiding a raw-fetch mutation.
     if (aa && (x % 4u == 0u)) {
         return (0x08u << 24) | (0x08u << 16) | (0x08u << 8) | 0x00u;
     }
     // aa == 2: a non-monotonic fully-covered probe triplet (see VI_DIVOT_PROBE_*).
     // All three pixels keep alpha 0xFF (cvg 7), so the divot bypass fires; the
-    // center's median across the triplet differs from the center in every channel.
+    // centre's median across the triplet differs from the centre in every channel.
     if (aa == 2u && y == VI_DIVOT_PROBE_Y) {
         if (x == VI_DIVOT_PROBE_X - 1u) {
             return (0x10u << 24) | (0x20u << 16) | (0x30u << 8) | 0xFFu; // left  (low)
         }
         if (x == VI_DIVOT_PROBE_X) {
-            return (0xF0u << 24) | (0xE0u << 16) | (0xD0u << 8) | 0xFFu; // center (high)
+            return (0xF0u << 24) | (0xE0u << 16) | (0xD0u << 8) | 0xFFu; // centre (high)
         }
         if (x == VI_DIVOT_PROBE_X + 1u) {
             return (0x80u << 24) | (0x90u << 16) | (0xA0u << 8) | 0xFFu; // right (mid)
@@ -1670,14 +1671,14 @@ static uint16_t vi_src_pixel16_cov(uint32_t x, uint32_t y, uint32_t aa, uint8_t 
     }
     // Divot probe (aa == 2): a non-monotonic fully-covered triplet at the probe row so
     // the divot all-fully-covered early-return is observable (its per-channel median
-    // differs from the center). All three keep bit0=1, hidden=3 (cvg 7).
+    // differs from the centre). All three keep bit0=1, hidden=3 (cvg 7).
     if (aa == 2u && y == VI_DIVOT_PROBE_Y) {
         *hid = 3;
         if (x == VI_DIVOT_PROBE_X - 1u) {
             return (2u << 11) | (4u << 6) | (6u << 1) | 1u; // left  (low 5-bit channels)
         }
         if (x == VI_DIVOT_PROBE_X) {
-            return (30u << 11) | (28u << 6) | (26u << 1) | 1u; // center (high)
+            return (30u << 11) | (28u << 6) | (26u << 1) | 1u; // centre (high)
         }
         if (x == VI_DIVOT_PROBE_X + 1u) {
             return (16u << 11) | (18u << 6) | (20u << 1) | 1u; // right (mid)
@@ -1689,7 +1690,7 @@ static uint16_t vi_src_pixel16_cov(uint32_t x, uint32_t y, uint32_t aa, uint8_t 
 }
 
 // Set the hidden byte for the source halfword at (x, y): `rdram_hidden` is indexed by
-// halfword with NO WORD_ADDR_XOR (unlike the color plane), matching the VI's read.
+// halfword with NO WORD_ADDR_XOR (unlike the colour plane), matching the VI's read.
 static void rdram_put_hidden16(uint32_t fb_addr, uint32_t x, uint32_t y, uint32_t w,
                                uint8_t hid) {
     uint32_t idx16 = (fb_addr >> 1) + y * w + x;
@@ -1814,7 +1815,7 @@ static int emit_vi_vector(const ViVector *v, const char *out_dir) {
     return 0;
 }
 
-// Emit the fixed VI scan-out vectors. Slice 1 (ledger R-5): nearest-neighbor X/Y
+// Emit the fixed VI scan-out vectors. Slice 1 (ledger R-5): nearest-neighbour X/Y
 // scale (aa_mode = REPLICATE, so no bilinear lerp and no AA/divot/de-dither/gamma),
 // exercising the 2.10 accumulator + the active-span/overscan geometry.
 static int emit_vi_vectors(const char *out_dir) {
@@ -1884,7 +1885,7 @@ static int emit_vi_vectors(const char *out_dir) {
     // coverage), dither_filter_enable (bit 16), type = 3 (0x00010003). Every 32-bit
     // source pixel has alpha 0xFF (coverage bits 7:5 = 7, fully covered), so the
     // cur_cvg==7 + dither_filter path (restore_filter32, an 8-tap ±1 nudge toward
-    // neighbors) runs everywhere; the AA-edge path is never hit. 1:1 scale (xfrac =
+    // neighbours) runs everywhere; the AA-edge path is never hit. 1:1 scale (xfrac =
     // yfrac = 0) so no bilinear lerp post-blends the filter output.
     ViVector vdedith = {"vi_dedither_32", 0x00010003u, 0x1000u, 80u,
                         0x00000400u,      0x00000400u, 0x006C0094u, 0x00220042u,
@@ -1895,7 +1896,7 @@ static int emit_vi_vectors(const char *out_dir) {
     // dither/divot/gamma (0x00000003), 32-bit source with every 4th column partial
     // (cvg 0, the trailing `1` = coverage-varying pattern). A partial pixel takes
     // video_filter32: it gathers the fully-covered pixels among its 6 diagonal/far
-    // taps, takes the penultimate min/max per channel, and pulls the center toward
+    // taps, takes the penultimate min/max per channel, and pulls the centre toward
     // their midpoint by (7 - cvg)/8. 1:1 scale so no lerp post-blends it.
     ViVector vaa = {"vi_aa_edge_32", 0x00000003u, 0x1000u, 80u,
                     0x00000400u,     0x00000400u, 0x006C0094u, 0x00220042u,
@@ -1904,11 +1905,11 @@ static int emit_vi_vectors(const char *out_dir) {
 
     // Slice 4e (ledger R-5): the divot median filter. divot_enable (VI_CTRL bit 4),
     // aa_mode = 0, type = 3 (0x00000013), 32-bit with the same every-4th-column partial
-    // pattern. A pixel whose 3 horizontal neighbors are not all fully covered (the
-    // partial columns and their immediate neighbors) takes the per-channel median of
+    // pattern. A pixel whose 3 horizontal neighbours are not all fully covered (the
+    // partial columns and their immediate neighbours) takes the per-channel median of
     // the post-AA values; the rest pass through. 1:1 scale so no lerp. aa = 2 adds a
     // non-monotonic fully-covered probe triplet (VI_DIVOT_PROBE_*) so the divot
-    // all-fully-covered EARLY-RETURN is observable: its center must pass through
+    // all-fully-covered EARLY-RETURN is observable: its centre must pass through
     // unchanged even though the triplet's per-channel median differs from it.
     ViVector vdivot = {"vi_divot_32", 0x00000013u, 0x1000u, 80u,
                        0x00000400u,   0x00000400u, 0x006C0094u, 0x00220042u,
