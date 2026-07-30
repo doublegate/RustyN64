@@ -7,7 +7,7 @@
 
 > **Partly superseded by measurement — see *Measured (2026-07-30)* below.** The
 > prediction in this section was that the RSP + CPU dominate. Measured on a real title
-> in the render phase, the **CPU is 31.6% and the RSP only 9.0%**, while **Bus + VI is
+> in the render phase, the **CPU is 32.0% and the RSP only 9.2%**, while **Bus + VI is
 > 29.0%** — the VI scan-out filters were not on the predicted list at all. A prediction
 > left unmarked reads as a finding, so it is marked.
 
@@ -146,11 +146,17 @@ RUSTYN64_PROBE_ROM="$PWD/tests/roms/external/commercial/eeprom-4k/Super Mario 64
   cargo test -p rustyn64-frontend --release --test frame_cost_probe -- --ignored --nocapture
 
 # B — render-phase profile. `-D 70000` discards the first 70 s, which is boot.
-CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
-  --no-run --test gameplay_phase_probe
+#
+# `perf` has to be pointed at the test binary, and cargo names it with a content
+# hash under `target/release/deps/`, so the path is asked for rather than guessed.
+# The `kind == "test"` filter is load-bearing: the stream also carries the frontend
+# `bin` artifact, and taking the last executable picks that one instead.
+BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
+        --no-run --test gameplay_phase_probe --message-format=json \
+      | jq -r 'select(.target.kind[0] == "test") | .executable // empty')
 RUSTYN64_PROBE_ROM="$PWD/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64" \
 RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o perf_play.data -- \
-  <the built test binary> --ignored --nocapture
+  "$BIN" --ignored --nocapture
 perf report -i perf_play.data -s srcline --full-source-path --no-children -g none
 ```
 
@@ -265,7 +271,8 @@ horizontal upscale, so `xfrac` alternates zero / non-zero); `VI_Y_SCALE` gives
 tap skip worth 39.1% of the scan-out, and the arithmetic checks out exactly: `yfrac` is
 always 0 and `xfrac` alternates 0 / 16, so the four-tap form averaged
 `(1 + 4) / 2 = 2.5` filter chains per output pixel and the skip brings that to
-`(1 + 2) / 2 = 1.5`. The predicted 1.67x on the scan-out against a measured 1.64x is as
+`(1 + 2) / 2 = 1.5`. The predicted 1.67x on the scan-out against a measured 1.64x
+(35.53 → 21.64 ms) is as
 close as this kind of accounting gets, which is the reason to write it down: a
 speed-up that matches a mechanism is a result, and one that does not is a coincidence
 waiting to be explained.
