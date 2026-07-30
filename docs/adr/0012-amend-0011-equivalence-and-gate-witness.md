@@ -71,12 +71,15 @@ differential gate is a longer-running instance of the same hazard.
 The gate must therefore:
 
 - **emit an explicit end-of-suite marker** naming how many **bail-out reasons** were
-  reached and how many comparison points ran. The reason count has an expected value and
-  must meet it; the comparison count has no meaningful expected value — it depends on how
-  long each fixture runs — so the only assertion on it is that it is **not zero** — a run that compared nothing must not read as agreement. The expected number is
-  **not a hand-maintained constant**: it is derived from the enumerated bail-out set the
-  fast path itself declares, so adding a bail-out reason without a fixture that reaches it
-  fails the gate, and no one has to remember to bump a total. A gate whose expected count
+  reached and how many comparison points ran. The two counts are asserted differently:
+  - the **reason count** has an expected value and must meet it;
+  - the **comparison count** has no meaningful expected value — it depends on how long
+    each fixture runs — so the only assertion on it is that it is **not zero**.
+
+  The expected value for the reason count is **not a hand-maintained constant**: it is
+  derived from the enumerated bail-out set the fast path itself declares, so adding a
+  bail-out reason without a fixture that reaches it fails the gate, and no one has to
+  remember to bump a total. A gate whose expected count
   is a literal drifts the moment the suite grows, which converts the witness into
   decoration.
 
@@ -140,7 +143,7 @@ copy of an environment is a second thing to leave stale.
 | scan-out 35.5 ms, 23.6% of a frame | 35.5 ms, 22.9% (pre-fix); 21.6 ms, 15.5% (post) |
 | debug is 7.7x slower | **8.7x**, paired on one tree and one window |
 | required speedup ~9x | ~8.3x from 139.3 ms |
-| in-model ceiling ~1.66x | **~1.64x** — the Amdahl fraction is the *sum* of both targets, latch copying ~16% plus the scan-out, so `1 / (1 - (0.16 + 0.229))` = 1.637 where 0011 had `1 / (1 - (0.16 + 0.236))` = 1.656. Both use the **pre-fix** scan-out share on purpose: the ceiling is what was available to collect when 0011 was written, and part of it has since been collected |
+| in-model ceiling ~1.66x | **~1.64x** — the Amdahl fraction is the *sum* of both targets, latch copying ~16% plus the scan-out, so `1 / (1 - (0.16 + 0.229))` = 1.637 where 0011 had `1 / (1 - (0.16 + 0.236))` = 1.656 — both scan-out shares rounded to three places from `35.5 / 155.1` and `35.5 / 150.5`. Both use the **pre-fix** scan-out share on purpose: the ceiling is what was available to collect when 0011 was written, and part of it has since been collected |
 
 **The decision does not move.** That is the point of recording the drift rather than
 quietly correcting it: 0011's argument is that ~9x is unreachable inside a per-cycle model

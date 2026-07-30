@@ -567,8 +567,8 @@ One of the findings was a contradiction *introduced while adopting an earlier re
 which is precisely the class of error a second reader catches and an author does not.
 
 **Practice adopted.** A merge waits for **every required review to have arrived**, not for
-CI. Poll until each reviewer has actually commented, adjudicate every thread, and only
-then merge. For an immutable document the rule is stricter still, because there is no such
+CI. Poll until each reviewer has actually **posted its review** — not started one, and not
+merely re-run its job — then adjudicate every thread, and only then merge. For an immutable document the rule is stricter still, because there is no such
 thing as a follow-up edit: an ADR merges only once every comment on it is resolved.
 
 ---
