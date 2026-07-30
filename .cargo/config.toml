@@ -39,23 +39,17 @@ full-build = "build --release -p rustyn64-frontend --features full"
 [resolver]
 incompatible-rust-versions = "fallback"
 
-# Resilient crates.io downloads. Forcing HTTP/1.1 sidesteps a known interaction
-# between curl's HTTP/2 multiplexing and the crates.io CDN that surfaces as
-# intermittent "Error in the HTTP2 framing layer" / "unexpected eof while reading"
-# fetch failures, and a higher retry count lets any remaining transient blip
-# self-heal instead of failing a CI job.
+# Resilient crates.io downloads: a higher retry count lets a transient blip
+# self-heal instead of failing a fetch. Costs nothing when nothing goes wrong.
 #
-# Provenance, since this is a workaround and workarounds outlive their causes:
-# it is inherited from `RustyNES`, where those failures were observed. They have
-# NOT been observed in this repository, and the cost of disabling multiplexing --
-# slower parallel fetches -- has not been measured here either. It is kept
-# repo-wide rather than moved behind a CI-only `CARGO_HTTP_MULTIPLEXING=false`
-# because the failure it prevents is not CI-specific and is painful to recognize:
-# it presents as a corrupt download rather than as a network error. If it ever
-# becomes a nuisance locally, the env var is the smaller change and this comment
-# is the reason to reach for it.
+# `http.multiplexing = false` was here too, and was REMOVED. It sidesteps a known
+# interaction between curl's HTTP/2 multiplexing and the crates.io CDN that
+# presents as "Error in the HTTP2 framing layer" / "unexpected eof while reading",
+# and it is worth knowing about -- but those failures were observed in `RustyNES`,
+# not here, and disabling multiplexing costs every local build parallel download
+# capacity to prevent something this repository has never seen. Shipping an
+# unobserved workaround is how a config file accumulates settings nobody can
+# justify. If the framing errors do turn up, `CARGO_HTTP_MULTIPLEXING=false` in
+# the environment is the fix, and this comment is the pointer to it.
 [net]
 retry = 10
-
-[http]
-multiplexing = false
