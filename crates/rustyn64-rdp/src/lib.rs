@@ -1824,7 +1824,7 @@ impl Rdp {
     /// arranging it. `Bus::rdp_tick` moves this whole struct out of the Bus with
     /// `core::mem::take` to satisfy the borrow checker — 344 bytes read and written,
     /// plus a default written back, on **every RCP step** — and on most steps the
-    /// answer here is `true`, so that shuffle bought nothing
+    /// answer here is `None`, so that shuffle bought nothing
     /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame").
     ///
     /// It lives here rather than in the Bus because it is a statement about *this*
@@ -1864,6 +1864,11 @@ impl Rdp {
     /// exactly when the FIFO is non-empty and the pipeline is neither frozen nor
     /// stalled. Those preconditions are therefore not asserted here: an assertion that
     /// cannot fire is dead code that reads like a safeguard.
+    ///
+    /// The token is taken **by value**, not by reference, so it is consumed: one
+    /// `tick_without_bus` authorizes exactly one bus half. Relaxing this to
+    /// `&NeedsBus` would let a caller hold one and re-enter after the state it
+    /// attested to had changed, which is the whole property being bought here.
     pub fn tick_with_bus<B: VideoBus>(&mut self, _proof: NeedsBus, bus: &mut B) {
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
@@ -3847,6 +3852,57 @@ pub const fn version() -> &'static str {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    /// Every early-out of [`Rdp::tick_without_bus`], exercised here rather than only
+    /// through `Bus::rdp_tick` in another crate.
+    ///
+    /// Each branch is the reason a step can skip the 344-byte `core::mem::take`, so a
+    /// branch that stopped firing would be a silent performance regression, and one
+    /// that fired when it should not would be a **correctness** regression — a skipped
+    /// command. Neither shows up in the conformance vectors as long as the totals
+    /// happen to work out, which is why they are pinned individually.
+    #[test]
+    fn every_bus_free_early_out_fires_on_its_own_condition() {
+        // Frozen: no bus needed, and the stall is *not* touched — a frozen pipeline
+        // does not burn a GCLK.
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_FREEZE;
+        rdp.stall = 5;
+        rdp.cmd_current = 0;
+        rdp.cmd_end = 0x100;
+        assert!(rdp.tick_without_bus().is_none(), "frozen: no bus");
+        assert_eq!(rdp.stall, 5, "a frozen pipeline does not count down");
+
+        // XBUS (DMEM-sourced, not yet wired) takes the same exit.
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_XBUS;
+        rdp.cmd_end = 0x100;
+        assert!(rdp.tick_without_bus().is_none(), "xbus: no bus");
+
+        // Stalling: no bus, and exactly one GCLK burned.
+        let mut rdp = Rdp::new();
+        rdp.stall = 2;
+        rdp.cmd_end = 0x100;
+        assert!(rdp.tick_without_bus().is_none(), "stalled: no bus");
+        assert_eq!(rdp.stall, 1, "one GCLK per step");
+        assert!(rdp.tick_without_bus().is_none(), "still stalled");
+        assert_eq!(rdp.stall, 0, "and again");
+
+        // Empty FIFO: no bus, nothing mutated.
+        let mut rdp = Rdp::new();
+        rdp.cmd_current = 0x40;
+        rdp.cmd_end = 0x40;
+        assert!(rdp.tick_without_bus().is_none(), "empty FIFO: no bus");
+
+        // And the one case that DOES need the bus: unfrozen, unstalled, non-empty.
+        let mut rdp = Rdp::new();
+        rdp.cmd_current = 0;
+        rdp.cmd_end = 0x100;
+        assert!(
+            rdp.tick_without_bus().is_some(),
+            "a queued command needs RDRAM to decode its opcode"
+        );
+    }
 
     struct NullBus;
     impl RdramBus for NullBus {
