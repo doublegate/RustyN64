@@ -73,11 +73,18 @@ The gate must therefore:
 - **emit an explicit end-of-suite marker** naming how many boundary fixtures and
   comparison points actually ran, and fail if that count is zero or below the expected
   number — a run that compared nothing must not read as agreement. The expected number is
-  **not a hand-maintained constant**: it is the length of the enumerated bail-out set the
+  **not a hand-maintained constant**: it is derived from the enumerated bail-out set the
   fast path itself declares, so adding a bail-out reason without a fixture that reaches it
   fails the gate, and no one has to remember to bump a total. A gate whose expected count
   is a literal drifts the moment the suite grows, which converts the witness into
   decoration.
+
+  The requirement is **variant coverage, not a fixture census**: every bail-out reason
+  must be reached at least once, and the gate fails if any variant was never observed. It
+  is deliberately not a 1:1 mapping — one reason may need several fixtures to reach it
+  under different machine states, and one fixture may trip a reason many times. Counting
+  fixtures instead would make adding a second fixture for an already-covered reason look
+  like progress, and would say nothing about the reason nobody wrote a fixture for.
 
   For that enumeration to mean anything, **bailing out must not be expressible any other
   way**: the fast path's only exit to the accurate scheduler is a typed reason — one enum,
@@ -119,6 +126,9 @@ of them, and it is authoritative where the two disagree:
 
 "Pre-fix" and "post-fix" below refer to commit `646a3e0`, which skips the zero-weight
 bilinear taps in the VI scan-out and is the only change between the two trees measured.
+The host, build profile, ROM hash, probe, and window are recorded once in
+`docs/performance.md` §Method rather than duplicated here — a second copy of an
+environment is a second thing to leave stale.
 
 | 0011 says | paired measurement says |
 | --- | --- |
