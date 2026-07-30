@@ -25,7 +25,7 @@
 
 #![cfg(feature = "fast-scheduler")]
 
-use rustyn64_core::scheduler::System;
+use rustyn64_core::scheduler::{EDGE_PERIOD, System};
 
 /// A seed with no special structure — the phase alignment it derives is what makes
 /// the two runs a real comparison rather than two runs of the same schedule.
@@ -83,10 +83,14 @@ fn describe_divergence(a: &[u8], b: &[u8]) -> String {
 
 /// **The fast path must land on exactly the state the accurate path would.**
 ///
-/// While `run_until_fast` bails out on every step this is trivially true, and that
-/// is the point: the gate has to exist and pass *before* block execution is
-/// written, or it grades nothing at the moment it is most needed. Once blocks
-/// start executing, this is the test that fails.
+/// This was trivially true in #224, when `run_until_fast` bailed out on every step,
+/// and that was the point: the gate had to exist and pass *before* block execution
+/// was written, or it would grade nothing at the moment it was most needed.
+///
+/// It is no longer trivial — the fast path now replays a precomputed edge pattern —
+/// but note that this single-seed test is still **not** the one doing the work.
+/// See `the_fast_path_agrees_at_every_phase_alignment`: a pattern off by one offset
+/// passed *this* test and failed that one.
 ///
 /// **`master_ticks` is asserted separately and first** even though the byte
 /// comparison would also catch it. Landing on the right state at the wrong tick is
@@ -154,31 +158,80 @@ fn the_fast_path_lands_where_the_accurate_path_would() {
 /// this outside the default `cargo test` budget.
 #[test]
 fn the_fast_path_agrees_at_every_phase_alignment() {
-    const SHORT: u64 = 60_000;
+    // Deliberately NOT a multiple of the edge period. 60_000 is, and with a target
+    // that lands exactly on a period boundary the partial-period tail — the part
+    // that falls back to the accurate loop — never runs at all. The offsets below
+    // sweep every possible remainder, so each alignment is tested with each tail
+    // length rather than only the one that happens to be zero.
+    const BASE: u64 = 60_000;
 
     for seed in PHASE_SEEDS {
+        let target = BASE + seed % (EDGE_PERIOD + 1);
         let mut accurate = System::new(seed);
         let mut fast = System::new(seed);
-        accurate.run_until(SHORT);
-        fast.run_until_fast(SHORT);
+        accurate.run_until(target);
+        fast.run_until_fast(target);
 
         assert!(
             accurate.cpu.retired > 0,
-            "seed {seed}: the accurate run retired nothing, so the comparison is vacuous"
+            "seed {seed} (target {target}): the accurate run retired nothing, so the comparison is vacuous"
         );
         assert_eq!(
             fast.master_ticks(),
             accurate.master_ticks(),
-            "seed {seed}: correct-but-late — the fast path finished at a different tick"
+            "seed {seed} (target {target}): correct-but-late — the fast path finished at a different tick"
         );
         assert_eq!(
             fast.cpu.retired, accurate.cpu.retired,
-            "seed {seed}: the two paths retired different instruction counts"
+            "seed {seed} (target {target}): the two paths retired different instruction counts"
         );
 
         let (a, f) = (state_of(&accurate), state_of(&fast));
-        assert!(a == f, "seed {seed}: {}", describe_divergence(&a, &f));
+        assert!(
+            a == f,
+            "seed {seed} (target {target}): {}",
+            describe_divergence(&a, &f)
+        );
     }
+}
+
+// **The top of the tick range is guarded by construction, not by a test — and this
+// records why there is no test.**
+//
+// Review asked for boundary cases at `u64::MAX - 1` and `u64::MAX`. They were
+// written, and they hang: `master_ticks` only reaches that region by *running*
+// there, so `run_until_fast(u64::MAX)` means emulating some 1.5e18 periods. It does
+// not wrap — it simply never returns, exactly as the accurate `run_until` would
+// not. At 187.5 MHz, `u64::MAX` is roughly three thousand years of emulated time.
+//
+// So the arithmetic this fast path introduces is made safe where it is written
+// rather than pinned by a test that cannot run: the pattern probe uses
+// `saturating_add` (a wrapped probe would report an edge that is not there) and the
+// loop bound uses `checked_add` (overflow ends the loop, which is correct — there
+// is no whole period left below `target`). The pre-existing `+ 1` in
+// `next_edge_after` and the phase additions inside `is_edge` are untouched and
+// remain out of scope for this change.
+//
+// The reachable half of that concern — a target at or before the current tick — is
+// tested immediately below.
+
+/// A target at or before the current tick must do nothing at all.
+#[test]
+fn a_target_already_reached_is_a_no_op() {
+    let mut sys = System::new(SEED);
+    sys.run_until_fast(10_000);
+    let (ticks, retired) = (sys.master_ticks(), sys.cpu.retired);
+    sys.run_until_fast(ticks);
+    sys.run_until_fast(ticks - 1);
+    assert_eq!(
+        sys.master_ticks(),
+        ticks,
+        "a reached target must not move the clock"
+    );
+    assert_eq!(
+        sys.cpu.retired, retired,
+        "a reached target must not retire work"
+    );
 }
 
 /// The gate must be able to **fail**, which a comparison of two identical runs

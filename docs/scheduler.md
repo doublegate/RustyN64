@@ -203,10 +203,17 @@ progress per RCP tick; the event-queue refinement is a Phase-1/2 ticket.
 ## The fast-path seam (`fast-scheduler`, default-off)
 
 ADR 0011 / ADR 0012 accept an optional block-based scheduler. Its seam exists now
-as `System::run_until_fast`, behind the default-off `fast-scheduler` feature, and
-**today it defers every step to `run_until`** — the total-bailout starting point
-ADR 0011 §6 sanctions ("a correct-but-slow fallback is always acceptable; a
-fast-but-wrong path is not").
+as `System::run_until_fast`, behind the default-off `fast-scheduler` feature.
+
+**The block is one period of the edge schedule.** Which domains are due is a
+function of `tick mod lcm(CPU_DIVIDER, RCP_DIVIDER)` and the power-on phases, so
+the pattern repeats every 6 ticks and never changes mid-run — while the accurate
+loop re-derives it on every edge. The fast path computes that shape once and
+replays it: the same edges, in the same order, at the same `master_ticks`, so it is
+a different *enumeration* rather than a different schedule. The partial-period tail
+and the `master_ticks = target` landing still go through the accurate loop, which
+is where ADR 0011 §6's fallback now lives. Measured **1.0563x** on the run loop
+(`docs/performance.md`).
 
 Three structural choices, made so the later work cannot quietly violate the ADR:
 

@@ -780,6 +780,42 @@ misdescribed it besides: an unprogrammed `VI_V_TOTAL` is *one* half-line, a peri
 a `debug_assert` making the claim checkable, which is the same treatment ledger R-16's guard
 gets in the AI.
 
+## The fast scheduler replays the edge pattern instead of re-deriving it
+
+ADR 0011's first executing block. A domain steps when `(tick + phase) % divider == 0`
+and the phases are power-on constants, so which domains are due repeats every
+`lcm(CPU_DIVIDER, RCP_DIVIDER) = 6` ticks and never changes mid-run — yet the
+accurate loop re-derives it on every edge (`next_edge` for the position, then two
+`is_edge` tests to attribute it). The fast path computes that shape once and
+replays it, which is a different **enumeration** of the same edges, not a different
+schedule.
+
+| | |
+| --- | --- |
+| Harness | `crates/rustyn64-core/tests/fast_scheduler_differential.rs`, `probe_scheduler_dispatch_cost` (`#[ignore]`d) |
+| Command | `cargo test -p rustyn64-core --release --features fast-scheduler --test fast_scheduler_differential -- --ignored --nocapture` |
+| Workload | `System::new(SEED)` run to **60,000,000** master ticks, both paths, from an identical power-on state |
+| Method | best of 3 per path, in one process, alternating accurate/fast each repetition |
+| Environment | as tabled in §Measured (2026-07-30) — same machine, `rustc 1.96.0` |
+| Result | accurate **1.8113 s**, fast **1.7147 s** → **1.0563x** |
+
+**What the number is and is not.** `run_until` executes the whole machine, so this
+is a **whole-system** figure rather than a share of one — but it is measured
+*headlessly*, with no VI scan-out and no frontend, so it is not a frame time and
+must not be compared against the ms/frame figures elsewhere in this document. Scan-out
+is outside `run_until`, so the frame-level effect is smaller than 5.6% by whatever
+share scan-out holds.
+
+**Limitations, stated because best-of-3 in one process is weaker than the A-B-A
+protocol used for the frame measurements above.** No ROM is loaded, so this is the
+reset-vector workload rather than a title's instruction mix; the two paths alternate
+within one process rather than across separate builds; and there is no return leg.
+It is a dispatch-cost differential between two implementations of the same
+enumeration, not a hardware-accuracy result — which is why it lives here and not in
+`docs/accuracy-ledger.md`, whose scope is measured hardware constants and residuals.
+
+The feature stays **default-off**, so no shipped build is affected by any of this.
+
 ## The render-phase map, re-measured after the VI and RDP work
 
 The attribution the earlier plan worked from was taken at **138.7 ms/frame**, before the

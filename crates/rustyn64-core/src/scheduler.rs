@@ -107,9 +107,10 @@ const _: () = {
 ///
 /// The cast cannot truncate — it is the LCM of two single-digit divider constants,
 /// so it is 6 on every target — but clippy sees only `u64 as usize` and cannot know
-/// the value. The assertion below turns "cannot truncate" from a claim in this
-/// comment into something the compiler checks, which is the difference between a
-/// justified `allow` and a silenced lint.
+/// the value. The assertion below checks exactly that: **that the value survives
+/// the narrowing**, which is the property at issue. (It is not a general round-trip
+/// proof, and an earlier version of this comment overstated it as one.) That is the
+/// difference between a justified `allow` and a silenced lint.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "value-checked by the const assertion immediately below"
@@ -119,7 +120,7 @@ const EDGE_PERIOD_LEN: usize = EDGE_PERIOD as usize;
 const _: () = {
     assert!(
         EDGE_PERIOD_LEN as u64 == EDGE_PERIOD,
-        "EDGE_PERIOD does not survive the round trip through usize on this target"
+        "EDGE_PERIOD does not survive narrowing to usize on this target"
     );
 };
 
@@ -367,13 +368,11 @@ impl System {
     /// The **fast-path** counterpart to [`System::run_until`] (ADR 0011 / ADR 0012),
     /// behind the default-off `fast-scheduler` feature.
     ///
-    /// **Today this is a total bailout: it defers every step to the accurate
-    /// scheduler.** That is not a placeholder in the pejorative sense — ADR 0011
-    /// §6 makes it the specification's own starting point ("a correct-but-slow
-    /// fallback is always acceptable; a fast-but-wrong path is not"), and it is
-    /// what lets the differential gate exist and pass *before* any block execution
-    /// is written. A gate that only starts working once the thing it grades is
-    /// finished grades nothing.
+    /// **The block is one period of the edge schedule**, replayed from a shape
+    /// computed once instead of re-derived per edge. The tail — a partial period,
+    /// plus the `master_ticks = target` landing — still goes through the accurate
+    /// path, which is the ADR 0011 §6 fallback and is where the "bailout" in that
+    /// section's language now lives.
     ///
     /// It is a **separate entry point**, not a branch inside `run_until`, which is
     /// what keeps ADR 0011 §1 exactly true: with the feature off this function does
@@ -382,12 +381,15 @@ impl System {
     /// marker is not yet owed — that falls due when the fast path acquires state of
     /// its own.
     ///
-    /// **The bailout invariant** (ADR 0011 §6) is what the next slice must
-    /// preserve: at every boundary the accurate scheduler has to resume with the
-    /// state it would have held had it run that stretch itself — the same
-    /// `master_ticks` above all, since landing on the right state at the wrong tick
-    /// is *correct-but-late*, and no AV comparison can see it. Trivially satisfied
-    /// while every step bails; the gate is here to keep it true when they stop.
+    /// **The bailout invariant** (ADR 0011 §6) — the accurate scheduler must resume
+    /// with exactly the state it would have held had it run that stretch itself,
+    /// the same `master_ticks` above all, since right state at the wrong tick is
+    /// *correct-but-late* and no AV comparison can see it — is satisfied here **by
+    /// construction rather than by argument**: this enumerates the same edges in the
+    /// same order at the same ticks, so there is no divergence to resynchronize.
+    /// A later slice that skips or reorders work will have to earn the invariant
+    /// instead of inheriting it, and the differential gate is what will say whether
+    /// it did.
     #[cfg(feature = "fast-scheduler")]
     pub fn run_until_fast(&mut self, target: u64) {
         // The edge schedule is PERIODIC. A domain steps when
@@ -404,15 +406,28 @@ impl System {
         // That is why the bailout invariant (ADR 0011 §6) is satisfied by
         // construction rather than by argument: there is nothing to resynchronize,
         // because nothing ever diverged.
-        let mut pattern = [(0u64, false, false); EDGE_PERIOD_LEN];
+        // Nothing to do, and saying so up front keeps every addition below inside a
+        // range the loop condition has already bounded.
+        if target <= self.master_ticks {
+            return;
+        }
+
+        // Only the two predicates are stored: the offset is always `index + 1`, so
+        // keeping it in the array would be a third of the footprint carrying no
+        // information.
+        //
+        // Offsets are 1..=EDGE_PERIOD because `run_until` advances to the next edge
+        // *strictly after* the current tick; offset 0 is the position the machine
+        // already sits on and has already been stepped.
+        let mut pattern = [(false, false); EDGE_PERIOD_LEN];
         for (i, slot) in pattern.iter_mut().enumerate() {
-            // Offsets are 1..=EDGE_PERIOD because `run_until` advances to the next
-            // edge *strictly after* the current tick; offset 0 is the position the
-            // machine already sits on and was already stepped.
-            let off = i as u64 + 1;
-            let t = self.master_ticks + off;
+            // `saturating_add`: `master_ticks` is at most `u64::MAX`, and a machine
+            // that close to the end of a 3,000-year timeline has no edges left to
+            // find. Saturating keeps the probe from wrapping to an early tick and
+            // reporting an edge that is not there; the loop below then does not run,
+            // because no `base + EDGE_PERIOD` can be `<= target`.
+            let t = self.master_ticks.saturating_add(i as u64 + 1);
             *slot = (
-                off,
                 Self::is_edge(t, self.phases.cpu, CPU_DIVIDER),
                 Self::is_edge(t, self.phases.rcp, RCP_DIVIDER),
             );
@@ -422,11 +437,20 @@ impl System {
         // `master_ticks` lands on each edge inside it, which is what keeps the
         // pattern's alignment valid: `base` advances by exactly one period, so
         // `(base + off + phase) % divider` is invariant across iterations.
+        //
+        // `checked_add` on the bound rather than `base + EDGE_PERIOD`: the sum is
+        // the loop's own guard, so it is the one addition here that is not already
+        // bounded by something else. Overflow ends the loop, which is correct —
+        // there is no whole period left below `target`.
         let mut base = self.master_ticks;
-        while base + EDGE_PERIOD <= target {
-            for &(off, cpu, rcp) in &pattern {
+        while base
+            .checked_add(EDGE_PERIOD)
+            .is_some_and(|end| end <= target)
+        {
+            for (i, &(cpu, rcp)) in pattern.iter().enumerate() {
                 if cpu || rcp {
-                    self.master_ticks = base + off;
+                    // In range: `base + EDGE_PERIOD <= target <= u64::MAX`.
+                    self.master_ticks = base + i as u64 + 1;
                     self.step_domains(cpu, rcp);
                 }
             }
