@@ -291,12 +291,22 @@ pub struct Latch {
 // case re-measure and update the breakdown, or the layout algorithm moved, in which
 // case the "no padding is wasted" conclusion needs re-deriving before it is re-quoted.
 //
-// Deliberately **not** gated on `target_pointer_width`. Every field here is
-// fixed-width — no `usize`, no references, no pointers — so 120 holds on 32-bit as
-// well, and the workspace proves it rather than assuming it: the `no_std` gate builds
-// this crate for `thumbv7em-none-eabihf`, where a divergence would fail the build. A
-// `#[cfg]` would switch the guard off on exactly the target where a pointer-sized field
-// would first change the answer.
+// **120 is the size on this workspace's targets, not a universal fact**, and the
+// distinction was learned the hard way in review. Every field is fixed-width — no
+// `usize`, no references, no pointers — but that does *not* make the layout
+// width-independent, because it is `u64` **alignment** that varies, not pointer size:
+//
+// | target | `size_of::<Latch>()` |
+// | --- | --- |
+// | `x86_64`, `thumbv7em-none-eabihf`, `wasm32-unknown-unknown` (all supported) | 120 |
+// | `i686-*` (32-bit x86, `u64` aligns to 4) | **108** |
+//
+// All three supported targets are built in CI — the `no_std` gate covers `thumbv7em`
+// and the wasm build covers `wasm32` — so this assert is checked on every one of them.
+// On `i686` it would fire, and that is the guard **working**: adding a target with a
+// different ABI is exactly the case where the copy-cost breakdown must be re-measured
+// before it is re-quoted. It is not `#[cfg]`-gated for that reason — a gate would make
+// the new target the one place the numbers go unchecked.
 //
 // `#[repr(C)]` is not the alternative either, and this was measured rather than
 // reasoned: `repr(C)` lays fields out in declaration order, which costs **128 bytes**

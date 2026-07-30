@@ -425,6 +425,13 @@ the instruction is to re-measure rather than to change the number, since either 
 was added or the layout algorithm moved and the "no padding" conclusion needs
 re-deriving.
 
+**120 is the size on this workspace's targets, not a universal fact.** Every field is
+fixed-width, but that does not make the layout width-independent — it is `u64`
+*alignment* that varies. On `x86_64`, `thumbv7em-none-eabihf` and
+`wasm32-unknown-unknown` (all three built in CI) it is 120; on 32-bit x86, where `u64`
+aligns to 4, it is **108**. The assert firing on a newly added target is the guard
+working: a different ABI is exactly when this breakdown must be re-measured.
+
 **`#[repr(C)]` would be the wrong way to get that stability**, measured: it lays fields
 out in declaration order, so the two `bool`s can no longer occupy alignment gaps and the
 struct becomes **128 bytes**. On something copied four times per emulated cycle that adds
