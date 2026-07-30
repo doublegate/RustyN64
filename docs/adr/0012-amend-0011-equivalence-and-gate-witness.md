@@ -70,9 +70,9 @@ differential gate is a longer-running instance of the same hazard.
 
 The gate must therefore:
 
-- **emit an explicit end-of-suite marker** naming how many boundary fixtures and
-  comparison points actually ran, and fail if that count is zero or below the expected
-  number — a run that compared nothing must not read as agreement. The expected number is
+- **emit an explicit end-of-suite marker** naming how many **bail-out reasons** were
+  reached and how many comparison points ran, and fail if either is zero or below the
+  expected number — a run that compared nothing must not read as agreement. The expected number is
   **not a hand-maintained constant**: it is derived from the enumerated bail-out set the
   fast path itself declares, so adding a bail-out reason without a fixture that reaches it
   fails the gate, and no one has to remember to bump a total. A gate whose expected count
@@ -130,7 +130,7 @@ copy of an environment is a second thing to leave stale.
 | scan-out 35.5 ms, 23.6% of a frame | 35.5 ms, 22.9% (pre-fix); 21.6 ms, 15.5% (post) |
 | debug is 7.7x slower | **8.7x**, paired on one tree and one window |
 | required speedup ~9x | ~8.3x from 139.3 ms |
-| in-model ceiling ~1.66x | **~1.64x** — the Amdahl fraction is the *sum* of both targets, latch copying ~16% plus the scan-out, so `1 / (1 - (0.16 + 0.229))` = 1.637 where 0011 had `1 / (1 - (0.16 + 0.236))` = 1.656 |
+| in-model ceiling ~1.66x | **~1.64x** — the Amdahl fraction is the *sum* of both targets, latch copying ~16% plus the scan-out, so `1 / (1 - (0.16 + 0.229))` = 1.637 where 0011 had `1 / (1 - (0.16 + 0.236))` = 1.656. Both use the **pre-fix** scan-out share on purpose: the ceiling is what was available to collect when 0011 was written, and part of it has since been collected |
 
 **The decision does not move.** That is the point of recording the drift rather than
 quietly correcting it: 0011's argument is that ~9x is unreachable inside a per-cycle model
@@ -165,6 +165,6 @@ permission to bail out to the accurate path for anything unhandled.
 
 The generalizable lesson is recorded where this repository keeps them, in
 `docs/engineering-lessons.md` under *"Re-requesting a review and then checking once is
-not waiting for it"* (§4.4 at the time of writing — cited by title, since a section
-number is the part that goes stale). It is referenced rather than argued here so that
+not waiting for it"* — cited by title, since a section number is the part that goes
+stale. It is referenced rather than argued here so that
 this document stays a specification.
