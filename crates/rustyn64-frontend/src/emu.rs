@@ -286,6 +286,43 @@ impl EmuCore {
         &self.system
     }
 
+    /// Copy this core's active frame and its status-bar readings into a present
+    /// handoff.
+    ///
+    /// One implementation on purpose: both producers — the dedicated emu thread
+    /// and the synchronous `emu-thread`-off path — publish through here, so they
+    /// cannot drift into disagreeing about what a published frame is.
+    ///
+    /// Only the `w * h * 4` **prefix** of `frame.rgba` is published, not the whole
+    /// `FB_MAX`-sized backing store, which `produce_frame` never resizes. A frame
+    /// whose dims are not covered by its bytes is skipped rather than truncated: a
+    /// partial frame is not a frame, and
+    /// [`PresentBuffer::publish`](crate::present_buffer::PresentBuffer::publish)
+    /// requires the pair to agree. `presentable_geometry` clamps the dims to the blit
+    /// texture, so the guard is for a future geometry change rather than a
+    /// currently-reachable case.
+    pub fn publish_into(&self, present: &crate::present_buffer::PresentBuffer) {
+        let (rgba, w, h) = self.frame_rgba();
+        let need = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+        // Loud in debug, tolerant in release. `presentable_geometry` makes this
+        // unreachable today, so if it ever trips it is a core-side bug that deserves
+        // a panic in development rather than a silently frozen picture.
+        debug_assert!(
+            need > 0 && need <= rgba.len(),
+            "produce_frame yielded {w}x{h}, needing {need} bytes of {}",
+            rgba.len()
+        );
+        if need > 0 && need <= rgba.len() {
+            present.publish(&rgba[..need], (w, h));
+        }
+        present.publish_status(
+            self.frame_count(),
+            self.master_ticks(),
+            self.is_loaded(),
+            self.is_paused(),
+        );
+    }
+
     /// Scan the core's framebuffer out into the presented frame.
     ///
     /// `Bus::scanout_scaled` reads the VI registers and converts the framebuffer at

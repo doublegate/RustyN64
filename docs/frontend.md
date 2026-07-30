@@ -23,8 +23,13 @@ core stays a pure deterministic timeline.
   CPU/RSP/RDP/memory debugger panels on top.
 - **Never hold the emu lock inside the egui closure.** Menu interactions return a
   `MenuAction` value; `App::dispatch_menu_action` runs it *after* the egui pass.
-  The hidden render branch copies the framebuffer under a brief lock, drops it,
-  and renders/presents with the core unlocked.
+- **The present path never takes the emu lock at all.** The producer publishes the
+  frame and the status readings into `present_buffer::PresentBuffer` (a
+  triple-buffer SPSC handoff with its own small mutex, held only for one RGBA8
+  memcpy); the winit thread reads that. The only emu-lock takers on the UI thread
+  are the menu actions that genuinely mutate the core (open / close / pause /
+  reset), which happen on a click, not per frame. See *Present handoff* below for
+  why this is not merely an optimization.
 - **The emulator runs on a dedicated thread** (`emu-thread`) on native,
   communicating via an `Arc<Mutex<System>>` handle + a lock-free shared-input
   channel; the winit thread only does UI + present. This thread is a *frontend*
@@ -33,6 +38,61 @@ core stays a pure deterministic timeline.
   resampler stage feeding the lock-free audio ring) and run-ahead
   (snapshot-restore orchestration) live here, NEVER in the core synthesis — that
   is what keeps the determinism contract intact (ADR 0004, `docs/audio.md`).
+
+## Present handoff and pacing
+
+Both ported from `RustyNES`/`RustySNES` (same author, so the port is
+license-clean). They existed there and were **missing here**: RustyN64 shipped the
+`emu-thread` feature without the handoff that feature exists to enable.
+
+### The defect
+
+`App::snapshot` took the emu mutex every UI frame merely to clone the framebuffer,
+while the emu thread held that same mutex across an entire emulated frame. Worse,
+the pacer's fell-behind branch was `next = now` with **no sleep and no yield** —
+and this core is ~6.5x slower than real time, so that branch was taken on every
+iteration, leaving the emu thread holding the mutex ~100% of the time. Against an
+unfair mutex, the UI starved for many frames at a stretch: menu clicks took 15–45
+seconds and roughly one frame was presented per 30–60 seconds.
+
+### Measured
+
+`emu_thread::tests::measure_ui_read_latency_through_the_handoff_versus_the_emu_mutex`
+(an `#[ignore]`d stopwatch, not a gate) times a competing UI thread's read both
+ways against a live emu thread. On the development machine, `--release`, 120
+samples:
+
+| UI-side read | p50 | p99 | max |
+| --- | --- | --- | --- |
+| via the handoff | **894 ns** | 163 µs | 163 µs |
+| via the emu mutex (the old path) | **97.8 ms** | 113.6 ms | 118 ms |
+
+The same run reported **60 snap-forwards over 60 produced frames** — the core is
+behind on *every* iteration, which is the direct confirmation that the old
+no-yield branch was the one always taken.
+
+### The pacer
+
+A bounded catch-up burst (`MAX_CATCHUP_FRAMES = 3`) then a **snap forward**
+(re-base the schedule on `now` rather than replay the missed window), then
+`block_until_native`: sleep in `SLEEP_CHUNK` (2 ms) capped naps until within
+`SPIN_MARGIN` (2 ms), then `spin_loop` to the exact instant. The nap cap is
+load-bearing — with one long sleep, a single OS oversleep blows past the target and
+the precise spin never engages.
+
+Video frames coalesce (the handoff keeps only the newest); **audio is never
+dropped**, since every produced frame's samples are pushed to the ring.
+
+**Known cost, not yet optimized.** Because the core is behind every iteration, the
+snap imposes a full frame period of wait after each frame, so the effective rate is
+`1 / (frame_cost + period)` rather than `1 / frame_cost` — about 8.1 FPS against a
+~9.3 FPS core ceiling, ~13%. That is the ported behavior, and it is what buys the UI
+its window; whether a shorter yield is better is a question for the perf work, with
+`perf.rs` data, rather than a constant to tune by feel.
+
+Thread-priority elevation (`SCHED_RR` at a low priority, below the audio callback)
+is deliberately **not** ported yet: it is the only `unsafe` in RustyNES's frontend,
+and it should wait until measurement shows it is needed.
 
 ## N64-specific bits (what differs from the NES shell)
 
