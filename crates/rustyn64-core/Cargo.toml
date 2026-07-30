@@ -9,6 +9,14 @@ authors.workspace = true
 [features]
 default = ["std"]
 std = []
+# ADR 0011 / ADR 0012: the optional block-based fast-path scheduler. Default-OFF,
+# and additive — with it disabled this crate contains no behavior change at all,
+# because the fast path is a separate entry point (`System::run_until_fast`)
+# rather than a branch inside the accurate one. It adds no field to `System`, so
+# the save-state layout is identical either way and ADR 0011 §4's mode marker is
+# not needed yet; that becomes due only when the fast path acquires state of its
+# own.
+fast-scheduler = []
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
@@ -19,6 +27,13 @@ rustyn64-rsp = { path = "../rustyn64-rsp", version = "0.8.0", default-features =
 rustyn64-rdp = { path = "../rustyn64-rdp", version = "0.8.0", default-features = false }
 rustyn64-audio = { path = "../rustyn64-audio", version = "0.8.0", default-features = false }
 rustyn64-cart = { path = "../rustyn64-cart", version = "0.8.0", default-features = false }
+
+[dev-dependencies]
+# The `fast-scheduler` differential gate compares two machines by serializing
+# both and requiring the bytes to match. A dev-dependency, so it is absent from
+# every shipped build and cannot affect `no_std`. Same version the frontend's
+# save-states already use, so the two agree on the encoding by construction.
+bincode = "1"
 
 [lints]
 workspace = true
