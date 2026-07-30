@@ -1572,6 +1572,11 @@ pub struct TileDescriptor {
 /// removes all three: calling the bus half out of order does not compile.
 ///
 /// The field is private and the type has no constructor, so it cannot be forged.
+///
+/// **`Copy` and `Clone` are deliberately not derived.** Either would let a caller keep
+/// a token past the step it authorized and present it again after the state it attested
+/// to had changed — the same hole as taking it by reference. `Debug` is derived because
+/// it cannot duplicate the value.
 #[derive(Debug)]
 #[must_use = "a step that needs the bus is not finished until `tick_with_bus` runs it"]
 pub struct NeedsBus(());
