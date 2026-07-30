@@ -3,8 +3,16 @@
 //!
 //! The winit thread does UI + present ONLY. The emulator runs on the dedicated
 //! [`crate::emu_thread::EmuThread`] behind an `Arc<Mutex<EmuCore>>`; this thread
-//! reads the staged framebuffer under a brief lock, runs the egui pass (never
-//! holding the lock), dispatches the resulting [`MenuAction`]s, then presents.
+//! reads the frame and the status readings from the
+//! [`PresentBuffer`](crate::present_buffer::PresentBuffer) — **never from the emu
+//! mutex** — runs the egui pass, dispatches the resulting [`MenuAction`]s, then
+//! presents.
+//!
+//! That last point is the fix for the catastrophic GUI stall: `App::snapshot` used
+//! to take the emu mutex every UI frame just to clone the framebuffer, while the
+//! emu thread held it across an entire emulated frame. The only places this thread
+//! still touches the emu mutex are the menu actions that genuinely mutate the core
+//! (open / close / pause / reset), which happen on a click rather than per frame.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -71,6 +79,18 @@ struct App {
     save_controls: Arc<crate::savestate::SaveStateControls>,
     /// Pressed logical keys this instant (the input collector reads these).
     keys_down: HashSet<Key>,
+    /// The framebuffer + status handoff the producer publishes into. Reading this
+    /// instead of the emu mutex is what keeps the UI responsive.
+    present: Arc<crate::present_buffer::PresentBuffer>,
+    /// The frame most recently taken out of the handoff. Reused across UI frames,
+    /// so a UI frame with nothing new re-presents these bytes rather than blanking.
+    frame_staging: Vec<u8>,
+    /// The dims of whatever `frame_staging` currently holds.
+    ///
+    /// Seeded to the DEFAULT rather than `(0, 0)`: the dims are passed to
+    /// `Gfx::render`, and `render(0, 0)` would compute a `1/640 x 1/480` crop of the
+    /// blit texture instead of a full frame.
+    fb_dims: (u32, u32),
     #[cfg(feature = "emu-thread")]
     emu_thread: Option<EmuThread>,
     /// The open `cpal` output stream; held so playback keeps running (dropping it
@@ -99,6 +119,9 @@ impl App {
             input: Arc::new(SharedInput::new()),
             save_controls: Arc::new(crate::savestate::SaveStateControls::default()),
             keys_down: HashSet::new(),
+            present: crate::present_buffer::PresentBuffer::new(),
+            frame_staging: Vec::new(),
+            fb_dims: (crate::FB_DEFAULT_W, crate::FB_DEFAULT_H),
             #[cfg(feature = "emu-thread")]
             emu_thread: None,
             #[cfg(feature = "emu-thread")]
@@ -117,6 +140,9 @@ impl App {
             core.load_rom(&raw)
                 .map_err(|e| AppError::Rom(format!("{e:?}")))?;
         }
+        // Drop the outgoing ROM's last frame and its counters, so the window shows
+        // black until the new ROM produces rather than holding the old picture.
+        self.present.reset();
         Ok(())
     }
 
@@ -140,23 +166,26 @@ impl App {
         self.input.store(0, buttons);
     }
 
-    /// Copy the core state the shell displays, under a brief lock.
-    fn snapshot(&self) -> (ShellState, Vec<u8>, u32, u32) {
-        self.emu.lock().map_or_else(
-            |_| (ShellState::default(), Vec::new(), 0, 0),
-            |core| {
-                let frame = core.frame();
-                let state = ShellState {
-                    rom_loaded: core.is_loaded(),
-                    paused: core.is_paused(),
-                    frames: core.frame_count(),
-                    master_ticks: core.master_ticks(),
-                    fb_w: frame.w,
-                    fb_h: frame.h,
-                };
-                (state, frame.rgba.clone(), frame.w, frame.h)
-            },
-        )
+    /// Take the newest frame and status out of the present handoff — **taking no
+    /// emu lock at all**, which is the whole point.
+    ///
+    /// A UI frame with nothing new leaves `frame_staging` and `fb_dims` alone, so
+    /// the previous frame is re-presented rather than blanked. The dims come from
+    /// the same `take_into` that produced the bytes, never from a separate query
+    /// that a VI reprogram could desynchronize (see the `PresentBuffer` module doc).
+    fn take_present(&mut self) -> ShellState {
+        if let Some(dims) = self.present.take_into(&mut self.frame_staging) {
+            self.fb_dims = dims;
+        }
+        let st = self.present.status();
+        ShellState {
+            rom_loaded: st.rom_loaded,
+            paused: st.paused,
+            frames: st.frames,
+            master_ticks: st.master_ticks,
+            fb_w: self.fb_dims.0,
+            fb_h: self.fb_dims.1,
+        }
     }
 
     /// Dispatch the actions the egui pass requested (runs AFTER the pass, so
@@ -177,17 +206,21 @@ impl App {
                     if let Ok(mut core) = self.emu.lock() {
                         *core = EmuCore::new(self.config.seed);
                     }
+                    self.present.reset();
                 }
                 MenuAction::TogglePause => {
                     if let Ok(mut core) = self.emu.lock() {
                         let p = core.is_paused();
                         core.set_paused(!p);
                     }
+                    // Deliberately NOT reset: a pause must keep showing the frame it
+                    // paused on, and the producer republishes the flag next frame.
                 }
                 MenuAction::Reset => {
                     if let Ok(mut core) = self.emu.lock() {
                         core.reset();
                     }
+                    self.present.reset();
                 }
                 MenuAction::ToggleDebugger => { /* the checkbox already flipped Shell state */ }
                 MenuAction::Quit => event_loop.exit(),
@@ -211,11 +244,15 @@ impl App {
                     core.set_controllers(self.input.load_all());
                     core.run_frame();
                     let _ = core.drain_audio();
+                    // Publish through the same path the emu thread uses; without
+                    // this the handoff would never receive a frame on this build
+                    // and the window would stay black.
+                    core.publish_into(&self.present);
                 }
             }
         }
 
-        let (state, rgba, fb_w, fb_h) = self.snapshot();
+        let state = self.take_present();
 
         // Hold an owned `Arc<Window>` clone so the immutable window borrow does
         // not span the `&mut self` dispatch below (which takes the emu lock).
@@ -245,9 +282,17 @@ impl App {
         self.dispatch(actions, event_loop);
 
         // Blit + present (winit thread only).
+        let (fb_w, fb_h) = self.fb_dims;
+        let need = (fb_w as usize)
+            .saturating_mul(fb_h as usize)
+            .saturating_mul(4);
         let Some(gfx) = self.gfx.as_mut() else { return };
-        if !rgba.is_empty() {
-            gfx.upload_framebuffer(&rgba, fb_w, fb_h);
+        // The consumer half of the bytes/dims contract: upload only a frame whose
+        // bytes actually cover its dims. `PresentBuffer::publish` debug-asserts the
+        // pair at the producer; this is the release-mode guard, so a short buffer is
+        // skipped rather than sliced out of bounds.
+        if need > 0 && self.frame_staging.len() >= need {
+            gfx.upload_framebuffer(&self.frame_staging[..need], fb_w, fb_h);
         }
         let prims = self
             .egui_ctx
@@ -333,15 +378,16 @@ impl ApplicationHandler for App {
                     None
                 }
             };
-            self.emu_thread = Some(EmuThread::spawn(
-                Arc::clone(&self.emu),
-                Arc::clone(&self.input),
+            self.emu_thread = Some(EmuThread::spawn(crate::emu_thread::EmuThreadParams {
+                emu: Arc::clone(&self.emu),
+                input: Arc::clone(&self.input),
+                present: Arc::clone(&self.present),
                 ring,
-                self.config.region,
-                self.config.rewind,
-                self.config.run_ahead,
-                Arc::clone(&self.save_controls),
-            ));
+                region: self.config.region,
+                rewind: self.config.rewind,
+                run_ahead: self.config.run_ahead,
+                controls: Arc::clone(&self.save_controls),
+            }));
         }
 
         self.window = Some(window);
