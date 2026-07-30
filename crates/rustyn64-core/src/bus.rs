@@ -60,6 +60,98 @@ fn vi_lerp3(a: [u8; 3], b: [u8; 3], frac: i32) -> [u8; 3] {
     o
 }
 
+/// The register-derived rules a scan-out filters every source pixel under.
+///
+/// Fixed for the whole of one [`Bus::scanout_scaled`] call, which is what makes a memo
+/// keyed on `(x, y)` alone sound.
+#[derive(Clone, Copy)]
+struct ViCfg {
+    /// `VI_ORIGIN`, the framebuffer base.
+    origin: u32,
+    /// `VI_WIDTH`, source pixels per row.
+    src_stride: i32,
+    /// 2 (RGBA5551) or 4 (RGBA8888).
+    bpp: u32,
+    /// `VI_CTRL` bits 9:8. Only 0 and 1 run the coverage filters.
+    aa_mode: u32,
+    /// `VI_CTRL` bit 4 — the 3-tap median on partial-coverage edges.
+    divot: bool,
+    /// `VI_CTRL` bit 16 — the de-dither restore on fully-covered pixels.
+    dither_filter: bool,
+}
+
+/// One scan-out's source-sampling configuration, plus a two-row memo of source
+/// pixels that have already been through the coverage filters.
+///
+/// The configuration and the memo live in **one** value on purpose. A cache keyed on
+/// `(x, y)` alone is only sound while `origin`, `src_stride`, `bpp`, and the filter
+/// flags are fixed, and pairing a memo with the wrong configuration would return a
+/// pixel filtered under different rules — a corruption no test would localize. Making
+/// them inseparable removes the possibility rather than asserting against it.
+///
+/// **Why memoizing is behavior-identical by construction.** [`Bus::vi_sample`] is a
+/// pure function of RDRAM and the fields here; [`Bus::scanout_scaled`] takes `&self`,
+/// so RDRAM cannot change while one scan-out runs. Two calls with the same `(x, y)`
+/// therefore cannot disagree, and returning the first answer for the second call is
+/// not an approximation.
+///
+/// **Why it is worth having.** The scan-out samples each source pixel about three
+/// times: at `x_add = 512` (a 2x upscale, what Super Mario 64 programs) an even output
+/// pixel samples column `sx`, the odd one samples `sx` and `sx + 1`, so every column is
+/// asked for twice as a near sample and once as a far one. Each of those calls runs the
+/// whole filter chain — under `aa_mode` 0 with `divot` and `dither_filter` set, three
+/// divot taps of nine de-dither taps each, 27 [`Bus::vi_read_cov`] calls of three
+/// `rdram_offset` lookups apiece.
+struct ViSampler {
+    /// The register-derived rules every sample is filtered under.
+    cfg: ViCfg,
+    /// First source column the memo covers.
+    x_lo: i32,
+    /// Columns per memo row.
+    span: usize,
+    /// The source row each memo row holds; `i32::MIN` marks an unused row.
+    row_y: [i32; 2],
+    /// `2 * span` filtered pixels, row-major. `None` is "not computed yet".
+    cells: alloc::vec::Vec<Option<[u8; 3]>>,
+}
+
+impl ViSampler {
+    /// Two rows is exactly what the vertical lerp needs: it samples `sy` and
+    /// `sy + 1`, and the walk over output rows only ever moves `sy` forward.
+    const ROWS: usize = 2;
+
+    /// Build a memo covering source columns `x_lo..=x_hi` inclusive.
+    fn new(cfg: ViCfg, x_lo: i32, x_hi: i32) -> Self {
+        let span = usize::try_from(i64::from(x_hi) - i64::from(x_lo) + 1).unwrap_or(0);
+        Self {
+            cfg,
+            x_lo,
+            span,
+            row_y: [i32::MIN; Self::ROWS],
+            cells: alloc::vec![None; span * Self::ROWS],
+        }
+    }
+
+    /// The memo row holding source row `y`, evicting if neither does.
+    ///
+    /// Eviction takes the row with the smaller `y`: the scan-out walks `y` forward
+    /// (`y_add` is unsigned), so the lower row is the one that will not be asked for
+    /// again. A wrong choice here would only cost hit rate, never correctness.
+    fn row_slot(&mut self, y: i32) -> usize {
+        if self.row_y[0] == y {
+            return 0;
+        }
+        if self.row_y[1] == y {
+            return 1;
+        }
+        let victim = usize::from(self.row_y[1] < self.row_y[0]);
+        self.row_y[victim] = y;
+        let base = victim * self.span;
+        self.cells[base..base + self.span].fill(None);
+        victim
+    }
+}
+
 /// The VI's integer square root (Angrylion `vi_integer_sqrt`), used to build the
 /// gamma curve. A restoring square-root: `res` accumulates the root two bits at a
 /// time from the top. Ledger R-5.
@@ -888,6 +980,27 @@ impl Bus {
             return (0, 0);
         }
 
+        // The source columns the walk below can ask for. `x_add` is unsigned, so `sx`
+        // is monotonically non-decreasing in `ox`: the first and last output pixels
+        // bracket it, and the `+ 1` covers the far bilinear column. Derived from the
+        // loop bounds rather than guessed, because a memo whose range is short by one
+        // silently falls back to the uncached path and reads as "the optimization did
+        // not help".
+        let x_first = (x_start + minhpass * x_add) >> 10;
+        let x_last = ((x_start + (minhpass + width - 1) * x_add) >> 10) + 1;
+        let mut sampler = ViSampler::new(
+            ViCfg {
+                origin,
+                src_stride,
+                bpp,
+                aa_mode,
+                divot,
+                dither_filter,
+            },
+            x_first,
+            x_last,
+        );
+
         for oy in 0..height {
             let curry = y_start + oy * y_add;
             let sy = curry >> 10;
@@ -897,62 +1010,26 @@ impl Bus {
                 let sx = x_offs >> 10;
                 let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
-                // Fetch one source pixel as RGB8. Under aa_mode 0/1 the coverage path
-                // (de-dither / AA-edge / divot) runs for both formats — 16-bit reads
-                // coverage from the hidden-bits plane, 32-bit from the alpha byte
-                // ([`Bus::vi_read_cov`]). Under aa_mode 2/3 (RESAMP_ONLY / REPLICATE)
-                // coverage is forced full, so it is a plain format-dispatched fetch.
-                let fetch = |x: i32, y: i32| {
-                    if aa_mode <= 1 {
-                        if divot {
-                            self.vi_divot(origin, src_stride, x, y, dither_filter, bpp)
-                        } else {
-                            self.vi_fetch_coverage(origin, src_stride, x, y, dither_filter, bpp)
-                        }
-                    } else if bpp == 2 {
-                        self.vi_fetch16(origin, src_stride, x, y)
-                    } else {
-                        self.vi_fetch32(origin, src_stride, x, y)
-                    }
-                };
                 // Bilinear when aa_mode isn't REPLICATE and a fraction is non-zero
                 // (Angrylion `lerping`): four texels, vertical lerp per column then
                 // horizontal between them. Otherwise the exact nearest sample.
+                //
+                // Both zero-weight cases are skipped rather than computed and
+                // multiplied by zero — `xfrac == 0` here and `yfrac == 0` inside
+                // [`Bus::vi_column`]. Under the configuration Super Mario 64 programs
+                // (`x_add` 512, so `xfrac` alternates 0 / 16; `y_add` 1024, so `yfrac`
+                // is always 0) that is the difference between 2.5 filter chains per
+                // output pixel and 1.5.
                 let mut rgb = if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
-                    // Skip a tap whose weight is zero. `vi_lerp3(a, b, 0)` is
-                    // `a + (((b - a) * 0 + 16) >> 5)` = `a + 0` = `a`, so a zero
-                    // fraction discards the far sample entirely — fetching it cannot
-                    // affect the output, and NOT fetching it therefore cannot either.
-                    //
-                    // This is not a micro-optimization. Each `fetch` runs the whole
-                    // coverage filter chain, and under the configuration Super Mario
-                    // 64 actually programs (`aa_mode` 0, `divot` 1, `dither_filter`
-                    // 1) that is 3 divot taps x 9 de-dither taps = 27 `vi_read_cov`
-                    // calls, each doing three `rdram_offset` lookups. SM64 also
-                    // programs `VI_Y_SCALE` with `y_add = 1024`, which holds `yfrac`
-                    // constant, and `VI_X_SCALE` with `y_add = 512`, which alternates
-                    // `xfrac` between zero and non-zero — so the unconditional
-                    // four-tap form spent most of its work on samples multiplied by
-                    // zero.
-                    // One column's vertical lerp, or its single upper sample when
-                    // `yfrac` weights the lower row at zero. Named rather than written
-                    // twice so the `sx` and `sx + 1` columns cannot drift apart — this
-                    // is a correctness-critical path pinned by the VI vectors.
-                    let vlerp = |x: i32| {
-                        if yfrac == 0 {
-                            fetch(x, sy)
-                        } else {
-                            vi_lerp3(fetch(x, sy), fetch(x, sy + 1), yfrac)
-                        }
-                    };
-                    let col = vlerp(sx);
+                    let col = self.vi_column(&mut sampler, sx, sy, yfrac);
                     if xfrac == 0 {
                         col
                     } else {
-                        vi_lerp3(col, vlerp(sx + 1), xfrac)
+                        let ncol = self.vi_column(&mut sampler, sx + 1, sy, yfrac);
+                        vi_lerp3(col, ncol, xfrac)
                     }
                 } else {
-                    fetch(sx, sy)
+                    self.vi_sample(&mut sampler, sx, sy)
                 };
                 // Gamma is the final RGB stage (after scale, before write) — a table
                 // lookup per channel (the LUT is `vi_gamma` precomputed).
@@ -964,6 +1041,80 @@ impl Bus {
             }
         }
         (w, h)
+    }
+
+    /// One source pixel as the scan-out wants it — filtered under `aa_mode` 0/1,
+    /// plain under 2/3 — served from the memo when it is there.
+    ///
+    /// Only the filtered path is memoized. Under `aa_mode` 2/3 a sample is two RDRAM
+    /// reads and a format convert, which is cheaper than the row bookkeeping, so
+    /// caching it would be a pessimization dressed as an optimization. The filters
+    /// themselves have exactly one implementation either way; this chooses whether to
+    /// consult a cache before calling it.
+    fn vi_sample(&self, s: &mut ViSampler, x: i32, y: i32) -> [u8; 3] {
+        if s.cfg.aa_mode > 1 {
+            return self.vi_sample_direct(s, x, y);
+        }
+        let Ok(idx) = usize::try_from(x - s.x_lo) else {
+            return self.vi_sample_direct(s, x, y);
+        };
+        if idx >= s.span {
+            return self.vi_sample_direct(s, x, y);
+        }
+        let cell = s.row_slot(y) * s.span + idx;
+        if let Some(hit) = s.cells[cell] {
+            return hit;
+        }
+        let computed = self.vi_sample_direct(s, x, y);
+        s.cells[cell] = Some(computed);
+        computed
+    }
+
+    /// [`Bus::vi_sample`] without the memo: the actual filter dispatch.
+    ///
+    /// Under `aa_mode` 0/1 the coverage path (de-dither / AA-edge / divot) runs for
+    /// both formats — 16-bit reads coverage from the hidden-bits plane, 32-bit from the
+    /// alpha byte ([`Bus::vi_read_cov`]). Under `aa_mode` 2/3 (`RESAMP_ONLY` / REPLICATE)
+    /// coverage is forced full, so it is a plain format-dispatched fetch.
+    fn vi_sample_direct(&self, s: &ViSampler, x: i32, y: i32) -> [u8; 3] {
+        let ViCfg {
+            origin,
+            src_stride,
+            bpp,
+            aa_mode,
+            divot,
+            dither_filter,
+        } = s.cfg;
+        if aa_mode <= 1 {
+            if divot {
+                self.vi_divot(origin, src_stride, x, y, dither_filter, bpp)
+            } else {
+                self.vi_fetch_coverage(origin, src_stride, x, y, dither_filter, bpp)
+            }
+        } else if bpp == 2 {
+            self.vi_fetch16(origin, src_stride, x, y)
+        } else {
+            self.vi_fetch32(origin, src_stride, x, y)
+        }
+    }
+
+    /// One column's vertical lerp, or its single upper sample when `yfrac` weights the
+    /// lower row at zero.
+    ///
+    /// A function rather than two inline copies so the `sx` and `sx + 1` columns cannot
+    /// drift apart — this is a correctness-critical path pinned by the VI conformance
+    /// vectors.
+    ///
+    /// The `yfrac == 0` case skips a tap whose weight is zero: `vi_lerp3(a, b, 0)` is
+    /// `a + (((b - a) * 0 + 16) >> 5)` = `a + 0` = `a`, so the far sample is discarded
+    /// and not fetching it cannot change the result.
+    fn vi_column(&self, s: &mut ViSampler, x: i32, sy: i32, yfrac: i32) -> [u8; 3] {
+        if yfrac == 0 {
+            return self.vi_sample(s, x, sy);
+        }
+        let upper = self.vi_sample(s, x, sy);
+        let lower = self.vi_sample(s, x, sy + 1);
+        vi_lerp3(upper, lower, yfrac)
     }
 
     /// Fetch a 16-bit RGBA5551 source pixel at `(x, y)` (stride `src_stride`, base
