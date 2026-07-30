@@ -93,7 +93,14 @@ The gate must therefore:
   compile error rather than an uncounted path. The gate then matches that enum
   exhaustively, which makes "a new reason arrived with no fixture" a build failure rather
   than a silent coverage hole. An enumeration that code can bypass is a list of the cases
-  someone remembered;
+  someone remembered.
+
+  An **abnormal termination is a gate failure, never an uncounted exit.** A panic, an
+  abort, or a fixture that hits its timeout is not a bail-out reason and must not be
+  absorbed as one — the run reports failure with the fixture named. Stated because the
+  natural implementation of "catch anything unhandled and fall back to the accurate
+  path" would turn a crash in the fast path into a silent, correct-looking result, which
+  is the most expensive way this gate could be wrong;
 - **carry a timeout** per fixture and for the suite, so a hang fails rather than
   hanging;
 - **define its failure conditions**, including "the fast path never engaged" and "no
@@ -120,8 +127,9 @@ frame cost by a release figure from a **different window** (before the VI is pro
 versus after). `docs/performance.md` §Measured now carries two-run paired figures for all
 of them, and it is authoritative where the two disagree:
 
-"Pre-fix" and "post-fix" below refer to commit `646a3e0`, which skips the zero-weight
-bilinear taps in the VI scan-out and is the only change between the two trees measured.
+"Pre-fix" and "post-fix" below refer to commit `646a3e0`
+(*perf(vi): skip zero-weight bilinear taps*, PR #211), the only change between the two
+trees measured.
 The host, build profile, ROM hash, probe, and window are recorded once in
 `docs/performance.md` §Method (under §Measured) rather than duplicated here — a second
 copy of an environment is a second thing to leave stale.
