@@ -25,11 +25,39 @@
 
 #![cfg(feature = "fast-scheduler")]
 
-use rustyn64_core::scheduler::System;
+use rustyn64_core::scheduler::{EDGE_PERIOD, System};
 
 /// A seed with no special structure — the phase alignment it derives is what makes
 /// the two runs a real comparison rather than two runs of the same schedule.
 const SEED: u64 = 0x5265_616C_6974_7921;
+
+/// Enough seeds to exercise **every** power-on phase alignment.
+///
+/// `Phases::from_seed` derives `cpu ∈ 0..CPU_DIVIDER` and `rcp ∈ 0..RCP_DIVIDER`,
+/// so there are six distinct alignments and a single seed samples exactly one of
+/// them. That is not a theoretical gap: an early version of the fast path's
+/// replayed pattern was off by one, skipping the edge at `base + 1` — and whether
+/// tick 1 *is* an edge is a function of the phases, so the one-seed gate passed a
+/// fast path that was demonstrably wrong. ADR 0011 §6 asks for boundaries to be
+/// forced rather than hoped for; this is that, at the cheapest boundary there is.
+///
+/// Sixteen consecutive seeds rather than six hand-picked ones: `SplitMix64` maps
+/// them to alignments opaquely, so enumerating seeds is honest where enumerating
+/// alignments would mean hardcoding the mapping and re-deriving it on every change.
+///
+/// **The limit of that, stated rather than glossed:** sixteen draws over six
+/// alignment buckets makes full coverage very likely, not certain. Proving it would
+/// mean reproducing `Phases::from_seed` here — a second copy of the thing under
+/// test, which is worse. The alternative accepted is a probabilistic sweep with the
+/// probability acknowledged.
+///
+/// **Cost:** with the tail sweep below this is 96 machine pairs, and a `System`
+/// carries 8 MiB of RDRAM that is allocated, zeroed, and traversed for each. That
+/// is ~60 s in a debug `cargo test` and a few seconds in `--release`. It is the
+/// most expensive test in this crate by a wide margin, deliberately: it is the only
+/// thing standing between a wrong fast path and a silently wrong emulator, and it
+/// has already caught one.
+const PHASE_SEEDS: core::ops::Range<u64> = 0..16;
 
 /// Long enough that both domains step many thousands of times and the CPU retires
 /// real work; short enough to stay in the default `cargo test` path.
@@ -38,6 +66,38 @@ const TICKS: u64 = 400_000;
 /// Serialize a machine's full state for comparison.
 fn state_of(sys: &System) -> Vec<u8> {
     bincode::serialize(sys).expect("a System is serializable; save-states rely on it")
+}
+
+/// A `std::io::Write` sink that hashes instead of storing.
+struct HashSink(std::collections::hash_map::DefaultHasher);
+
+impl std::io::Write for HashSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::hash::Hasher::write(&mut self.0, buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The same whole-state comparison as [`state_of`], reduced to 64 bits.
+///
+/// Covers exactly the same bytes — it is the identical `bincode` traversal — but
+/// streams them through a hasher instead of allocating. That matters at scale: the
+/// serialized machine includes **8 MiB of RDRAM**, and the phase x tail
+/// cross-product below compares 96 pairs, so materializing both images each time
+/// took the test past 100 seconds and out of the default `cargo test` budget.
+///
+/// A 64-bit digest can collide in principle. It is used only where the alternative
+/// was running fewer cases, which is a strictly worse trade: a birthday collision
+/// against one specific other image is ~2^-64, while a case not run is a hole with
+/// probability 1. The single-seed test still compares full bytes, so the exact
+/// comparison is exercised on every run of this file.
+fn state_digest(sys: &System) -> u64 {
+    let mut sink = HashSink(std::collections::hash_map::DefaultHasher::new());
+    bincode::serialize_into(&mut sink, sys).expect("a System is serializable");
+    std::hash::Hasher::finish(&sink.0)
 }
 
 /// Report where two state images diverge, with enough context to bisect.
@@ -68,10 +128,14 @@ fn describe_divergence(a: &[u8], b: &[u8]) -> String {
 
 /// **The fast path must land on exactly the state the accurate path would.**
 ///
-/// While `run_until_fast` bails out on every step this is trivially true, and that
-/// is the point: the gate has to exist and pass *before* block execution is
-/// written, or it grades nothing at the moment it is most needed. Once blocks
-/// start executing, this is the test that fails.
+/// This was trivially true in #224, when `run_until_fast` bailed out on every step,
+/// and that was the point: the gate had to exist and pass *before* block execution
+/// was written, or it would grade nothing at the moment it was most needed.
+///
+/// It is no longer trivial — the fast path now replays a precomputed edge pattern —
+/// but note that this single-seed test is still **not** the one doing the work.
+/// See `the_fast_path_agrees_at_every_phase_alignment`: a pattern off by one offset
+/// passed *this* test and failed that one.
 ///
 /// **`master_ticks` is asserted separately and first** even though the byte
 /// comparison would also catch it. Landing on the right state at the wrong tick is
@@ -126,6 +190,102 @@ fn the_fast_path_lands_where_the_accurate_path_would() {
     assert!(a == f, "{}", describe_divergence(&a, &f));
 }
 
+/// **The same comparison, across every power-on phase alignment.**
+///
+/// The single-seed test above samples one of six alignments. That is not enough:
+/// which ticks are edges depends on the phases, so a fast path that mishandles one
+/// specific offset can be invisible at one seed and obvious at another. This ran
+/// green on a fast path whose replayed pattern was off by one — until it was given
+/// more than one seed.
+///
+/// A shorter run than the single-seed test, since the point here is breadth of
+/// alignment rather than depth of execution, and running the full cross-product at
+/// full length would put this outside the default `cargo test` budget.
+#[test]
+fn the_fast_path_agrees_at_every_phase_alignment() {
+    // The full cross-product of alignment x tail length, not one tail per seed.
+    //
+    // `BASE` is an exact multiple of the edge period, so a target of `BASE + tail`
+    // leaves exactly `tail` ticks for the partial-period fallback. Sweeping `tail`
+    // over `0..EDGE_PERIOD` inside the seed loop is what makes the claim true: a
+    // tail bug that only bites at one alignment needs *that* alignment and *that*
+    // remainder together, and an earlier version of this test picked a single tail
+    // per seed while its comment claimed the cross-product. Review caught that; it
+    // is the same over-claim this file exists to prevent, so it is spelled out
+    // rather than quietly corrected.
+    const BASE: u64 = 24_000;
+    const { assert!(BASE.is_multiple_of(EDGE_PERIOD)) };
+
+    for seed in PHASE_SEEDS {
+        for tail in 0..EDGE_PERIOD {
+            let target = BASE + tail;
+            let mut accurate = System::new(seed);
+            let mut fast = System::new(seed);
+            accurate.run_until(target);
+            fast.run_until_fast(target);
+
+            assert!(
+                accurate.cpu.retired > 0,
+                "seed {seed} tail {tail}: the accurate run retired nothing, so the comparison is vacuous"
+            );
+            assert_eq!(
+                fast.master_ticks(),
+                accurate.master_ticks(),
+                "seed {seed} tail {tail}: correct-but-late — the fast path finished at a different tick"
+            );
+            assert_eq!(
+                fast.cpu.retired, accurate.cpu.retired,
+                "seed {seed} tail {tail}: the two paths retired different instruction counts"
+            );
+
+            // Digest first; only materialize both images to describe a failure.
+            if state_digest(&accurate) != state_digest(&fast) {
+                let (a, f) = (state_of(&accurate), state_of(&fast));
+                panic!("seed {seed} tail {tail}: {}", describe_divergence(&a, &f));
+            }
+        }
+    }
+}
+
+// **The top of the tick range is guarded by construction, not by a test — and this
+// records why there is no test.**
+//
+// Review asked for boundary cases at `u64::MAX - 1` and `u64::MAX`. They were
+// written, and they hang: `master_ticks` only reaches that region by *running*
+// there, so `run_until_fast(u64::MAX)` means emulating some 1.5e18 periods. It does
+// not wrap — it simply never returns, exactly as the accurate `run_until` would
+// not. At 187.5 MHz, `u64::MAX` is roughly three thousand years of emulated time.
+//
+// So the arithmetic this fast path introduces is made safe where it is written
+// rather than pinned by a test that cannot run: the pattern probe uses
+// `saturating_add` (a wrapped probe would report an edge that is not there) and the
+// loop bound uses `checked_add` (overflow ends the loop, which is correct — there
+// is no whole period left below `target`). The pre-existing `+ 1` in
+// `next_edge_after` and the phase additions inside `is_edge` are untouched and
+// remain out of scope for this change.
+//
+// The reachable half of that concern — a target at or before the current tick — is
+// tested immediately below.
+
+/// A target at or before the current tick must do nothing at all.
+#[test]
+fn a_target_already_reached_is_a_no_op() {
+    let mut sys = System::new(SEED);
+    sys.run_until_fast(10_000);
+    let (ticks, retired) = (sys.master_ticks(), sys.cpu.retired);
+    sys.run_until_fast(ticks);
+    sys.run_until_fast(ticks - 1);
+    assert_eq!(
+        sys.master_ticks(),
+        ticks,
+        "a reached target must not move the clock"
+    );
+    assert_eq!(
+        sys.cpu.retired, retired,
+        "a reached target must not retire work"
+    );
+}
+
 /// The gate must be able to **fail**, which a comparison of two identical runs
 /// cannot demonstrate on its own.
 ///
@@ -149,5 +309,44 @@ fn the_gate_detects_a_one_tick_divergence() {
         state_of(&a) != state_of(&b),
         "the gate compared two demonstrably different machines as equal — it cannot \
          detect divergence and therefore grades nothing"
+    );
+}
+
+/// Timing probe for the fast path, `#[ignore]`d like the project's other probes.
+///
+/// Not a gate — it asserts nothing about speed, because a wall-clock threshold in
+/// CI is a flake generator. It exists so the PR that changes the block executor has
+/// a number to quote, measured through the scheduler alone rather than through a
+/// frame, which is the only way to see this change without the CPU and RDP burying
+/// it.
+///
+/// ```text
+/// cargo test -p rustyn64-core --release --features fast-scheduler \
+///   --test fast_scheduler_differential -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "timing probe, not a gate"]
+fn probe_scheduler_dispatch_cost() {
+    use std::time::Instant;
+
+    const TICKS: u64 = 60_000_000;
+    const REPS: u32 = 3;
+
+    let mut acc_best = f64::MAX;
+    let mut fast_best = f64::MAX;
+    for _ in 0..REPS {
+        let mut a = System::new(SEED);
+        let t = Instant::now();
+        a.run_until(TICKS);
+        acc_best = acc_best.min(t.elapsed().as_secs_f64());
+
+        let mut f = System::new(SEED);
+        let t = Instant::now();
+        f.run_until_fast(TICKS);
+        fast_best = fast_best.min(t.elapsed().as_secs_f64());
+    }
+    println!(
+        "accurate {acc_best:.4}s  fast {fast_best:.4}s  ratio {:.4}x  ({TICKS} ticks, best of {REPS})",
+        acc_best / fast_best
     );
 }
