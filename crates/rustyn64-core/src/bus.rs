@@ -919,9 +919,38 @@ impl Bus {
                 // (Angrylion `lerping`): four texels, vertical lerp per column then
                 // horizontal between them. Otherwise the exact nearest sample.
                 let mut rgb = if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
-                    let col = vi_lerp3(fetch(sx, sy), fetch(sx, sy + 1), yfrac);
-                    let ncol = vi_lerp3(fetch(sx + 1, sy), fetch(sx + 1, sy + 1), yfrac);
-                    vi_lerp3(col, ncol, xfrac)
+                    // Skip a tap whose weight is zero. `vi_lerp3(a, b, 0)` is
+                    // `a + (((b - a) * 0 + 16) >> 5)` = `a + 0` = `a`, so a zero
+                    // fraction discards the far sample entirely — fetching it cannot
+                    // affect the output, and NOT fetching it therefore cannot either.
+                    //
+                    // This is not a micro-optimization. Each `fetch` runs the whole
+                    // coverage filter chain, and under the configuration Super Mario
+                    // 64 actually programs (`aa_mode` 0, `divot` 1, `dither_filter`
+                    // 1) that is 3 divot taps x 9 de-dither taps = 27 `vi_read_cov`
+                    // calls, each doing three `rdram_offset` lookups. SM64 also
+                    // programs `VI_Y_SCALE` with `y_add = 1024`, which holds `yfrac`
+                    // constant, and `VI_X_SCALE` with `y_add = 512`, which alternates
+                    // `xfrac` between zero and non-zero — so the unconditional
+                    // four-tap form spent most of its work on samples multiplied by
+                    // zero.
+                    // One column's vertical lerp, or its single upper sample when
+                    // `yfrac` weights the lower row at zero. Named rather than written
+                    // twice so the `sx` and `sx + 1` columns cannot drift apart — this
+                    // is a correctness-critical path pinned by the VI vectors.
+                    let vlerp = |x: i32| {
+                        if yfrac == 0 {
+                            fetch(x, sy)
+                        } else {
+                            vi_lerp3(fetch(x, sy), fetch(x, sy + 1), yfrac)
+                        }
+                    };
+                    let col = vlerp(sx);
+                    if xfrac == 0 {
+                        col
+                    } else {
+                        vi_lerp3(col, vlerp(sx + 1), xfrac)
+                    }
                 } else {
                     fetch(sx, sy)
                 };
