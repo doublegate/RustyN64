@@ -6,6 +6,33 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Two Angrylion conformance vectors closing out the RDP side of the mirrored-text
+  hunt (R-18), taking the accuracy battery from 54 probes to **56 (43 RDP + 13
+  VI), still 100%**:
+  - `tex_tri_neg_dsdx_16` — a **negative `DsDx`**, S walked backwards at one
+    texel per pixel. Clamped rather than wrapped on purpose: under an 8-texel
+    wrap a missing sign extension produces the *same* reversed ramp as correct
+    code, so the two outcomes would be indistinguishable.
+  - `tex_tri_right_major_16` — the first **textured** right-major (`lft = 0`)
+    triangle in the battery. Previously the only `lft = 0` triangle was a
+    FILL-mode one with no texture coefficients, so the path where the span's
+    texture coordinate is evaluated at the *right* edge was unpinned.
+
+  Both match RustyN64 byte-for-byte and are mutation-checked. Neither is the
+  mirrored-text cause; with five RDP hypotheses now cleared, the defect is
+  reclassified to the RSP/geometry side (see `docs/residuals/R-18.md`).
+
+### Fixed
+
+- Corrected two vector comments in `vectors-gen/driver.c` that described
+  `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel colour ramp.
+  Their goldens are solid texel 0: `dx.S = 1` is 1/32 of a texel per pixel in
+  the s10.5 domain, so S never leaves the first texel. The vectors pass and
+  still cover what they cover — but they never pinned a gradient, and nothing
+  failed when the claim went stale.
+
 ## [0.8.0] - 2026-07-29 — "Breadth"
 
 **Phase 7 — the accuracy battery, and the first commercial pictures.**

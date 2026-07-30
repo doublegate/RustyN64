@@ -75,12 +75,21 @@ Recorded here because the *rejected* captures localise real bugs:
   It is **per-draw, not global**: WCW/nWo Revenge — same publisher — renders its
   THQ logo correctly oriented, and that frame is committed above.
 
-  The obvious suspect has been **ruled out by the oracle**. The
-  `tex_tri_mirror_s_16` conformance vector renders a tile with `mirror_s` set
-  and RustyN64 matches Angrylion **byte-for-byte**, mutation-checked. So the
-  texture S-axis mirror path is correct and the cause is elsewhere — the live
-  candidates are a **negative `DsDx`** (texture coordinates stepping backwards)
-  and the **triangle edge/winding** path. See ledger R-18.
+  **Every RDP-side suspect has now been ruled out by the oracle**, across three
+  conformance vectors that each match Angrylion **byte-for-byte** and are each
+  mutation-checked: `tex_tri_mirror_s_16` (a tile with `mirror_s` set),
+  `tex_tri_neg_dsdx_16` (texture coordinates stepping **backwards**), and
+  `tex_tri_right_major_16` (a **right-major** textured triangle, where the span's
+  texture coordinate is evaluated at the opposite edge). With the `Set Tile`
+  `mirror_s` decode and `mask_coupled`'s fold, that is five cleared hypotheses;
+  `Texture Rectangle Flip` is excluded separately because it bails out rather
+  than rendering flipped.
+
+  So the cause is most likely **not in the RDP at all** but upstream of the DPC
+  seam — in the geometry that produces the vertex X coordinates, i.e. the game's
+  graphics microcode on the LLE RSP. A vertex transform, viewport scale, or
+  vector-unit sign error there would flip a quad while every RDP command it then
+  emits is rasterised faithfully. See ledger R-18.
 - **Garbled colour blocks** (Blast Corps) and a **glitchy textured plane**
   (Turok) — both issue large command counts, so the failure is downstream of
   submission.
