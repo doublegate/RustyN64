@@ -283,7 +283,8 @@ measurements would overstate them:
   immaterial to 0011's argument — its point is that ~8-9x is unreachable against a
   ceiling under 1.7 — but a derived figure that no longer follows from its inputs is
   the kind of thing that gets re-quoted, so it is corrected here; ADR 0011 is immutable,
-  so its copy is marked superseded in ADR 0012 §5, which lands separately.
+  so its copy is marked superseded in ADR 0012, under *"0011's measured table is
+  superseded by the paired re-measurement"*, which lands separately.
 
   Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
   physical impossibility, since something has to produce the pixels — would leave
