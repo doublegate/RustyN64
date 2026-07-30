@@ -143,6 +143,9 @@ render-phase table.
 | Duration | one probe run, ~9 s | **58.9 s of samples**, after `-D 70000` discards the first 70 s — the process runs ~130 s in total, so the sampled tail is roughly the last 400 of the 900 frames |
 | Answers | ms/frame, and the scan-out's share of it | which subsystem owns the time |
 
+Needs `perf` and `jq` on the host beyond the usual toolchain. The capture lands in
+`target/`, which is already ignored, so a profiling run leaves the tree clean.
+
 ```bash
 # `$ROOT` rather than `$PWD`: these run from anywhere in the workspace.
 ROOT=$(git rev-parse --show-toplevel)
@@ -170,9 +173,10 @@ BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
                      and .executable != null) | .executable' | head -n 1)
 test -n "$BIN" || { echo "no test binary — did the build fail?" >&2; exit 1; }
 RUSTYN64_PROBE_ROM="$ROM" \
-RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o perf_play.data -- \
+RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o "$ROOT/target/perf_play.data" -- \
   "$BIN" does_a_retail_title_reach_a_rendering_phase --ignored --nocapture
-perf report -i perf_play.data -s srcline --full-source-path --no-children -g none
+perf report -i "$ROOT/target/perf_play.data" -s srcline --full-source-path \
+  --no-children -g none --stdio
 ```
 
 | | |
