@@ -25,21 +25,33 @@ use rustyn64_frontend::{FB_MAX_H, FB_MAX_W};
 
 /// A committed CC0 homebrew ROM that actually drives the RDP, so the render path
 /// is exercised rather than idling.
-const DEFAULT_ROM: &str = "../../tests/roms/homebrew/render_fill.z64";
+///
+/// Resolved from `CARGO_MANIFEST_DIR` at compile time rather than as a
+/// cwd-relative path: `cargo test` happens to run integration tests from the
+/// package root, but nothing guarantees it, and a path that silently misses is
+/// exactly how this probe would go back to reporting a pass over no measurement.
+const DEFAULT_ROM: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/roms/homebrew/render_fill.z64"
+);
 
-/// Frames to advance looking for the VI to come up before giving up. Super Mario 64
-/// takes 36; the cap is generous because a title that never programs the VI must be
-/// reported as such rather than waited on forever.
-const MAX_WARM: usize = 900;
+/// Frames to advance looking for the VI to come up before giving up.
+///
+/// Super Mario 64 takes 36, so 300 is ample headroom. It is not larger because the
+/// committed default ROM is bare-metal and never programs the VI at all — at ~58 ms
+/// a frame, a 900-frame search cost 53 seconds to conclude nothing.
+const MAX_WARM: usize = 300;
 
 fn percentiles(label: &str, mut v: Vec<Duration>) -> Duration {
+    assert!(!v.is_empty(), "{label}: no samples to summarize");
     v.sort_unstable();
     let mean = v.iter().sum::<Duration>() / u32::try_from(v.len()).unwrap_or(1);
+    // No p99 column: at 30 samples `30 * 99 / 100` is index 29, so it would be
+    // identical to max and imply resolution the sample size cannot carry.
     println!(
-        "{label:>22}: mean {:>9.3?}  p50 {:>9.3?}  p99 {:>9.3?}  max {:>9.3?}",
+        "{label:>22}: mean {:>9.3?}  p50 {:>9.3?}  max {:>9.3?}",
         mean,
         v[v.len() / 2],
-        v[v.len() * 99 / 100],
         v[v.len() - 1],
     );
     mean
@@ -49,18 +61,16 @@ fn percentiles(label: &str, mut v: Vec<Duration>) -> Duration {
 #[ignore = "a measurement, not a gate; machine-specific and seconds long"]
 fn where_does_a_frame_go() {
     let path = std::env::var("RUSTYN64_PROBE_ROM").unwrap_or_else(|_| DEFAULT_ROM.to_string());
-    let raw = match std::fs::read(&path) {
-        Ok(r) => r,
-        Err(e) => {
-            println!("skipped: cannot read {path}: {e}");
-            return;
-        }
-    };
+    // A missing or unbootable ROM is a FAILURE, not a skip. Returning `()` from a
+    // #[test] marks it `ok`, so the earlier early-return meant this probe reported a
+    // pass having measured nothing whatsoever -- the vacuous-pass hazard its own
+    // module doc warns about, reproduced in the warning's own file. The default ROM
+    // is committed, so it is always present; an override that names a missing file is
+    // a caller error and must say so.
+    let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("probe ROM unreadable: {path}: {e}"));
     let mut core = EmuCore::new(0);
-    if let Err(e) = core.load_rom(&raw) {
-        println!("skipped: {path} did not boot: {e:?}");
-        return;
-    }
+    core.load_rom(&raw)
+        .unwrap_or_else(|e| panic!("probe ROM did not boot: {path}: {e:?}"));
     println!("ROM: {path} ({} bytes)", raw.len());
 
     let mut buf = vec![0u8; (FB_MAX_W * FB_MAX_H * 4) as usize];
@@ -118,17 +128,16 @@ fn where_does_a_frame_go() {
     } else {
         println!("     scanout_scaled: NOT MEASURED (VI never programmed)");
     }
+    // Checked BEFORE the division below, so a zero mean cannot be formatted as
+    // `inf FPS` -- a probe that measured nothing must not print a number at all.
+    assert!(
+        frame_mean > Duration::ZERO,
+        "a measured frame must take nonzero time"
+    );
     println!(
         "implied ceiling: {:.2} FPS (frame mean {:.1?}); 60 FPS needs {:.1?}",
         1.0 / frame_mean.as_secs_f64(),
         frame_mean,
         Duration::from_secs_f64(1.0 / 60.0),
-    );
-
-    // The only assertion: a frame must take SOME measurable time, so a probe that
-    // silently measured nothing cannot read as a result (the vacuous-pass hazard).
-    assert!(
-        frame_mean > Duration::ZERO,
-        "a measured frame must take nonzero time"
     );
 }
