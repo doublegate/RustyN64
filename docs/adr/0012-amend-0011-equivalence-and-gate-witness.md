@@ -117,8 +117,8 @@ The witness is asserted, not printed for a human to notice.
 
 ### 3. The pointer line is the one part of an immutable ADR that still changes
 
-0011 gains an `Amended by: [ADR 0012](0012-amend-0011-equivalence-and-gate-witness.md)`
-line in its header, and nothing else. That is not a
+0011 gains an `Amended by:` entry in its header — naming this document and the Decision
+items it affects — and nothing below the header changes. That is not a
 breach of its immutability: the header's `Superseded by:` field cannot be filled in by the
 document that carries it, so in this repository the pointer line has always been written
 after the fact — [ADR 0001](0001-master-clock-lockstep-scheduler.md)'s Status section names

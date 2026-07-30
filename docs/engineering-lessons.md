@@ -568,7 +568,9 @@ which is precisely the class of error a second reader catches and an author does
 
 **Practice adopted.** A merge waits for **every required review to have arrived**, not for
 CI. Poll until each reviewer has actually **posted its review** — not started one, and not
-merely re-run its job — then adjudicate every thread, and only then merge. For an immutable document the rule is stricter still, because there is nowhere for a
+merely re-run its job — then adjudicate every thread, and only then merge.
+
+For an immutable document the rule is stricter still, because there is nowhere for a
 follow-up edit to go: the header's pointer line is the one part that may still change
 after acceptance, and it cannot carry a correction. An ADR merges only once every
 comment on it is resolved.
