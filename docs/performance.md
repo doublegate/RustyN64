@@ -211,15 +211,18 @@ because the arithmetic that produced them is what makes them wrong.
 | --- | --- | --- | --- | --- |
 | frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.99 FPS)** | measured, ×2 runs |
 | `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
-| effect of that change | — | **1.114x** frame, **-39.1%** scan-out | **1.11x** frame, **-63.6%** scan-out | derived from each pair |
+| effect of that change | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
 
 `646a3e0` skips the zero-weight bilinear taps (PR #211); `6a6adfa` memoizes the filtered
 source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms**, a
-**1.24x** speed-up, with the scan-out down from 22.9% of a frame to 6.3%.
+**1.24x** speed-up, with the scan-out down from **35.5 ms to 7.9 ms**. (The percentage
+columns above have different denominators — each is a share of *its own* frame — so the
+durations are the comparable figures.)
 
 **Noise, measured rather than assumed.** Back-to-back runs of one binary agree to
 **0.05-0.13%**. The *same tree* measured about thirty minutes apart differed by **~1%**
-(123.5 against 125.2 ms) — machine state drifts across a session. So the ±0.5% in the
+(123.5 against 125.2 ms measured for the same tree) — machine state drifts across a
+session. So the ±0.5% in the
 method table is a **within-session** figure: pair a before and after in one sitting, and
 treat any cross-session comparison as ±1%.
 
@@ -232,7 +235,7 @@ the difference between them is exactly the drift that pairing exists to remove.
 | debug-build frame cost, same tree and window | 1.216 / 1.214 s (0.82 FPS) | measured, ×2 runs |
 | **debug vs release** | **8.7x** | paired, same tree |
 | 60 FPS budget | 16.7 ms | arithmetic (`1/60`) |
-| **gap to 60 FPS from 125.2 ms** | **~7.5x** | derived |
+| **gap to 60 FPS from 125.24 ms** | **~7.5x** | derived |
 
 The **7.7x** debug ratio quoted in ADR 0011 is **superseded**. It was self-consistent —
 784.7 ms debug against 101.6 ms release — but both came from the pre-`#209` probe, which
@@ -293,7 +296,9 @@ measurements would overstate them:
   they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
   `1 / (1 - 0.389)` = 1.637. It assumes both are eliminated *entirely*, so it is an
   upper bound and not a forecast. **Most of the scan-out half has since been collected**
-  — it is 6.3% of a frame after `6a6adfa`, down from 22.9% — and the cumulative gain is
+  — **35.5 ms down to 7.9 ms**, quoted as durations because the two percentages have
+  different denominators (22.9% of the old frame, 6.3% of the new one) — and the
+  cumulative gain is
   1.24x against that 1.64x bound, so what remains inside the model is the latch copying
   and little else.
 
