@@ -80,10 +80,11 @@ mode, off by default, with the accurate one retained as the reference.
 
 ## Decision
 
-Add an **optional, default-off fast-path scheduler** behind a Cargo feature
-(`fast-scheduler`, name to be fixed by the implementing PR). The cycle-accurate
-scheduler remains the default and becomes the **differential oracle** for the fast
-path.
+Add an **optional, default-off fast-path scheduler** behind the Cargo feature
+**`fast-scheduler`** on `rustyn64-core`. The name is fixed here rather than deferred
+to the implementing PR: this ADR is immutable once merged, so leaving it open would
+make the document contradict its own status. The cycle-accurate scheduler remains the
+default and becomes the **differential oracle** for the fast path.
 
 1. **Default builds are byte-identical to today.** The feature is additive and
    off-by-default, per the additive-features rule; with it disabled the shipped
@@ -107,7 +108,17 @@ path.
    bit-identical AV) holds *within* each mode. The two modes are not required to
    agree on save-state layout; a state captured in one mode is not portable to the
    other, and the state header must record which mode produced it, so a mismatch is
-   rejected rather than silently misinterpreted (ADR 0005).
+   **rejected** rather than silently misinterpreted (ADR 0005).
+
+   **Save-state compatibility, because adding that marker is a format change.** The
+   header gains a scheduler-mode field behind a version bump. A state written *before*
+   this change carries no marker and is therefore read as **accurate-mode** — which is
+   what it is, since the fast path did not exist when it was written. Every existing
+   save-state thus keeps loading in the default build, and no migration is asked of
+   anyone. A state whose recorded mode does not match the running mode is refused with
+   a diagnostic naming both; it is **never** loaded on the assumption that the layouts
+   happen to agree. Refusing is a visible inconvenience, while loading a mismatched
+   layout is silent corruption of the emulated machine.
 5. **The mechanism is block-based execution, not reduced accuracy.** The fast path
    earns its speed by *not dispatching per cycle when nothing observable depends on
    the per-cycle position* — executing a run of instructions whose timing effects
@@ -126,7 +137,13 @@ path.
    state at the wrong `master_ticks` is *correct-but-late*, and every timing result
    downstream of it is then wrong in a way no AV comparison would reveal. The
    differential gate must therefore **force each bailout boundary explicitly** rather
-   than hoping a ROM happens to hit them.
+   than hoping a ROM happens to hit them. That forcing comes from *inputs*, not from
+   instrumentation: fixtures — crafted machine states and instruction sequences that
+   reach each boundary — driven through the ordinary public entry points. Where a
+   boundary genuinely cannot be reached that way, the seam is **test-only**, behind
+   `#[cfg(test)]` or a test feature, and never a hook compiled into a release build. A
+   production path carrying branches that exist only for its tests is a path whose
+   released behavior nobody measured.
 
 ## Relationship to 0006 and 0007
 
@@ -197,5 +214,8 @@ ever ship.
   filters re-fetch neighboring source pixels per output pixel, so a sliding-window
   reuse should cut fetch count; inlining has already been measured not to be the
   answer.
-- Making `--release` the convenient default (there is no `.cargo/config.toml`, and a
-  debug build is 7.7x slower — a trap that cost real diagnostic time here).
+- Making a release build *convenient*, since a debug build is **7.7x slower** and that
+  trap cost real diagnostic time here (a reported "~1 FPS" proved to be a debug
+  binary). The fix is explicit **aliases** — `cargo full-build` / `full-run`, adopted
+  from `RustyNES` — and deliberately **not** redefining the default profile in
+  `.cargo/config.toml`, which would silently break ordinary debugging.
