@@ -290,6 +290,13 @@ pub struct Latch {
 /// **If this fires, do not just change the number.** Either a field was added, in which
 /// case re-measure and update the breakdown, or the layout algorithm moved, in which
 /// case the "no padding is wasted" conclusion needs re-deriving before it is re-quoted.
+///
+/// Deliberately **not** gated on `target_pointer_width`. Every field here is
+/// fixed-width — no `usize`, no references, no pointers — so 120 holds on 32-bit as
+/// well, and the workspace proves it rather than assuming it: the `no_std` gate builds
+/// this crate for `thumbv7em-none-eabihf`, where a divergence would fail the build. A
+/// `#[cfg]` would switch the guard off on exactly the target where a pointer-sized field
+/// would first change the answer.
 const _: () = assert!(
     core::mem::size_of::<Latch>() == 120,
     "Latch changed size; docs/performance.md's copy-cost breakdown must be re-measured"
