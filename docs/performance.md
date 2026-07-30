@@ -449,7 +449,10 @@ needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
 
 `core::mem`'s `replace` is **5.32%** of the frame on its own — 4.21% and 1.11% at lines
 930 and 929 of the **Rust standard library's** `library/core/src/mem/mod.rs`, inside the
-toolchain, not a file in this repository. About **6.7 ms of 125**, and all of it is the
+toolchain, not a file in this repository. Those two lines are the `read_via_copy` /
+`write_via_move` pair inside `replace`, in **`rustc 1.96.0`** — the exactly-pinned
+toolchain (`rust-toolchain.toml`), which is what makes a stdlib line number citable at
+all here; on any other toolchain, look for that pair rather than for the numbers. About **6.7 ms of 125**, and all of it is the
 Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
 `crates/rustyn64-core/src/bus.rs` (lines 539 and 548 at the time of writing; like the
 line numbers above, these drift and the function names are the durable part):
