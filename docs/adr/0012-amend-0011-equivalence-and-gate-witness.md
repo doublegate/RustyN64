@@ -5,8 +5,8 @@ immutable thereafter.
 Date: 2026-07-30
 Deciders: repo owner
 Supersedes: none · Superseded by: none
-Amends: ADR 0011 (optional fast-path scheduler) — corrections, not a change of
-decision. 0011's decision stands in full.
+Amends: [ADR 0011](0011-optional-fast-path-scheduler.md) (optional fast-path
+scheduler) — corrections, not a change of decision. 0011's decision stands in full.
 
 ## Context
 
@@ -23,10 +23,13 @@ have been two lines.
 
 ### 1. "Byte-identical" is scoped to execution and AV output, not to the save-state container
 
-ADR 0011 asserts both of the following, and they cannot both hold:
+ADR 0011 asserts both of the following, and they cannot both hold. First, in its
+Decision:
 
 > **Default builds are byte-identical to today.** […] with it disabled the shipped
 > binary must contain no behavior change whatsoever.
+
+Then, nineteen lines later, in the same Decision:
 
 > […] the state header must record which mode produced it […] The header gains a
 > scheduler-mode field behind a version bump.
@@ -83,9 +86,19 @@ The witness is asserted, not printed for a human to notice.
 be there. Recorded here rather than fixed in place, since 0011 is immutable — and noted
 mainly so the discrepancy is not mistaken for a quotation error later.
 
+### 4. The pointer line is the one part of an immutable ADR that still changes
+
+0011 gains an `Amended by: ADR 0012` marker in its header, and nothing else. That is not a
+breach of its immutability: the header's `Superseded by:` field cannot be filled in by the
+document that carries it, so in this repository the pointer line has always been written
+after the fact — [ADR 0001](0001-master-clock-lockstep-scheduler.md)'s Status section names
+ADR 0006, which did not exist when 0001 was accepted. Immutability protects the
+**reasoning**, which is what later readers cite; a reader who arrives at 0011 and is not
+told 0012 exists has been misled by the omission, not protected by it.
+
 ## Consequences
 
-**Good**
+### Good
 
 - The byte-identity guarantee is now checkable. As written in 0011 it was false, and a
   false guarantee is worse than a narrower true one — someone would eventually have
@@ -94,12 +107,12 @@ mainly so the discrepancy is not mistaken for a quotation error later.
   this gate than most: it is the *only* thing standing between a fast path and shipped
   divergence.
 
-**Bad, and accepted**
+### Bad, and accepted
 
 - Two ADRs must now be read together to understand one decision. Mitigated only by
   cross-links in both directions and by keeping this document to corrections.
 
-**Not changed**
+### Not changed
 
 Everything else in 0011: the default-off `fast-scheduler` feature, the accurate
 scheduler as differential oracle, state-based rather than pixel-based equivalence, the
