@@ -363,32 +363,47 @@ ADR 0011 recorded that "latch copy/zero instructions" were ~16% of runtime and t
 removing them is "not safely possible", from a `perf annotate` view. Per-**line**
 attribution of the post-`6a6adfa` render capture says where that 16% actually sits:
 
-| `crates/rustyn64-cpu/src/pipeline.rs` | what it is | share |
-| --- | --- | --- |
-| `:2061` `self.ex_dc = out;` | EX → DC store | 3.68% |
-| `:913` `self.dc_wb = out;` | DC → WB store | 2.87% |
-| `:1903` `let mut out = self.rf_ex;` | EX load | 2.58% |
-| `:2351` `self.ic_rf = Latch { … }` | IC store | 2.15% |
-| `:848` `let mut out = self.ex_dc;` | DC load | 2.10% |
-| `:2147` `self.rf_ex = out;` | RF store | 1.28% |
-| **six copy sites** | | **14.66%** |
+Line numbers are given for the capture that produced them and **will drift**; the
+function and the statement are the durable part.
+
+| function | statement | line at capture | share |
+| --- | --- | --- | --- |
+| `ex_stage` | `self.ex_dc = out;` (EX → DC store) | 2061 | 3.68% |
+| `dc_stage` | `self.dc_wb = out;` (DC → WB store) | 913 | 2.87% |
+| `ex_stage` | `let mut out = self.rf_ex;` (EX load) | 1903 | 2.58% |
+| `ic_stage` | `self.ic_rf = Latch { … }` (IC store) | 2351 | 2.15% |
+| `dc_stage` | `let mut out = self.ex_dc;` (DC load) | 848 | 2.10% |
+| `rf_stage` | `self.rf_ex = out;` (RF store) | 2147 | 1.28% |
+| **six copy sites** | | | **14.66%** |
+
+Grouped by stage rather than by site: `ex_stage` **6.26%**, `dc_stage` **4.97%**,
+`ic_stage` 2.15%, `rf_stage` 1.28%. Each stage pays a load and a store except `IC`,
+which only stores, and `WB`, which consumes `dc_wb` in place.
 
 Plus 3.77% attributed to `pipeline.rs:0` (inlined, no line), so ~15-18% of the frame —
 about **19-22 ms of 125** — is moving `Latch` values. That is more than the entire VI
 scan-out cost after the memo.
 
-**`Latch` is 120 bytes and the fields do sum to exactly that** (measured with
-`size_of`, so ADR 0011's "zero-padding-optimal" claim holds):
+**`Latch` is 120 bytes and its contents account for exactly that**, which is the
+padding question rather than a dodge of it: `size_of::<Latch>()` **includes** whatever
+alignment padding the layout needs, and the component figures are each `size_of` of that
+component. They sum to the whole, so there is no padding left over — ADR 0011's
+"zero-padding-optimal" claim holds, now measured rather than asserted.
 
-| field | bytes |
+| contents | bytes |
 | --- | --- |
-| `occupied`, `pc`, `word`, `in_delay_slot`, `rs_val`, `rt_val` | 30 |
 | `decoded: Decoded` | 16 |
 | `abort: Option<Exception>` | 2 |
 | `write_back: WriteBack` | 24 |
 | `mem: Option<MemOp>` | 24 |
 | `cop0: Option<Cop0Access>` | 24 |
-| **total** | **120** |
+| the six scalars (`occupied`, `pc`, `word`, `in_delay_slot`, `rs_val`, `rt_val`) | 30 |
+| **`size_of::<Latch>()`** | **120** |
+
+The scalar row is the remainder, and 30 is also their naive sum (1 + 8 + 4 + 1 + 8 + 8) —
+so `repr(Rust)` has packed the two `bool`s into gaps rather than padding them out. That
+is the useful reading of "no padding": there is no field ordering that would make this
+struct smaller.
 
 **What the byte breakdown adds to 0011's analysis.** The last three fields — **72 of the
 120 bytes** — are *produced at `EX`*. In `ic_rf` and `rf_ex` they are structurally always
