@@ -100,7 +100,7 @@ The gate must therefore:
 
 The witness is asserted, not printed for a human to notice.
 
-### 3. Editorial
+### 3. A stray comma in 0011's save-state heading
 
 0011's save-state-compatibility heading carries a stray comma before "because". Noted
 only so a later quotation of that heading is not mistaken for a transcription error.
@@ -126,8 +126,8 @@ of them, and it is authoritative where the two disagree:
 "Pre-fix" and "post-fix" below refer to commit `646a3e0`, which skips the zero-weight
 bilinear taps in the VI scan-out and is the only change between the two trees measured.
 The host, build profile, ROM hash, probe, and window are recorded once in
-`docs/performance.md` §Method rather than duplicated here — a second copy of an
-environment is a second thing to leave stale.
+`docs/performance.md` §Method (under §Measured) rather than duplicated here — a second
+copy of an environment is a second thing to leave stale.
 
 | 0011 says | paired measurement says |
 | --- | --- |
@@ -135,7 +135,7 @@ environment is a second thing to leave stale.
 | scan-out 35.5 ms, 23.6% of a frame | 35.5 ms, 22.9% (pre-fix); 21.6 ms, 15.5% (post) |
 | debug is 7.7x slower | **8.7x**, paired on one tree and one window |
 | required speedup ~9x | ~8.3x from 139.3 ms |
-| in-model ceiling ~1.66x | **~1.64x** — `1 / (1 - 0.389)`, from the paired 22.9% scan-out share rather than the single-run 23.6% |
+| in-model ceiling ~1.66x | **~1.64x** — the Amdahl fraction is the *sum* of both targets, latch copying ~16% plus the scan-out, so `1 / (1 - (0.16 + 0.229))` = 1.637 where 0011 had `1 / (1 - (0.16 + 0.236))` = 1.656 |
 
 **The decision does not move.** That is the point of recording the drift rather than
 quietly correcting it: 0011's argument is that ~9x is unreachable inside a per-cycle model
