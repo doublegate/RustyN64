@@ -816,6 +816,30 @@ order:
 - **Gamma** (`VI_CTRL` bit 3, dither bit 2 clear) — the `sqrt` curve as a
   precomputed 256-entry LUT, applied last.
 
+**How a source pixel is sampled, and why it is memoized.** The output walk asks for
+each source column about three times — at a 2x horizontal upscale an even output pixel
+samples column `sx` while the odd one samples `sx` and `sx + 1` — and every one of those
+calls runs the whole filter chain above (under `aa_mode` 0 with `divot` and
+`dither_filter` set, three divot taps of nine de-dither taps each, 27 `Bus::vi_read_cov`
+calls). `ViSampler` therefore carries a **two-row memo** of already-filtered source
+pixels, consulted by `Bus::vi_sample`; `Bus::vi_sample_direct` is the uncached filter
+dispatch, and `Bus::vi_column` is the vertical lerp that both bilinear columns go
+through.
+
+The memo is **behavior-identical by construction, not by testing**: a filtered sample is
+a pure function of RDRAM and the `ViCfg` fields, `scanout_scaled` takes `&self` so RDRAM
+cannot change mid-scan-out, and `ViSampler` owns its `ViCfg` so a memo cannot be paired
+with a different configuration. Two rows is exactly what the vertical lerp needs (`sy`
+and `sy + 1`) and the walk only moves `sy` forward. Only the `aa_mode` 0/1 filtered path
+is cached: under 2/3 a sample is two RDRAM reads and a format convert, cheaper than the
+row bookkeeping.
+
+Measured on Super Mario 64, `--release`, two runs each: the scan-out fell from
+**21.64 ms to 7.82 ms** (2.77x) and the frame from 139.31 ms to 123.76 ms (1.126x,
+7.18 → 8.08 FPS). `docs/performance.md` §Measured carries the provenance. Verified by
+the 164 VI/Angrylion conformance vectors, which are byte-for-byte and were shown to
+cover this path by mutation — an off-by-one in the memo index turns them red.
+
 **Still deferred in `scanout_scaled` (R-5/R-6):** gamma-**dither** (bit 2, noise
 based); the coverage filters under `aa_mode == 2` (RESAMP_ONLY forces `cvg = 7` on
 hardware, so de-dither can still apply — currently gated to `aa_mode ≤ 1`); and the

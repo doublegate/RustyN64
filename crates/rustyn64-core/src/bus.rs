@@ -60,6 +60,142 @@ fn vi_lerp3(a: [u8; 3], b: [u8; 3], frac: i32) -> [u8; 3] {
     o
 }
 
+/// The register-derived rules a scan-out filters every source pixel under.
+///
+/// Fixed for the whole of one [`Bus::scanout_scaled`] call, which is what makes a memo
+/// keyed on `(x, y)` alone sound.
+#[derive(Clone, Copy)]
+struct ViCfg {
+    /// `VI_ORIGIN`, the framebuffer base.
+    origin: u32,
+    /// `VI_WIDTH`, source pixels per row.
+    src_stride: i32,
+    /// 2 (RGBA5551) or 4 (RGBA8888).
+    bpp: u32,
+    /// `VI_CTRL` bits 9:8. Only 0 and 1 run the coverage filters.
+    aa_mode: u32,
+    /// `VI_CTRL` bit 4 — the 3-tap median on partial-coverage edges.
+    divot: bool,
+    /// `VI_CTRL` bit 16 — the de-dither restore on fully-covered pixels.
+    dither_filter: bool,
+}
+
+/// One scan-out's source-sampling configuration, plus a two-row memo of source
+/// pixels that have already been through the coverage filters.
+///
+/// The configuration and the memo live in **one** value on purpose. A cache keyed on
+/// `(x, y)` alone is only sound while `origin`, `src_stride`, `bpp`, and the filter
+/// flags are fixed, and pairing a memo with the wrong configuration would return a
+/// pixel filtered under different rules — a corruption no test would localize. Making
+/// them inseparable removes the possibility rather than asserting against it.
+///
+/// **Why memoizing is behavior-identical by construction.** [`Bus::vi_sample`] is a
+/// pure function of RDRAM and the fields here; [`Bus::scanout_scaled`] takes `&self`,
+/// so RDRAM cannot change while one scan-out runs. Two calls with the same `(x, y)`
+/// therefore cannot disagree, and returning the first answer for the second call is
+/// not an approximation.
+///
+/// **On the per-scan-out allocation.** `cells` is one heap allocation per frame — at
+/// most 32 KB, and about 5 KB at the resolutions a real title programs. It is not
+/// hoisted into `Bus` because `scanout_scaled` takes `&self`: caching there would mean
+/// interior mutability in the type whose field layout *is* the save-state format
+/// (ADR 0005), which is a far larger cost than one allocation. Against the ~7.8 ms of
+/// filtering the memo replaces, the allocation does not appear in a profile.
+///
+/// **Why it is worth having.** The scan-out samples each source pixel about three
+/// times: at `x_add = 512` (a 2x upscale, what Super Mario 64 programs) an even output
+/// pixel samples column `sx`, the odd one samples `sx` and `sx + 1`, so every column is
+/// asked for twice as a near sample and once as a far one. Each of those calls runs the
+/// whole filter chain — under `aa_mode` 0 with `divot` and `dither_filter` set, three
+/// divot taps of nine de-dither taps each, 27 [`Bus::vi_read_cov`] calls of three
+/// `rdram_offset` lookups apiece.
+struct ViSampler {
+    /// The register-derived rules every sample is filtered under.
+    cfg: ViCfg,
+    /// First source column the memo covers.
+    x_lo: i32,
+    /// Columns per memo row.
+    span: usize,
+    /// The source row each memo row holds; `None` marks an unused row.
+    ///
+    /// An `Option` rather than a sentinel because a sentinel is a value the domain
+    /// might one day contain, and a collision would return another row's pixels
+    /// without invalidating anything.
+    row_y: [Option<i32>; 2],
+    /// `2 * span` filtered pixels, row-major. `None` is "not computed yet".
+    cells: alloc::vec::Vec<Option<[u8; 3]>>,
+}
+
+impl ViSampler {
+    /// Two rows is exactly what the vertical lerp needs: it samples `sy` and
+    /// `sy + 1`, and the walk over output rows only ever moves `sy` forward.
+    const ROWS: usize = 2;
+
+    /// The widest memo this will allocate, in source columns per row.
+    ///
+    /// The real bound is much smaller — `VI_X_SCALE` fields are 12 bits and the
+    /// output is clamped to a 640-pixel prescale line, so the walk cannot ask for
+    /// more than about 3,000 columns — but that argument lives a hundred lines away
+    /// in `scanout_scaled`'s register decode and would not survive someone relaxing a
+    /// clamp. `x_lo`/`x_hi` are ultimately guest-controlled through VI MMIO, and an
+    /// allocation sized by guest registers deserves a bound stated where the
+    /// allocation happens. Past the cap the memo is simply empty and every sample
+    /// takes the uncached path: slower, never wrong.
+    const MAX_SPAN: usize = 4096;
+
+    /// Build a memo covering source columns `x_lo..=x_hi` inclusive.
+    fn new(cfg: ViCfg, x_lo: i32, x_hi: i32) -> Self {
+        // `i64` throughout: the subtraction is on guest-derived values, and a signed
+        // overflow here would be a debug-build panic in a scan-out path.
+        // An empty or inverted range (`x_hi < x_lo`) and an over-wide one are the same
+        // outcome — no memo — but they are written as one explicit match so neither
+        // reads as an accident of `try_from` failing on a negative.
+        let columns = i64::from(x_hi) - i64::from(x_lo) + 1;
+        let span = match usize::try_from(columns) {
+            Ok(want) if want <= Self::MAX_SPAN => want,
+            _ => 0,
+        };
+        Self {
+            cfg,
+            x_lo,
+            span,
+            row_y: [None; Self::ROWS],
+            cells: alloc::vec![None; span * Self::ROWS],
+        }
+    }
+
+    /// The memo row holding source row `y`, evicting if neither does.
+    ///
+    /// Eviction takes the row with the smaller `y`: the scan-out walks `y` forward
+    /// (`y_add` is unsigned), so the lower row is the one that will not be asked for
+    /// again. A wrong choice here would only cost hit rate, never correctness.
+    ///
+    /// The choice is written as an explicit match rather than as a comparison of two
+    /// `Option`s, because the rule it encodes — unused rows first, then the row
+    /// further behind the walk — should be readable without knowing that `None` sorts
+    /// below every `Some`.
+    fn row_slot(&mut self, y: i32) -> usize {
+        if self.row_y[0] == Some(y) {
+            return 0;
+        }
+        if self.row_y[1] == Some(y) {
+            return 1;
+        }
+        // Written out rather than leaning on `Option`'s derived `Ord`: an unused row
+        // goes first, then the row further behind the forward walk.
+        let victim = match (self.row_y[0], self.row_y[1]) {
+            (None, _) => 0,
+            (_, None) => 1,
+            (Some(y0), Some(y1)) if y1 < y0 => 1,
+            (Some(_), Some(_)) => 0,
+        };
+        self.row_y[victim] = Some(y);
+        let base = victim * self.span;
+        self.cells[base..base + self.span].fill(None);
+        victim
+    }
+}
+
 /// The VI's integer square root (Angrylion `vi_integer_sqrt`), used to build the
 /// gamma curve. A restoring square-root: `res` accumulates the root two bits at a
 /// time from the top. Ledger R-5.
@@ -888,6 +1024,36 @@ impl Bus {
             return (0, 0);
         }
 
+        // The source columns the walk below can ask for. `x_add` is unsigned, so `sx`
+        // is monotonically non-decreasing in `ox`: the first and last output pixels
+        // bracket it, and the `+ 1` covers the far bilinear column. Derived from the
+        // loop bounds rather than guessed, because a memo whose range is short by one
+        // silently falls back to the uncached path and reads as "the optimization did
+        // not help".
+        // `i64` because every term is guest-controlled through VI MMIO: `x_start` and
+        // `x_add` come from `VI_X_SCALE`, and `width` from the `VI_H_VIDEO` span. The
+        // product is small in practice, but "small in practice" is not a property that
+        // survives a clamp being relaxed, and the failure mode would be a debug-build
+        // overflow panic in the scan-out.
+        let x_span_end =
+            i64::from(x_start) + (i64::from(minhpass) + i64::from(width) - 1) * i64::from(x_add);
+        let x_first =
+            i32::try_from((i64::from(x_start) + i64::from(minhpass) * i64::from(x_add)) >> 10)
+                .unwrap_or(0);
+        let x_last = i32::try_from((x_span_end >> 10) + 1).unwrap_or(x_first);
+        let mut sampler = ViSampler::new(
+            ViCfg {
+                origin,
+                src_stride,
+                bpp,
+                aa_mode,
+                divot,
+                dither_filter,
+            },
+            x_first,
+            x_last,
+        );
+
         for oy in 0..height {
             let curry = y_start + oy * y_add;
             let sy = curry >> 10;
@@ -897,62 +1063,26 @@ impl Bus {
                 let sx = x_offs >> 10;
                 let xfrac = (x_offs >> 5) & 0x1F;
                 let dst = ((oy * width + ox) * 4) as usize;
-                // Fetch one source pixel as RGB8. Under aa_mode 0/1 the coverage path
-                // (de-dither / AA-edge / divot) runs for both formats — 16-bit reads
-                // coverage from the hidden-bits plane, 32-bit from the alpha byte
-                // ([`Bus::vi_read_cov`]). Under aa_mode 2/3 (RESAMP_ONLY / REPLICATE)
-                // coverage is forced full, so it is a plain format-dispatched fetch.
-                let fetch = |x: i32, y: i32| {
-                    if aa_mode <= 1 {
-                        if divot {
-                            self.vi_divot(origin, src_stride, x, y, dither_filter, bpp)
-                        } else {
-                            self.vi_fetch_coverage(origin, src_stride, x, y, dither_filter, bpp)
-                        }
-                    } else if bpp == 2 {
-                        self.vi_fetch16(origin, src_stride, x, y)
-                    } else {
-                        self.vi_fetch32(origin, src_stride, x, y)
-                    }
-                };
                 // Bilinear when aa_mode isn't REPLICATE and a fraction is non-zero
                 // (Angrylion `lerping`): four texels, vertical lerp per column then
                 // horizontal between them. Otherwise the exact nearest sample.
+                //
+                // Both zero-weight cases are skipped rather than computed and
+                // multiplied by zero — `xfrac == 0` here and `yfrac == 0` inside
+                // [`Bus::vi_column`]. Under the configuration Super Mario 64 programs
+                // (`x_add` 512, so `xfrac` alternates 0 / 16; `y_add` 1024, so `yfrac`
+                // is always 0) that is the difference between 2.5 filter chains per
+                // output pixel and 1.5.
                 let mut rgb = if aa_mode != 3 && (xfrac != 0 || yfrac != 0) {
-                    // Skip a tap whose weight is zero. `vi_lerp3(a, b, 0)` is
-                    // `a + (((b - a) * 0 + 16) >> 5)` = `a + 0` = `a`, so a zero
-                    // fraction discards the far sample entirely — fetching it cannot
-                    // affect the output, and NOT fetching it therefore cannot either.
-                    //
-                    // This is not a micro-optimization. Each `fetch` runs the whole
-                    // coverage filter chain, and under the configuration Super Mario
-                    // 64 actually programs (`aa_mode` 0, `divot` 1, `dither_filter`
-                    // 1) that is 3 divot taps x 9 de-dither taps = 27 `vi_read_cov`
-                    // calls, each doing three `rdram_offset` lookups. SM64 also
-                    // programs `VI_Y_SCALE` with `y_add = 1024`, which holds `yfrac`
-                    // constant, and `VI_X_SCALE` with `y_add = 512`, which alternates
-                    // `xfrac` between zero and non-zero — so the unconditional
-                    // four-tap form spent most of its work on samples multiplied by
-                    // zero.
-                    // One column's vertical lerp, or its single upper sample when
-                    // `yfrac` weights the lower row at zero. Named rather than written
-                    // twice so the `sx` and `sx + 1` columns cannot drift apart — this
-                    // is a correctness-critical path pinned by the VI vectors.
-                    let vlerp = |x: i32| {
-                        if yfrac == 0 {
-                            fetch(x, sy)
-                        } else {
-                            vi_lerp3(fetch(x, sy), fetch(x, sy + 1), yfrac)
-                        }
-                    };
-                    let col = vlerp(sx);
+                    let col = self.vi_column(&mut sampler, sx, sy, yfrac);
                     if xfrac == 0 {
                         col
                     } else {
-                        vi_lerp3(col, vlerp(sx + 1), xfrac)
+                        let ncol = self.vi_column(&mut sampler, sx + 1, sy, yfrac);
+                        vi_lerp3(col, ncol, xfrac)
                     }
                 } else {
-                    fetch(sx, sy)
+                    self.vi_sample(&mut sampler, sx, sy)
                 };
                 // Gamma is the final RGB stage (after scale, before write) — a table
                 // lookup per channel (the LUT is `vi_gamma` precomputed).
@@ -964,6 +1094,86 @@ impl Bus {
             }
         }
         (w, h)
+    }
+
+    /// One source pixel as the scan-out wants it — filtered under `aa_mode` 0/1,
+    /// plain under 2/3 — served from the memo when it is there.
+    ///
+    /// Only the filtered path is memoized. Under `aa_mode` 2/3 a sample is two RDRAM
+    /// reads and a format convert, which is cheaper than the row bookkeeping, so
+    /// caching it would be a pessimization dressed as an optimization. The filters
+    /// themselves have exactly one implementation either way; this chooses whether to
+    /// consult a cache before calling it.
+    fn vi_sample(&self, s: &mut ViSampler, x: i32, y: i32) -> [u8; 3] {
+        if s.cfg.aa_mode > 1 {
+            return self.vi_sample_direct(s, x, y);
+        }
+        // `checked_sub` rather than `-`: both operands trace back to guest-controlled
+        // VI registers, and the miss path is a fall-through, not an error — so an
+        // extreme pair should decline the memo, not panic a debug build.
+        let Some(idx) = x
+            .checked_sub(s.x_lo)
+            .and_then(|offset| usize::try_from(offset).ok())
+        else {
+            return self.vi_sample_direct(s, x, y);
+        };
+        if idx >= s.span {
+            return self.vi_sample_direct(s, x, y);
+        }
+        let cell = s.row_slot(y) * s.span + idx;
+        if let Some(hit) = s.cells[cell] {
+            return hit;
+        }
+        let computed = self.vi_sample_direct(s, x, y);
+        s.cells[cell] = Some(computed);
+        computed
+    }
+
+    /// [`Bus::vi_sample`] without the memo: the actual filter dispatch.
+    ///
+    /// Under `aa_mode` 0/1 the coverage path (de-dither / AA-edge / divot) runs for
+    /// both formats — 16-bit reads coverage from the hidden-bits plane, 32-bit from the
+    /// alpha byte ([`Bus::vi_read_cov`]). Under `aa_mode` 2/3 (`RESAMP_ONLY` / REPLICATE)
+    /// coverage is forced full, so it is a plain format-dispatched fetch.
+    fn vi_sample_direct(&self, s: &ViSampler, x: i32, y: i32) -> [u8; 3] {
+        let ViCfg {
+            origin,
+            src_stride,
+            bpp,
+            aa_mode,
+            divot,
+            dither_filter,
+        } = s.cfg;
+        if aa_mode <= 1 {
+            if divot {
+                self.vi_divot(origin, src_stride, x, y, dither_filter, bpp)
+            } else {
+                self.vi_fetch_coverage(origin, src_stride, x, y, dither_filter, bpp)
+            }
+        } else if bpp == 2 {
+            self.vi_fetch16(origin, src_stride, x, y)
+        } else {
+            self.vi_fetch32(origin, src_stride, x, y)
+        }
+    }
+
+    /// One column's vertical lerp, or its single upper sample when `yfrac` weights the
+    /// lower row at zero.
+    ///
+    /// A function rather than two inline copies so the `sx` and `sx + 1` columns cannot
+    /// drift apart — this is a correctness-critical path pinned by the VI conformance
+    /// vectors.
+    ///
+    /// The `yfrac == 0` case skips a tap whose weight is zero: `vi_lerp3(a, b, 0)` is
+    /// `a + (((b - a) * 0 + 16) >> 5)` = `a + 0` = `a`, so the far sample is discarded
+    /// and not fetching it cannot change the result.
+    fn vi_column(&self, s: &mut ViSampler, x: i32, sy: i32, yfrac: i32) -> [u8; 3] {
+        if yfrac == 0 {
+            return self.vi_sample(s, x, sy);
+        }
+        let upper = self.vi_sample(s, x, sy);
+        let lower = self.vi_sample(s, x, sy + 1);
+        vi_lerp3(upper, lower, yfrac)
     }
 
     /// Fetch a 16-bit RGBA5551 source pixel at `(x, y)` (stride `src_stride`, base
@@ -2184,6 +2394,162 @@ mod tests {
         let mut out = alloc::vec![0xFFu8; 8]; // too small (< 16)
         assert_eq!(bus.scanout(&mut out), (0, 0), "undersized: refused");
         assert!(out.iter().all(|&b| b == 0xFF), "and left untouched");
+    }
+
+    /// The memo must be invisible: a scan-out that consults it has to produce exactly
+    /// what one that never does would.
+    ///
+    /// This is the test that would catch a wrong key, a stale row, or an eviction that
+    /// keeps the wrong row — none of which the geometry tests above can see, because
+    /// they read a single pixel. It recomputes every output pixel from
+    /// [`Bus::vi_sample_direct`], which bypasses the memo entirely, and compares the
+    /// whole buffer.
+    ///
+    /// The framebuffer is filled with a pattern that varies per pixel in *both* axes
+    /// and sets coverage bits unevenly, so a sample taken from the wrong column, the
+    /// wrong row, or the wrong coverage class differs in its bytes. A flat fill would
+    /// pass with the memo returning any pixel at all.
+    #[test]
+    fn memoized_scanout_matches_uncached_recomputation() {
+        for &(ctrl, x_scale, y_scale) in &[
+            // The coverage path with divot + de-dither, at the 2x horizontal upscale
+            // that makes the memo worth having (what Super Mario 64 programs).
+            (0x0001_3016u32, 0x0000_0200u32, 0x0000_0400u32),
+            // Same filters, a vertical fraction as well, so both memo rows are live.
+            (0x0001_3016, 0x0000_0200, 0x0000_0300),
+            // Coverage path without divot, 1:1.
+            (0x0001_3006, 0x0000_0400, 0x0000_0400),
+            // Downscale: consecutive output pixels skip source columns, so the memo
+            // mostly misses and the eviction path runs hot.
+            (0x0001_3016, 0x0000_0900, 0x0000_0400),
+        ] {
+            let mut bus = Bus::new();
+            let fb = 0x2000usize;
+            let stride = 64u32;
+            for i in 0..(stride as usize * 64) {
+                // Vary both axes and leave coverage bit 0 set on only some pixels.
+                let px = ((i * 7919) % 0xFFFF) as u16;
+                let off = fb + i * 2;
+                bus.rdram[off..off + 2].copy_from_slice(&px.to_be_bytes());
+            }
+            bus.vi.regs[vi::VI_CTRL as usize] = ctrl;
+            bus.vi.regs[vi::VI_ORIGIN as usize] = fb as u32;
+            bus.vi.regs[vi::VI_WIDTH as usize] = stride;
+            bus.vi.regs[vi::VI_V_TOTAL as usize] = 525;
+            bus.vi.regs[vi::VI_H_VIDEO as usize] = (108 << 16) | 0x94;
+            bus.vi.regs[vi::VI_V_VIDEO as usize] = (34 << 16) | 0x54;
+            bus.vi.regs[vi::VI_X_SCALE as usize] = x_scale;
+            bus.vi.regs[vi::VI_Y_SCALE as usize] = y_scale;
+
+            let mut memoized = alloc::vec![0u8; 640 * 64 * 4];
+            let (w, h) = bus.scanout_scaled(&mut memoized);
+            assert!(
+                w > 0 && h > 0,
+                "ctrl {ctrl:#x}: scan-out produced no pixels"
+            );
+
+            // The same walk with the memo disabled. `span == 0` makes every lookup
+            // fall through to `vi_sample_direct`, which is the uncached path.
+            let cfg = ViCfg {
+                origin: bus.vi.read(vi::VI_ORIGIN) & 0x00FF_FFFF,
+                src_stride: i32::try_from(bus.vi.read(vi::VI_WIDTH) & 0xFFF).expect("12-bit"),
+                bpp: 2,
+                aa_mode: (ctrl >> 8) & 0x3,
+                divot: (ctrl >> 4) & 1 != 0,
+                dither_filter: (ctrl >> 16) & 1 != 0,
+            };
+            let mut bypass = ViSampler::new(cfg, 0, -1);
+            assert_eq!(bypass.span, 0, "the bypass sampler must cache nothing");
+
+            let x_add = i32::try_from(x_scale & 0xFFF).expect("12-bit field");
+            let y_add = i32::try_from(y_scale & 0xFFF).expect("12-bit field");
+            let x_start = i32::try_from((x_scale >> 16) & 0xFFF).expect("12-bit field");
+            let y_start = i32::try_from((y_scale >> 16) & 0xFFF).expect("12-bit field");
+            let (wi, hi) = (
+                i32::try_from(w).expect("width fits i32"),
+                i32::try_from(h).expect("height fits i32"),
+            );
+            for oy in 0..hi {
+                let curry = y_start + oy * y_add;
+                let (sy, yfrac) = (curry >> 10, (curry >> 5) & 0x1F);
+                for ox in 0..wi {
+                    // `8` is `minhpass`: `VI_H_VIDEO`'s start is 108, the NTSC
+                    // overscan adjust takes it to `h_start = 0`, and an unclamped
+                    // `h_start` crops 8 columns. Output column 0 samples source
+                    // column 8.
+                    let x_offs = x_start + (8 + ox) * x_add;
+                    let (sx, xfrac) = (x_offs >> 10, (x_offs >> 5) & 0x1F);
+                    let want = if xfrac != 0 || yfrac != 0 {
+                        let col = bus.vi_column(&mut bypass, sx, sy, yfrac);
+                        if xfrac == 0 {
+                            col
+                        } else {
+                            let ncol = bus.vi_column(&mut bypass, sx + 1, sy, yfrac);
+                            vi_lerp3(col, ncol, xfrac)
+                        }
+                    } else {
+                        bus.vi_sample(&mut bypass, sx, sy)
+                    };
+                    let dst = usize::try_from((oy * wi + ox) * 4).expect("non-negative index");
+                    assert_eq!(
+                        &memoized[dst..dst + 3],
+                        &want,
+                        "ctrl {ctrl:#x} x_scale {x_scale:#x}: output ({ox}, {oy}) \
+                         disagrees with the uncached recomputation"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Eviction keeps the row the walk is still using, and an unused row goes first.
+    #[test]
+    fn vi_sampler_evicts_the_lower_row() {
+        let cfg = ViCfg {
+            origin: 0,
+            src_stride: 8,
+            bpp: 2,
+            aa_mode: 0,
+            divot: false,
+            dither_filter: false,
+        };
+        let mut s = ViSampler::new(cfg, 0, 7);
+        assert_eq!(s.row_y, [None, None], "a fresh memo holds no rows");
+        assert_eq!(s.row_slot(5), 0, "the first unused row is taken");
+        assert_eq!(s.row_slot(6), 1, "then the second");
+        assert_eq!(s.row_slot(5), 0, "an existing row is found, not re-taken");
+        assert_eq!(s.row_slot(7), 0, "row 5 is evicted, not row 6");
+        assert_eq!(s.row_y, [Some(7), Some(6)]);
+    }
+
+    /// A column outside the memo's range must fall through rather than index it, and
+    /// an over-wide range must disable the memo rather than allocate for it.
+    #[test]
+    fn vi_sampler_falls_through_outside_its_range() {
+        let cfg = ViCfg {
+            origin: 0,
+            src_stride: 8,
+            bpp: 2,
+            aa_mode: 0,
+            divot: false,
+            dither_filter: false,
+        };
+        let bus = Bus::new();
+        let mut s = ViSampler::new(cfg, 10, 12);
+        assert_eq!(s.span, 3);
+        // Left of, right of, and inside the range all answer; only the last is cached.
+        let _ = bus.vi_sample(&mut s, 9, 0);
+        let _ = bus.vi_sample(&mut s, 13, 0);
+        let _ = bus.vi_sample(&mut s, 11, 0);
+        assert_eq!(
+            s.cells.iter().filter(|c| c.is_some()).count(),
+            1,
+            "only the in-range column is memoized"
+        );
+
+        let huge = ViSampler::new(cfg, 0, i32::MAX);
+        assert_eq!(huge.span, 0, "an over-wide range disables the memo");
+        assert!(huge.cells.is_empty(), "and allocates nothing for it");
     }
 
     /// **`scanout_scaled` geometry + truncating convert (R-5).** A hand-computed
