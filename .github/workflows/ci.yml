@@ -79,6 +79,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The maximal NATIVE feature set the `cargo full-build` alias uses. Identical
+      # to `default` today (`full = ["default"]`), so this costs a cache hit -- but
+      # the moment a feature is added to `full` and not to `default`, this is the
+      # only job that would notice it stopped compiling.
+      - run: cargo build -p rustyn64-frontend --features full
 
   rustdoc:
     name: rustdoc (-D warnings)
