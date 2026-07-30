@@ -186,6 +186,11 @@ jobs:
         with:
           targets: thumbv7em-none-eabihf
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features
+      # And with the optional fast-path scheduler on. An additive feature that
+      # quietly pulled in `std` would still pass every other job here, because
+      # nothing else builds this crate for a bare-metal target -- so the no_std
+      # claim for `fast-scheduler` is only true if it is checked here.
+      - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features --features fast-scheduler
 
   no-commercial-roms:
     name: no commercial ROMs

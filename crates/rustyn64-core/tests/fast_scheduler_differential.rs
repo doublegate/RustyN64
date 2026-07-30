@@ -116,6 +116,12 @@ fn the_fast_path_lands_where_the_accurate_path_would() {
         "the two paths retired different instruction counts"
     );
 
+    // A failure walks the images twice — once for this comparison, once inside
+    // `describe_divergence` to find the offset. That is the failure path only, so
+    // it costs nothing in practice. Review suggested the more explicit
+    // `if a != f { panic!(..) }`; clippy's `manual_assert` rejects that form under
+    // this workspace's pedantic set, so `assert!` is not merely the tidier choice
+    // here, it is the only one that compiles.
     let (a, f) = (state_of(&accurate), state_of(&fast));
     assert!(a == f, "{}", describe_divergence(&a, &f));
 }
