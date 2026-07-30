@@ -152,11 +152,19 @@ ROOT=$(git rev-parse --show-toplevel)
 # Adjust to wherever the dump lives; check it against the SHA-256 below first.
 ROM="$ROOT/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64"
 
-# A — frame timing (the FPS numbers). Run twice; take the mean line.
+# A — frame timing (the FPS numbers). Run twice; take the mean line. No
+# CARGO_PROFILE_RELEASE_DEBUG here: A produces no profile to attribute, and while
+# `debug = 1` adds only line tables and does not change codegen, leaving it off
+# keeps A's binary the one users actually build.
 RUSTYN64_PROBE_ROM="$ROM" \
   cargo test -p rustyn64-frontend --release --test frame_cost_probe -- --ignored --nocapture
 
 # B — render-phase profile. `-D 70000` discards the first 70 s, which is boot.
+#
+# That 70 s is calibrated to THIS host: it is the time the probe takes to reach the
+# rendering phase here, not a property of the ROM. On a faster or slower machine it
+# has to move. Check the capture rather than trusting it — if `perf report` shows
+# `rustyn64-rdp` at ~0%, the window is still in boot and `-D` is too small.
 #
 # `perf` has to be pointed at the test binary, and cargo names it with a content
 # hash under `target/release/deps/`, so the path is asked for rather than guessed.
