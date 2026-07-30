@@ -306,6 +306,35 @@ impl System {
         }
     }
 
+    /// The **fast-path** counterpart to [`System::run_until`] (ADR 0011 / ADR 0012),
+    /// behind the default-off `fast-scheduler` feature.
+    ///
+    /// **Today this is a total bailout: it defers every step to the accurate
+    /// scheduler.** That is not a placeholder in the pejorative sense — ADR 0011
+    /// §6 makes it the specification's own starting point ("a correct-but-slow
+    /// fallback is always acceptable; a fast-but-wrong path is not"), and it is
+    /// what lets the differential gate exist and pass *before* any block execution
+    /// is written. A gate that only starts working once the thing it grades is
+    /// finished grades nothing.
+    ///
+    /// It is a **separate entry point**, not a branch inside `run_until`, which is
+    /// what keeps ADR 0011 §1 exactly true: with the feature off this function does
+    /// not exist and the accurate path has no added test. It also stores no mode on
+    /// [`System`], so the save-state layout is untouched and ADR 0011 §4's header
+    /// marker is not yet owed — that falls due when the fast path acquires state of
+    /// its own.
+    ///
+    /// **The bailout invariant** (ADR 0011 §6) is what the next slice must
+    /// preserve: at every boundary the accurate scheduler has to resume with the
+    /// state it would have held had it run that stretch itself — the same
+    /// `master_ticks` above all, since landing on the right state at the wrong tick
+    /// is *correct-but-late*, and no AV comparison can see it. Trivially satisfied
+    /// while every step bails; the gate is here to keep it true when they stop.
+    #[cfg(feature = "fast-scheduler")]
+    pub fn run_until_fast(&mut self, target: u64) {
+        self.run_until(target);
+    }
+
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the
     /// AI/interface DMA progress — all on the SAME `&mut self.bus`.
     fn step_rcp(&mut self) {

@@ -2321,6 +2321,7 @@ version = "0.8.0"
 name = "rustyn64-core"
 version = "0.8.0"
 dependencies = [
+ "bincode",
  "rustyn64-audio",
  "rustyn64-cart",
  "rustyn64-cpu",

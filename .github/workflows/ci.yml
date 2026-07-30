@@ -89,6 +89,16 @@ jobs:
       # entry expands correctly. The alias itself runs in the FULL-run leg below,
       # where that cost is already being paid.
       - run: cargo build -p rustyn64-frontend --features full
+      # The ADR 0011 fast-path scheduler and its differential gate. Feature-gated
+      # code is invisible to every other job here -- CI runs clippy exactly once
+      # and never with this feature -- so without this step the gate would be a
+      # gate that never runs, which is the failure mode `markdownlint` already
+      # demonstrated in this repo.
+      #
+      # On the LIGHT leg on purpose: it is the test that grades the fast path, so
+      # it has to run on the PRs that change it, not only on push-to-main.
+      - run: cargo test -p rustyn64-core --features fast-scheduler
+      - run: cargo clippy -p rustyn64-core --all-targets --features fast-scheduler -- -D warnings
 
   rustdoc:
     name: rustdoc (-D warnings)

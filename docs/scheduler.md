@@ -200,6 +200,40 @@ progress per RCP tick; the event-queue refinement is a Phase-1/2 ticket.
   93.75 MHz VR4300 cycle; ADR 0006 and this doc use it for the 187.5 MHz tick.
   Always state the unit when citing `MASTER_HZ`.
 
+## The fast-path seam (`fast-scheduler`, default-off)
+
+ADR 0011 / ADR 0012 accept an optional block-based scheduler. Its seam exists now
+as `System::run_until_fast`, behind the default-off `fast-scheduler` feature, and
+**today it defers every step to `run_until`** — the total-bailout starting point
+ADR 0011 §6 sanctions ("a correct-but-slow fallback is always acceptable; a
+fast-but-wrong path is not").
+
+Three structural choices, made so the later work cannot quietly violate the ADR:
+
+- **A separate entry point, not a branch inside `run_until`.** With the feature
+  off the function does not exist, so ADR 0011 §1's "default builds are
+  byte-identical" is true by construction rather than by inspection, and the
+  accurate path carries no test that exists only for its sibling.
+- **No mode field on `System`.** The caller picks the entry point per call, so the
+  save-state layout is identical either way and ADR 0011 §4's header marker is not
+  yet owed. It falls due the moment the fast path stores state of its own.
+- **The differential gate exists and passes before any block executes**
+  (`crates/rustyn64-core/tests/fast_scheduler_differential.rs`). A gate written
+  after the thing it grades is a gate that has never once been observed to fail
+  for the right reason. It compares the **whole serialized machine** rather than a
+  list of fields, so a field added to any chip later is covered automatically —
+  and it carries its own falsifiability test, which perturbs one run by a single
+  CPU edge and requires the comparison to notice.
+
+`master_ticks` equality is asserted separately from the state bytes even though
+the byte comparison subsumes it: right state at the wrong tick is the
+*correct-but-late* failure ADR 0011 §6 singles out, and it deserves an error
+message that says so rather than a byte offset.
+
+The gate runs in CI on the light leg (`cargo test -p rustyn64-core --features
+fast-scheduler`), because feature-gated code is invisible to every other job —
+CI runs clippy exactly once and not with this feature.
+
 ## Test plan
 
 - **The residue invariant (the important one):** sample the affine offsets
