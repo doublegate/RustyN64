@@ -1,0 +1,52 @@
+# Repo-wide cargo configuration.
+#
+# Adopted from `RustyNES/.cargo/config.toml` (same author, so the port is
+# license-clean), trimmed to what RustyN64 can currently justify: the wasm32
+# rustflags and the libretro MinGW ABI override are NOT copied, because neither
+# target is built here yet and an unexplained flag is worse than a missing one.
+
+# The "cargo --full equivalent". One command builds or runs the most fully-featured
+# NATIVE binary.
+#
+# This exists for a measured reason, not for tidiness: a **debug build of this
+# emulator is 7.7x slower than a release build** (784.7 ms per frame against
+# 138.7 ms on Super Mario 64 — `docs/performance.md` §Measured). A plain
+# `cargo run` therefore hands you 1.27 FPS where the same code does 7.21, and that
+# trap has already cost real diagnostic time: a reported "~1 FPS" turned out to be a
+# debug binary rather than an emulation defect.
+#
+# It is deliberately an **alias** and NOT a `[profile]` override making release the
+# default. Redefining the default profile would silently break ordinary debugging —
+# no backtraces worth reading, no `debug_assert!` (which this codebase relies on to
+# catch, for example, a published frame whose bytes disagree with its dims).
+#
+# `full-run` ends in `--`, so EVERY argument after the alias — the ROM path, and any
+# flag whose leading dash `cargo run` would otherwise eat — is forwarded to the
+# emulator binary. `full-build` takes no binary arguments, so it has no trailing `--`.
+# Neither name collides with a built-in cargo subcommand.
+#
+#     cargo full-run path/to/rom.z64
+#     cargo full-build
+[alias]
+full-run = "run --release -p rustyn64-frontend --features full --"
+full-build = "build --release -p rustyn64-frontend --features full"
+
+# MSRV-aware dependency resolution. The workspace pins an EXACT toolchain (1.96.0)
+# for libretro build reproducibility, so `fallback` makes a future `cargo update`
+# prefer versions compatible with that MSRV over the newest available. Inert today —
+# the committed `Cargo.lock` already holds compatible versions — so this guards
+# future resolves rather than changing the current build.
+[resolver]
+incompatible-rust-versions = "fallback"
+
+# Resilient crates.io downloads. Forcing HTTP/1.1 sidesteps a known interaction
+# between curl's HTTP/2 multiplexing and the crates.io CDN that surfaces as
+# intermittent "Error in the HTTP2 framing layer" / "unexpected eof while reading"
+# fetch failures, and a higher retry count lets any remaining transient blip
+# self-heal instead of failing a CI job. Repo-wide, so it covers every cargo
+# invocation in CI as well as local builds.
+[net]
+retry = 10
+
+[http]
+multiplexing = false

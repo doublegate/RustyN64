@@ -33,6 +33,17 @@ debug-hooks = []
 hd-pack = []
 retroachievements = []
 
+# The maximal NATIVE feature set, for the `cargo full-build` / `full-run` aliases
+# (`.cargo/config.toml`). Deliberately NOT the union of every feature above: the
+# roadmap placeholders are empty, so listing them here would advertise capability
+# that does not exist. It is also NOT `--all-features`, which this workspace forbids
+# outright because mutually-exclusive backend features cannot resolve together.
+#
+# Today this equals `default`, which makes the aliases' `--features full` a no-op and
+# their whole value the `--release` they also pass — that is the point, given a debug
+# build is 7.7x slower. Add features here as they gain code.
+full = ["emu-thread"]
+
 [[bin]]
 name = "rustyn64"
 path = "src/main.rs"
