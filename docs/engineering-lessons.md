@@ -552,11 +552,11 @@ hits its budget is reporting a hang, which is information; a job with no budget 
 ### 4.4 Re-requesting a review and then checking once is not waiting for it
 
 **The pattern.** Review arrives asynchronously, regardless of who is doing it, and for the
-bots that is
-minutes after CI goes green. A merge taken on the first green — or after a single poll that
-found nothing — lands before the review exists, and the findings then arrive against a closed
-PR where nothing can be applied. Nothing here is specific to automation; bots are merely the
-reviewers whose latency is short enough to be mistaken for zero.
+bots that is minutes after CI goes green. A merge taken on the first green — or after a
+single poll that found nothing — lands before the review exists, and the findings then
+arrive against a closed PR where nothing can be applied. Nothing here is specific to
+automation; bots are merely the reviewers whose latency is short enough to be mistaken
+for zero.
 
 **How it went wrong here.** Twice. The second time cost more than the first: ADR 0011 declares
 itself immutable on merge, so a review that landed moments afterwards could not be edited in,
