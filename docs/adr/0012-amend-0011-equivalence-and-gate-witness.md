@@ -71,8 +71,9 @@ differential gate is a longer-running instance of the same hazard.
 The gate must therefore:
 
 - **emit an explicit end-of-suite marker** naming how many **bail-out reasons** were
-  reached and how many comparison points ran, and fail if either is zero or below the
-  expected number — a run that compared nothing must not read as agreement. The expected number is
+  reached and how many comparison points ran. The reason count has an expected value and
+  must meet it; the comparison count has no meaningful expected value — it depends on how
+  long each fixture runs — so the only assertion on it is that it is **not zero** — a run that compared nothing must not read as agreement. The expected number is
   **not a hand-maintained constant**: it is derived from the enumerated bail-out set the
   fast path itself declares, so adding a bail-out reason without a fixture that reaches it
   fails the gate, and no one has to remember to bump a total. A gate whose expected count
