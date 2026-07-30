@@ -435,6 +435,16 @@ impl Audio {
         // The naive alternative — letting `dac_rate == 0` compute
         // `video_clock / 1` ≈ 48 MHz — is what the old zero-gate was avoiding,
         // and it would flood the sink. A default rate avoids both failures.
+        //
+        // KNOWN SIMPLIFICATION, ledgered (R-16): this conflates "never
+        // programmed" with "software explicitly wrote 0". ares keeps them apart —
+        // `power()` sets 44100, while its `AI_DACRATE` write honors a literal
+        // zero (`dac.frequency = max(1, videoFrequency / (dacRate + 1))`,
+        // `ai/io.cpp`) — so full fidelity needs a `dac_rate_programmed` flag to
+        // tell the two apart. That adds a field to a serialized struct and so
+        // changes the save-state layout (ADR 0005), which is not a change to make
+        // in passing. Unobservable in practice: a DACRATE of 0 asks for a ~48 MHz
+        // DAC and no title does it. Recorded rather than silently accepted.
         self.sample_rate = if self.video_clock == 0 {
             0
         } else if self.dac_rate == 0 {
@@ -687,6 +697,17 @@ mod tests {
         // document.
         let mut ai = Audio::new();
         ai.set_region(Region::Pal);
+        // Two assertions, each catching something the other cannot. The equality
+        // pins the WIRING — that `recompute_rate` reads the named constant rather
+        // than an inlined literal that could drift from it. The bound pins the
+        // PROPERTY, and it is the one that catches the failure class this test was
+        // written for: any future rate derived from the video clock rather than an
+        // audio rate.
+        assert_eq!(
+            ai.sample_rate(),
+            Audio::DEFAULT_DAC_HZ,
+            "an unprogrammed DAC must run at the documented default"
+        );
         assert!(
             ai.sample_rate() > 0 && ai.sample_rate() < 100_000,
             "an unprogrammed DAC runs at an audio rate, not the video clock: {}",
