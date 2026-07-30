@@ -353,8 +353,7 @@ tap skip worth 39.1% of the scan-out, and the arithmetic checks out exactly: `yf
 always 0 and `xfrac` alternates 0 / 16, so the four-tap form averaged
 `(1 + 4) / 2 = 2.5` filter chains per output pixel and the skip brings that to
 `(1 + 2) / 2 = 1.5`. The predicted 1.67x on the scan-out against a measured 1.64x
-(35.53 → 21.64 ms) is as
-close as this kind of accounting gets, which is the reason to write it down: a
+(35.52 → 21.64 ms) is as close as this kind of accounting gets, which is the reason to write it down: a
 speed-up that matches a mechanism is a result, and one that does not is a coincidence
 waiting to be explained.
 
