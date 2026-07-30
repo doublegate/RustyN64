@@ -647,13 +647,33 @@ can.
    behind the "split `Latch` into a front half and an EX-onward payload" task, which the
    line attribution had made look like ~1.07x.
 
-   **The caveat, stated because it bounds the conclusion:** padding that nothing reads can
-   be narrowed by LLVM, so this cannot prove every added byte was moved. It is evidence
-   against copy width driving the cost, not proof. What it definitely shows is that a
-   +60% nominal growth in latch traffic costs nothing measurable — and that is enough to
-   say the refactor should not be undertaken *on this evidence*. A sound positive test is
-   the split itself, which is the work being questioned; do that only if some other
-   measurement first shows the copies matter.
+   **Provenance.** Experiment A (`frame_cost_probe`, `where_does_a_frame_go`), 30 frames
+   from the first live-VI frame, on the environment tabled in §Measured (2026-07-30) —
+   same machine, `rustc 1.96.0`, same SM64 dump. Tree at commit `9631c06` with the padding
+   applied as an uncommitted patch: `probe_pad: [u64; 9]` added to `Latch`, the two
+   non-struct-update construction sites extended, and `pipeline.rs`'s size assertion
+   retargeted 120 → 192. Built with `cargo build -p rustyn64-frontend --release --tests`.
+   Two runs padded; the unpadded pair is the B leg of the DAC-period A-B-A above, run
+   minutes earlier on the same tree minus the patch. The patch was reverted afterwards
+   and the tree verified clean; it is not in any commit.
+
+   **Two weaknesses, because they bound what may be concluded.**
+
+   *It is a two-leg comparison, not A-B-A.* There is no return leg, and 1.1% sits inside
+   the 1–2% a session drifts. **So "1.1% faster" is not a claim** — the padded build and
+   the unpadded one are indistinguishable here. What the data does carry is the *absence
+   of the predicted regression*: if the copies were transfer-bound at 16.1%, +60% of
+   traffic predicts roughly **+10%** frame time, and nothing remotely that size appeared.
+   Refuting a 10% prediction does not require resolving 1%.
+
+   *Padding that nothing reads can be narrowed by LLVM*, so this cannot prove every added
+   byte was actually moved. Evidence against copy width driving the cost, then, rather
+   than proof — but the codegen did change (the timings moved outside the back-to-back
+   spread), so it was not a no-op build.
+
+   Together that is enough to say the refactor should not be undertaken *on this
+   evidence*. A sound positive test is the split itself, which is the work being
+   questioned; do it only if some other measurement first shows the copies matter.
 
 ## The render-phase map, re-measured after the VI and RDP work
 
