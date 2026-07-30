@@ -23,6 +23,9 @@ have been two lines.
 
 ### 1. "Byte-identical" is scoped to execution and AV output, not to the save-state container
 
+*(Narrows 0011's Decision items **1** — the byte-identity claim — and **4**, whose
+save-state header field is the change that contradicts it.)*
+
 ADR 0011 asserts both of the following, and they cannot both hold. First, in its
 Decision:
 
