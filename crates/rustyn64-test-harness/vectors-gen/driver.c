@@ -523,11 +523,20 @@ static const uint32_t V10_SHADE_GRAD_TRI_32[] = {
 // V11: a 1-cycle TEXTURED triangle (16-bit RGBA5551), the first vector to validate
 // texture sampling against Angrylion (every prior texture check was an internal
 // round-trip). An 8x1 texture of eight distinct texels is preloaded into RDRAM at
-// 0x3000, loaded into TMEM by Load Tile, and sampled across the triangle by a per-x
-// S gradient (dx.S = 1.0/pixel, T flat) so each column reads a different texel. The
+// 0x3000, loaded into TMEM by Load Tile, and sampled across the triangle. The
 // combiner passes texel0 straight through (rgb_d = a_d = texel0). Perspective off.
 // This exercises Set Texture Image / Set Tile / Set Tile Size / Load Tile /
 // interpolate_st / fetch_texel end-to-end; Angrylion defines the golden.
+//
+// **Its golden is SOLID RED, not the ramp** — every pixel is texel 0. This comment
+// used to claim "a per-x S gradient (dx.S = 1.0/pixel) so each column reads a
+// different texel", which the data refutes: `dx.S = 1` is one unit of the s10.5
+// texel domain, i.e. 1/32 of a texel per pixel, so S never leaves texel 0 across
+// eight columns. One texel per pixel is `0x20` (see V40/V41/V42, whose goldens do
+// vary per column). The vector is still a valid Load-Tile round trip and still
+// matches byte-for-byte; it simply never pinned a gradient, so nothing failed when
+// the claim went stale. Kept as authored — retiring a passing golden to fix a
+// comment would discard the round-trip coverage it does have.
 static const uint16_t TEX8_RAMP[8] = {
     0xF801u, 0x07C1u, 0x003Fu, 0xFFFFu, // red, green, blue, white
     0xF83Fu, 0x07FFu, 0xFFC1u, 0x8421u, // magenta, cyan, yellow, grey
@@ -1006,9 +1015,14 @@ static const uint32_t V30_TEX_TRI_CHROMAKEY_ALPHA_16[] = {
 // **tile 3** at a NON-ZERO TMEM word (0x40 -> byte 0x200), and the triangle names
 // **tile 3** (op 0x0A830020). Tile 0 is set as RGBA16 over the UNLOADED low TMEM, so a
 // renderer that wrongly samples tile 0 reads zeros -> black. The golden is therefore the
-// V11 ramp (identical picture, just via tile 3), and a `tiles[0]` regression collapses
-// it to black -> fails. Non-vacuous: the colourful ramp is produced ONLY by the correct
-// tile-3 selection of the tile-3 load.
+// V11 picture (identical, just via tile 3), and a `tiles[0]` regression collapses it to
+// black -> fails. Non-vacuous, and for the reason stated: RED is produced ONLY by the
+// correct tile-3 selection of the tile-3 load.
+//
+// (This shares V11's `dx.S = 1`, so the picture is solid texel 0 — RED, not a ramp.
+// An earlier revision of this comment described the picture as a multi-texel ramp;
+// see V11 for why that was never true. The red-vs-black discrimination this vector
+// rests on is unaffected.)
 static const uint32_t V31_TEX_TRI_BASE_TILE_16[] = {
     0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0=1, persp off
     0x3C000000u, 0x00000041u, // Set Combine: rgb_d=1 / a_d=1 (texel0 passthrough)
@@ -1316,6 +1330,87 @@ static const uint32_t V40_TEX_TRI_MIRROR_S_16[] = {
     0x00000000u, 0x00000000u, // XL, DxLDy
     0x00000000u, 0x00000000u, // XH = 0.0 -- start at column 0 so both halves render
     0x00000000u, 0x00020000u, // XM = 0.0, DxMDy = 2.0
+    TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
+};
+
+// V41 (probe): does a **NEGATIVE `DsDx`** step the S axis backwards?
+//
+// The second of the two live candidates for the mirrored-text defect, after V40
+// exonerated the tile `mirror_s` path byte-for-byte. This is how a game actually
+// draws a horizontally flipped quad: leave the tile alone, start S at the far end
+// and walk it down. The coefficient is a signed 32-bit s15.16 in the S10.5 texel
+// domain, so a missing sign extension does not fail loudly — it walks *forwards*
+// by an enormous stride instead, which is a wrap away from looking correct.
+//
+// Geometry is a full 8x8 rectangle (both edges vertical, `lft = 1`: XH = 0.0 left,
+// XM = 8.0 right) rather than V40's staircase, so every column of every row reads
+// out and the row is a directly legible eight-texel word.
+//
+// **`mask_s = 0` with `clamp_s = 1` is load-bearing, not tidiness.** Under an
+// 8-texel wrap the two outcomes are INDISTINGUISHABLE: the bad stride is
+// `0xFFE0 = 65504` in s.5 = 2047 texels, and `2047 mod 8 == 7 == -1 mod 8`, so a
+// sign-extension bug would wrap to exactly the reversed ramp the fix produces.
+// Clamping instead of wrapping separates them:
+//
+//   signed (correct) : gray yellow cyan magenta white blue green red  (ramp reversed)
+//   unsigned (bug)   : gray gray   gray gray    gray  gray gray  gray (all clamped high)
+//
+// Column 0 is gray either way, which is the trap: a probe reading only the first
+// texel converges on the same answer for both. The eight-column readout is what
+// makes it a test.
+static const uint32_t V41_TEX_TRI_NEG_DSDX_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0, persp off
+    0x3C000000u, 0x00000041u, // Set Combine: pure TEXEL0 passthrough
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    // Render tile 0: 16-bit, line 2 words, tmem 0, mask_s = 0 + **clamp_s** (bit 9).
+    0x35100400u, 0x00000200u,
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: SL=0 TL=0 SH=7 TH=0 (u10.2)
+    0x34000000u, 0x0001C000u, // Load Tile 0: SL=0 TL=0 SH=7 TH=0
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A800020u, 0x00200000u, // op=0x0A (tex), lft=1, yl=32 ym=32 yh=0, tile 0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00000000u, 0x00000000u, // XH = 0.0 (left edge, vertical)
+    0x00080000u, 0x00000000u, // XM = 8.0 (right edge, vertical) -> a full rectangle
+    // S base = 7 texels (7 * 32 = 0xE0 in s10.5), dx.S = **-0x20** = -1 texel/pixel.
+    TEX_BLOCK(0xE0, 0, 1, -0x20, 0, 0, 0, 0, 0),
+};
+
+// V42 (probe): where does a **RIGHT-MAJOR** (`lft = 0`) triangle start its S walk?
+//
+// The third candidate for the mirrored-text defect, and the one no existing vector
+// touches: of the 34 triangles in this file exactly one sets `lft = 0`
+// (`fill_tri_neg_16`, V4) and it is a FILL-mode triangle carrying no texture
+// coefficients at all. So the textured right-major path — which is the winding a
+// game emits for a flipped quad it did not bother to reorder — is unpinned.
+//
+// It matters because the RDP evaluates the span's texture coordinate at the MAJOR
+// edge and steps by `DsDx` from there. Swapping which edge is major swaps which end
+// of the span holds the base coordinate, and getting that backwards mirrors the
+// span while leaving every left-major vector in this battery green.
+//
+// Same 8-texel ramp and same full-rectangle shape as V41, but `lft = 0` inverts the
+// edge roles: XH is now the RIGHT edge and XM the LEFT (V4's convention). `mask_s = 3`
+// wraps rather than clamps deliberately — under a clamp a wrong span origin would
+// flatten to a solid bar and throw away which way it was wrong, whereas a wrap keeps
+// the ramp's phase readable and so reports the offset as well as the direction.
+//
+// Angrylion defines the golden; this vector is authored to be diagnostic, not to
+// assert a predicted answer.
+static const uint32_t V42_TEX_TRI_RIGHT_MAJOR_16[] = {
+    0x2F0008F0u, 0x00000000u, // Set Other Modes: 1-cycle, bi_lerp0, persp off
+    0x3C000000u, 0x00000041u, // Set Combine: pure TEXEL0 passthrough
+    0x3D100007u, 0x00003000u, // Set Texture Image: 16-bit, width 8, addr 0x3000
+    0x35100400u, 0x00000030u, // Set Tile 0: 16-bit, line 2, tmem 0, mask_s = 3 (wrap)
+    0x32000000u, 0x0001C000u, // Set Tile Size 0: SL=0 TL=0 SH=7 TH=0 (u10.2)
+    0x34000000u, 0x0001C000u, // Load Tile 0: SL=0 TL=0 SH=7 TH=0
+    0x3F100007u, 0x00001000u, // Set Color Image: 16-bit, width 8, addr 0x1000
+    0x2D000000u, 0x00020020u, // Set Scissor: (0,0)-(8,8)
+    0x0A000020u, 0x00200000u, // op=0x0A (tex), **lft=0** (right-major), yl=32 ym=32 yh=0
+    0x00000000u, 0x00000000u, // XL, DxLDy
+    0x00080000u, 0x00000000u, // XH = 8.0 -- the RIGHT edge when lft=0
+    0x00000000u, 0x00000000u, // XM = 0.0 -- the LEFT edge when lft=0
+    // S base 0, dx.S = 0x20 = one texel per pixel (forwards).
     TEX_BLOCK(0, 0, 1, 0x20, 0, 0, 0, 0, 0),
 };
 
@@ -2076,6 +2171,16 @@ int main(int argc, char **argv) {
                   sizeof(V40_TEX_TRI_MIRROR_S_16) / 4, V40_TEX_TRI_MIRROR_S_16,
                   0x3000, sizeof(TEX_MIRROR_TEXELS) / sizeof(uint16_t), TEX_MIRROR_TEXELS};
     if (emit_vector(&v40, out_dir)) return 1;
+
+    Vector v41 = {"tex_tri_neg_dsdx_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V41_TEX_TRI_NEG_DSDX_16) / 4, V41_TEX_TRI_NEG_DSDX_16,
+                  0x3000, sizeof(TEX8_RAMP) / sizeof(uint16_t), TEX8_RAMP};
+    if (emit_vector(&v41, out_dir)) return 1;
+
+    Vector v42 = {"tex_tri_right_major_16", 0x2000, 0x1000, 8, 8, 2,
+                  sizeof(V42_TEX_TRI_RIGHT_MAJOR_16) / 4, V42_TEX_TRI_RIGHT_MAJOR_16,
+                  0x3000, sizeof(TEX8_RAMP) / sizeof(uint16_t), TEX8_RAMP};
+    if (emit_vector(&v42, out_dir)) return 1;
 
     if (emit_vi_vectors(out_dir)) return 1;
 
