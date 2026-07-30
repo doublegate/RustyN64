@@ -858,7 +858,12 @@ public constructor, so the bus half cannot be called out of order at all;
 `Rdp::tick` calls the same
 helper, so there is one implementation of the early-outs. Measured on Super Mario 64,
 `--release`, two runs each: **125.24 → 108.22 ms, 1.157x** (7.98 → 9.24 FPS), with the
-scan-out unchanged. Verified by the Angrylion `.rvec` and VI conformance vectors.
+scan-out unchanged. Graded by the Angrylion `.rvec` suite — the oracle that actually
+drives an RDP command list — plus unit tests that pin each early-out to its own
+condition and drive a queued command through the bus half end to end. The `.vivec` VI
+conformance vectors are **not** evidence for this change: they feed the VI from RDRAM
+and never step the RDP, so they would pass just as convincingly with the stepping
+broken. They stay attached to the scan-out claim below, which is what they grade.
 
 **Oracle effect:** not measured, and it cannot change the n64-systemtest count:
 both scan-out methods are pure conversions with **no runtime driver** — nothing in

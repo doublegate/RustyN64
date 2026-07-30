@@ -1560,8 +1560,11 @@ pub struct TileDescriptor {
 /// Proof that a step needs the bus, produced only by [`Rdp::tick_without_bus`] and
 /// consumed only by [`Rdp::tick_with_bus`].
 ///
-/// The two halves exist so `Bus::rdp_tick` can decide whether to pay for a 344-byte
-/// `core::mem::take` *before* arranging it, and the bus half has real preconditions:
+/// The two halves exist for a caller that cannot hand out a borrow of this struct
+/// without first moving the struct itself — it needs to know whether the step will use
+/// the bus *before* paying the 344-byte `core::mem::take` that arranging one costs.
+/// (In this workspace that caller is the Bus, which owns every chip.) The bus half
+/// then has real preconditions:
 /// the pipeline is unfrozen, `stall` is zero, and the command FIFO is non-empty.
 ///
 /// Those preconditions are carried by this token rather than by a comment, an
@@ -1573,11 +1576,14 @@ pub struct TileDescriptor {
 ///
 /// The field is private and the type has no constructor, so it cannot be forged.
 ///
-/// **Dropping a token abandons that step's work.** The RDP will not have advanced,
-/// and the next `rdp_tick` starts the same step over — so nothing is corrupted, but a
-/// step is lost. (It does *not* leave a half-applied stall: the token is only handed
-/// out on the path where `stall` is already zero, so the decrement and the token are
-/// mutually exclusive.)
+/// **Dropping a token loses a cycle, not the work.** The `Some` path mutates
+/// nothing — it is reached only once `stall` is zero, so no decrement has happened, and
+/// no FIFO pointer moves until the bus half runs. The command is therefore still
+/// pending and the next `rdp_tick` retries the identical step. What is lost is the
+/// *step*: the RDP made no progress during that GCLK and is one cycle late from then
+/// on. That is the failure mode worth naming here, because it is a timing divergence
+/// with **no wrong state anywhere** — correct-but-late, which no state comparison can
+/// see. Hence `#[must_use]`, below, rather than a `debug_assert` on the token count.
 ///
 /// What makes ignoring one loud is the `#[must_use]` on
 /// [`Rdp::tick_without_bus`] **itself**, not the one on this type: an attribute on `T`

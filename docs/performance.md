@@ -621,7 +621,7 @@ can.
    `dc_stage`'s error branch re-reads `self.ex_dc` *after* `abort_with` has stamped it,
    and `Latch` is already zero-padding-optimal at 120 bytes. Upper bound 1.19x.
 4. **Inlining the VI leaf readers** — `#[inline]` declined by LLVM;
-   `#[inline(always)]` made the scan-out **36% worse** (35.5 → 48.4 ms). Also
+   `#[inline(always)]` made the scan-out **36% worse** (35.5 → 48.4 ms). Also,
    `#[inline]` on `Rdp::tick_without_bus`, a cross-crate call on the hot path:
    **neutral**, by the A-B-A above. Under `lto = "fat"` an inline hint has nothing to
    add — that is now two independent results, and the general form is *this workspace's
