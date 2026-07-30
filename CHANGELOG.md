@@ -25,10 +25,17 @@ All notable changes to RustyN64 are documented here. The format is based on
   same choice structurally. The default is labeled in the ledger as a **modeling
   default, not a measured value** — the register's reset value is undocumented.
 
-  Measured effect: WDC goes **0 → 120,015 RDP commands** under `real_pif_boot`
-  and from no scan-out to a real 625×237 frame. The Phase-4 golden PCM stream is
-  unaffected (810 workspace tests pass). WDC still ends its run in a separate
-  self-loop, so this closes the AI livelock, not that title.
+  Measured effect: WDC goes **0 → 175,815 RDP commands** under `real_pif_boot`,
+  near-exact parity with its 176,085 under `hle_boot`, and the two boot paths now
+  agree exactly at 29 render / 24 silent across the 66-title corpus — closing the
+  only title the boot path made worse. The Phase-4 golden PCM stream is unaffected
+  (810 workspace tests pass).
+
+  **It does not make WDC render.** The title lights zero pixels on both paths — it
+  submits a full command stream and rasterizes black. This closes the AI livelock,
+  not that title. (An earlier draft of this entry claimed a "real 625×237 frame";
+  that was `scanout_scaled`'s *dimensions* read as content, and is retracted in
+  ledger R-16.)
 
 - Corrected two vector comments in `vectors-gen/driver.c` that described
   `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel color ramp.
