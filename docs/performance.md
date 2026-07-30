@@ -371,7 +371,7 @@ function and the statement are the durable part.
 | `ex_stage` | `self.ex_dc = out;` (EX → DC store) | 2061 | 3.68% |
 | `dc_stage` | `self.dc_wb = out;` (DC → WB store) | 913 | 2.87% |
 | `ex_stage` | `let mut out = self.rf_ex;` (EX load) | 1903 | 2.58% |
-| `ic_stage` | `self.ic_rf = Latch { … }` (IC store) | 2351 | 2.15% |
+| `ic_stage` | `self.ic_rf = Latch { ... }` (IC store) | 2351 | 2.15% |
 | `dc_stage` | `let mut out = self.ex_dc;` (DC load) | 848 | 2.10% |
 | `rf_stage` | `self.rf_ex = out;` (RF store) | 2147 | 1.28% |
 | **six copy sites** | | | **14.66%** |
@@ -430,9 +430,10 @@ needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
 
 ### The Bus split-borrow moves 1.35 GB a frame (open)
 
-`core::mem`'s `replace` is **5.32%** of the frame on its own —
-`core/src/mem/mod.rs:930` at 4.21% and `:929` at 1.11%, about **6.7 ms of 125**. All of
-it is the Bus split-borrow:
+`core::mem`'s `replace` is **5.32%** of the frame on its own — 4.21% and 1.11% at lines
+930 and 929 of the **Rust standard library's** `library/core/src/mem/mod.rs`, inside the
+toolchain, not a file in this repository. About **6.7 ms of 125**, and all of it is the
+Bus split-borrow:
 
 ```rust
 pub fn rdp_tick(&mut self) {
@@ -471,8 +472,13 @@ Two candidate routes, neither measured, both **hypotheses**:
   correctness bug, and the predicate is a claim about the RDP's state machine rather
   than about performance.
 
-Upper bound if the whole 5.32% went: **1.056x**. Like the latch split, worth doing after
-the dispatch question rather than instead of it — and the Angrylion `.rvec` vectors and
+Upper bound if the whole 5.32% went: **1.056x**.
+
+**Both bounds are isolated, and they compose.** The latch split's 1.064x and this 1.056x
+address disjoint shares (6.01% and 5.32%), so collecting *both* entirely gives
+`1 / (1 - 0.1133)` = **1.128x** — 125.24 ms down to about 111 ms, or 9.0 FPS. Against a
+7.5x gap. That is the case for doing them after the dispatch question rather than
+instead of it — and the Angrylion `.rvec` vectors and
 the audio goldens are what would catch an idle predicate that is wrong.
 
 ### Ruled out by measurement — do not retry
