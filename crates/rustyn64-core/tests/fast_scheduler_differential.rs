@@ -44,6 +44,19 @@ const SEED: u64 = 0x5265_616C_6974_7921;
 /// Sixteen consecutive seeds rather than six hand-picked ones: `SplitMix64` maps
 /// them to alignments opaquely, so enumerating seeds is honest where enumerating
 /// alignments would mean hardcoding the mapping and re-deriving it on every change.
+///
+/// **The limit of that, stated rather than glossed:** sixteen draws over six
+/// alignment buckets makes full coverage very likely, not certain. Proving it would
+/// mean reproducing `Phases::from_seed` here — a second copy of the thing under
+/// test, which is worse. The alternative accepted is a probabilistic sweep with the
+/// probability acknowledged.
+///
+/// **Cost:** with the tail sweep below this is 96 machine pairs, and a `System`
+/// carries 8 MiB of RDRAM that is allocated, zeroed, and traversed for each. That
+/// is ~60 s in a debug `cargo test` and a few seconds in `--release`. It is the
+/// most expensive test in this crate by a wide margin, deliberately: it is the only
+/// thing standing between a wrong fast path and a silently wrong emulator, and it
+/// has already caught one.
 const PHASE_SEEDS: core::ops::Range<u64> = 0..16;
 
 /// Long enough that both domains step many thousands of times and the CPU retires
@@ -53,6 +66,38 @@ const TICKS: u64 = 400_000;
 /// Serialize a machine's full state for comparison.
 fn state_of(sys: &System) -> Vec<u8> {
     bincode::serialize(sys).expect("a System is serializable; save-states rely on it")
+}
+
+/// A `std::io::Write` sink that hashes instead of storing.
+struct HashSink(std::collections::hash_map::DefaultHasher);
+
+impl std::io::Write for HashSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::hash::Hasher::write(&mut self.0, buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The same whole-state comparison as [`state_of`], reduced to 64 bits.
+///
+/// Covers exactly the same bytes — it is the identical `bincode` traversal — but
+/// streams them through a hasher instead of allocating. That matters at scale: the
+/// serialized machine includes **8 MiB of RDRAM**, and the phase x tail
+/// cross-product below compares 96 pairs, so materializing both images each time
+/// took the test past 100 seconds and out of the default `cargo test` budget.
+///
+/// A 64-bit digest can collide in principle. It is used only where the alternative
+/// was running fewer cases, which is a strictly worse trade: a birthday collision
+/// against one specific other image is ~2^-64, while a case not run is a hole with
+/// probability 1. The single-seed test still compares full bytes, so the exact
+/// comparison is exercised on every run of this file.
+fn state_digest(sys: &System) -> u64 {
+    let mut sink = HashSink(std::collections::hash_map::DefaultHasher::new());
+    bincode::serialize_into(&mut sink, sys).expect("a System is serializable");
+    std::hash::Hasher::finish(&sink.0)
 }
 
 /// Report where two state images diverge, with enough context to bisect.
@@ -154,44 +199,51 @@ fn the_fast_path_lands_where_the_accurate_path_would() {
 /// more than one seed.
 ///
 /// A shorter run than the single-seed test, since the point here is breadth of
-/// alignment rather than depth of execution, and sixteen full-length runs would put
-/// this outside the default `cargo test` budget.
+/// alignment rather than depth of execution, and running the full cross-product at
+/// full length would put this outside the default `cargo test` budget.
 #[test]
 fn the_fast_path_agrees_at_every_phase_alignment() {
-    // Deliberately NOT a multiple of the edge period. 60_000 is, and with a target
-    // that lands exactly on a period boundary the partial-period tail — the part
-    // that falls back to the accurate loop — never runs at all. The offsets below
-    // sweep every possible remainder, so each alignment is tested with each tail
-    // length rather than only the one that happens to be zero.
-    const BASE: u64 = 60_000;
+    // The full cross-product of alignment x tail length, not one tail per seed.
+    //
+    // `BASE` is an exact multiple of the edge period, so a target of `BASE + tail`
+    // leaves exactly `tail` ticks for the partial-period fallback. Sweeping `tail`
+    // over `0..EDGE_PERIOD` inside the seed loop is what makes the claim true: a
+    // tail bug that only bites at one alignment needs *that* alignment and *that*
+    // remainder together, and an earlier version of this test picked a single tail
+    // per seed while its comment claimed the cross-product. Review caught that; it
+    // is the same over-claim this file exists to prevent, so it is spelled out
+    // rather than quietly corrected.
+    const BASE: u64 = 24_000;
+    const { assert!(BASE.is_multiple_of(EDGE_PERIOD)) };
 
     for seed in PHASE_SEEDS {
-        let target = BASE + seed % (EDGE_PERIOD + 1);
-        let mut accurate = System::new(seed);
-        let mut fast = System::new(seed);
-        accurate.run_until(target);
-        fast.run_until_fast(target);
+        for tail in 0..EDGE_PERIOD {
+            let target = BASE + tail;
+            let mut accurate = System::new(seed);
+            let mut fast = System::new(seed);
+            accurate.run_until(target);
+            fast.run_until_fast(target);
 
-        assert!(
-            accurate.cpu.retired > 0,
-            "seed {seed} (target {target}): the accurate run retired nothing, so the comparison is vacuous"
-        );
-        assert_eq!(
-            fast.master_ticks(),
-            accurate.master_ticks(),
-            "seed {seed} (target {target}): correct-but-late — the fast path finished at a different tick"
-        );
-        assert_eq!(
-            fast.cpu.retired, accurate.cpu.retired,
-            "seed {seed} (target {target}): the two paths retired different instruction counts"
-        );
+            assert!(
+                accurate.cpu.retired > 0,
+                "seed {seed} tail {tail}: the accurate run retired nothing, so the comparison is vacuous"
+            );
+            assert_eq!(
+                fast.master_ticks(),
+                accurate.master_ticks(),
+                "seed {seed} tail {tail}: correct-but-late — the fast path finished at a different tick"
+            );
+            assert_eq!(
+                fast.cpu.retired, accurate.cpu.retired,
+                "seed {seed} tail {tail}: the two paths retired different instruction counts"
+            );
 
-        let (a, f) = (state_of(&accurate), state_of(&fast));
-        assert!(
-            a == f,
-            "seed {seed} (target {target}): {}",
-            describe_divergence(&a, &f)
-        );
+            // Digest first; only materialize both images to describe a failure.
+            if state_digest(&accurate) != state_digest(&fast) {
+                let (a, f) = (state_of(&accurate), state_of(&fast));
+                panic!("seed {seed} tail {tail}: {}", describe_divergence(&a, &f));
+            }
+        }
     }
 }
 
