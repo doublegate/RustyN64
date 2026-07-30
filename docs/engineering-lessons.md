@@ -551,7 +551,8 @@ hits its budget is reporting a hang, which is information; a job with no budget 
 
 ### 4.4 Re-requesting a review and then checking once is not waiting for it
 
-**The pattern.** Review arrives asynchronously whoever is doing it, and for the bots that is
+**The pattern.** Review arrives asynchronously, regardless of who is doing it, and for the
+bots that is
 minutes after CI goes green. A merge taken on the first green — or after a single poll that
 found nothing — lands before the review exists, and the findings then arrive against a closed
 PR where nothing can be applied. Nothing here is specific to automation; bots are merely the
