@@ -536,9 +536,24 @@ impl Bus {
     }
 
     /// Step the RDP against this bus's narrow [`VideoBus`] view (split-borrow).
+    ///
+    /// The `take` is how the RDP borrows its owner, and it is not free: `Rdp` is 344
+    /// bytes, and `core::mem::take` reads them out *and* writes a fresh `Default` into
+    /// the vacated slot, which the restore then overwrites — three touches of the whole
+    /// struct on **every RCP step**, about 1.07 GB a frame
+    /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame").
+    ///
+    /// So the step's bus-free half runs first. On most steps the RDP is frozen,
+    /// stalling, or looking at an empty command FIFO, and answers the whole step from
+    /// its own fields — in which case nothing is moved at all. The predicate lives in
+    /// [`rustyn64_rdp::Rdp::tick_without_bus`] beside the early-outs it encodes, not
+    /// here, so it cannot drift away from them.
     pub fn rdp_tick(&mut self) {
+        if self.rdp.tick_without_bus() {
+            return;
+        }
         let mut rdp = core::mem::take(&mut self.rdp);
-        rdp.tick(self);
+        rdp.tick_with_bus(self);
         self.rdp = rdp;
     }
 
@@ -2559,6 +2574,31 @@ mod tests {
     /// (`(px>>8)&0xF8`, `(px&0x7C0)>>3`, `(px&0x3E)<<2`) gives `[10,40,D0]` with an
     /// opaque display alpha. A `expand5`-style replicating conversion or a wrong
     /// overscan offset would change the bytes, so this pins both.
+    /// A stalling RDP still burns exactly one GCLK per RCP step through the skip path.
+    ///
+    /// The skip path is new, and the stall is the only thing it **mutates** — the other
+    /// two early-outs are pure reads — so this is where an ordering mistake would land.
+    /// Mutation-checked: moving the empty-FIFO check ahead of the stall countdown turns
+    /// this red, because a stalled RDP with nothing queued would then never count down
+    /// and the pipeline would hang. Nothing else in the suite notices that: a stall that
+    /// never expires changes *when* a command retires, not whether the vectors match.
+    #[test]
+    fn a_stalled_rdp_decrements_exactly_once_per_rcp_step() {
+        let mut bus = Bus::new();
+        bus.rdp.stall = 3;
+        for expected in [2u32, 1, 0] {
+            bus.rdp_tick();
+            assert_eq!(
+                bus.rdp.stall, expected,
+                "one GCLK burned per step, never two"
+            );
+        }
+        // And the step after the stall expires must reach the FIFO check rather
+        // than wrapping the counter.
+        bus.rdp_tick();
+        assert_eq!(bus.rdp.stall, 0, "an expired stall stays expired");
+    }
+
     #[test]
     fn scanout_scaled_geometry_and_truncating_convert() {
         let mut bus = Bus::new();

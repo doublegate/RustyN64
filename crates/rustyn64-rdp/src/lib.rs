@@ -1793,20 +1793,58 @@ impl Rdp {
     /// pipeline (Set Color Image, Set Fill Color, Set Scissor, Fill Rectangle).
     /// Everything else is still recognized-and-consumed only.
     pub fn tick<B: VideoBus>(&mut self, bus: &mut B) {
+        if self.tick_without_bus() {
+            return;
+        }
+        self.tick_with_bus(bus);
+    }
+
+    /// The part of a step that needs **no bus access**, returning `true` when it
+    /// finished the step on its own.
+    ///
+    /// Split out so a caller can decide whether to pay for bus access *before*
+    /// arranging it. `Bus::rdp_tick` moves this whole struct out of the Bus with
+    /// `core::mem::take` to satisfy the borrow checker — 344 bytes read and written,
+    /// plus a default written back, on **every RCP step** — and on most steps the
+    /// answer here is `true`, so that shuffle bought nothing
+    /// (`docs/performance.md` §"The Bus split-borrow moves 1.35 GB a frame").
+    ///
+    /// It lives here rather than in the Bus because it is a statement about *this*
+    /// chip's early-outs: if they change, this changes with them, in the same file.
+    /// [`Rdp::tick`] calls it too, so there is one implementation and no way for the
+    /// two to disagree.
+    ///
+    /// The bus-using remainder is a separate method purely to avoid re-running these
+    /// checks after a caller has already made them. It is **not** a correctness
+    /// requirement, and an earlier version of this comment claimed it was — that
+    /// re-entering `tick` would decrement `stall` twice. It would not: `rdp_tick` only
+    /// reaches the bus half when this returned `false`, which implies `stall == 0`, so
+    /// the second pass finds nothing to decrement. The claim was written from the shape
+    /// of the hazard rather than from the code, and a mutation test is what disproved
+    /// it.
+    pub fn tick_without_bus(&mut self) -> bool {
         // Frozen or DMEM-sourced (XBUS, not yet wired): the pipeline counter is
         // halted, so do not even burn a stall cycle.
         if self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0 {
-            return;
+            return true;
         }
         // A prior sync is still stalling the pipeline — burn one GCLK and hold
         // the FIFO until the stall expires.
         if self.stall > 0 {
             self.stall -= 1;
-            return;
+            return true;
         }
-        if self.cmd_current >= self.cmd_end {
-            return;
-        }
+        // An empty command FIFO. The *partially written* case cannot be decided
+        // here: its length comes from an opcode that lives in RDRAM, which is
+        // exactly why the check below is on the far side of the split.
+        self.cmd_current >= self.cmd_end
+    }
+
+    /// The remainder of a step, once [`Rdp::tick_without_bus`] has returned `false`.
+    ///
+    /// Never call this without that check first: it assumes the FIFO is non-empty and
+    /// the pipeline is neither frozen nor stalled.
+    pub fn tick_with_bus<B: VideoBus>(&mut self, bus: &mut B) {
         let word0_hi = bus.rdram_read_u32(self.cmd_current);
         let opcode = command::opcode_of(word0_hi);
         let len_bytes = command::command_len_words(opcode) * 8;
