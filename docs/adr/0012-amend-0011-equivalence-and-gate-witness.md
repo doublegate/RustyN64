@@ -77,7 +77,15 @@ The gate must therefore:
   fast path itself declares, so adding a bail-out reason without a fixture that reaches it
   fails the gate, and no one has to remember to bump a total. A gate whose expected count
   is a literal drifts the moment the suite grows, which converts the witness into
-  decoration;
+  decoration.
+
+  For that enumeration to mean anything, **bailing out must not be expressible any other
+  way**: the fast path's only exit to the accurate scheduler is a typed reason — one enum,
+  returned through one signature — so an ad-hoc early return in execution logic is a
+  compile error rather than an uncounted path. The gate then matches that enum
+  exhaustively, which makes "a new reason arrived with no fixture" a build failure rather
+  than a silent coverage hole. An enumeration that code can bypass is a list of the cases
+  someone remembered;
 - **carry a timeout** per fixture and for the suite, so a hang fails rather than
   hanging;
 - **define its failure conditions**, including "the fast path never engaged" and "no
@@ -108,6 +116,9 @@ run, and several were later found not to pair: its **7.7x** debug ratio divided 
 frame cost by a release figure from a **different window** (before the VI is programmed
 versus after). `docs/performance.md` §Measured now carries two-run paired figures for all
 of them, and it is authoritative where the two disagree:
+
+"Pre-fix" and "post-fix" below refer to commit `646a3e0`, which skips the zero-weight
+bilinear taps in the VI scan-out and is the only change between the two trees measured.
 
 | 0011 says | paired measurement says |
 | --- | --- |

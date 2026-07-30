@@ -4,9 +4,10 @@ Status: **Proposed** — accepted on merge of the PR that introduces this file;
 immutable thereafter.
 Date: 2026-07-30
 Deciders: repo owner
-Supersedes: none · Superseded by: none · **Amended by
-[ADR 0012](0012-amend-0011-equivalence-and-gate-witness.md)** (byte-identity scope;
-differential-gate completion witness)
+Supersedes: none · Superseded by: none
+Amended by: **[ADR 0012](0012-amend-0011-equivalence-and-gate-witness.md)** — byte-identity
+scope, differential-gate completion witness, and the paired re-measurement of the figures
+quoted below.
 Amends: ADR 0006 (one canonical master clock), ADR 0007 (cycle-accurate VR4300
 pipeline) — **without superseding either**; see *Relationship to 0006 and 0007*.
 
