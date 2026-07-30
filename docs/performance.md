@@ -207,14 +207,24 @@ host. Unpaired quantities that once appeared here — a debug figure from one wi
 divided by a release figure from another — are marked as superseded rather than deleted,
 because the arithmetic that produced them is what makes them wrong.
 
-| quantity | before `646a3e0` | after `646a3e0` | kind |
-| --- | --- | --- | --- |
-| frame cost | 155.17 / 155.09 ms (6.44 FPS) | **139.34 / 139.28 ms (7.18 FPS)** | measured, ×2 runs |
-| `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | **21.64 / 21.64 ms (15.5%)** | measured, ×2 runs |
-| the VI tap fix's effect | — | **1.114x** on the frame, **-39.1%** on the scan-out | derived from the pair |
+| quantity | before `646a3e0` | after `646a3e0` | after `6a6adfa` | kind |
+| --- | --- | --- | --- | --- |
+| frame cost | 155.17 / 155.09 ms (6.45 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.98 FPS)** | measured, ×2 runs |
+| `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
+| effect, **step over the previous column** (each ratio against *that* column, not the baseline) | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
+| effect, **cumulative from the baseline** | — | 1.114x frame, -39.1% scan-out | **1.24x** frame, **-77.8%** scan-out | derived |
 
-Run-to-run spread in `--release` is **0.05%** across these pairs, well inside the ±0.5%
-the method claims, so a change under ~1% is still not a result.
+`646a3e0` skips the zero-weight bilinear taps (PR #211); `6a6adfa` memoizes the filtered
+source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms** (each the mean of its paired runs above), a
+**1.24x** speed-up, with the scan-out down from **35.52 ms to 7.88 ms** (paired means, as everywhere else here). (The percentage
+columns above have different denominators — each is a share of *its own* frame — so the
+durations are the comparable figures.)
+
+**Noise, measured rather than assumed.** Back-to-back runs of one binary agree to
+**0.05-0.13%**. The *same tree* measured about thirty minutes apart differed by **~1%**
+(123.5 against 125.2 ms) — machine state drifts across a session. So the ±0.5% in the
+method table is a **within-session** figure: pair a before and after in one sitting, and
+treat any cross-session comparison as ±1%.
 
 The 1.09x quoted in `646a3e0`'s own commit message came from comparing runs taken in
 different sessions (151.7 → 138.7). The paired figure above, 1.114x, is the one to cite;
@@ -225,7 +235,7 @@ the difference between them is exactly the drift that pairing exists to remove.
 | debug-build frame cost, same tree and window | 1.216 / 1.214 s (0.82 FPS) | measured, ×2 runs |
 | **debug vs release** | **8.7x** | paired, same tree |
 | 60 FPS budget | 16.7 ms | arithmetic (`1/60`) |
-| **gap to 60 FPS from 139.3 ms** | **~8.3x** | derived |
+| **gap to 60 FPS from 125.24 ms** | **~7.5x** | derived |
 
 The **7.7x** debug ratio quoted in ADR 0011 is **superseded**. It was self-consistent —
 784.7 ms debug against 101.6 ms release — but both came from the pre-`#209` probe, which
@@ -265,6 +275,34 @@ Two corrections to the first version of this table, both found by re-deriving it
   iterators) executing on behalf of the crate above it, so they are real work — just not
   attributable to one subsystem by source path alone.
 
+### Where the time goes now (after `6a6adfa`)
+
+The table above is the shape *before* the scan-out memo. Re-profiled on `main` at
+`2abc817`, same method, the render window has changed shape rather than merely shrunk:
+
+| bucket | before `6a6adfa` | **after** | of a 125.24 ms frame |
+| --- | --- | --- | --- |
+| CPU (`rustyn64-cpu/`) | 32.0% | **41.0%** | ~51.3 ms |
+| — of which `pipeline.rs` | 22.6% | **28.9%** | **~36.2 ms** |
+| Bus + VI | 29.0% | **12.2%** | ~15.3 ms |
+| `core`/`std` inlined | 10.1% | 11.6% | ~14.5 ms |
+| RSP | 9.2% | 11.4% | ~14.3 ms |
+| `scheduler.rs` | 6.4% | 8.1% | ~10.1 ms |
+| RDP | 4.6% | 6.2% | ~7.8 ms |
+| audio | 2.6% | 3.0% | ~3.8 ms |
+| unresolved, libc, kernel | 5.9% | 6.4% | ~8.0 ms |
+| **total** | 99.8% | **99.9%** | (rows are rounded; `pipeline.rs` is a sub-row of CPU and not counted again) |
+
+**This is the measurement that settles what the remaining work has to be.** The VI is no
+longer the second-largest bucket — it has gone from 29.0% to 12.2% — and the CPU is now
+**41.0%**, with the five-stage pipeline alone at **28.9%**, about **36 ms of a 125 ms
+frame**. The 60 FPS budget is 16.7 ms, so `pipeline.rs` on its own is more than twice it,
+and the whole CPU crate is **3.1x** it. Deleting every other bucket entirely — VI, RSP,
+RDP, audio, scheduler, libc — would still leave ~51 ms, or 19.5 FPS.
+
+No change that keeps per-cycle dispatch reaches 16.7 ms from there, which is ADR 0011's
+argument stated in measured milliseconds rather than in prospect.
+
 **The boot column is a trap, not a baseline.** `scheduler.rs` reads 0.0% there and 6.4%
 in the render window; the RDP reads 1.9% against 4.6%. A window taken before the title
 draws under-reports precisely the subsystems that dominate once it does. Profile the
@@ -285,8 +323,17 @@ measurements would overstate them:
 - **~1.64x in-model ceiling** — Amdahl over the largest identified in-model targets as
   they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
   `1 / (1 - 0.389)` = 1.637. It assumes both are eliminated *entirely*, so it is an
-  upper bound and not a forecast; part of it has since been collected (the scan-out is
-  now 15.5% of a frame), which is why the measured gain was 1.114x and not more.
+  upper bound and not a forecast. **Most of the scan-out term has since been eliminated**
+  — **35.52 ms down to 7.88 ms**, quoted as durations because the two percentages have
+  different denominators (22.9% of the old frame, 6.3% of the new one) — and the
+  cumulative gain is
+  1.24x against that 1.64x bound, so what remains inside the model is the latch copying
+  and little else.
+
+  Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
+  physical impossibility, since something has to produce the pixels — would leave
+  117.4 ms, or 8.5 FPS. The 16.7 ms budget is below the cost of the CPU pipeline alone,
+  which is the whole argument for ADR 0011: no dispatch-preserving change reaches it.
 
   ADR 0011 quotes **1.66x** for this, from `1 / (1 - 0.396)` with the single-run 23.6%
   scan-out share. The paired share is 22.9%, so the ceiling is 1.64. The difference is
@@ -295,10 +342,6 @@ measurements would overstate them:
   the kind of thing that gets re-quoted, so it is corrected here; ADR 0011 is immutable,
   so its copy is marked superseded in ADR 0012, under *"0011's measured table is
   superseded by the paired re-measurement"*, which lands separately.
-
-  Note what the ceiling does *not* say: eliminating the scan-out **completely** — a
-  physical impossibility, since something has to produce the pixels — would leave
-  117.7 ms, or 8.5 FPS. The 16.7 ms budget is below the cost of the CPU pipeline alone.
 
 ### SM64's VI configuration (measured, not assumed)
 
@@ -310,8 +353,7 @@ tap skip worth 39.1% of the scan-out, and the arithmetic checks out exactly: `yf
 always 0 and `xfrac` alternates 0 / 16, so the four-tap form averaged
 `(1 + 4) / 2 = 2.5` filter chains per output pixel and the skip brings that to
 `(1 + 2) / 2 = 1.5`. The predicted 1.67x on the scan-out against a measured 1.64x
-(35.53 → 21.64 ms) is as
-close as this kind of accounting gets, which is the reason to write it down: a
+(35.52 → 21.64 ms) is as close as this kind of accounting gets, which is the reason to write it down: a
 speed-up that matches a mechanism is a result, and one that does not is a coincidence
 waiting to be explained.
 
