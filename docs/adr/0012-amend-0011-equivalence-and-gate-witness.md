@@ -61,6 +61,9 @@ guarantee anyone depends on — that turning the feature off gives them today's 
 
 ### 2. The differential gate must witness its own completion
 
+*(Adds requirements to 0011's Decision items **3** — the differential gate — and **6**,
+whose bail-out set the witness counts against.)*
+
 ADR 0011 requires the gate to compare architectural state across both schedulers and to
 force each bailout boundary, but says nothing about how the gate reports having
 finished. Without that, **a gate that hangs mid-suite is indistinguishable from a gate
@@ -143,7 +146,8 @@ frame cost by a release figure from a **different window** (before the VI is pro
 versus after). `docs/performance.md` §Measured now carries two-run paired figures for all
 of them, and it is authoritative where the two disagree:
 
-"Pre-fix" and "post-fix" below refer to commit `646a3e0`
+"Pre-fix" and "post-fix" below mean before and after the VI scan-out stopped fetching
+bilinear taps whose weight is zero — commit `646a3e0`
 (*perf(vi): skip zero-weight bilinear taps*, PR #211), the only change between the two
 trees measured.
 The host, build profile, ROM hash, probe, and window are recorded once in
