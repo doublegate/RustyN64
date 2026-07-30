@@ -209,14 +209,14 @@ because the arithmetic that produced them is what makes them wrong.
 
 | quantity | before `646a3e0` | after `646a3e0` | after `6a6adfa` | kind |
 | --- | --- | --- | --- | --- |
-| frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.99 FPS)** | measured, ×2 runs |
+| frame cost | 155.17 / 155.09 ms (6.44 FPS) | 139.34 / 139.28 ms (7.18 FPS) | **125.32 / 125.16 ms (7.98 FPS)** | measured, ×2 runs |
 | `Bus::scanout_scaled` | 35.53 / 35.50 ms (22.9% of a frame) | 21.64 / 21.64 ms (15.5%) | **7.88 / 7.88 ms (6.3%)** | measured, ×2 runs |
 | effect, **step over the previous column** | — | **1.114x** frame, **-39.1%** scan-out | **1.112x** frame, **-63.6%** scan-out | derived from each pair |
 | effect, **cumulative from the baseline** | — | 1.114x frame, -39.1% scan-out | **1.24x** frame, **-77.8%** scan-out | derived |
 
 `646a3e0` skips the zero-weight bilinear taps (PR #211); `6a6adfa` memoizes the filtered
 source pixel across output pixels (PR #216). Cumulatively **155.13 → 125.24 ms** (each the mean of its paired runs above), a
-**1.24x** speed-up, with the scan-out down from **35.5 ms to 7.9 ms**. (The percentage
+**1.24x** speed-up, with the scan-out down from **35.53 ms to 7.88 ms**. (The percentage
 columns above have different denominators — each is a share of *its own* frame — so the
 durations are the comparable figures.)
 
@@ -291,7 +291,7 @@ The table above is the shape *before* the scan-out memo. Re-profiled on `main` a
 | RDP | 4.6% | 6.2% | ~7.8 ms |
 | audio | 2.6% | 3.0% | ~3.8 ms |
 | unresolved, libc, kernel | 5.9% | 6.4% | ~8.0 ms |
-| **total** | 99.8% | **99.8%** | |
+| **total** | 99.8% | **99.9%** | (rows are rounded; `pipeline.rs` is a sub-row of CPU and not counted again) |
 
 **This is the measurement that settles what the remaining work has to be.** The VI is no
 longer the second-largest bucket — it has gone from 29.0% to 12.2% — and the CPU is now
@@ -324,7 +324,7 @@ measurements would overstate them:
   they stood *before* the VI tap fix (latch copy ~16%, VI scan-out 22.9%), i.e.
   `1 / (1 - 0.389)` = 1.637. It assumes both are eliminated *entirely*, so it is an
   upper bound and not a forecast. **Most of the scan-out term has since been eliminated**
-  — **35.5 ms down to 7.9 ms**, quoted as durations because the two percentages have
+  — **35.53 ms down to 7.88 ms**, quoted as durations because the two percentages have
   different denominators (22.9% of the old frame, 6.3% of the new one) — and the
   cumulative gain is
   1.24x against that 1.64x bound, so what remains inside the model is the latch copying
