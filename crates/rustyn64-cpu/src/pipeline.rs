@@ -278,6 +278,23 @@ pub struct Latch {
     pub cop0: Option<Cop0Access>,
 }
 
+/// The inter-stage latch is **copied four times per emulated CPU cycle**, so its size is
+/// a performance fact and not merely a layout detail: at ~1.56 M steps a frame those
+/// copies are ~15% of the frame (`docs/performance.md` §"The latch copies, anatomized").
+///
+/// This pins it. `repr(Rust)` layout is not stable across compiler versions, and the
+/// measured breakdown in that document — 120 bytes, with the six scalars occupying
+/// exactly their naive sum, so no padding is wasted — would otherwise decay silently
+/// into a claim about a toolchain nobody is using any more.
+///
+/// **If this fires, do not just change the number.** Either a field was added, in which
+/// case re-measure and update the breakdown, or the layout algorithm moved, in which
+/// case the "no padding is wasted" conclusion needs re-deriving before it is re-quoted.
+const _: () = assert!(
+    core::mem::size_of::<Latch>() == 120,
+    "Latch changed size; docs/performance.md's copy-cost breakdown must be re-measured"
+);
+
 /// Does a load into `load_rt` interlock with the following instruction?
 ///
 /// `rs` / `rt` are the *raw encoded fields* of the next instruction,

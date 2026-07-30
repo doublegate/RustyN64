@@ -308,7 +308,7 @@ concentrated target are written up below.** The RSP's 11.4% is *not* one of them
 hottest attributable line is 0.65% and its largest entry is 1.17% of inlined code with no
 line at all, so it is thinly spread instruction execution with no structural target —
 which is why ADR 0011 scopes the fast path to the VR4300 first and leaves the RSP for
-later. The same holds for the rest of the CPU: the 41.0% is the **whole** `rustyn64-cpu/`
+later. The same holds for the rest of the CPU: the 41.0% is the **whole** `crates/rustyn64-cpu/`
 share, latch copying included, so setting that 14.66% aside leaves ~26% of genuine
 instruction execution with no concentrated site either.
 
@@ -417,6 +417,14 @@ so `repr(Rust)` has packed the two `bool`s into gaps rather than padding them ou
 is the useful reading of "no padding": there is no field ordering that would make this
 struct smaller.
 
+**That breakdown is now pinned in code**, because `repr(Rust)` layout is not stable
+across compiler versions and this table would otherwise decay into a claim about a
+toolchain nobody is using. `crates/rustyn64-cpu/src/pipeline.rs` carries
+`const _: () = assert!(size_of::<Latch>() == 120, …)` next to the struct; if it fires,
+the instruction is to re-measure rather than to change the number, since either a field
+was added or the layout algorithm moved and the "no padding" conclusion needs
+re-deriving.
+
 **What the byte breakdown adds to 0011's analysis.** The last three fields — **72 of the
 120 bytes** — are *produced at `EX`*. In `ic_rf` and `rf_ex` they are structurally always
 `None`/`WriteBack::None`, so those two latches copy 72 bytes of provably-empty payload,
@@ -485,7 +493,7 @@ which is consistent with the 5.32% the profile attributes to `core::mem`.
 at that commit)
 used to do exactly this and no longer does; its comment records that the `take` was worse than the "no
 allocation" claim above it, because `take` needs `Default` and constructing an `Rsp`
-allocated 8 KiB of DMEM and IMEM **every RCP step**. `Rsp::tick` now *returns* what it
+allocated its 8 KiB of scratch — 4 KiB DMEM and 4 KiB IMEM — **every RCP step**. `Rsp::tick` now *returns* what it
 wants done instead of borrowing its owner. `Rdp` and `Audio` were not converted.
 
 Two candidate routes, neither measured, both **hypotheses**:
@@ -506,7 +514,9 @@ Two candidate routes, neither measured, both **hypotheses**:
   does not need the bus either, so it can be handled before the `take` as well rather
   than being a reason to keep it. The fourth, a partially-written multi-word command
   (`cmd_end - cmd_current < len_bytes`), is **not** decidable without the bus — it reads
-  the opcode from RDRAM to learn the length — so that case must still take.
+  the opcode from RDRAM to learn the length, and the RDP caches neither the opcode nor
+  the length (`Rdp` holds only `cmd_start` / `cmd_current` / `cmd_end`, and `tick`
+  re-reads `word0_hi` every time) — so that case must still take.
 
   `Audio::tick` is different and simpler: it writes `self.last_tick = now`
   unconditionally on entry, so it is *never* idle by this definition and needs the
