@@ -70,8 +70,9 @@ differential gate is a longer-running instance of the same hazard.
 
 The gate must therefore:
 
-- **emit an explicit end-of-suite marker** naming how many **bail-out reasons** were
-  reached and how many comparison points ran. The two counts are asserted differently:
+- **emit an explicit end-of-suite marker** naming how many **distinct bail-out variants**
+  were reached — not how many bail-out *events* occurred — and how many comparison points
+  ran. The two counts are asserted differently:
   - the **reason count** has an expected value and must meet it;
   - the **comparison count** has no meaningful expected value — it depends on how long
     each fixture runs — so the only assertion on it is that it is **not zero**.
