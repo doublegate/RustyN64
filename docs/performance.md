@@ -156,18 +156,22 @@ RUSTYN64_PROBE_ROM="$ROM" \
 #
 # `perf` has to be pointed at the test binary, and cargo names it with a content
 # hash under `target/release/deps/`, so the path is asked for rather than guessed.
+# The test is named explicitly too: `--ignored` alone would profile every ignored
+# test in that binary, and the capture would silently become a profile of something
+# else the day a second one is added.
 # The filter is load-bearing: the stream also carries the frontend `bin` artifact,
 # so taking the last executable points perf at `target/release/rustyn64` instead.
 # Matching on the target *name* keeps it a single path even if more test targets are
 # built later.
 BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
         --no-run --test gameplay_phase_probe --message-format=json \
-      | jq -r 'select(.target.name == "gameplay_phase_probe" and .executable != null)
-             | .executable')
+      | jq -r 'select(.reason == "compiler-artifact"
+                     and .target.name == "gameplay_phase_probe"
+                     and .executable != null) | .executable' | head -n 1)
 test -n "$BIN" || { echo "no test binary — did the build fail?" >&2; exit 1; }
 RUSTYN64_PROBE_ROM="$ROM" \
 RUSTYN64_PROBE_SKIP=900 perf record -F 999 -D 70000 -o perf_play.data -- \
-  "$BIN" --ignored --nocapture
+  "$BIN" does_a_retail_title_reach_a_rendering_phase --ignored --nocapture
 perf report -i perf_play.data -s srcline --full-source-path --no-children -g none
 ```
 
