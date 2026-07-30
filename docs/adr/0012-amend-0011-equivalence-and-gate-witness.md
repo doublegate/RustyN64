@@ -120,8 +120,11 @@ The gate must therefore:
   bail-out boundary was reached", both of which would otherwise look like success. Both
   are **suite-wide**, not per-fixture: a fixture that runs start to finish on the fast
   path without ever handing back is a legitimate and valuable case, and requiring every
-  fixture to bail would make it unwritable. What must not happen is a whole run in which
-  nothing engaged the fast path, or nothing ever left it.
+  fixture to bail would make it unwritable. What must not happen is a whole **unfiltered**
+  run in which nothing engaged the fast path, or nothing ever left it. A filtered run —
+  one fixture under a debugger — cannot satisfy a suite-wide expectation and must not
+  pretend to: it reports that the witness did not apply, and it is the unfiltered run in
+  CI that gates.
 
 The witness is asserted, not printed for a human to notice.
 
@@ -160,7 +163,12 @@ copy of an environment is a second thing to leave stale.
 | scan-out 35.5 ms, 23.6% of a frame | 35.5 ms, 22.9% (pre-fix); 21.6 ms, 15.5% (post) |
 | debug is 7.7x slower | **8.7x**, paired on one tree and one window |
 | required speedup ~9x | ~8.3x from 139.3 ms |
-| in-model ceiling ~1.66x | **~1.64x** — the Amdahl fraction is the *sum* of both targets, latch copying ~16% plus the scan-out, so `1 / (1 - (0.16 + 0.229))` = 1.637 where 0011 had `1 / (1 - (0.16 + 0.236))` = 1.656 — both scan-out shares rounded to three places from `35.5 / 155.1` and `35.5 / 150.5`. Both use the **pre-fix** scan-out share on purpose: the ceiling is what was available to collect when 0011 was written, and part of it has since been collected |
+| in-model ceiling ~1.66x | **~1.64x** — see the note below |
+
+The ceiling's arithmetic, since it is the one row that is not a direct reading: the
+Amdahl fraction is the **sum** of both targets, latch copying ~16% plus the scan-out, so
+`1 / (1 - (0.16 + 0.229))` = 1.637 against 0011's `1 / (1 - (0.16 + 0.236))` = 1.656.
+Both scan-out shares are rounded to three places, from `35.5 / 155.1` and `35.5 / 150.5`.
 
 **The decision does not move.** That is the point of recording the drift rather than
 quietly correcting it: 0011's argument is that ~9x is unreachable inside a per-cycle model
