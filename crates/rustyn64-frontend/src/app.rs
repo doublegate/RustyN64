@@ -132,7 +132,7 @@ impl App {
     }
 
     /// Read a ROM file and hand it to the core.
-    fn load_rom(&self, path: &Path) -> Result<(), AppError> {
+    fn load_rom(&mut self, path: &Path) -> Result<(), AppError> {
         // Reads a plain image or unwraps a `.zip` — ROM sets ship one-ROM-per-zip,
         // so requiring a manual unpack would be friction with no upside.
         let raw = crate::romfile::read_rom(path).map_err(|e| AppError::Rom(e.to_string()))?;
@@ -140,10 +140,31 @@ impl App {
             core.load_rom(&raw)
                 .map_err(|e| AppError::Rom(format!("{e:?}")))?;
         }
-        // Drop the outgoing ROM's last frame and its counters, so the window shows
-        // black until the new ROM produces rather than holding the old picture.
-        self.present.reset();
+        self.blank_presentation();
         Ok(())
+    }
+
+    /// Drop the outgoing ROM's frame — from the handoff **and** from this thread —
+    /// so the window really shows black until the next producer publishes.
+    ///
+    /// There are two traps here and each one on its own leaves the previous ROM's
+    /// last frame on screen, which is why this is a named helper rather than a
+    /// `present.reset()` at each call site:
+    ///
+    /// 1. `PresentBuffer::reset` clears the *handoff*, but `take_into` then returns
+    ///    `None`, so a stale `frame_staging` would keep being uploaded.
+    /// 2. Merely *emptying* `frame_staging` makes the upload **skip** — and the wgpu
+    ///    texture persists between frames, so the stale image would stay on the GPU
+    ///    and keep being sampled.
+    ///
+    /// So the staging buffer is filled with actual black at the default geometry,
+    /// which the next upload writes over the texture.
+    fn blank_presentation(&mut self) {
+        self.present.reset();
+        self.fb_dims = (crate::FB_DEFAULT_W, crate::FB_DEFAULT_H);
+        let len = (self.fb_dims.0 as usize) * (self.fb_dims.1 as usize) * 4;
+        self.frame_staging.clear();
+        self.frame_staging.resize(len, 0);
     }
 
     /// Pack the currently-pressed keys into P1's controller word and publish it
@@ -190,7 +211,7 @@ impl App {
 
     /// Dispatch the actions the egui pass requested (runs AFTER the pass, so
     /// taking the emu lock here never collides with the egui closure).
-    fn dispatch(&self, actions: Vec<MenuAction>, event_loop: &ActiveEventLoop) {
+    fn dispatch(&mut self, actions: Vec<MenuAction>, event_loop: &ActiveEventLoop) {
         for action in actions {
             match action {
                 MenuAction::OpenRom => {
@@ -206,7 +227,7 @@ impl App {
                     if let Ok(mut core) = self.emu.lock() {
                         *core = EmuCore::new(self.config.seed);
                     }
-                    self.present.reset();
+                    self.blank_presentation();
                 }
                 MenuAction::TogglePause => {
                     if let Ok(mut core) = self.emu.lock() {
@@ -220,7 +241,7 @@ impl App {
                     if let Ok(mut core) = self.emu.lock() {
                         core.reset();
                     }
-                    self.present.reset();
+                    self.blank_presentation();
                 }
                 MenuAction::ToggleDebugger => { /* the checkbox already flipped Shell state */ }
                 MenuAction::Quit => event_loop.exit(),

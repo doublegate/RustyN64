@@ -54,6 +54,11 @@ const SPIN_MARGIN: Duration = Duration::from_millis(2);
 /// `sleep(remaining - margin)`, a single oversleep blows past the target, the
 /// precise spin never engages, and the frame lands late. Capping and re-measuring
 /// keeps the wait converging.
+///
+/// Equal to [`SPIN_MARGIN`] **coincidentally**, not by construction — they answer
+/// different questions ("how close before spinning" versus "how long may one nap
+/// be") and the port defines them separately for that reason. Either can be tuned
+/// without the other; do not collapse them into one constant.
 const SLEEP_CHUNK: Duration = Duration::from_millis(2);
 
 /// Frames the pacer will run back-to-back to catch up before giving up and
