@@ -280,9 +280,9 @@ waiting to be explained.
    common-subexpression-eliminates the second call. That is the falsifiable half —
    disassemble `run_until` and count the calls — and it is why re-measuring was judged
    not worth a build. Treat the entry as "no measurable win", not as a number.
-3. **Removing the double latch copy** — unsafe (`dc_stage`'s error branch re-reads
-   `self.ex_dc` *after* `abort_with` stamps it), and `Latch` is already
-   zero-padding-optimal at 120 bytes. Upper bound 1.19x.
+3. **Removing the double latch copy** — unsafe: in `crates/rustyn64-cpu/src/pipeline.rs`,
+   `dc_stage`'s error branch re-reads `self.ex_dc` *after* `abort_with` has stamped it,
+   and `Latch` is already zero-padding-optimal at 120 bytes. Upper bound 1.19x.
 4. **Inlining the VI leaf readers** — `#[inline]` declined by LLVM;
    `#[inline(always)]` made the scan-out **36% worse** (35.5 → 48.4 ms).
 5. **Reordering `vi_divot`'s early-out to test coverage first** — **10% worse**, measured.
