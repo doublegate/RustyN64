@@ -11,7 +11,7 @@ architecture the later phases fill in.
 ### T-01-001 — Cargo workspace, lints, and the pinned toolchain
 
 **Description:** the virtual workspace manifest listing all ten crates, `[workspace.package]`
-(edition 2024, MSRV 1.96, dual licence), `[workspace.lints]` with clippy `pedantic` + `nursery`
+(edition 2024, MSRV 1.96, dual license), `[workspace.lints]` with clippy `pedantic` + `nursery`
 at warn plus `missing_docs` and `unsafe_code`, the release profile, and `rust-toolchain.toml`
 pinning 1.96 with the wasm and embedded targets.
 
@@ -68,13 +68,13 @@ preserves it.
 
 ### T-01-004 — ROM-format detection and header parsing
 
-**Description:** detect and normalise `.z64` (big-endian), `.n64` (little-endian), and `.v64`
+**Description:** detect and normalize `.z64` (big-endian), `.n64` (little-endian), and `.v64`
 (byte-swapped) by magic, parse the cartridge header, and expose the `RomFormat`, `SaveType`, and
 `Cic` enums.
 
 **Acceptance criteria:**
 
-- [x] All three byte orders detected by magic and normalised to native. *(`rustyn64-cart`.)*
+- [x] All three byte orders detected by magic and normalized to native. *(`rustyn64-cart`.)*
 - [x] Header fields parsed; round-trip tests cover each format.
 - [x] The enums exist and are exhaustive for the backends Phase 5 will implement.
 
@@ -108,13 +108,13 @@ release-class events get the full matrix.
 
 ### T-01-006 — Release and Pages automation
 
-**Description:** a `v*` tag builds all three targets, packages archives with licences, generates
+**Description:** a `v*` tag builds all three targets, packages archives with licenses, generates
 `SHA256SUMS`, and publishes a GitHub Release; pushes to `main` publish rustdoc to Pages under
 `/api/`.
 
 **Acceptance criteria:**
 
-- [x] Per-target archives contain the binary plus both licences, `NOTICE`, `README`, `CHANGELOG`.
+- [x] Per-target archives contain the binary plus both licenses, `NOTICE`, `README`, `CHANGELOG`.
 - [x] The tag is checked against the workspace version before anything publishes.
 - [x] Re-running an existing release re-uploads assets rather than erroring.
 - [x] Pages deploys and serves rustdoc. *(live; `/` redirects to `/api/`.)*

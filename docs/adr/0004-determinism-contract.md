@@ -39,7 +39,7 @@ orchestration), never the core synthesis.
 Concretely:
 
 - Power-on CPU/RCP phase comes from a **seeded SplitMix64** (`rustyn64-core::scheduler`), so
-  hardware's genuine indeterminacy is modelled as a *parameter* rather than as live entropy.
+  hardware's genuine indeterminacy is modeled as a *parameter* rather than as live entropy.
   The seed is part of the machine's identity and of any save-state.
 - Reset preserves phase alignment (pinned by the `reset_preserves_phase` unit test).
 - The core never reads wall-clock time, OS entropy, or thread scheduling order, and never
@@ -64,7 +64,7 @@ Concretely:
 - **Reset returns to a reproducible state** regardless of what ran before it.
 - **A source-level guard** rejects `std::time`, `SystemTime`, `Instant::now`,
   `getrandom`, `thread::spawn`, `HashMap` and `HashSet` anywhere in the core
-  crates. This is deliberately *not* behavioural: those dependencies are often
+  crates. This is deliberately *not* behavioral: those dependencies are often
   intermittent, so a run-twice test can pass for months before the first
   divergence. The guard fails on the commit that introduces one.
 
@@ -84,11 +84,11 @@ construct in any core crate fails the fourth with a precise file and line.
 
 ### Negative / costs
 
-- Optimisations that trade reproducibility for speed are permanently off the table in the
+- Optimizations that trade reproducibility for speed are permanently off the table in the
   core: no wall-clock-driven frame skipping, no "catch-up" that varies with host load, no
-  parallelising the three engines against each other. ADR 0006's single-timeline lockstep (superseding ADR 0001) is
+  parallelizing the three engines against each other. ADR 0006's single-timeline lockstep (superseding ADR 0001) is
   partly a consequence of this contract.
-- Every new piece of hidden state must be reachable by the save-state serialiser, or it
+- Every new piece of hidden state must be reachable by the save-state serializer, or it
   becomes a silent divergence source. This is an ongoing tax on every subsystem, not a
   one-time setup.
 - The contract is only as good as its test. Today there is **no determinism regression test** —

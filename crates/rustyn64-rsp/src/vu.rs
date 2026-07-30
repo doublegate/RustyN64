@@ -9,7 +9,7 @@
 //!
 //! Every move here addresses the register by **byte offset**, not by lane, and
 //! the two disagree in ways that matter: `MTC2` with an odd offset straddles two
-//! lanes, and an offset of 15 wraps. Modelling the register as eight `u16`s and
+//! lanes, and an offset of 15 wraps. Modeling the register as eight `u16`s and
 //! converting at the edges is what keeps that expressible — the alternative,
 //! treating a lane as the unit, silently rounds every odd offset.
 
@@ -245,7 +245,7 @@ mod tests {
 /// # The accumulator is one 48-bit register per lane, not three 16-bit ones
 ///
 /// `VSAR` slices it into `ACC_HI` (bits 47..32), `ACC_MD` (31..16) and `ACC_LO`
-/// (15..0), which invites modelling it as three separate halfwords. It is not:
+/// (15..0), which invites modeling it as three separate halfwords. It is not:
 /// the multiply instructions write and accumulate across the full 48 bits, and
 /// the extraction that produces `vd` reads a 32-bit window *spanning* two of
 /// those slices. Splitting the storage makes carries between them disappear.
@@ -972,7 +972,7 @@ mod compute_tests {
     /// `0x7FFF`.
     ///
     /// Note this test's `vs` differs from `VMULF`'s in lane 2 (`0x0010`), which
-    /// is the oracle's own input — kept rather than normalised, so the expected
+    /// is the oracle's own input — kept rather than normalized, so the expected
     /// vectors can be compared against the suite verbatim.
     #[test]
     fn vmulu_matches_the_oracle_vectors() {
@@ -1503,7 +1503,7 @@ impl Rsp {
     /// Eight lanes are computed from a fixed offset pattern around the aligned
     /// address, each byte placed at bit 14. Then only the register **bytes**
     /// `[e, e + min(8, 16 - e))` are written from that temporary — the rest of
-    /// the register is left as it was, which is the partial-write behaviour the
+    /// the register is left as it was, which is the partial-write behavior the
     /// name hides.
     fn lfv(&mut self, address: u32, vt: usize, element: usize) {
         let aligned = address & !7;
@@ -1542,7 +1542,7 @@ impl Rsp {
     /// Four bytes are written at DMEM stride 4 within the aligned window. Which
     /// four source lanes supply them depends on `e` through a fixed table; for
     /// any `e` **not** in the table the bytes are **zero** — a real zero, not a
-    /// wrap, which is the "even 0 for some E" behaviour the suite warns about.
+    /// wrap, which is the "even 0 for some E" behavior the suite warns about.
     fn sfv(&mut self, address: u32, vt: usize, element: usize) {
         // The source-lane table (N64brew / n64-systemtest). `None` -> write 0.
         let lanes: Option<[usize; 4]> = match element {
@@ -1569,7 +1569,7 @@ impl Rsp {
     /// Transcribed from ares. The window is the 16 bytes at `rs & ~7`; the read
     /// pointer starts at an element-and-address-dependent offset and wraps at
     /// the window's end; each iteration fills one lane of the next register in
-    /// the group, the register index rotating mod 8. Modelled and cross-checked
+    /// the group, the register index rotating mod 8. Modeled and cross-checked
     /// in a scratch script before implementation, per the note in
     /// `docs/rsp.md`.
     fn ltv(&mut self, address: u32, vt: usize, element: usize) {
@@ -1943,7 +1943,7 @@ mod rom_tests {
 
     /// The reciprocal ROM is **monotonically decreasing**: it approximates
     /// `1/x` over an increasing divisor, so any entry that rises above its
-    /// predecessor is a construction error rather than a rounding artefact.
+    /// predecessor is a construction error rather than a rounding artifact.
     ///
     /// This is a property test rather than a transcription check — it cannot
     /// prove the values are the hardware's, but it fails loudly for the class
@@ -1991,7 +1991,7 @@ mod rom_tests {
     /// **The inverse-square-root ROM is two interleaved decreasing sequences**,
     /// not one.
     ///
-    /// Odd indices *halve* `a`, so they cover the neighbouring binade and come
+    /// Odd indices *halve* `a`, so they cover the neighboring binade and come
     /// out **larger** than their even predecessors — the table alternates
     /// between roughly 92,000 and 131,000 rather than descending. Asserting a
     /// single monotonic run fails, and my first version of this test asserted
@@ -2013,7 +2013,7 @@ mod rom_tests {
             );
             assert!(
                 rom::inverse_square_root(i + 1) > rom::inverse_square_root(i),
-                "the odd entry at {i} must exceed its even neighbour"
+                "the odd entry at {i} must exceed its even neighbor"
             );
         }
     }
@@ -2065,7 +2065,7 @@ impl Rsp {
                 rom::reciprocal(index as usize)
             };
             let r = (0x10000 | i32::from(entry)) << 14;
-            // The square root halves the renormalising shift, because it is
+            // The square root halves the renormalizing shift, because it is
             // undoing a squaring.
             let back = if sqrt { (31 - shift) >> 1 } else { 31 - shift };
             (r >> back) ^ mask
@@ -2923,7 +2923,7 @@ mod transpose_tests {
 /// Store-side register wrap. Loads shorten on a non-zero element; **stores wrap
 /// the register index and move the full width** (`op_vector_stores.rs:17`). The
 /// expected DMEM below is computed by hand from that rule, not from the code, so
-/// it fails if the store silently adopts the load's shortening behaviour.
+/// it fails if the store silently adopts the load's shortening behavior.
 #[cfg(test)]
 mod store_wrap_tests {
     use super::*;

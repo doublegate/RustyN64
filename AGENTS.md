@@ -71,9 +71,9 @@ Architecture (the load-bearing facts — read `docs/architecture.md`):
   libdragon's `rdpq` — boots on the RSP and **emits a plausible RDP command list** through the
   DPC seam (witnessed byte-for-byte in `tests/microcode.rs`).
 
-The ~93 suite-wide failures that remain are cart/PIF (Phase 5) and the RDP rasteriser (Phase 3).
+The ~93 suite-wide failures that remain are cart/PIF (Phase 5) and the RDP rasterizer (Phase 3).
 `docs/STATUS.md` is authoritative for the current numbers. The next rung is **v0.4.0
-"Rasteriser"** (Phase 3 — the LLE RDP and VI, the first picture). Tagging is the phase-close
+"Rasterizer"** (Phase 3 — the LLE RDP and VI, the first picture). Tagging is the phase-close
 ceremony in VERSION-PLAN (pre-release gate, annotated tag, notes) and belongs on `main` after the
 work lands, not on a feature branch.
 
@@ -91,13 +91,13 @@ may not name `rustyn64-rdp`), which is how `mtc0 DP_END` submits an RDP command 
 
 FP arithmetic runs on a **soft-float core** (`crates/rustyn64-cpu/src/softfloat.rs`), not on
 Rust's `f32`/`f64` operators. That is not gratuitous: the native operators discard the exact
-pre-rounding result, so `inexact`/`underflow` cannot be reported and `FCSR.RM` cannot be honoured.
+pre-rounding result, so `inexact`/`underflow` cannot be reported and `FCSR.RM` cannot be honored.
 It is verified bit-for-bit against those same operators in round-to-nearest over ~100k cases —
-they are the independent oracle, which is why the module implements *IEEE* behaviour and leaves
+they are the independent oracle, which is why the module implements *IEEE* behavior and leaves
 the VR4300's refusal to produce subnormals as a separate layer.
 
 **The RDP and AI are still LLE-shaped stubs; the RSP now executes.** The RDP's DPC command
-registers receive command lists, but nothing downstream rasterises them yet, and the AI does not
+registers receive command lists, but nothing downstream rasterizes them yet, and the AI does not
 play audio. Do not assume any chip *other than the CPU and RSP* executes. A green `cargo test`
 still does not mean a subsystem works — check `docs/STATUS.md`.
 
@@ -129,7 +129,7 @@ run produces zero failures just as convincingly as a passing one). Every `Failed
   **Read `ref-proj/README.md` before copying anything from a reference emulator.** RustyN64 is
   MIT OR Apache-2.0; only ares, cen64, parallel-rdp, parallel-rsp (MIT arm), n64-systemtest,
   libdragon, and PeterLemon-N64 are permissive enough to vendor. simple64/gopher64 (GPLv3),
-  n64-tests (no licence), and angrylion-rdp-plus (**non-commercial MAME licence, despite having
+  n64-tests (no license), and angrylion-rdp-plus (**non-commercial MAME license, despite having
   no `LICENSE` file**) are study-only — compare their outputs, never their source.
 - `n64brew_wiki/` — gitignored offline mirror of the N64brew Wiki, the primary hardware
   reference. Search `n64brew_wiki/markdown/`; browse `n64brew_wiki/html/`. Rebuild or update
@@ -277,7 +277,7 @@ in this repo, which is worth fixing even when the suggested wording is not.
   outright. Nothing fails when such a claim goes stale, so it survives review and is then cited as
   if it described the hardware. Cite the pages actually read, and name the source — "the UM does not
   say" is checkable, "undocumented" is not (§3.3b).
-- **Never invent a value the documentation does not give — and that includes *behaviour*.** The FP
+- **Never invent a value the documentation does not give — and that includes *behavior*.** The FP
   multiplication erratum's trigger is documented and its *output* is not, so `Stepping::Early`
   changes no arithmetic (ledger U-7). A fitted constant makes every later result built on it stop
   being evidence. Invented **side effects** are worse, because a constant at least lands in the
@@ -292,10 +292,10 @@ in this repo, which is worth fixing even when the suggested wording is not.
   ~100 oracle assertions and nine rounds aimed at the wrong subsystem, while the existing test for
   that path asserted only "does not raise when `CU1` is set" — which a no-op satisfies. Assert the
   **effect**: seed the destination so it differs from the expected result in every byte. When
-  adding a decode arm, enumerate the neighbouring funct/opcode space rather than only the encoding
+  adding a decode arm, enumerate the neighboring funct/opcode space rather than only the encoding
   that prompted the change.
 - **Capture the instruction stream, not the state, and correlate the capture.** When a value looks
-  wrong or stale, dump `(pc, word)` around the site before theorising about the unit that produced
+  wrong or stale, dump `(pc, word)` around the site before theorizing about the unit that produced
   it — four register-watching probes failed where one code dump succeeded. Arm the capture on the
   suite's own `Running <test>...` marker so the instruction is provably the failing case's;
   uncorrelated captures produced two confident conclusions here that had to be retracted. Three
@@ -358,7 +358,7 @@ in this repo, which is worth fixing even when the suggested wording is not.
   later timing result unfalsifiable. Currently unmeasured: `M` (memory access time), the
   exception-epilogue cost, CP0I, RDRAM bank-state costs.
 - **NaN classification on the VR4300 is INVERTED from IEEE-754:2008**: significand MSB **set**
-  means *signalling*, so `f32::NAN` (`0x7FC0_0000`) raises Invalid here. This looks like a bug on
+  means *signaling*, so `f32::NAN` (`0x7FC0_0000`) raises Invalid here. This looks like a bug on
   every reading and is not — it is the legacy MIPS convention, corroborated by the processor's own
   default NaN result (`0x7FBF_FFFF`, MSB clear) being quiet only under it. Never "correct" it back
   to IEEE; see ledger **C-12** and the test that asserts `is_snan_f32(f32::NAN)` on purpose.

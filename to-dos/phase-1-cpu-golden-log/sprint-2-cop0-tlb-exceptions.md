@@ -63,7 +63,7 @@ reads or writes, and it is the one where a wrong *width* is invisible until 64-b
 - [x] `Random` decrements per instruction, floors at `Wired`, wraps at 31, reads 31 after cold
       reset, **and is forced to 31 whenever `Wired` is written** (UM §5.4.2 p. 147).
 - [x] `EntryHi.Fill` (bits 61:40) is write-ignored and reads 0.
-- [x] Reserved registers 7, 21–25, 31: behaviour is **undocumented** (ledger U-1). Implement one
+- [x] Reserved registers 7, 21–25, 31: behavior is **undocumented** (ledger U-1). Implement one
       explicit choice, comment it as a guess, and make it a ledger entry — do not let it look
       decided.
 - [x] `PRId.Imp = 0x0B`; the `Rev` field is undocumented (ledger U-3) and must not be invented
@@ -153,7 +153,7 @@ front of it, and the full 32-/64-bit segment map.
 
 - [x] 32 entries, each mapping an even/odd page pair; page sizes 4K…16M via the seven legal
       `PageMask` encodings of UM Table 5-7 p. 149. An illegal mask is **undefined** per the
-      manual — pick a behaviour, comment it, ledger it.
+      manual — pick a behavior, comment it, ledger it.
 - [x] Match rule: `VPN2` match **and** (`G` **or** `ASID` match). **The `V` bit does not
       participate in matching** (UM §5.4.9 p. 155) — a V-checking matcher passes ordinary tests
       and gets TLB-shutdown wrong.
@@ -174,7 +174,7 @@ front of it, and the full 32-/64-bit segment map.
 - [x] `Status.KX`/`SX`/`UX` gate 64-bit addressing and select the **XTLB** refill vector for the
       mode the faulting address belongs to.
 - [x] An address outside any valid region raises Address Error (UM §6.4.7 p. 186).
-- [x] The **micro-ITLB is modelled separately** from the JTLB, with its 3-PCycle refill stall
+- [x] The **micro-ITLB is modeled separately** from the JTLB, with its 3-PCycle refill stall
       (UM §4.6.2 p. 107). A micro-TLB miss is a *stall*; a JTLB miss is an *exception*. Collapsing
       the two does not approximate the cost — it deletes the structure the cost occurs in.
       **If this is descoped, it must be descoped explicitly here**, not by omission.
@@ -195,22 +195,22 @@ front of it, and the full 32-/64-bit segment map.
 **Acceptance criteria:**
 
 - [x] `CACHE` (opcode `0o57`) decodes and executes rather than raising.
-- [x] The I- and D-caches are modelled to the depth the test ROMs actually observe, and **the
+- [x] The I- and D-caches are modeled to the depth the test ROMs actually observe, and **the
       chosen depth is written down with its justification** — the answer is **zero depth**: cache
-      contents are not modelled at all, so `CACHE` is a translating no-op. Sound only because no
+      contents are not modeled at all, so `CACHE` is a translating no-op. Sound only because no
       cache state exists to become stale. Recorded as ledger **D-5**, with the point it stops
       being sound (Phase 5 DMA coherency) stated rather than left to be discovered.
-      **SUPERSEDED by T-11-003 (ledger D-6).** The caches are modelled now, with real contents;
+      **SUPERSEDED by T-11-003 (ledger D-6).** The caches are modeled now, with real contents;
       the boundary this box named came due earlier than it predicted, at n64-systemtest's
       `DCACHE:`/`ICACHE:` groups rather than at DMA coherency. Left standing rather than
       rewritten, because the reasoning was sound while it held and the ledger records the
       supersession the same way.
 - [ ] **Deferred with the cache model.** Cache-miss costs need a cache to miss in; with zero
-      modelled depth there is no miss to charge. The formulas and `M` (ledger C-1) stay recorded
+      modeled depth there is no miss to charge. The formulas and `M` (ledger C-1) stay recorded
       and unimplemented rather than being applied to a cache that does not exist.
-      **Superseded in part, and carried past the Phase 1 close.** The caches *are* modelled now
+      **Superseded in part, and carried past the Phase 1 close.** The caches *are* modeled now
       (T-11-003, ledger D-6), so the premise of this deferral is gone — but the cost is still
-      not charged, because both formulas are parameterised on the unmeasured `M`. It is
+      not charged, because both formulas are parameterized on the unmeasured `M`. It is
       therefore blocked on C-1 rather than on the cache, and moves with it to **Phase 7**.
 - [x] **`M` was not measured, and stays absent.** No real measurement became available, so no
       value was invented. This criterion is met by *not* producing a number.
@@ -365,7 +365,7 @@ faults again. A hot exception vector looks identical to a busy test suite from a
 alone; the thing that distinguishes them is whether `EPC` *moves*, and it never does.
 
 Recording the mistake because it is instructive: the histogram was real evidence and I drew an
-optimistic conclusion from it that one more cheap measurement would have refuted. "Which
+optimiztic conclusion from it that one more cheap measurement would have refuted. "Which
 instruction" was the question the whole session's method was built on, and I stopped one step
 short of asking it.
 
@@ -424,7 +424,7 @@ short of asking it.
 
    **A note on the ELF header at `0x8000_0000`.** The image's first `PT_LOAD` is
    `off=0 vaddr=0x8000_0000 filesz=0x400` — the ELF header and program headers themselves, which
-   the linker maps over the vector region. Loading it is *correct* ELF behaviour and is not the
+   the linker maps over the vector region. Loading it is *correct* ELF behavior and is not the
    bug; hardware never populates that range because IPL3 copies from ROM `0x1000` to
    `0x8000_0400`. It is benign precisely because the suite overwrites the vectors — which is the
    step that is failing.
@@ -472,7 +472,7 @@ short of asking it.
    | 1 | COP0 CO `funct` 0x20-0x3F raised RI | suite never printed a line |
    | 2 | `IP7` latched at power-on (equality, not edge) | `Cause = 0x8010` vs `0x10` |
    | 3 | `Context`/`XContext` gated on TLB exceptions | `Context = 0x0` vs `0x0052_0000` |
-   | 4 | `SP_STATUS` unmodelled, read as 0 | RSP STATUS `0x0` vs `0x1` |
+   | 4 | `SP_STATUS` unmodeled, read as 0 | RSP STATUS `0x0` vs `0x1` |
    | 5 | Cartridge never inserted, only its RDRAM image | every cart read `0x0` |
 
    `StartupTest` and the whole unaligned-access group pass. **`Failed: 0` is not met** — the run
@@ -488,7 +488,7 @@ short of asking it.
    2. **32-bit address sign-extension.** `LW/SW with address not sign extended` expect an
       `AdEL` that we do not raise: `segment()` truncates with `vaddr as u32`, so
       `0x0000_0000_8000_0000` is treated as KSEG0. The check must be **gated on 64-bit addressing
-      mode** (`Status.KX`/`SX`/`UX`), which is not modelled yet — landing it ungated would fault
+      mode** (`Status.KX`/`SX`/`UX`), which is not modeled yet — landing it ungated would fault
       legitimate sign-extended kernel addresses, so `KX` comes first.
    3. **The exception storm.** Whatever drives the abort likely masks further tests; worth
       diagnosing before grinding through the cart list, since the abort may be truncating the run.
@@ -585,13 +585,13 @@ short of asking it.
    The actual work is three steps, in order:
 
    1. Add `fn read_u16(&mut self, addr: u32) -> u16` to `CpuBus`, defaulted from `read_u8` so no
-      existing implementor changes behaviour.
+      existing implementor changes behavior.
    2. Route the CPU's `LH`/`LHU` path through it, so the access width reaches the bus.
    3. Override `read_u16`/`read_u32` on `Bus` for the PI window with the `addr & !1` base and
       `addr & 3` lane.
 
    Step 2 touches the shared memory path, so it is the one to be careful with: every load must
-   keep its current behaviour for RDRAM, SPMEM, and the register windows. That is why this was
+   keep its current behavior for RDRAM, SPMEM, and the register windows. That is why this was
    not attempted at the tail of a long session.
 
    Confirm against the `cart: Read32` cases that currently **pass**, so this does not regress them.
@@ -619,10 +619,10 @@ short of asking it.
    | ~80 | everything else (CACHE, MI, RDP, RE, …) |
 
    **COP1 is 85% of the remaining gap.** The RSP is 10%. Every PI/cart item I have been working
-   through is a rounding error against the FPU — I was optimising the tail because I picked targets
+   through is a rounding error against the FPU — I was optimizing the tail because I picked targets
    by reading failure text rather than by counting it.
 
-   The good news is that this is *plumbing*, not new modelling. `crates/rustyn64-cpu/src/fpu.rs`
+   The good news is that this is *plumbing*, not new modeling. `crates/rustyn64-cpu/src/fpu.rs`
    already implements the arithmetic, comparisons, conversions, rounding modes, and the `MUL`
    erratum; `fpr.rs` implements the `FR` register views. What is missing is the **decode and
    execute wiring**: FP arithmetic still decodes to `Op::Cop1Unimplemented`, which executes as a
@@ -670,7 +670,7 @@ short of asking it.
    - the failures are concentrated in the operations still unwired (`SQRT`, `ABS`, `NEG`, `MOV`,
      the conversions, the `C.cond.fmt` compares and the `BC1*` branches), so a wired `ADD.S` is a
      small share; or
-   - the arithmetic executes correctly but each test *also* asserts exception behaviour, and the
+   - the arithmetic executes correctly but each test *also* asserts exception behavior, and the
      **enabled-trap path is deliberately absent** (see `Pipeline::fp_arith`), so every one still
      fails on the trap even when the value is right.
 
@@ -689,7 +689,7 @@ short of asking it.
    | 25-28 | `CVT.L.D`, `CVT.W.D`, `CVT.W.S` |
 
    The failures are on the **operations just wired**, on their **values** — not on unwired
-   operations, and not on exception behaviour. So neither candidate held.
+   operations, and not on exception behavior. So neither candidate held.
 
    **Root cause: the FPU core ignores `FCSR.RM`.** `fpu::add_s` is literally `a + b`, i.e. Rust's
    round-to-nearest-even, always. The VR4300 has four rounding modes (`RM` 0-3) plus the `FS`
@@ -721,7 +721,7 @@ short of asking it.
    > that is being written.
 
    So a cart write must: latch the 32-bit value; set `PI_STATUS.IOBUSY`; make **every** PI-bus read
-   return the latched value while busy; and ignore further writes until it finalises. Note the PI
+   return the latched value while busy; and ignore further writes until it finalizes. Note the PI
    does not know a device is read-only, so ROM-area writes follow the same path and are simply
    dropped by the ROM.
 
@@ -731,7 +731,7 @@ short of asking it.
    **The decay duration is NOT documented here, and must not be invented.** The
    `cart-writing: Temp value decay` tests bound it only relatively: still visible after 0 loop
    iterations, gone after 110. Turning that into a cycle count requires knowing the loop's cost,
-   and the honest options are to derive the finalisation time from the PI domain timing registers
+   and the honest options are to derive the finalization time from the PI domain timing registers
    (`PGS`/`RLS`/`PWD`/`LAT`, which we do not model) or to leave those four tests failing and say
    so. Implementing the latch **without** a decay would flip them from failing-absent to
    failing-stuck, which is not progress — the previous note in this ticket made exactly that

@@ -19,7 +19,7 @@ They are not interchangeable sources, and conflating them wastes the pass:
 - **RustyNES** is the most mature and furthest ahead. Take **process and infrastructure** from
   it: CI shape, release ceremony, docs-site structure, the `plans/` and `archive/` conventions,
   and the frontend/UX surface. Its accuracy techniques are mostly NES-specific and will not port.
-- **RustySNES** is the closer structural analogue — a second-generation project that inherited
+- **RustySNES** is the closer structural analog — a second-generation project that inherited
   from RustyNES and had to adapt rather than copy. Take **planning shape and honesty mechanisms**
   from it: the phase/sprint skeleton, `VERSION-PLAN.md`, `accuracy-ledger.md`, and how it tracks
   residuals it has not closed. Its coprocessor tiering explicitly does **not** apply here

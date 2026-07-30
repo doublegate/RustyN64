@@ -8,7 +8,7 @@
 //! carries coverage in its output alpha, which `RustyN64` renders as opaque `0xFF`
 //! for display, so alpha is not part of the comparison).
 //!
-//! Covered so far: nearest-neighbour scaling + the active-span/overscan geometry +
+//! Covered so far: nearest-neighbor scaling + the active-span/overscan geometry +
 //! the truncating RGBA5551→8 conversion (slice 1), the 5-bit bilinear lerp (slice 2),
 //! the sqrt gamma curve (slice 3), the PAL geometry (slice 4a), 32-bit source
 //! resampling (slice 4b), the de-dither restore filter (slice 4c), and the AA edge
@@ -39,7 +39,7 @@ fn assert_matches(name: &str) {
 /// 0x400`), so this pins the active-span/overscan geometry: the NTSC 108-px
 /// horizontal overscan makes the first visible column sample source column 8, and
 /// the truncating RGBA5551→8 conversion. Non-vacuous: the source pixel encodes its
-/// `(x, y)` in separate channels, so any mis-addressed sample lands on a wrong colour.
+/// `(x, y)` in separate channels, so any mis-addressed sample lands on a wrong color.
 #[test]
 fn vi_scale_1x_16_matches_angrylion() {
     assert_matches("vi_scale_1x_16");
@@ -105,8 +105,8 @@ fn vi_scale_bilinear_32_matches_angrylion() {
 /// **The de-dither restore filter (slice 4c).** `aa_mode = 0` (reads real coverage),
 /// `dither_filter_enable` (`VI_STATUS = 0x00010003`), 32-bit source, every pixel
 /// fully covered (alpha `0xFF` → `cvg = 7`), 1:1 scale. So `restore_filter32` runs
-/// everywhere: over the 3×3-minus-centre 8 taps, each channel is nudged ±1 toward the
-/// neighbour's top-5-bit value. Non-vacuous — the output differs from the raw sample
+/// everywhere: over the 3×3-minus-center 8 taps, each channel is nudged ±1 toward the
+/// neighbor's top-5-bit value. Non-vacuous — the output differs from the raw sample
 /// (e.g. output col 0 = `0x1b`, not the raw `0x20`, because the row-0 top taps read 0).
 #[test]
 fn vi_dedither_32_matches_angrylion() {
@@ -117,8 +117,8 @@ fn vi_dedither_32_matches_angrylion() {
 /// (`VI_STATUS = 0x00000003`), 32-bit source where every 4th column is partial
 /// (`cvg = 0`). A partial pixel takes `video_filter32`: it gathers the fully-covered
 /// pixels among its 6 diagonal/two-away taps, takes the penultimate min/max per
-/// channel (`vi_video_max`), and pulls the centre toward their midpoint by
-/// `(7 - cvg)/8`. The partial pixels are a fixed dark colour (not the gradient's local
+/// channel (`vi_video_max`), and pulls the center toward their midpoint by
+/// `(7 - cvg)/8`. The partial pixels are a fixed dark color (not the gradient's local
 /// midpoint), so the filter changes them measurably at **interior** pixels too, not
 /// just the top boundary — a raw-fetch mutation fails everywhere. 1:1 scale so no lerp.
 #[test]
@@ -128,8 +128,8 @@ fn vi_aa_edge_32_matches_angrylion() {
 
 /// **The divot median filter (slice 4e).** `divot_enable` (bit 4), `aa_mode = 0`
 /// (`VI_STATUS = 0x00000013`), the same 32-bit every-4th-column-partial source. A
-/// pixel whose 3 horizontal neighbours are not all fully covered (the partial columns
-/// and their immediate neighbours) takes the per-channel median of the post-AA values;
+/// pixel whose 3 horizontal neighbors are not all fully covered (the partial columns
+/// and their immediate neighbors) takes the per-channel median of the post-AA values;
 /// the rest pass through. Non-vacuous — the output differs from the non-divot AA-edge
 /// result at those pixels (the median ≠ the AA blend). 1:1 scale so no lerp.
 #[test]
@@ -161,8 +161,8 @@ fn vi_aa_edge_16_matches_angrylion() {
 /// **The 16-bit divot median filter (slice 4f).** `divot_enable` (bit 4), `type = 2`
 /// (`VI_STATUS = 0x00000012`), the every-4th-column-partial hidden-plane pattern plus a
 /// non-monotonic fully-covered probe triplet (source columns 17/18/19, row 10) so the
-/// all-fully-covered early-return is observable: its centre lands on an output pixel
-/// with the median differing from the centre. Confirms the divot path over 16-bit
+/// all-fully-covered early-return is observable: its center lands on an output pixel
+/// with the median differing from the center. Confirms the divot path over 16-bit
 /// coverage. Deleting the early-return computes the median and fails the vector.
 #[test]
 fn vi_divot_16_matches_angrylion() {

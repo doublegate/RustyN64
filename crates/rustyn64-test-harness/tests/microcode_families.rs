@@ -4,7 +4,7 @@
 //! structural rather than technical. The criterion is that commercial titles'
 //! own graphics microcode — F3DEX, F3DEX2 and the per-studio variants — drives
 //! our RDP to a picture. That microcode is proprietary and ships *inside*
-//! commercial ROMs, which ADR 0008 forbids committing. There is no licence-clean
+//! commercial ROMs, which ADR 0008 forbids committing. There is no license-clean
 //! substitute that exercises the real thing: the rdpq path (`tests/microcode.rs`)
 //! is a genuine LLE microcode test and is CI-gated, but rdpq is *not* F3DEX, so
 //! it cannot stand in for this.
@@ -53,9 +53,9 @@ const SAMPLE_EVERY: u64 = 60;
 
 /// A title counts as rendering only above **both** thresholds.
 ///
-/// Neither alone is evidence. Commands without lit pixels is the "rasterises to
+/// Neither alone is evidence. Commands without lit pixels is the "rasterizes to
 /// black" state several titles sat in; lit pixels without commands is
-/// uninitialised RDRAM scanned out, which scored 90%+ on titles producing pure
+/// uninitialized RDRAM scanned out, which scored 90%+ on titles producing pure
 /// noise (ledger R-18). The pair is still only a *filter* — the committed
 /// screenshots exist because the only real proof is looking.
 const MIN_COMMANDS: u64 = 1_000;

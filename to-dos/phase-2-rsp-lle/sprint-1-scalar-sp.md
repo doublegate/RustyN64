@@ -10,7 +10,7 @@ DMEM/IMEM, DMAs to and from RDRAM, and halts and interrupts correctly through th
 ### T-21-001 — DMEM/IMEM and the SP address space
 
 **Description:** implement the two 4 KiB on-chip memories and the CPU-visible address space that
-lets the VR4300 read and write them directly, with the wrapping behaviour hardware has.
+lets the VR4300 read and write them directly, with the wrapping behavior hardware has.
 
 **Acceptance criteria:**
 
@@ -37,7 +37,7 @@ double-buffered DMA the hardware supports.
       bits in `SP_STATUS`.
 - [ ] DMA is double-buffered: a second transfer can be queued while one is in flight, and the
       full/busy bits report it.
-- [ ] `SP_SEMAPHORE` implements its test-and-set behaviour.
+- [ ] `SP_SEMAPHORE` implements its test-and-set behavior.
 - [ ] Writing `SP_PC` sets the start address, and clearing halt begins execution there.
 
 **Dependencies:** T-21-001
@@ -56,7 +56,7 @@ stride form and the alignment rules, taking the correct time so polling loops be
 - [ ] Both directions transfer correctly at every legal length.
 - [ ] The stride form transfers the right rows with the right skip.
 - [ ] Alignment rules match hardware, including what happens on a misaligned request.
-- [ ] Transfers take realistic time; `SP_DMA_BUSY` clears only when they finish.
+- [ ] Transfers take realiztic time; `SP_DMA_BUSY` clears only when they finish.
 
 **Dependencies:** T-21-002
 **Reference:** `docs/rsp.md` §DMA
@@ -67,7 +67,7 @@ stride form and the alignment rules, taking the correct time so polling loops be
 ### T-21-004 — The scalar unit ISA
 
 **Description:** implement the RSP's MIPS subset — no 64-bit operations, no TLB, DMEM/IMEM
-addressing only — with the RSP's own branch and delay-slot behaviour.
+addressing only — with the RSP's own branch and delay-slot behavior.
 
 **Acceptance criteria:**
 
@@ -86,7 +86,7 @@ addressing only — with the RSP's own branch and delay-slot behaviour.
 
 ### T-21-005 — Halt, break, and the MI interrupt path
 
-**Description:** wire `SP_STATUS`'s halt, broke, and interrupt-on-break behaviour to the MI line
+**Description:** wire `SP_STATUS`'s halt, broke, and interrupt-on-break behavior to the MI line
 so the CPU's wait loops terminate, preserving the lockstep property that an SP event is visible
 to the very next CPU step.
 

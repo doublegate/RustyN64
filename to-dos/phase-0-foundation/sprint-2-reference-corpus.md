@@ -2,7 +2,7 @@
 
 **Phase:** Phase 0 — Foundation
 **Sprint goal:** the hardware reference, the study clones, and the test-ROM corpora are acquired,
-licence-classified, and organised, with commercial ROMs structurally unable to enter the
+license-classified, and organized, with commercial ROMs structurally unable to enter the
 repository.
 **Estimated duration:** 1 week
 
@@ -30,20 +30,20 @@ media, with revision-based incremental refresh.
 
 ---
 
-### T-02-002 — Reference emulators cloned and licence-classified
+### T-02-002 — Reference emulators cloned and license-classified
 
 **Description:** shallow-clone the reference emulators and test suites into the gitignored
-`ref-proj/`, verify each licence by reading the actual file, and record a vendor-ok or
+`ref-proj/`, verify each license by reading the actual file, and record a vendor-ok or
 study-only decision per repo.
 
 **Acceptance criteria:**
 
 - [x] Eleven clones with commit hashes recorded. *(ares, cen64, gopher64, simple64, parallel-rdp,
       parallel-rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon.)*
-- [x] Every licence verified against the upstream file, not a badge.
+- [x] Every license verified against the upstream file, not a badge.
 - [x] Each classified vendor-ok or study-only, with the reasoning written down.
 - [x] The non-obvious traps are called out: angrylion ships **no** `LICENSE` but is
-      non-commercial MAME-licensed; n64-tests has no licence at all, which grants nothing.
+      non-commercial MAME-licensed; n64-tests has no license at all, which grants nothing.
 - [x] `AGENTS.md` carries the summary so it is read before anything is copied.
 
 **Dependencies:** none
@@ -52,7 +52,7 @@ study-only decision per repo.
 
 ---
 
-### T-02-003 — Test-ROM corpora, tiered by licence
+### T-02-003 — Test-ROM corpora, tiered by license
 
 **Description:** stage the test-ROM corpora in two tiers — a committed tier of permissively
 licensed suites and a gitignored external tier for everything else — and build the committed
@@ -64,7 +64,7 @@ suite from source where no prebuilt exists.
       *(sha256 recorded; upstream publishes no prebuilt ROM.)*
 - [x] External tier staged: krom (196 ROMs), dillon-n64-tests (26), 240p (built from source),
       commercial (66).
-- [x] Every corpus has a verified licence and a recorded reason for its tier.
+- [x] Every corpus has a verified license and a recorded reason for its tier.
 - [x] The 240p build recipe is documented, including that dependency install and build must
       happen in one container because `/opt/libdragon` does not survive `--rm`.
 

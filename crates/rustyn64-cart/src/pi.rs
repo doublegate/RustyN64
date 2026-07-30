@@ -26,7 +26,7 @@
 //! - **`RD` and `WR` are named from the cartridge's point of view**, so
 //!   `PI_WR_LEN` — the one everything actually uses — moves data **cart →
 //!   RDRAM**. Getting them the wrong way round makes the first ROM load write
-//!   the ROM's own image over itself with uninitialised RDRAM.
+//!   the ROM's own image over itself with uninitialized RDRAM.
 
 use serde::{Deserialize, Serialize};
 
@@ -164,7 +164,7 @@ impl Pi {
             // The BSD domain timing registers store and read back (masked to
             // their field widths). The length registers read back as 0x7F on
             // hardware (N64brew *Peripheral Interface* §PI_RD_LEN/PI_WR_LEN);
-            // returning 0 for those is a documented simplification, not modelled.
+            // returning 0 for those is a documented simplification, not modeled.
             addr => {
                 if let Some((d, field)) = Self::dom_field(addr) {
                     match field {
@@ -286,7 +286,7 @@ mod tests {
 
     /// `RD`/`WR` are named from the **cartridge's** point of view, so `WR_LEN`
     /// moves cart → RDRAM. Reversing them makes the first ROM load overwrite the
-    /// image with uninitialised RDRAM.
+    /// image with uninitialized RDRAM.
     #[test]
     fn wr_len_moves_cart_to_dram_and_rd_len_the_other_way() {
         let mut pi = Pi::new();

@@ -5,7 +5,7 @@ chip→crate map, and version policy. Everything else defers to it.
 
 **Current release:** **v0.8.0 "Breadth"** — this commit is the v0.8.0 release; the `v0.8.0`
 tag is cut from it on merge to `main`. (v0.4.1 was a documentation-only patch over
-v0.4.0 "Rasteriser".)
+v0.4.0 "Rasterizer".)
 
 **Phases 1, 2, 3, 4, 5, 6, and 7 are complete.** Phase 7 is the accuracy battery and the
 commercial-corpus breadth pass: the battery reports a real **56 probes / 100%** across
@@ -21,8 +21,8 @@ scoped:
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
 | Native picture + sound + control on a real ROM (**Phase 6** committable gate) | **met** — committed homebrew ROMs show a real rendered frame through the LLE VI scan-out (`real_rom_frame`, a verified golden), play deterministic PCM through the AI (`audio_play_rom`), and read the pad through the SI joybus; the frontend presents `Bus::scanout` / the AI drain / SI input, not a test pattern | `cargo test -p rustyn64-test-harness --test real_rom_frame --test audio_play_rom` |
-| Save-state restore continues bit-identically (**Phase 6** capstone) | **met** — the whole `System` is serde-serialisable; a two-run trace compare (`tests/savestate.rs`) proves snapshot→continue→restore→continue is bit-identical on a homebrew ROM (committable) and on a booted **commercial** ROM (full RSP/RDP/AI/cart machine, local-only). Rewind and run-ahead are byte-identical to a plain `run_frame` when off | `cargo test -p rustyn64-test-harness --test savestate` |
-| A commercial ROM is playable natively **with a picture** (VERSION-PLAN's literal cut criterion) | **partially met (ledger R-18)** — **superseded 2026-07-29**: this row previously said a commercial title "scans out no frame", which is now false. **Paper Mario renders a real frame** through the full LLE path (retail HLE boot -> game code -> its microcode on the LLE RSP -> DPC seam -> LLE RDP -> `Bus::scanout_scaled`), committed at `screenshots/paper-mario-first-commercial-frame.png` — 87 distinct RGBA5551 values, fully lit on both scan-out paths, held frames 120-270. So the pipeline is **not** the gap. **MET 2026-07-29 — Super Mario 64 renders its TITLE SCREEN** (`screenshots/super-mario-64-title.png`): Mario's head, textured cap, over the tiled *SUPER MARIO 64* background, **125,278 RDP commands**, 138,474/148,125 px lit at 625x237, viewed and confirmed. The two defects that blocked it were **not in the RDP**: an interrupt across an `ERET` was charged to the `ERET`, livelocking the CPU (#189), and the PIF answered as a connected controller on **all four** joybus channels, so `osContInit` saw four pads on a one-pad console and SM64 halted in its own assert (#190). Banjo-Kazooie also renders real 3D geometry (0 -> 133,625 commands) with an open colour-cast issue. **Corpus census, 2026-07-29: 29 of 66 staged titles render** (>1000 RDP commands AND >1000 lit pixels) — Mario Kart 64, Star Fox 64, Wave Race 64, GoldenEye 007, Blast Corps, Bomberman 64/Hero, Perfect Dark, Kirby 64, Ocarina of Time, Super Smash Bros., Resident Evil 2, Turok, Mario Golf and others. **24 issue zero RDP commands** (Banjo-Tooie, Conker, Donkey Kong 64, Diddy Kong Racing, F-Zero X, Jet Force Gemini, the Star Wars titles, 1080 ...) and the remainder issue commands but scan out nothing. What remains is **per-title coverage**, not the pipeline. The census requires **both** terms deliberately: Rayman 2 and Namco Museum 64 report **zero** RDP commands with 123,540 and 137,681 lit pixels — uninitialised RDRAM scanned out, which a lit-pixel-only metric would have counted as successes (ledger R-18). The earlier text on this row (Paper Mario as the first frame; SM64 emitting none) is retained above as the historical record. v0.7.0 shipped on the demonstrated-playable path, not a faked commercial pass | `cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored` (local) |
+| Save-state restore continues bit-identically (**Phase 6** capstone) | **met** — the whole `System` is serde-serializable; a two-run trace compare (`tests/savestate.rs`) proves snapshot→continue→restore→continue is bit-identical on a homebrew ROM (committable) and on a booted **commercial** ROM (full RSP/RDP/AI/cart machine, local-only). Rewind and run-ahead are byte-identical to a plain `run_frame` when off | `cargo test -p rustyn64-test-harness --test savestate` |
+| A commercial ROM is playable natively **with a picture** (VERSION-PLAN's literal cut criterion) | **partially met (ledger R-18)** — **superseded 2026-07-29**: this row previously said a commercial title "scans out no frame", which is now false. **Paper Mario renders a real frame** through the full LLE path (retail HLE boot -> game code -> its microcode on the LLE RSP -> DPC seam -> LLE RDP -> `Bus::scanout_scaled`), committed at `screenshots/paper-mario-first-commercial-frame.png` — 87 distinct RGBA5551 values, fully lit on both scan-out paths, held frames 120-270. So the pipeline is **not** the gap. **MET 2026-07-29 — Super Mario 64 renders its TITLE SCREEN** (`screenshots/super-mario-64-title.png`): Mario's head, textured cap, over the tiled *SUPER MARIO 64* background, **125,278 RDP commands**, 138,474/148,125 px lit at 625x237, viewed and confirmed. The two defects that blocked it were **not in the RDP**: an interrupt across an `ERET` was charged to the `ERET`, livelocking the CPU (#189), and the PIF answered as a connected controller on **all four** joybus channels, so `osContInit` saw four pads on a one-pad console and SM64 halted in its own assert (#190). Banjo-Kazooie also renders real 3D geometry (0 -> 133,625 commands) with an open color-cast issue. **Corpus census, 2026-07-29: 29 of 66 staged titles render** (>1000 RDP commands AND >1000 lit pixels) — Mario Kart 64, Star Fox 64, Wave Race 64, GoldenEye 007, Blast Corps, Bomberman 64/Hero, Perfect Dark, Kirby 64, Ocarina of Time, Super Smash Bros., Resident Evil 2, Turok, Mario Golf and others. **24 issue zero RDP commands** (Banjo-Tooie, Conker, Donkey Kong 64, Diddy Kong Racing, F-Zero X, Jet Force Gemini, the Star Wars titles, 1080 ...) and the remainder issue commands but scan out nothing. What remains is **per-title coverage**, not the pipeline. The census requires **both** terms deliberately: Rayman 2 and Namco Museum 64 report **zero** RDP commands with 123,540 and 137,681 lit pixels — uninitialized RDRAM scanned out, which a lit-pixel-only metric would have counted as successes (ledger R-18). The earlier text on this row (Paper Mario as the first frame; SM64 emitting none) is retained above as the historical record. v0.7.0 shipped on the demonstrated-playable path, not a faked commercial pass | `cargo test -p rustyn64-test-harness --release --test commercial_boot -- --ignored` (local) |
 
 **The earlier phases' exit criteria all remain met** (unchanged oracle results). Phase 5, for
 reference, delivers the cartridge + I/O boundary — the
@@ -30,7 +30,7 @@ PI bus (BSD domain timing), the SI joybus, all four save backends, the CIC hands
 boot paths**: the copyright-clean **HLE boot** (default, CI-able) and a **faithful real-PIF
 boot** that runs the console's real IPL1/IPL2 from the PIF ROM and verifies the IPL2 checksum
 against the CIC (off by default, local-only, never CI-gated — the PIF ROM is copyrighted). Its
-committable gate is met; its commercial-boot capstone is characterised honestly:
+committable gate is met; its commercial-boot capstone is characterized honestly:
 
 | Criterion | Result | Reproduce |
 | --- | --- | --- |
@@ -105,7 +105,7 @@ not the same as a wired gate.
   errata reproduced-not-corrected, and a `SysAD` transaction model that cannot
   complete inside its address phase.
 - `rustyn64-rsp` and `rustyn64-rdp` **execute**: the RSP runs real microcode
-  (scalar + full vector unit) and the RDP rasterises the command list through the
+  (scalar + full vector unit) and the RDP rasterizes the command list through the
   texture / combiner / blender / coverage pipeline with VI scan-out. `rustyn64-audio`
   (AI) **implements the interface** (Phase 4, Sprint 1) — the register block at
   `0x0450_0000`, the two-deep DMA FIFO, the derived DAC rate, the interrupt-on-start,
@@ -136,16 +136,16 @@ actually stands.
 | Repository | `github.com/doublegate/RustyN64`, **public**. Version-controlled since 2026-07-19; before that the tree had no git history of its own. |
 | CI | **Green, verified.** All jobs pass on `ubuntu`/`macOS`/`windows`: `setup`, `test` (fmt + clippy + test + `no_std`), `rustdoc` (`-D warnings`, an independent job so a doc break cannot ride in behind a green test job), `test-roms`, `no-commercial-roms`, `wasm-bindgen-pin`. Split light/full: the `test-roms` job and the macOS/Windows matrix run only on push-to-main, the merge queue, `release/*` PRs, dispatch, and a weekly cron. |
 | Docs site | **Live** — <https://doublegate.github.io/RustyN64/>. rustdoc publishes to `/api/`; `/` is reserved for the Phase 6 wasm demo and currently redirects. |
-| Release | `release.yml` builds all three targets, packages archives with licences, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0` through `v0.8.0` are all tagged and released (`v0.2.0` onward published checksummed three-target binaries). |
+| Release | `release.yml` builds all three targets, packages archives with licenses, generates `SHA256SUMS`, and publishes on a `v*` tag. Guarded so the tag must match the workspace version. Exercised for real: `v0.1.0` through `v0.8.0` are all tagged and released (`v0.2.0` onward published checksummed three-target binaries). |
 | wasm | Compiles for `wasm32-unknown-unknown` **and has a browser entry point** (`#[wasm_bindgen(start)]` in `crates/rustyn64-frontend/src/wasm.rs`, `web/index.html`); `trunk build` produces a 2D-canvas demo that boots a homebrew ROM and blits the VI scan-out. The full in-browser winit/wgpu/egui shell is roadmap. |
 | Hardware reference | `n64brew_wiki/` — offline mirror of the N64brew Wiki (324 pages, 96 media, gitignored). Rebuild with `scripts/mirror_n64brew_wiki.py`. |
-| Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licences vary and several forbid copying** — read `ref-proj/README.md` first. |
+| Reference emulators | `ref-proj/` — 11 study clones (ares, cen64, gopher64, simple64, parallel-rdp/rsp, angrylion, n64-systemtest, n64-tests, libdragon, PeterLemon). **Licenses vary and several forbid copying** — read `ref-proj/README.md` first. |
 
 ## Test-ROM corpora
 
-Full provenance and licence rules in `tests/roms/README.md`.
+Full provenance and license rules in `tests/roms/README.md`.
 
-| Corpus | Licence | Tier | Staged |
+| Corpus | License | Tier | Staged |
 | --- | --- | --- | --- |
 | `n64-systemtest` | MIT | committed | 1 ROM, 2.7 MB — built from source |
 | `krom` (PeterLemon) | Unlicense | external | 196 ROMs, 182 MB |
@@ -198,7 +198,7 @@ produced for subnormal operands and results, for `FS = 1` with underflow or
 inexact enabled, for MSB-clear NaN operands, and for out-of-range integer
 conversions (ledger C-13); the arithmetic runs on a soft-float core
 (`crates/rustyn64-cpu/src/softfloat.rs`) that produces exact IEEE flags and
-honours all four `FCSR.RM` modes, verified bit-for-bit against Rust's native
+honors all four `FCSR.RM` modes, verified bit-for-bit against Rust's native
 operators over 100,000 cases; enabled FP traps raise `Exception::FloatingPoint`,
 leave `fd` unwritten, do not accumulate the sticky `Flags`, and do not retire;
 and the compares and conversions decode and execute — **all sixteen
@@ -212,7 +212,7 @@ them; `SQRT` (funct 4) was the last, wired to `pipeline::fp_sqrt` in T-13-005.
 `MOV` alone cost ~100 failures, because a *decoded-but-no-op* instruction is
 invisible to `cargo test` and the compiler emits one at every FP call boundary.
 That pattern has cost two separate investigations; when adding a decode arm,
-enumerate the neighbouring funct space rather than only the encoding that
+enumerate the neighboring funct space rather than only the encoding that
 prompted the change.
 | RDP LLE (software reference rasterizer) + VI scan-out | **done** — texture / combiner / blender / coverage pipeline; 164 conformance vectors bit-match Angrylion; a real ROM renders a golden frame (T-33-006) | Phase 3 |
 | AI audio DMA double-buffer | **done** — registers, FIFO, derived DAC rate, IRQ-on-start, delayed-carry bug (Sprint 1); the real mixer microcode produces PCM on the RSP (Sprint 2); the frontend drain + resampler landed in Phase 6 | Phase 4 |
@@ -260,8 +260,8 @@ entropy, threads and unordered collections anywhere in the core.
 | n64-systemtest, **CPU/COP0/TLB/COP1** categories (Phase 1's criterion) | **yes** — ROM committed, and the runner with it | **MET: `Failed: 0`**, across 917 tests started. Reproduce with `cargo test -p rustyn64-test-harness --release --test systemtest -- --ignored`. **90** assertions still fail suite-wide, down from 413 (and from 93 before the Phase 5 cart/PIF/SI work); **none are RSP-prefixed** (the RSP category is Phase 2's criterion and is now 0), leaving the RDP rasterizer (Phase 3), the MI's RDRAM repeat mode, and the remaining cart/PIF corners |
 | n64-systemtest, **RSP** category (Phase 2's criterion) | **yes** — same runner | **MET: `Failed: 0`** across 917 tests started — every RSP-prefixed test passes (verified by dumping per-test failures; 0 begin with `RSP`). The full VU ISA, vector load/store, reserved opcodes, `BREAK`-in-delay-slot, and the DPC registers landed in #41–#44 |
 | ParaLLEl-RDP fuzz suite (RDP bit-exactness) | source cloned, suite not set up | not started |
-| Accuracy battery (`AccuracyScorer::default_battery`) | **yes** — 56 probes across two oracle suites: 43 Angrylion RDP rasteriser vectors + 13 Angrylion VI scan-out vectors (expected values are the oracle's, never our own output; RDP probes are byte-for-byte, VI probes are RGB-only since the 4th byte is coverage) | **100% (56/56)** — asserted by `default_battery_matches_the_oracle`; both suites are asserted to contribute, and an empty battery now scores 0%, not a vacuous 100% |
-| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | **first frame MET** (T-31-005) — a synthetic RDP FILL list rendered through the full command-decode → FILL → VI scan-out path is pinned byte-exact against a committed golden hash (`--test golden_frame`). Real-ROM krom/240p goldens await cartridge boot (Phase 5). **A commercial-cartridge frame is now captured** — `screenshots/paper-mario-first-commercial-frame.png` (R-18) — as a viewed artefact, not yet a byte-pinned golden |
+| Accuracy battery (`AccuracyScorer::default_battery`) | **yes** — 56 probes across two oracle suites: 43 Angrylion RDP rasterizer vectors + 13 Angrylion VI scan-out vectors (expected values are the oracle's, never our own output; RDP probes are byte-for-byte, VI probes are RGB-only since the 4th byte is coverage) | **100% (56/56)** — asserted by `default_battery_matches_the_oracle`; both suites are asserted to contribute, and an empty battery now scores 0%, not a vacuous 100% |
+| Visual golden / screenshots | **yes** — krom + 240p + commercial staged | **first frame MET** (T-31-005) — a synthetic RDP FILL list rendered through the full command-decode → FILL → VI scan-out path is pinned byte-exact against a committed golden hash (`--test golden_frame`). Real-ROM krom/240p goldens await cartridge boot (Phase 5). **A commercial-cartridge frame is now captured** — `screenshots/paper-mario-first-commercial-frame.png` (R-18) — as a viewed artifact, not yet a byte-pinned golden |
 
 The distinction matters: "oracle available" means the ROM is on disk; it says
 nothing about whether the emulator can execute it. Both must be true before a
@@ -286,7 +286,7 @@ matrix.
 Save-type coverage target (per-game DB resolved): EEPROM 4k/16k, SRAM, FlashRAM,
 Controller Pak (`docs/cart.md`). All five backends have regression ROMs staged
 under `tests/roms/external/commercial/`, one folder per backend, with save types
-resolved by MD5 against the mupen64plus catalogue rather than guessed. **All four
+resolved by MD5 against the mupen64plus catalog rather than guessed. **All four
 backends are implemented and round-trip byte-for-byte** (Phase 5, v0.6.0); the
 save-type DB lookup itself (identity only) is a Phase-7 item (`T-CART-02`).
 
@@ -302,7 +302,7 @@ save-type DB lookup itself (identity only) is a Phase-7 item (`T-CART-02`).
      every 3. **Implemented** (T-11-001). ADR 0001's 93.75 MHz tick with its 3:2
      fractional accumulator is gone from the tree.
   2. The **SysAD command/data split** at SClock, 62.5 MHz (ADR 0007). Note this is
-     *coarser* than one PClock, so it is not sub-cycle resolution. **Modelled**
+     *coarser* than one PClock, so it is not sub-cycle resolution. **Modeled**
      (T-11-008) — the transaction exists and cannot complete in its address
      phase, but the scheduler does not yet step the RCP between phases (Sprint 2).
   3. **Resolution finer than one PClock** — the deferred ADR 0005 refactor. Does

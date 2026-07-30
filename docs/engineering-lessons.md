@@ -43,10 +43,10 @@ own right. First, the accuracy payoff was real: 100% versus 94.24% on their orac
 performance story is easy to misreport — and I misreported it here in an earlier revision of this
 document. Their direct A/B, same host and session, put the one-clock model **6–8% slower** in
 end-to-end frame time, while its *isolated CPU loop* got ~35% faster; the cost is entirely
-bus-side. Later model-independent optimisation (LTO, lookup tables) brought the one-clock build
+bus-side. Later model-independent optimization (LTO, lookup tables) brought the one-clock build
 below the legacy build's original absolute time — but legacy was never re-measured with those
-same optimisations, so quoting that as "~9% faster overall" compares an optimised build against
-an unoptimised one.
+same optimizations, so quoting that as "~9% faster overall" compares an optimized build against
+an unoptimized one.
 
 **The meta-lesson: a number that conveniently refutes the main objection to a decision you have
 already made deserves more scrutiny than one that supports it, not less.** The throughput cost of
@@ -110,7 +110,7 @@ clock* is invariant under a uniform shift — moving both endpoints moves nothin
 shape are guaranteed to fail, and they are indistinguishable from promising attempts until tried.
 
 **How it went wrong before.** Five successive re-phasings of one timing track were implemented and
-rolled back before the class of test was recognised as immune to that entire family of fix.
+rolled back before the class of test was recognized as immune to that entire family of fix.
 
 **What it means here.** N64 timing tests overwhelmingly measure *differences*: `Count`/`Compare`
 deltas, DMA completion relative to an interrupt, VI line counts between frames. Before attempting
@@ -234,7 +234,7 @@ n64-systemtest.
 
 **Practice adopted.** A homegrown test ROM must state its source of truth (hardware doc section,
 n64brew wiki page, hardware capture) in a comment at the top. One whose expected value came from
-"what our emulator currently does" is a regression pin, and must be labelled as such rather than
+"what our emulator currently does" is a regression pin, and must be labeled as such rather than
 presented as an accuracy test.
 
 ### 2.6 Pin ROM identity by hash, and re-verify the input before debugging the emulator
@@ -247,7 +247,7 @@ The local dump turned out to be a fan-translation hack rather than an original c
 emulator had been right the whole time; the "gap" was ROM sourcing.
 
 **What it means here.** The commercial corpus is 66 personal dumps, every one MD5-matched against a
-catalogue when staged. That is the mitigation — but it only works if the check is *repeated* when
+catalog when staged. That is the mitigation — but it only works if the check is *repeated* when
 a title misbehaves rather than assumed to hold forever. A file can also be replaced in place.
 
 **Practice adopted.** When a single title fails while others in its class pass, re-verify its hash
@@ -282,7 +282,7 @@ pre-store value. This masquerades as an emulator bug in whatever produced the va
 nothing." The frame contradicted it (34 instruction rows had been drawn, so the ROM ran to
 completion), and disassembly confirmed the address was right. The value was in the write-back
 D-cache the whole time; reading through it (`Dcache::hits` + `Dcache::read`) gave the real
-**304 180** — a 5.42× differential, not a zero. An hour was nearly spent theorising a VI-timing
+**304 180** — a 5.42× differential, not a zero. An hour was nearly spent theorizing a VI-timing
 mechanism that did not exist.
 
 **Practice adopted.** When a harness reads emulated memory to score a result, classify the address
@@ -366,7 +366,7 @@ uncertain (all four are open questions in `docs/architecture.md`), and each is e
 ### 3.3b "Undocumented" is a claim about a document, and it decays
 
 **The pattern.** A note that some constant is undocumented gets written once, then **cited**
-rather than re-checked. Unlike a claim about behaviour, nothing ever fails when it is wrong — no
+rather than re-checked. Unlike a claim about behavior, nothing ever fails when it is wrong — no
 test goes red, no ROM diverges — so it survives indefinitely and spreads. Worse, it *licenses* a
 fitted constant, and a fitted constant standing in for a documented one looks exactly like
 evidence.
@@ -445,8 +445,8 @@ investigation chased threading, run-ahead, audio, pacing, and achievements at le
 load path was suspected at all. The core had been correct the entire time.
 
 **What it means here.** We already depend on this class of file. `docs/cart.md` states that save
-type is DB-resolved rather than header-read, and the commercial corpus was organised by save types
-resolved via MD5 against the mupen64plus catalogue; region and CIC variant resolve similarly. On
+type is DB-resolved rather than header-read, and the commercial corpus was organized by save types
+resolved via MD5 against the mupen64plus catalog; region and CIC variant resolve similarly. On
 N64 the DB is genuinely authoritative for save type — the header has no reliable field — so the
 answer is not "stop using a DB", it is "bound what the DB is allowed to decide".
 
@@ -458,7 +458,7 @@ answer is not "stop using a DB", it is "bound what the DB is allowed to decide".
   the determinism contract and every accuracy gate DB-immune by construction.
 - Therefore a bug that reproduces through the frontend but not headless is a load-path problem
   until proven otherwise. Check the DB, the overrides, and save-type resolution *before*
-  theorising about timing.
+  theorizing about timing.
 - Diff the **full** machine state between the failing frontend run and a headless replay, per
   frame. A partial hash (RAM only, framebuffer only) can hide a divergence living in a field that
   only later leaks into the hashed region.
@@ -498,7 +498,7 @@ output is compared against — at which point its errors are undetectable.
 **What it means here.** This is already ADR 0002 policy: the software reference RDP is the oracle
 and the wgpu-compute backend is validated against it, never the reverse. It is recorded here
 because it is a *discipline* that erodes under performance pressure, not a decision that stays made
-on its own. The same applies to optimisation generally — profile before optimising, and never
+on its own. The same applies to optimization generally — profile before optimizing, and never
 accept a speedup that has not been shown to preserve output.
 
 ---
@@ -507,12 +507,12 @@ accept a speedup that has not been shown to preserve output.
 
 ### 4.1 Do not write a version number before it exists
 
-**The pattern.** Labelling in-flight work with the next version number, before checking what has
-actually shipped, produces a large mislabelling to unwind at release time.
+**The pattern.** Labeling in-flight work with the next version number, before checking what has
+actually shipped, produces a large mislabeling to unwind at release time.
 
-**How it went wrong before.** A body of work was labelled throughout the changelog, docs, and dozens
+**How it went wrong before.** A body of work was labeled throughout the changelog, docs, and dozens
 of code comments with a version one ahead of reality, because an earlier version had never actually
-been tagged. Every occurrence had to be relabelled across dozens of files.
+been tagged. Every occurrence had to be relabeled across dozens of files.
 
 **What it means here.** This project had the same latent condition until very recently: `v0.1.0`
 existed in the manifest and the README badge while no tag existed at all.

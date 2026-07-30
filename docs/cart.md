@@ -11,7 +11,7 @@ This doc is the SPEC, not history — update it in the same PR as the code.
 This subsystem is the cartridge and I/O boundary: the **Peripheral Interface (PI)**
 DMA path to the cart ROM and PI-bus saves; the **PIF + CIC** boot/lockout
 handshake; the **Serial Interface (SI)** joybus path to controllers, Controller
-Paks, and serial EEPROM. Board behaviour lives behind the `Cartridge` trait, not
+Paks, and serial EEPROM. Board behavior lives behind the `Cartridge` trait, not
 in the CPU (`docs/architecture.md` fact 5).
 
 ## Interfaces
@@ -100,8 +100,8 @@ RustyN64 has **two boot paths** (ADR 0009), both implemented:
   never CI-gated** (it needs the copyrighted PIF ROM, never committed). Installs the
   real IPL1/IPL2 at `0x1FC0_0000` and runs the CPU from the reset vector
   `0xBFC0_0000`: IPL1 → IPL2 (checksum-verified against the CIC) → the cart's IPL3.
-  The PIF-SM5's boot behaviours (seed hand-off, ROM lockout, checksum acquire/run)
-  are modelled behaviourally from `PIF-NUS.md`; the SM5 firmware is not run
+  The PIF-SM5's boot behaviors (seed hand-off, ROM lockout, checksum acquire/run)
+  are modeled behaviorally from `PIF-NUS.md`; the SM5 firmware is not run
   (accuracy-ledger **C-33**). Validated locally across 6102/6103/6105 CICs.
 
 ### PIF + CIC lockout

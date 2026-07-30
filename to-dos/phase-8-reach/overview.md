@@ -33,7 +33,7 @@ In-scope:
 
 Out-of-scope:
 
-- Anything that changes core behaviour when disabled. If a feature cannot be additive, it does
+- Anything that changes core behavior when disabled. If a feature cannot be additive, it does
   not land in this phase.
 - Mobile platforms and a libretro core: both are plausible later, neither is in the v1.0 line.
 - HLE microcode fast paths. Still barred by ADR 0002, and this phase is not a loophole.

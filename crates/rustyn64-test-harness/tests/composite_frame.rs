@@ -4,7 +4,7 @@
 //! *multi-primitive* scene end to end — a FILL-mode background rectangle plus a
 //! 1-cycle shaded triangle drawn over it — through the RDP and the VI scan-out,
 //! and pins the result against a committed golden hash. It exercises the
-//! rasteriser features the Sprint-3 slices added (FILL, cycle-type switching, the
+//! rasterizer features the Sprint-3 slices added (FILL, cycle-type switching, the
 //! combiner, sub-pixel-coverage shaded triangles) composed into one frame, and
 //! guards the whole compose → scan-out path against silent drift.
 //!

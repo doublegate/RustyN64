@@ -411,7 +411,7 @@ pub fn dispatch(
     //    but the hardware oracle pins a definite value: n64-systemtest's `tlb64`
     //    group triggers an AdEL from a 64-bit load and asserts
     //    `EntryHi == (VPN2 << 13) | (R << 62)` from the faulting address (ledger
-    //    R-20). "Undefined" in the manual is a licence, not a guarantee of
+    //    R-20). "Undefined" in the manual is a license, not a guarantee of
     //    non-writing, and the oracle wins (ADR 0005). This matches how Context /
     //    XContext are already filled on an address error two blocks up -- EntryHi
     //    was the one register wrongly held back. The old worry that a stale

@@ -4,7 +4,7 @@
 //! a **16 KiB instruction cache** with 32-byte lines and an **8 KiB write-back
 //! data cache** with 16-byte lines (UM §11.2, Tables 11-1/11-2).
 //!
-//! # Why they are modelled at all
+//! # Why they are modeled at all
 //!
 //! They were a deliberate no-op until now (accuracy ledger D-5): with no cache
 //! contents, invalidate and write-back had nothing to act on, which is
@@ -21,7 +21,7 @@
 //!
 //! This is a **deviation, not a simplification that is strictly safer**. Software
 //! that observes aliasing — or that relies on an `Index_*` operation selecting a
-//! line by *virtual* index on a TLB-mapped page — sees different behaviour here,
+//! line by *virtual* index on a TLB-mapped page — sees different behavior here,
 //! because translation preserves only the low 12 bits while the D-cache index
 //! reaches bit 12 and the I-cache bit 13. What is bounded is the tested scope:
 //! every test that motivated this module operates through KSEG0, where the two
@@ -40,7 +40,7 @@
 //!
 //! The D-cache's write-back ("dirty") bit is **not** in `TagLo`, so a clean and a
 //! dirty valid line are indistinguishable to `Index_Load_Tag`. That is hardware
-//! behaviour, not an omission — see [`Dcache::load_tag`].
+//! behavior, not an omission — see [`Dcache::load_tag`].
 
 use serde::{Deserialize, Serialize};
 

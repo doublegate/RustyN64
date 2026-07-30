@@ -50,7 +50,7 @@ fn snapshot(sys: &System) -> Snapshot {
 
 mod alloc_hash {
     /// A stable content hash. FNV-1a: order-sensitive, no allocation, and — the
-    /// point here — **not** `DefaultHasher`, whose output is randomised per
+    /// point here — **not** `DefaultHasher`, whose output is randomized per
     /// process and would make this test pass or fail at random.
     pub type Hash = u64;
 
@@ -79,7 +79,7 @@ fn run_once(seed: u64, ticks: u64) -> Option<Snapshot> {
 #[test]
 fn the_same_seed_produces_a_bit_identical_machine() {
     let Some(a) = run_once(0x1234_5678, 50_000) else {
-        eprintln!("SKIP: {BASIC_Z64} not staged (external tier, no licence)");
+        eprintln!("SKIP: {BASIC_Z64} not staged (external tier, no license)");
         return;
     };
     let b = run_once(0x1234_5678, 50_000).expect("second run");
@@ -127,7 +127,7 @@ fn reset_returns_to_a_reproducible_state() {
 
 /// The core must contain no wall-clock, OS-entropy or thread dependency.
 ///
-/// A source-level guard rather than a behavioural one: those dependencies are
+/// A source-level guard rather than a behavioral one: those dependencies are
 /// often *intermittent*, so a run-twice test can pass for months before the
 /// first divergence. This fails on the commit that introduces one.
 #[test]

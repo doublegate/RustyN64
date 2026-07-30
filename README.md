@@ -27,7 +27,7 @@ coprocessors, and a hard determinism contract.
 > **Every core subsystem executes, and the shell presents the real machine.** Phase 1 delivered the
 > complete VR4300 (`n64-systemtest Failed: 0` on CPU/COP0/TLB/COP1, 0-diff golden trace vs ares);
 > Phase 2 the **LLE RSP** (`Failed: 0` on the RSP category, libdragon's `rdpq` microcode booting
-> through the DPC seam); Phase 3 the **LLE RDP rasteriser + VI scan-out** (bit-matching Angrylion
+> through the DPC seam); Phase 3 the **LLE RDP rasterizer + VI scan-out** (bit-matching Angrylion
 > across **164 conformance vectors**, a real ROM rendering a committed golden frame); Phase 4 the
 > **AI audio** (the libdragon mixer microcode producing golden PCM on the LLE RSP, a real ROM
 > playing it through the AI); Phase 5 the **cartridge boot + saves** (PI/SI/PIF/CIC + all four save
@@ -40,7 +40,7 @@ coprocessors, and a hard determinism contract.
 > committed **homebrew** ROMs through the real LLE VI/AI/SI paths, and save-state restore is
 > bit-identical (proven on a booted commercial ROM). A **commercial** title boots and executes real
 > code but does **not** yet reach a rendered frame — the cross-subsystem VI-vblank / RI-register /
-> F3DEX gap tracked as accuracy-ledger **R-18**, deferred to the Phase 3/7 rasteriser + microcode
+> F3DEX gap tracked as accuracy-ledger **R-18**, deferred to the Phase 3/7 rasterizer + microcode
 > work. Where a subsystem is still a stub it is a no-op `TODO(...)` body rather than a `todo!()`
 > panic, so **a green test run does not mean a subsystem works**.
 >
@@ -54,7 +54,7 @@ coprocessors, and a hard determinism contract.
 RustyN64 applies the accuracy-first architecture proven in its two sibling projects to a
 markedly harder machine. The N64 is not an 8- or 16-bit console with a CPU and a video chip: it
 is two large chips on a unified Rambus memory pool, with a programmable SIMD coprocessor running
-game-supplied microcode and a fixed-function rasteriser fed by a command list.
+game-supplied microcode and a fixed-function rasterizer fed by a command list.
 
 **Key differentiators:**
 
@@ -67,12 +67,12 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
   which genuinely run off a different crystal, keep a fractional accumulator (ADR 0006).
 - **LLE, never HLE, in the core.** The N64 let every studio ship custom microcode, so
   signature-matching HLE is per-game-fragile and mis-renders mid-frame effects. The RSP executes
-  the real instruction stream and the RDP rasterises the real command list. Audio falls out free,
+  the real instruction stream and the RDP rasterizes the real command list. Audio falls out free,
   because the audio microcode runs on the same LLE core — there is no per-game audio HLE
   (ADR 0002).
 - **Determinism as a hard contract.** Same seed, ROM, and input sequence yield a bit-identical
   framebuffer and audio. Power-on CPU/RCP phase — genuinely indeterminate on hardware — is
-  modelled as a *seeded* parameter rather than live entropy, so it is reproducible and
+  modeled as a *seeded* parameter rather than live entropy, so it is reproducible and
   save-stateable (ADR 0004).
 - **Honest status reporting.** This README, `docs/STATUS.md`, and the accuracy tables all
   distinguish "the oracle ROM is staged" from "the gate passes". The CPU and RSP gates now pass as
@@ -90,7 +90,7 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
 | **Canonical 187.5 MHz master clock** | **Working** — one incremented counter; CPU/RCP/`Count` derived from it, seeded power-on phase, reset-preserves-phase; pinned by a residue-invariant test (ADR 0006) |
 | **Bus owns all mutable state** | **Working** — RDRAM + every chip + MI lines; five narrow per-chip traits; `core::mem::take` split-borrow stepping |
 | **One-directional crate graph** | **Working** — exactly one permitted chip-to-chip edge (`rdp` → `cart`, for `RdramBus`) |
-| **ROM format handling** | **Working** — `.z64` / `.n64` / `.v64` detection and byte-order normalisation, header parse, save-type and CIC enums |
+| **ROM format handling** | **Working** — `.z64` / `.n64` / `.v64` detection and byte-order normalization, header parse, save-type and CIC enums |
 | **VR4300 five-stage pipeline** | **Working** — four inter-stage latches, reverse cascade, operand bypass, imprecise load interlock, delay slots and branch-likely (ADR 0007) |
 | **VR4300 MIPS III integer set** | **Working** — incl. the 64-bit `D*` forms, unaligned `LWL`/`LWR`/`LDL`/`LDR`, `LL`/`SC`, and the documented errata reproduced rather than corrected |
 | **COP0, exceptions, interrupts** | **Working** — full register file, exception epilogue and vectors, `ERET`, `Count`/`Compare` timer, MI interrupt line |
@@ -135,7 +135,7 @@ game-supplied microcode and a fixed-function rasteriser fed by a command list.
   borrows `&mut Bus`; each chip sees only the narrow trait it needs. Chips are stepped with a
   `core::mem::take` split-borrow — no allocation, no `Rc`/`RefCell`.
 - **One cart model, no board tiering.** Unlike the NES with its hundreds of mappers, the N64 has
-  a single cart parameterised by save type, CIC variant, and region — so there is no board tier
+  a single cart parameterized by save type, CIC variant, and region — so there is no board tier
   matrix and no honesty gate here (ADR 0003).
 
 ### Test infrastructure
@@ -150,7 +150,7 @@ retrofitted:
   cart/PIF/MI (Phase 5) and the residual RDP-category assertions.
 - **External corpora** (gitignored) — PeterLemon/krom (196 ROMs), Dillon's n64-tests (26), the
   240p Test Suite (built from source in a container), and a 66-ROM commercial regression corpus
-  organised by save type, with save types resolved by MD5 against the mupen64plus catalogue
+  organized by save type, with save types resolved by MD5 against the mupen64plus catalog
   rather than guessed.
 - **Three-layer ROM guard** — commercial ROMs cannot enter the repository. `.gitignore` covers
   the ordinary case, a pre-commit hook covers `git add -f` (which bypasses `.gitignore`
@@ -263,7 +263,7 @@ Three of those facts, in brief:
 | --- | --- |
 | `rustyn64-cpu` | NEC VR4300 (MIPS III, TLB, FPU, SysAD) |
 | `rustyn64-rsp` | RSP — scalar unit + vector unit, DMEM/IMEM, downloadable microcode |
-| `rustyn64-rdp` | RDP rasteriser + VI scan-out |
+| `rustyn64-rdp` | RDP rasterizer + VI scan-out |
 | `rustyn64-audio` | AI DAC + sample DMA |
 | `rustyn64-cart` | PI cart + PIF/CIC boot + SI + saves |
 | `rustyn64-core` | The Bus + canonical master-clock scheduler tie crate |
@@ -278,7 +278,7 @@ Three of those facts, in brief:
 crates/         Cargo workspace: the crates above
 docs/           Subsystem specs, ADRs, and STATUS.md (single source of truth)
 ref-docs/       Immutable deep-research N64 hardware reference
-ref-proj/       Gitignored study clones of reference emulators (licence-classified)
+ref-proj/       Gitignored study clones of reference emulators (license-classified)
 n64brew_wiki/   Gitignored offline mirror of the N64brew Wiki
 tests/roms/     Committed permissive corpus + gitignored external/ (never committed)
 scripts/        The wiki mirror tool and the commercial-ROM guard
@@ -308,7 +308,7 @@ nothing about whether the emulator can execute it.
 
 Where the hardware documentation is silent, or contradicts itself, the project records that
 rather than guessing quietly: [`docs/accuracy-ledger.md`](docs/accuracy-ledger.md) tracks measured
-constants with their provenance, genuinely undocumented behaviour awaiting a hardware pin,
+constants with their provenance, genuinely undocumented behavior awaiting a hardware pin,
 deliberate deviations, and contradictions **within the vendor manual itself**. A measured constant
 is never tuned to make a ROM pass — the moment one is, every later timing result built on it stops
 being evidence.
@@ -325,7 +325,7 @@ being evidence.
 **No headline performance measurements are published yet**, and any would be premature while
 whole subsystems (AI audio, cart boot) are still stubbed and no full-speed run path exists. The
 strategy is recorded in [`docs/performance.md`](docs/performance.md): correctness first, then
-accelerate validated layers. The software reference RDP — now the working rasteriser — lands
+accelerate validated layers. The software reference RDP — now the working rasterizer — lands
 before any wgpu-compute backend, and stays the oracle that backend is graded against (ADR 0002).
 
 ---
@@ -392,7 +392,7 @@ entry point** (a 2D-canvas demo built with `trunk`). "Playable" is honestly scop
 and control are demonstrated on the committed **homebrew** ROMs, and save-state restore is
 bit-identical (proven on a booted commercial ROM); a **commercial** title boots and executes but does
 not yet reach a rendered frame — the VI/RI/F3DEX gap tracked as ledger **R-18**, deferred to the
-Phase 3/7 rasteriser + microcode work. The earlier phases remain met: Phase 5 (cart boot + all four
+Phase 3/7 rasterizer + microcode work. The earlier phases remain met: Phase 5 (cart boot + all four
 save backends; HLE and real-PIF boot; n64-systemtest 93 → 90), Phase 4 (audio — the real libdragon
 mixer microcode produces golden PCM; a ROM plays it through the AI), Phase 3 (RDP conformance
 bit-matches Angrylion across 164 vectors; a real ROM renders a golden frame), Phase 2 (RSP-category
@@ -424,14 +424,14 @@ title frame that R-18 defers). The release ladder is
 Nine phases. **Phases 0–6 are complete**; **Phase 7 is next**:
 
 - **Phase 0 — Foundation** *(complete)* — workspace, CI, the Bus and scheduler, and the acquired
-  and licence-classified reference corpus.
+  and license-classified reference corpus.
 - **Phase 1 — CPU golden log** *(complete, v0.2.0)* — the VR4300 to a 0-diff ares trace and
   n64-systemtest `Failed: 0` on CPU/COP0/TLB/COP1. The integer core, COP0, the TLB, the exception
   model, and a soft-float COP1 are all in.
 - **Phase 2 — RSP LLE** *(complete, v0.3.0)* — the scalar and vector units running real microcode;
   n64-systemtest `Failed: 0` on the RSP category, and libdragon's `rdpq` microcode emitting an RDP
   command list through the DPC seam.
-- **Phase 3 — RDP LLE + VI** *(complete, v0.4.0)* — the software reference rasteriser and scan-out;
+- **Phase 3 — RDP LLE + VI** *(complete, v0.4.0)* — the software reference rasterizer and scan-out;
   first picture. 164 conformance vectors bit-match Angrylion and a real ROM renders a golden frame.
 - **Phase 4 — AI audio** *(complete, v0.5.0)* — the AI interface + timing; the real libdragon
   mixer microcode runs on the LLE RSP and produces verified PCM, resampled to the host by the frontend.
@@ -534,7 +534,7 @@ If you use RustyN64 in academic research, please cite:
              a one-directional no_std chip-crate graph, and a hard determinism contract;
              pure-Rust winit/wgpu/cpal/egui frontend. As of v0.7.0 the VR4300 and the LLE
              RSP are complete and verified against n64-systemtest and an ares golden trace,
-             the LLE RDP rasteriser and VI scan-out bit-match Angrylion across 164
+             the LLE RDP rasterizer and VI scan-out bit-match Angrylion across 164
              conformance vectors with a real ROM rendering a committed golden frame, the RSP
              audio microcode mixes verified PCM through the AI, a commercial cartridge boots
              through the real IPL1/IPL2/IPL3 chain (HLE and faithful real-PIF paths) to game

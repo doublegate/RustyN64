@@ -9,7 +9,7 @@
 //! # Why the write layout differs from the read layout
 //!
 //! `SP_STATUS` reads as a flag word and writes as a list of **set/clear
-//! commands** — two bits per flag. That is not an encoding quirk to normalise
+//! commands** — two bits per flag. That is not an encoding quirk to normalize
 //! away: it exists so either processor can change one flag with a single store,
 //! without the read-modify-write that would race the other. Collapsing the two
 //! layouts into one would reintroduce exactly the race the hardware design
@@ -439,7 +439,7 @@ mod tests {
     ///
     /// Quoted from n64-systemtest's own header comment, and it checks five
     /// consecutive reads. The value written is irrelevant — the suite writes 0,
-    /// 1 and `0xFFFF_FFFF` and expects identical behaviour from each.
+    /// 1 and `0xFFFF_FFFF` and expects identical behavior from each.
     #[test]
     fn the_semaphore_is_taken_by_reading_it() {
         for written in [0u32, 1, 0xFFFF_FFFF] {

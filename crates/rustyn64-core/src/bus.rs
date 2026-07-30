@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::vi::{self, Vi};
 
-/// Expand a 5-bit colour channel to 8 bits, replicating the high bits into the
+/// Expand a 5-bit color channel to 8 bits, replicating the high bits into the
 /// low so 0x1F maps to 0xFF (not 0xF8) — the standard RGBA5551 → RGBA8 widening.
 /// Masks to 5 bits first, so an out-of-range argument cannot overflow the shift.
 const fn expand5(v5: u8) -> u8 {
@@ -89,7 +89,7 @@ const fn vi_integer_sqrt(a: u32) -> u32 {
 fn vi_video_max(pixels: &[u32]) -> (u32, u32) {
     debug_assert!(
         !pixels.is_empty(),
-        "vi_video_max needs at least the centre pixel"
+        "vi_video_max needs at least the center pixel"
     );
     let n = pixels.len();
     let (mut posmax, mut posmin) = (0usize, 0usize);
@@ -206,12 +206,12 @@ pub struct RcpRegs {
     /// Plain storage — writes stick and reads return them. That is enough for the
     /// one thing that actually depends on it today: the cartridge's IPL3 reads
     /// `RI_SELECT` and branches on whether RDRAM has already been brought up
-    /// (ledger R-18). The documented read *oddities* are deliberately NOT modelled
+    /// (ledger R-18). The documented read *oddities* are deliberately NOT modeled
     /// (see R-22): `RI_CURRENT_LOAD` is write-only on hardware and its read
     /// returns a collection of bits from other registers, and `RI_ERROR` /
     /// `RI_BANK_STATUS` reflect controller state rather than the last write.
     /// Nothing exercises those yet and there is no oracle for them — the suite has
-    /// no RI group — so they stay honest storage rather than invented behaviour.
+    /// no RI group — so they stay honest storage rather than invented behavior.
     pub ri: [u32; 8],
     // The SP, DP (DPC), VI, AI, PI, SI, MI, and RI register blocks are all decoded
     // (see the `is_*_register` methods + the read/write dispatch). Still undecoded:
@@ -257,9 +257,9 @@ pub struct Bus {
     /// hardware has none, and offering them changes the guest's control flow.
     emux_enabled: bool,
     /// The value a PI direct-I/O write latched, visible to every PI-bus read
-    /// until the write finalises. See [`Bus::pi_tick`].
+    /// until the write finalizes. See [`Bus::pi_tick`].
     pi_write_latch: u32,
-    /// RCP cycles remaining before the latched PI write finalises. Zero is idle.
+    /// RCP cycles remaining before the latched PI write finalizes. Zero is idle.
     pi_write_countdown: u32,
     /// `SI_DRAM_ADDR` — the RDRAM side of a PIF-RAM SI DMA.
     si_dram_addr: u32,
@@ -356,8 +356,8 @@ impl Bus {
     ///
     /// # The duration is bounded by the oracle, not derived from hardware
     ///
-    /// How long finalisation takes depends on the PI domain timing registers
-    /// (`LAT`/`PWD`/`PGS`/`RLS`), which are not modelled. n64-systemtest bounds
+    /// How long finalization takes depends on the PI domain timing registers
+    /// (`LAT`/`PWD`/`PGS`/`RLS`), which are not modeled. n64-systemtest bounds
     /// it only *relatively*: the latched value must still be visible after 0
     /// loop iterations and gone after 110. [`Bus::PI_WRITE_CYCLES`] sits inside
     /// those bounds; it is **not** a hardware measurement. Accuracy ledger C-9.
@@ -433,18 +433,18 @@ impl Bus {
     /// Base of RSP DMEM. IMEM follows at `+0x1000`.
     pub const SPMEM_BASE: u32 = 0x0400_0000;
 
-    /// RCP cycles a PI direct-I/O write stays latched before finalising.
+    /// RCP cycles a PI direct-I/O write stays latched before finalizing.
     ///
-    /// **This number is fitted, not measured.** Hardware finalisation depends on
+    /// **This number is fitted, not measured.** Hardware finalization depends on
     /// the PI domain timing registers (`LAT`/`PWD`/`PGS`/`RLS`), which are not
-    /// modelled; n64-systemtest bounds the latch only relatively (visible after
+    /// modeled; n64-systemtest bounds the latch only relatively (visible after
     /// 0 decay-loop iterations, gone after 110). 100 was the best of the values
     /// tried against the suite.
     ///
     /// Treat that provenance as a warning, not a credential. The suite still
     /// fails `Write32, Read32 (same location)` on its **second** read, where
-    /// hardware has finalised and we have not — a gap no single constant closes,
-    /// because the real duration is not constant. Modelling the domain registers
+    /// hardware has finalized and we have not — a gap no single constant closes,
+    /// because the real duration is not constant. Modeling the domain registers
     /// is the actual fix. Accuracy ledger C-9.
     pub const PI_WRITE_CYCLES: u32 = 100;
 
@@ -488,7 +488,7 @@ impl Bus {
             0 => {
                 // Only the bits that are storage are kept. `ClearDP` (bit 11)
                 // is an action rather than a mode, and the repeat/EBus/Upper
-                // modes are RDRAM-transfer behaviour this emulator does not
+                // modes are RDRAM-transfer behavior this emulator does not
                 // model -- see the note in `docs/rsp.md`.
                 self.rcp.mi_mode = (self.rcp.mi_mode & !0x7F) | (val & 0x7F);
                 if val & (1 << 11) != 0 {
@@ -541,7 +541,7 @@ impl Bus {
     }
 
     /// Base of the DP command registers (`0x0410_0000`): START, END, CURRENT,
-    /// STATUS, then the (unmodelled) CLOCK/BUSY/PIPE/TMEM counters.
+    /// STATUS, then the (unmodeled) CLOCK/BUSY/PIPE/TMEM counters.
     pub const DP_REGS_BASE: u32 = 0x0410_0000;
 
     /// Is this one of the eight DP command (`DPC_*`) registers?
@@ -605,7 +605,7 @@ impl Bus {
 
     /// Base of the PIF address space — the PIF **boot ROM** (IPL1/IPL2) window
     /// `0x1FC0_0000..0x1FC0_07C0`, mapped only during the real-PIF boot; under HLE
-    /// no ROM is installed and it reads back 0 (the prior behaviour).
+    /// no ROM is installed and it reads back 0 (the prior behavior).
     const PIF_ROM_BASE: u32 = 0x1FC0_0000;
 
     /// The 64-byte PIF RAM window (`0x1FC0_07C0..0x1FC0_0800`) — the tail of the
@@ -874,9 +874,9 @@ impl Bus {
         let maxhpass = if hres_clamped { hres } else { hres - 7 };
         // Interlace/serrate (`VI_CTRL` bit 6) is deferred to R-6: this slice models
         // only the progressive field, so the height is `vres`. Angrylion doubles it
-        // (`vres << serrate`) and doubles the source walk per field — modelling only
+        // (`vres << serrate`) and doubles the source walk per field — modeling only
         // the height doubling here would fabricate a half-rate double-height frame,
-        // which is worse than not modelling interlace at all, so serrate is ignored
+        // which is worse than not modeling interlace at all, so serrate is ignored
         // until R-6 lands the field cadence and a vector for it.
         let width = (maxhpass - minhpass).max(0);
         let height = vres.max(0);
@@ -962,7 +962,7 @@ impl Bus {
     }
 
     /// Read the raw 32-bit RGBA8888 source word at `(x, y)` (for coverage + the
-    /// filter neighbour taps). Big-endian, bounds-safe. Ledger R-5.
+    /// filter neighbor taps). Big-endian, bounds-safe. Ledger R-5.
     fn vi_read32(&self, origin: u32, src_stride: i32, x: i32, y: i32) -> u32 {
         let idx = src_stride.wrapping_mul(y).wrapping_add(x);
         let byte = origin.wrapping_add_signed(idx.wrapping_mul(4));
@@ -1002,7 +1002,7 @@ impl Bus {
         // (RGBA8888); any other value would silently take the 32-bit branch.
         debug_assert!(bpp == 2 || bpp == 4, "vi_read_cov: bpp must be 2 or 4");
         if bpp == 2 {
-            // The hidden-bits halfword shares the colour pixel's byte address.
+            // The hidden-bits halfword shares the color pixel's byte address.
             let idx = src_stride.wrapping_mul(y).wrapping_add(x);
             let byte = origin.wrapping_add_signed(idx.wrapping_mul(2));
             let px = self.vi_read16(origin, src_stride, x, y);
@@ -1020,12 +1020,12 @@ impl Bus {
     /// A source fetch for the coverage path (`aa_mode` 0/1), format-generic over
     /// `bpp` (2 = RGBA5551, 4 = RGBA8888). Reads the pixel's coverage via
     /// [`Bus::vi_read_cov`]; a fully-covered pixel (`cvg == 7`) gets the **de-dither**
-    /// restore filter when `dither_filter` is set, otherwise the raw colour. A partial
+    /// restore filter when `dither_filter` is set, otherwise the raw color. A partial
     /// pixel (`cvg < 7`) takes the **AA-edge** filter ([`Bus::vi_video_filter`]).
     /// Ledger R-5.
     ///
     /// De-dither (Angrylion `restore_filter16`/`32`): over the 8 taps of the 3×3
-    /// neighbourhood minus the centre, each channel is nudged ±1 toward the neighbour
+    /// neighborhood minus the center, each channel is nudged ±1 toward the neighbor
     /// (comparing the top-5-bit values `rgb8 >> 3` — the stored 5-bit channel in both
     /// formats), the noise-removing correction; the result is truncated to `u8`
     /// (Angrylion stores it into a `u8` field unmasked).
@@ -1039,7 +1039,7 @@ impl Bus {
         dither_filter: bool,
         bpp: u32,
     ) -> ([u8; 3], u32) {
-        // The 3×3 neighbourhood minus the centre (restore.c tap layout).
+        // The 3×3 neighborhood minus the center (restore.c tap layout).
         const TAPS: [(i32, i32); 8] = [
             (-1, -1),
             (0, -1),
@@ -1059,7 +1059,7 @@ impl Bus {
             );
         }
         if !dither_filter {
-            return (center, cvg); // fully covered without dither → raw colour
+            return (center, cvg); // fully covered without dither → raw color
         }
         let center5 = [center[0] >> 3, center[1] >> 3, center[2] >> 3]; // top 5 bits
         let mut acc = [
@@ -1081,7 +1081,7 @@ impl Bus {
         ([acc[0] as u8, acc[1] as u8, acc[2] as u8], cvg)
     }
 
-    /// The filtered coverage-path colour ([`Bus::vi_fetch_cov`] without the
+    /// The filtered coverage-path color ([`Bus::vi_fetch_cov`] without the
     /// coverage — for the non-divot path, which only needs the RGB).
     fn vi_fetch_coverage(
         &self,
@@ -1097,8 +1097,8 @@ impl Bus {
     }
 
     /// The **divot** filter (Angrylion `divot_filter`), format-generic over `bpp`: the
-    /// per-channel median of a pixel and its two horizontal neighbours (all
-    /// post-de-dither/AA-edge, via [`Bus::vi_fetch_cov`]). It is **skipped** (the centre
+    /// per-channel median of a pixel and its two horizontal neighbors (all
+    /// post-de-dither/AA-edge, via [`Bus::vi_fetch_cov`]). It is **skipped** (the center
     /// passes through) when all three are fully covered
     /// (`cen_cvg & left_cvg & right_cvg == 7`), so it only touches partial-coverage
     /// edges. Ledger R-5.
@@ -1138,10 +1138,10 @@ impl Bus {
     /// The AA-edge filter for a partial-coverage pixel (Angrylion
     /// `video_filter16`/`32`), format-generic over `bpp`. Gathers the fully-covered
     /// pixels (`cvg == 7`) among the 6 taps — the up/down diagonals and the two-away
-    /// left/right — via [`Bus::vi_read_cov`], plus the centre, takes the per-channel
-    /// penultimate min/max (`vi_video_max`), and pulls the centre toward their midpoint
+    /// left/right — via [`Bus::vi_read_cov`], plus the center, takes the per-channel
+    /// penultimate min/max (`vi_video_max`), and pulls the center toward their midpoint
     /// weighted by `(7 - cvg)`:
-    /// `centre + (((penmin + penmax - 2*centre) * (7 - cvg)) + 4 >> 3)`, masked to 8
+    /// `center + (((penmin + penmax - 2*center) * (7 - cvg)) + 4 >> 3)`, masked to 8
     /// bits (the intermediate is unsigned two's-complement, so wrapping). Ledger R-5.
     #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
     fn vi_video_filter(
@@ -1156,7 +1156,7 @@ impl Bus {
     ) -> [u8; 3] {
         // Up/down diagonals + two-away left/right (video.c `dirs`).
         const TAPS: [(i32, i32); 6] = [(-1, -1), (1, -1), (-2, 0), (2, 0), (-1, 1), (1, 1)];
-        let mut back = [[0u32; 7]; 3]; // per channel, centre at index 0
+        let mut back = [[0u32; 7]; 3]; // per channel, center at index 0
         for c in 0..3 {
             back[c][0] = u32::from(center[c]);
         }
@@ -1246,7 +1246,7 @@ impl Bus {
     pub const ISVIEWER_WRITE_LEN: u32 = 0x13FF_0014;
     /// The text buffer.
     pub const ISVIEWER_BUF: u32 = 0x13FF_0020;
-    /// Bytes of buffer modelled — the suite writes in `0x200` chunks.
+    /// Bytes of buffer modeled — the suite writes in `0x200` chunks.
     pub const ISVIEWER_LEN: usize = 0x1000;
 
     /// Is this address inside the `ISViewer` window?
@@ -1305,7 +1305,7 @@ impl Bus {
     /// address with bit 0 ignored, then the LSB at `address + 2`. The RCP thus
     /// returns the word starting at `addr & !1`, while the CPU selects its byte
     /// lane assuming a word at `addr & !3`. **That two-byte disagreement is the
-    /// bug**, and it is hardware behaviour, not an approximation:
+    /// bug**, and it is hardware behavior, not an approximation:
     ///
     /// > effectively a 16-bit read at `0x1000'0002` returns the 16-bit word at
     /// > `0x1000'0004`
@@ -1716,7 +1716,7 @@ impl CpuBus for Bus {
         // reason as the PI: the default byte-wise path would fire four DMAs for
         // one `sw` to a length register.
         // A PI direct-I/O write latches and returns immediately; the transfer
-        // finalises in the background. Further writes while one is in flight are
+        // finalizes in the background. Further writes while one is in flight are
         // ignored -- not queued.
         if Self::is_pi_bus(addr) && !Self::is_isviewer(addr) {
             if !self.pi_io_busy() {
@@ -1931,7 +1931,7 @@ mod tests {
         assert_eq!(bus.rdram_read_hidden(0x1002), 0);
         bus.rdram_write_hidden(0x1002, 0x2);
         assert_eq!(bus.rdram_read_hidden(0x1002), 0x2);
-        assert_eq!(bus.rdram_read_hidden(0x1000), 0x3, "neighbour unchanged");
+        assert_eq!(bus.rdram_read_hidden(0x1000), 0x3, "neighbor unchanged");
         // Only the low 2 bits are kept.
         bus.rdram_write_hidden(0x1000, 0x5);
         assert_eq!(bus.rdram_read_hidden(0x1000), 0x1);
@@ -2111,7 +2111,7 @@ mod tests {
 
         // 16-bit RGBA5551, non-uniform channels so component order and the
         // field shifts are exercised: 0x0887 -> R=1,G=2,B=3,A=1 = [08,10,18,FF];
-        // 0x0886 is the same colour with alpha 0 = [08,10,18,00].
+        // 0x0886 is the same color with alpha 0 = [08,10,18,00].
         bus.rdram[fb..fb + 2].copy_from_slice(&0x0887u16.to_be_bytes());
         bus.rdram[fb + 2..fb + 4].copy_from_slice(&0x0886u16.to_be_bytes());
         bus.vi.regs[vi::VI_CTRL as usize] = 2;
@@ -2123,7 +2123,7 @@ mod tests {
             &[0x08, 0x10, 0x18, 0xFF],
             "distinct channels, A=1"
         );
-        assert_eq!(&out16[4..8], &[0x08, 0x10, 0x18, 0x00], "same colour, A=0");
+        assert_eq!(&out16[4..8], &[0x08, 0x10, 0x18, 0x00], "same color, A=0");
     }
 
     /// **A blanked VI scans out nothing.** With a non-zero sentinel in the
@@ -2276,7 +2276,7 @@ mod pi_tests {
     #[test]
     fn a_pi_wr_len_write_copies_cart_to_rdram_and_raises_the_interrupt() {
         let mut bus = Bus::new();
-        // A cart whose ROM is a recognisable ramp.
+        // A cart whose ROM is a recognizable ramp.
         let mut rom = alloc::vec![0u8; 0x100];
         rom[..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]); // .z64 magic
         for (i, b) in rom.iter_mut().enumerate().skip(0x40) {
@@ -2417,7 +2417,7 @@ mod pi_tests {
         assert_eq!(
             CpuBus::read_u32(&mut bus, 0x0800_1000),
             0xDEAD_BEEF,
-            "the SRAM store must survive the direct-I/O finalisation"
+            "the SRAM store must survive the direct-I/O finalization"
         );
         // And it is visible in the persistable backing (for the host save file).
         assert_eq!(
@@ -2676,7 +2676,7 @@ mod pi_tests {
     /// them, while SPMEM stays contiguous. Reading only bits 11:0 silently
     /// drops every row after the first.
     #[test]
-    fn an_sp_dma_honours_the_count_and_skip_fields() {
+    fn an_sp_dma_honors_the_count_and_skip_fields() {
         let mut bus = Bus::new();
         // Two rows of 8, separated by an 8-byte gap in RDRAM.
         for i in 0..8 {
@@ -2775,7 +2775,7 @@ mod pi_tests {
     /// **RDRAM is not size-blind.** The RI passes the low address bits and the
     /// access size to the RDRAM devices, which build a real byte mask. Without
     /// this the size-blind rule would corrupt every ordinary narrow store, so
-    /// the exclusion is load-bearing rather than an optimisation.
+    /// the exclusion is load-bearing rather than an optimization.
     #[test]
     fn a_byte_store_to_rdram_writes_one_byte() {
         let mut bus = Bus::new();
@@ -2929,7 +2929,7 @@ mod pi_tests {
     /// in flight, reads from *any* PI address return the value being written --
     /// including from ROM, which the PI has no way of knowing is read-only.
     #[test]
-    fn a_pi_write_is_latched_and_shadows_reads_until_it_finalises() {
+    fn a_pi_write_is_latched_and_shadows_reads_until_it_finalizes() {
         let mut bus = Bus::new();
         let mut rom = alloc::vec![0u8; 0x1000];
         rom[0..4].copy_from_slice(&[0x80, 0x37, 0x12, 0x40]);
@@ -2952,7 +2952,7 @@ mod pi_tests {
             "and shadows a DIFFERENT address too -- it is the bus, not the cell"
         );
 
-        // ...and it decays: the ROM value returns once the write finalises.
+        // ...and it decays: the ROM value returns once the write finalizes.
         for _ in 0..Bus::PI_WRITE_CYCLES {
             bus.pi_tick();
         }
@@ -2966,7 +2966,7 @@ mod pi_tests {
     /// `PI_STATUS.IOBUSY` reports the asynchronous write, which is how software
     /// knows when a cart write has landed.
     #[test]
-    fn a_pi_write_sets_io_busy_until_it_finalises() {
+    fn a_pi_write_sets_io_busy_until_it_finalizes() {
         let mut bus = Bus::new();
         let st = rustyn64_cart::pi::PI_STATUS;
         assert_eq!(bus.read_u32(st) & rustyn64_cart::pi::STATUS_IO_BUSY, 0);

@@ -1,6 +1,6 @@
 [package]
 name = "rustyn64-snapshot"
-description = "RustyN64: serde helpers for save-state serialisation (boxed big arrays)"
+description = "RustyN64: serde helpers for save-state serialization (boxed big arrays)"
 version = "0.8.0"
 edition.workspace = true
 rust-version.workspace = true

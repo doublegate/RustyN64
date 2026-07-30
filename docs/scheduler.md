@@ -149,10 +149,10 @@ the just-mixed samples within the same RCP tick.
 `System::new(seed)` derives `phase` in `0..6` (the CPU/RCP repeat period) from a
 SplitMix64 PRNG seeded with `seed` (never the OS RNG), and `master_ticks` starts
 at `phase`. Two power-ons with different seeds therefore begin the CPU/RCP
-relationship at a different offset within the 6-tick pattern — modelling the real
+relationship at a different offset within the 6-tick pattern — modeling the real
 hardware's power-on phase indeterminacy while staying **reproducible**.
 
-This is not a modelling convenience; it is vendor-documented. VR4300 User's
+This is not a modeling convenience; it is vendor-documented. VR4300 User's
 Manual Table 11-1 charges "**1 to 2** PCycles: synchronize with SClock and
 transfer address to internal SysAD bus" for every data-cache miss — an
 indeterminate cost, arising precisely because PClock and SClock are in a 3:2
@@ -195,7 +195,7 @@ progress per RCP tick; the event-queue refinement is a Phase-1/2 ticket.
   enough to cache, cache it — but the residue test still owns correctness.
 - **`master_ticks` must be `u64`.** At 187.5 MHz a `u32` wraps in 23 seconds.
 - **`master_ticks` starts at `phase`, not zero**, or every power-on is
-  phase-aligned and the modelled indeterminacy is lost.
+  phase-aligned and the modeled indeterminacy is lost.
 - **"Master clock" is ambiguous across documents.** ADR 0001 used it for the
   93.75 MHz VR4300 cycle; ADR 0006 and this doc use it for the 187.5 MHz tick.
   Always state the unit when citing `MASTER_HZ`.
@@ -212,7 +212,7 @@ progress per RCP tick; the event-queue refinement is a Phase-1/2 ticket.
   steps == `floor((N + phase) / 3)` for every seed; `master_ticks()` monotonic.
 - **Integration (Phase 1+):** a DMA scheduled at tick T raises its completion
   interrupt at exactly T + duration; a busy-wait loop polling `SP_STATUS`
-  observes the halt clear at the modelled cycle.
+  observes the halt clear at the modeled cycle.
 - **Determinism:** two `System`s with the same seed + input produce identical
   `master_ticks` and bit-identical RDRAM after a fixed run (the determinism gate,
   ADR 0004).

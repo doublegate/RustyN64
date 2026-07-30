@@ -29,7 +29,7 @@
 //!
 //! # How this works instead
 //!
-//! One code path for both formats, parameterised by [`Format`]. Values are
+//! One code path for both formats, parameterized by [`Format`]. Values are
 //! unpacked to `(sign, significand, exponent)` with the significand as a plain
 //! integer — value = `sig × 2^exp` — computed at a widened scale in `u128`, and
 //! rounded **once** at the end by a single internal rounding step, which is the
@@ -41,18 +41,18 @@
 //! There is no `unsafe`, no allocation and no `std`; the widest type used is
 //! `u128`, which `core` provides everywhere this crate builds.
 //!
-//! # What is deliberately NOT modelled here
+//! # What is deliberately NOT modeled here
 //!
 //! The VR4300 does not produce subnormal results: it raises the unmaskable
 //! **unimplemented-operation** cause for subnormal operands and results (unless
 //! `FCSR.FS` is set, which flushes instead). This module implements the *IEEE*
-//! behaviour and produces the subnormal, because that separation is what lets
+//! behavior and produces the subnormal, because that separation is what lets
 //! it be checked against an independent oracle — every `f32`/`f64` operation in
 //! Rust. Layering the VR4300's refusal on top is a separate change; doing both
 //! at once would leave the arithmetic with nothing to be tested against.
 
 // Four lints are allowed module-wide, each because the thing it warns about is
-// the thing being modelled or tested:
+// the thing being modeled or tested:
 //
 //   * `float_cmp` -- this module exists to be bit-exact. Every comparison here
 //     is against an exactly-representable value or a bit pattern, and an
@@ -77,7 +77,7 @@ use serde::{Deserialize, Serialize};
 /// The parameters of an IEEE-754 binary interchange format.
 ///
 /// Held as data rather than as a type parameter so that one implementation
-/// serves both precisions. A second copy of this logic specialised per format
+/// serves both precisions. A second copy of this logic specialized per format
 /// is exactly how the two diverge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Format {
@@ -143,10 +143,10 @@ impl Format {
     ///
     /// `0x7FBF_FFFF` / `0x7FF7_FFFF_FFFF_FFFF` — the significand's MSB is
     /// **clear**, which by IEEE-754:2008 would make the result of every invalid
-    /// operation a *signalling* NaN, absurdly re-trapping on first use.
+    /// operation a *signaling* NaN, absurdly re-trapping on first use.
     ///
     /// It is not absurd, because the VR4300 uses the **legacy MIPS
-    /// convention**, where MSB set means signalling. Under its own rules this
+    /// convention**, where MSB set means signaling. Under its own rules this
     /// is an ordinary quiet NaN. See `fpu::is_snan_f32` and accuracy ledger
     /// C-12; this value is the corroboration that the convention really is
     /// inverted rather than the tests being odd.
@@ -173,7 +173,7 @@ enum Class {
 
 /// A decoded float: for [`Class::Finite`], the value is `sig × 2^exp`.
 ///
-/// The significand is a plain integer with **no** normalisation requirement,
+/// The significand is a plain integer with **no** normalization requirement,
 /// which is what lets subnormals and normals take the same code path.
 #[derive(Clone, Copy, Debug)]
 struct Unpacked {
@@ -212,9 +212,9 @@ fn unpack(bits: u64, f: Format) -> Unpacked {
             sig: man,
             exp: 0,
             // The VR4300 uses the LEGACY MIPS convention: significand MSB
-            // **set** means signalling, the opposite of IEEE-754:2008. See
+            // **set** means signaling, the opposite of IEEE-754:2008. See
             // `fpu::is_snan_f32` and accuracy ledger C-12. Naming the constant
-            // `quiet_bit` and then testing it for *signalling* would be a trap
+            // `quiet_bit` and then testing it for *signaling* would be a trap
             // for the next reader, so it is named for the position it occupies.
             snan: man & signal_bit != 0,
         };
@@ -261,7 +261,7 @@ const fn invalid(f: Format) -> Rounded {
     }
 }
 
-/// Convert a two's-complement integer to `f`, honouring `mode`.
+/// Convert a two's-complement integer to `f`, honoring `mode`.
 ///
 /// An integer is `sign × |v| × 2^0`, so this is `round_pack` with a zero
 /// exponent and no sticky bit — which is the whole point of routing it here
@@ -437,7 +437,7 @@ fn overflowed(sign: bool, f: Format, mode: Rounding) -> Rounded {
 
 /// Propagate a NaN operand, or produce the default NaN.
 ///
-/// A **signalling** operand raises Invalid; a quiet one does not. Either way
+/// A **signaling** operand raises Invalid; a quiet one does not. Either way
 /// the VR4300 delivers its own default NaN rather than the operand's payload,
 /// which is why nothing is copied through.
 fn nan_result(a: Unpacked, b: Unpacked, f: Format) -> Rounded {
@@ -611,7 +611,7 @@ pub fn div(a_bits: u64, b_bits: u64, f: Format, mode: Rounding) -> Rounded {
         _ => {}
     }
 
-    // Normalise both significands to bit 63 so the quotient always carries at
+    // Normalize both significands to bit 63 so the quotient always carries at
     // least 64 significant bits — enough for `p + 2` in either format. Without
     // this a subnormal numerator over a large divisor yields a quotient of only
     // a dozen bits and the rounding below has nothing to round.
@@ -970,7 +970,7 @@ mod tests {
         assert_eq!(as32(r), f32::NEG_INFINITY);
     }
 
-    /// Underflow is signalled when the result is tiny **and** inexact — an
+    /// Underflow is signaled when the result is tiny **and** inexact — an
     /// exact subnormal result raises neither.
     #[test]
     fn a_directed_rounding_out_of_the_subnormal_range_still_underflows() {
@@ -1091,14 +1091,14 @@ mod tests {
         assert_eq!(r.bits, 0x7FF7_FFFF_FFFF_FFFF);
     }
 
-    /// A **signalling** NaN operand raises Invalid; a quiet one propagates
-    /// silently. Treating every NaN as signalling raises Invalid on ordinary
+    /// A **signaling** NaN operand raises Invalid; a quiet one propagates
+    /// silently. Treating every NaN as signaling raises Invalid on ordinary
     /// NaN propagation, which is a common and invisible error.
     #[test]
-    fn only_a_signalling_nan_operand_raises_invalid() {
+    fn only_a_signaling_nan_operand_raises_invalid() {
         // **Inverted from IEEE**: on the VR4300 the significand MSB set means
-        // *signalling*. See `fpu::is_snan_f32` and ledger C-12.
-        let snan = 0x7FC0_0000u64; // MSB set   -> signalling here
+        // *signaling*. See `fpu::is_snan_f32` and ledger C-12.
+        let snan = 0x7FC0_0000u64; // MSB set   -> signaling here
         let qnan = 0x7FA0_0000u64; // MSB clear -> quiet here
         assert!(add(snan, b32(1.0), F32, Rounding::Nearest).flags.invalid);
         assert!(!add(qnan, b32(1.0), F32, Rounding::Nearest).flags.invalid);
@@ -1221,7 +1221,7 @@ mod tests {
     /// differ between the modes, and one past `f32::MAX` must overflow the way
     /// the mode directs.
     #[test]
-    fn narrowing_honours_the_rounding_mode_and_overflows_per_mode() {
+    fn narrowing_honors_the_rounding_mode_and_overflows_per_mode() {
         let v = 4.123_456_789_123_456_f64.to_bits();
         let down = convert(v, F64, F32, Rounding::TowardMinusInf);
         let near = convert(v, F64, F32, Rounding::Nearest);
@@ -1350,7 +1350,7 @@ mod tests {
             f32::INFINITY
         );
 
-        // The rounding mode splits sqrt(f32::MAX) between two neighbours.
+        // The rounding mode splits sqrt(f32::MAX) between two neighbors.
         let near = as32(sqrt(b32(f32::MAX), F32, Rounding::Nearest));
         let up = as32(sqrt(b32(f32::MAX), F32, Rounding::TowardPlusInf));
         let down = as32(sqrt(b32(f32::MAX), F32, Rounding::TowardMinusInf));

@@ -25,7 +25,7 @@
 //! which is exactly the wrong conclusion this test exists to prevent.
 //!
 //! ROMs are **never committed** (copyright); this reads them at runtime and skips
-//! when absent. `#[ignore]`d — a local capstone, not a CI gate. The licence-clean
+//! when absent. `#[ignore]`d — a local capstone, not a CI gate. The license-clean
 //! CI-gated counterpart is `tests/microcode.rs`, which runs libdragon's public
 //! domain `rdpq` microcode end to end.
 #![allow(

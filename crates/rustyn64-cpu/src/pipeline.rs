@@ -13,7 +13,7 @@
 //!
 //! `in_delay_slot` riding in the latch rather than in a global CPU flag is
 //! load-bearing: a multi-cycle stall between a branch and its delay slot
-//! desynchronises a global flag, and that is the classic bug in this area. With
+//! desynchronizes a global flag, and that is the classic bug in this area. With
 //! the flag attached to the instruction, `Cause.BD` and `EPC` come out right for
 //! free. `delay_slot_flag_survives_a_multi_cycle_stall` pins it.
 //!
@@ -286,7 +286,7 @@ pub struct Latch {
 /// `next_rs`/`next_operand` would imply a semantics the check does not have.
 ///
 /// Reproduces the hardware's **imprecision**, which is the specification here —
-/// emulating precise behaviour is the bug. From
+/// emulating precise behavior is the bug. From
 /// `n64brew_wiki/markdown/VR4300.md` § Microarchitecture → Load Delay Interlock:
 ///
 /// - Matches the load's `rt` against the next instruction's `rs` **or** `rt`
@@ -816,7 +816,7 @@ impl Pipeline {
         self.cop0.set_ip(2, bus.poll_irq());
         // IP7 is LATCHED on the match and stays set until `Compare` is written
         // (UM §6.4.18, p. 200) -- note the one-way `if`, with no `else` clearing
-        // it. Modelling it as a level tied to `Count == Compare` looks tidier
+        // it. Modeling it as a level tied to `Count == Compare` looks tidier
         // and silently DROPS any timer interrupt that fires while `EXL` is set,
         // because the equality holds for one tick and the handler never sees it.
         //
@@ -844,7 +844,7 @@ impl Pipeline {
             self.abort_from(Stage::Dc, Exception::Interrupt);
         }
         // The memory access. This is the point the scheduler interleaves the RCP
-        // around -- the whole reason the pipeline is modelled at all (ADR 0007).
+        // around -- the whole reason the pipeline is modeled at all (ADR 0007).
         let mut out = self.ex_dc;
         if out.occupied
             && out.abort.is_none()
@@ -1114,7 +1114,7 @@ impl Pipeline {
     ///   `KSU == 0`, or `EXL`/`ERL` set.
     /// - A **valid but unimplemented** COP1 encoding still checks `CU1`. With
     ///   `CU1` set it must *not* raise here, so that Sprint 3's arithmetic is an
-    ///   addition rather than a behaviour change.
+    ///   addition rather than a behavior change.
     fn unusable_coprocessor(&self, d: Decoded) -> Option<u8> {
         use crate::decode::Op;
         let unit = match d.op {
@@ -1248,7 +1248,7 @@ impl Pipeline {
                 1 => crate::addr::Mode::Supervisor,
                 2 => crate::addr::Mode::User,
                 // 0 is Kernel. 3 is not a defined encoding and the manual
-                // gives it no behaviour; it falls in with Kernel because that is
+                // gives it no behavior; it falls in with Kernel because that is
                 // what `KSU == 0` already does and it keeps the match total
                 // without inventing a fourth mode. Note this is the most
                 // PERMISSIVE choice, not the safest one -- if a test ever pins
@@ -1564,7 +1564,7 @@ impl Pipeline {
                 Ok(WriteBack::None)
             }
             // Every other encoding in the range stays inert, which is the
-            // hardware behaviour C-8 records and the reason the range is usable
+            // hardware behavior C-8 records and the reason the range is usable
             // as extension space at all.
             _ => Ok(WriteBack::None),
         }
@@ -1977,7 +1977,7 @@ impl Pipeline {
                     out.cop0 = e.cop0;
                     // Control flow. The delay slot has ALREADY been fetched -- it
                     // is in `ic_rf` right now, because IC ran a cycle ahead. That
-                    // is the architectural delay slot, not a modelling artefact.
+                    // is the architectural delay slot, not a modeling artifact.
                     //
                     // Because the cascade runs backwards, `ic_stage` executes
                     // AFTER this in the same cycle, so writing `next_pc` here
@@ -2028,7 +2028,7 @@ impl Pipeline {
                     self.resolve_branch_control(&mut out, e.link, e.redirect, next_pc);
                     // Multiply and divide stall the ENTIRE pipeline for the
                     // documented count (UM Table 3-12), so the request is raised
-                    // here and honoured from the next cycle onward.
+                    // here and honored from the next cycle onward.
                     if e.stall_cycles > 0 {
                         self.stall_for(e.stall_cycles, Interlock::Mci);
                     }
@@ -2062,7 +2062,7 @@ impl Pipeline {
         self.rf_ex.occupied = false;
     }
 
-    /// Resolve a branch's link write and its taken-redirect, honouring the
+    /// Resolve a branch's link write and its taken-redirect, honoring the
     /// delay-slot-fault rule (ledger R-19).
     ///
     /// The delay slot IC fetched last cycle is in `ic_rf` right now; if it
@@ -2206,7 +2206,7 @@ impl Pipeline {
         // executes down the wrong path.
         //
         // TODO(T-11-002): redirect `next_pc` to the exception vector instead of
-        // bubbling. Until the vector exists, a bubble is the honest behaviour:
+        // bubbling. Until the vector exists, a bubble is the honest behavior:
         // it declines to execute rather than executing the wrong thing.
         if self.flush_pending {
             self.ic_rf = Latch::default();
@@ -2332,8 +2332,8 @@ impl Pipeline {
         };
         // Fetch through the I-cache when the segment is cached. This is what
         // makes an uncached patch to already-fetched code invisible until a
-        // CACHE invalidate -- the behaviour n64-systemtest's ICACHE group
-        // asserts, and the reason the cache is modelled at all.
+        // CACHE invalidate -- the behavior n64-systemtest's ICACHE group
+        // asserts, and the reason the cache is modeled at all.
         let word = if cached == crate::addr::Cached::Yes {
             if !self.icache.hits(phys) {
                 self.icache_fill(bus, phys);
@@ -2440,10 +2440,10 @@ impl Pipeline {
         //
         // **`MOV` (funct 6) alone is the pure bit move.** `ABS` (5) and `NEG`
         // (7) look like sign flips and are not: they classify their operand,
-        // raising Invalid on a signalling NaN and unimplemented-operation on a
+        // raising Invalid on a signaling NaN and unimplemented-operation on a
         // subnormal or an MSB-clear NaN, and they REPLACE the `Cause` field.
         // An earlier version of this comment described all three as raising
-        // nothing, which was true of `MOV` and never of its neighbours.
+        // nothing, which was true of `MOV` and never of its neighbors.
         //
         // n64-systemtest settles which is which by construction rather than by
         // description: `MOV.S` is driven through
@@ -2487,7 +2487,7 @@ impl Pipeline {
         // Computed but **not committed**. Whether the write happens depends on
         // the enables, and they cannot be consulted until the flags are known.
         // Writing inside a branch and undoing it afterwards would be wrong
-        // under `FR = 0`, where a `.S` write can disturb a neighbouring
+        // under `FR = 0`, where a `.S` write can disturb a neighboring
         // register's half.
         let (commit, flags, unimplemented) = match funct {
             0o00..=0o03 => self.fp_binary(fmt, funct, ft, fs, fr, mode),
@@ -2551,7 +2551,7 @@ impl Pipeline {
     /// `ABS` and `NEG` — sign manipulation, but **not** a pure bit flip.
     ///
     /// The VR4300 classifies the operand first: a subnormal or an MSB-clear NaN
-    /// raises unimplemented-operation, and an MSB-set (signalling, ledger C-12)
+    /// raises unimplemented-operation, and an MSB-set (signaling, ledger C-12)
     /// NaN raises Invalid and yields the default NaN rather than the operand
     /// with its sign changed. Only when the operand is ordinary does the sign
     /// bit move.
@@ -3023,7 +3023,7 @@ impl Pipeline {
                     }
                 }
             },
-            // To word / to long, both honouring `FCSR.RM` -- which is what
+            // To word / to long, both honoring `FCSR.RM` -- which is what
             // separates them from the fixed-mode family above.
             0o44 => {
                 if self.integer_conversion_unimplemented(fmt, fs, fr) {
@@ -3290,7 +3290,7 @@ mod tests {
     /// **The delay-slot invariant** — the Phase 1 exit criterion.
     ///
     /// A multi-cycle stall between a branch and its delay slot must not
-    /// desynchronise the flag. A global `in_delay_slot` bool passes the naive
+    /// desynchronize the flag. A global `in_delay_slot` bool passes the naive
     /// test and fails this one, which is why the flag rides in the latch.
     #[test]
     fn delay_slot_flag_survives_a_multi_cycle_stall() {
@@ -4112,7 +4112,7 @@ mod tests {
     }
 
     /// The load interlock reproduces the hardware's documented imprecision.
-    /// Emulating *precise* behaviour here is the bug.
+    /// Emulating *precise* behavior here is the bug.
     #[test]
     fn load_interlock_is_imprecise_exactly_as_hardware_is() {
         // Matches on rt: the ordinary true positive.
@@ -4165,7 +4165,7 @@ mod tests {
         }
     }
 
-    /// The synchronisation tests need only the data half of [`Ram`].
+    /// The synchronization tests need only the data half of [`Ram`].
     fn ram() -> Ram {
         Ram::new(alloc::vec![])
     }
@@ -4861,7 +4861,7 @@ mod tests {
             p.cop0.set_ip(2, true);
             assert!(
                 !p.cop0.interrupt_pending(),
-                "{name}: the interrupt must NOT be recognised"
+                "{name}: the interrupt must NOT be recognized"
             );
         }
     }
@@ -4876,7 +4876,7 @@ mod tests {
         let mut regs = Regs::new();
         let mut pc = KSEG0_PROG;
         let mut bus = AlwaysIrq;
-        // IE set but IM2 MASKED, so nothing is recognised.
+        // IE set but IM2 MASKED, so nothing is recognized.
         p.cop0.set_hardware(reg::STATUS, 1);
 
         p.advance(&mut bus, &mut regs, &mut pc);
@@ -4885,7 +4885,7 @@ mod tests {
             0,
             "IP2 is asserted even though it is masked"
         );
-        assert!(!p.cop0.interrupt_pending(), "but not recognised");
+        assert!(!p.cop0.interrupt_pending(), "but not recognized");
     }
 
     /// **NMI ignores every mask, and saves to `ErrorEPC` rather than `EPC`.**
@@ -5082,7 +5082,7 @@ mod tests {
     /// cannot accept one — `EXL` set, i.e. inside a handler — must still be
     /// waiting when the handler returns.
     ///
-    /// With `IP7` modelled as a level tied to `Count == Compare`, the equality
+    /// With `IP7` modeled as a level tied to `Count == Compare`, the equality
     /// holds for a single tick, so the interrupt is silently **lost**. That is
     /// the failure the latch prevents, and it is invisible to any test that only
     /// checks the match cycle itself.
@@ -5525,7 +5525,7 @@ mod tests {
     /// **This test cannot currently observe the charge itself.** `stall_for`
     /// replaces any pending stall, so the exception's 2-PCycle stall supersedes
     /// a wrongly-charged 3-PCycle reload in the same cycle — mutating the guard
-    /// away produces no behavioural difference today, which mutation testing
+    /// away produces no behavioral difference today, which mutation testing
     /// duly reported. The guard is kept because it is what the manual says and
     /// because it becomes observable the moment stalls compose rather than
     /// replace; what is asserted here is the *decision*
@@ -5780,7 +5780,7 @@ mod tests {
     }
 
     /// An unimplemented COP1 encoding with `CU1` **set** must not raise. Sprint 3
-    /// then *adds* behaviour rather than changing it — and an emulator that
+    /// then *adds* behavior rather than changing it — and an emulator that
     /// raised here would look correct until the FPU landed.
     #[test]
     fn an_unimplemented_cop1_encoding_does_not_raise_when_cu1_is_set() {
@@ -6214,7 +6214,7 @@ mod tests {
     /// proving the two families really are wired differently rather than both
     /// happening to truncate.
     #[test]
-    fn the_fixed_mode_conversions_ignore_fcsr_rm_and_cvt_w_honours_it() {
+    fn the_fixed_mode_conversions_ignore_fcsr_rm_and_cvt_w_honors_it() {
         use crate::cop0::reg;
         /// `TRUNC.W.S $f4, $f0` — fmt 16, `fs` 0 (the zero shift is elided),
         /// `fd` 4, funct 0o15.
@@ -6337,7 +6337,7 @@ mod tests {
     ///
     /// The encodings are structurally identical — the doubleword control moves
     /// of their respective coprocessors — and it is tempting to give them one
-    /// behaviour. COP1's raise a *floating-point* exception with `FCSR.Cause`
+    /// behavior. COP1's raise a *floating-point* exception with `FCSR.Cause`
     /// set to unimplemented-operation; COP2's raise *Reserved Instruction* with
     /// `Cause.CE = 2` and do not touch `FCSR` at all.
     ///
@@ -6675,7 +6675,7 @@ mod tests {
     }
 
     /// **The two NaN classes trap differently.** MSB clear (quiet by the
-    /// VR4300's convention) is unimplemented; MSB set (signalling) is Invalid.
+    /// VR4300's convention) is unimplemented; MSB set (signaling) is Invalid.
     ///
     /// Swapping them is invisible until `FCSR` is read back, and both are
     /// "the operation trapped", so a test asserting only that would pass either
@@ -6683,7 +6683,7 @@ mod tests {
     #[test]
     fn the_two_nan_classes_raise_different_causes() {
         let msb_clear = 0x7F80_0001u32; // unimplemented here
-        let msb_set = 0x7FC0_0001u32; // signalling here -> Invalid
+        let msb_set = 0x7FC0_0001u32; // signaling here -> Invalid
 
         let p = run_add_s(0, msb_clear, 2.0f32.to_bits());
         assert_ne!(p.cop1.fcsr() & CAUSE_E, 0, "MSB clear -> unimplemented");
@@ -6871,7 +6871,7 @@ mod tests {
     /// An **`Index_*`** `CACHE` op addresses the cache by index and **must not
     /// translate**, so it cannot fault however unmapped the address is.
     ///
-    /// This matters at boot: cache-initialisation code walks every index with an
+    /// This matters at boot: cache-initialization code walks every index with an
     /// arbitrary base address, and translating would raise a TLB refill on the
     /// first one — before any mapping exists to satisfy it.
     #[test]

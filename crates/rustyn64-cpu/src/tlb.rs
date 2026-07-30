@@ -19,7 +19,7 @@
 //! > place, it is not involved in the determination of a matching TLB entry."*
 //!
 //! So an invalid entry still *matches* — it just raises TLB Invalid instead of
-//! translating. Checking `V` during matching looks like an optimisation, passes
+//! translating. Checking `V` during matching looks like an optimization, passes
 //! ordinary tests, and breaks two things: an invalid entry would fall through to
 //! a **refill** (wrong vector, wrong handler), and TLB shutdown would stop
 //! firing on duplicates involving an invalid entry, which UM Fig. 6-6 (p. 167)
@@ -61,7 +61,7 @@ pub struct Entry {
     /// held **in place** rather than divided down.
     ///
     /// Storing the masked address rather than `address / pair_size` matters
-    /// because `PageMask` need not be contiguous: a canonicalised mask can have
+    /// because `PageMask` need not be contiguous: a canonicalized mask can have
     /// a hole (`0b11_11_11_11_00` covers bits 22:15 and leaves 14:13 alone), and
     /// division only ever clears the *low* bits. The two agree for every legal
     /// page size and diverge exactly on the masks n64-systemtest writes to check
@@ -303,7 +303,7 @@ impl Tlb {
     /// Does this entry match?
     ///
     /// `VPN2` **and** (`G` **or** `ASID`). `V` is deliberately absent — see the
-    /// module docs for why including it breaks two separate behaviours.
+    /// module docs for why including it breaks two separate behaviors.
     fn matches(e: &Entry, vaddr: u64, asid: u8) -> bool {
         // Compare the ARCHITECTURAL fields, not the raw 64-bit value.
         //
@@ -365,7 +365,7 @@ impl Tlb {
         self.itlb = [None; ITLB_ENTRIES];
     }
 
-    /// Canonicalise a written `PageMask` to what the entry actually stores.
+    /// Canonicalize a written `PageMask` to what the entry actually stores.
     ///
     /// `PageMask` bits 24:13 are **six 2-bit pairs**, and an entry does not store
     /// twelve independent bits: each pair reads back as `11` exactly when its
@@ -739,7 +739,7 @@ mod tests {
     ///
     /// `VA / pair_size * pair_size` clears the *low* bits of the tag, which is
     /// right for every legal page size — they are all contiguous runs from bit
-    /// 13. A canonicalised mask need not be: `0b11_11_11_11_00` covers bits
+    /// 13. A canonicalized mask need not be: `0b11_11_11_11_00` covers bits
     /// 22:15 and leaves 14:13 alone, and division cannot express that.
     #[test]
     fn entry_hi_read_back_clears_exactly_the_page_mask_bits() {

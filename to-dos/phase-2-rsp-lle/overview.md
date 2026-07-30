@@ -7,7 +7,7 @@ the Scalar Unit (a stripped-down MIPS 32-bit core) and the Vector Unit (a COP2 S
 32 registers of 8 × 16-bit lanes), addressing the 4 KiB DMEM and 4 KiB IMEM, driven by the CPU
 through the SP interface. This is the phase that makes the LLE-over-HLE decision (ADR 0002)
 pay off: custom microcode runs because the instruction stream runs, not because it was
-recognised.
+recognized.
 
 **Status: COMPLETE (v0.3.0 "Microcode", 2026-07-22).** Both exit criteria are met by oracle: the
 RSP category reports `n64-systemtest Failed: 0`, and libdragon's real `rdpq` microcode boots on
@@ -18,7 +18,7 @@ deferral (unobserved by any test ROM, not part of the cut), not an oversight.
 ## Exit criteria
 
 - [x] The SU implements its MIPS subset: no 64-bit operations, no TLB, addressing DMEM/IMEM
-      only, with the RSP's own branch and delay-slot behaviour.
+      only, with the RSP's own branch and delay-slot behavior.
 - [x] The VU implements the full vector ISA over 8 lanes of 16 bits, including the 48-bit
       per-lane accumulator and its high/mid/low readback.
 - [x] The reciprocal and reciprocal-square-root ROM tables produce bit-exact results — these are
@@ -32,7 +32,7 @@ deferral (unobserved by any test ROM, not part of the cut), not an oversight.
       form and the alignment rules.
 - [x] `SP_STATUS` halt, broke, and interrupt semantics drive the MI line so the CPU's polling
       loops terminate.
-- [ ] The SU/VU dual-issue pipeline is modelled to the depth the test ROMs observe.
+- [ ] The SU/VU dual-issue pipeline is modeled to the depth the test ROMs observe.
       **Made falsifiable (this was previously unmeasurable as written).** N64brew *RSP CPU
       Pipeline* states its scope up front: it *"describes the effects of the pipelines on code
       execution"* from a software point of view. Those effects are **entirely timing** — the
@@ -40,14 +40,14 @@ deferral (unobserved by any test ROM, not part of the cut), not an oversight.
       of them changes an architectural result: the same registers end up holding the same
       values, only later.
       **The distinction that keeps this honest:** the pipeline timing itself is *unmeasured and
-      unmodelled* — this box does not claim otherwise, and stays unchecked. What **is** measured
+      unmodeled* — this box does not claim otherwise, and stays unchecked. What **is** measured
       is a separate, weaker fact about the instrument: the RSP exposes no cycle counter to
       software, and a `grep` for `dual`/`cycles`/`stall` across
       `ref-proj/n64-systemtest/src/tests/rsp/` returns **nothing**, so the *test ROMs observe a
       depth of zero*. That is a claim about the suite, not about the hardware, and the two must
       not be conflated: "nothing observes it" is not "its value is 0".
       So the criterion as phrased (*"to the depth the test ROMs observe"*) has no work to do
-      today — there is no observed behaviour to model against — but it is **not validated** and
+      today — there is no observed behavior to model against — but it is **not validated** and
       the box stays open. It should be checked only when a real measurement or an explicit
       timing model exists. Two triggers create that, whichever comes first: (a) a real
       microcode's *output* depends on when the RSP finishes relative to the CPU — an `SP_STATUS`
@@ -56,14 +56,14 @@ deferral (unobserved by any test ROM, not part of the cut), not an oversight.
       checkable rather than a matter of opinion.
 - [x] `n64-systemtest` reports `Failed: 0` for the RSP category.
 - [x] A real graphics microcode boots and emits a plausible RDP command list into RDRAM, even
-      though nothing rasterises it yet.
+      though nothing rasterizes it yet.
       **Source resolved: libdragon's `src/rdpq/rsp_rdpq.S`.** libdragon is released into the
       **public domain** (`ref-proj/libdragon/LICENSE.md`, Unlicense) and is already on
       `ref-proj/README.md`'s vendorable list, so its RDP-queue microcode can be built and
-      committed as a test fixture. That removes the licence obstacle that made this criterion
+      committed as a test fixture. That removes the license obstacle that made this criterion
       look open-ended — F3DEX2 from a commercial ROM is *not* available to us and never was.
       **"Plausible" still needs defining, and should be defined before the work starts**, or it
-      becomes a judgement call made by whoever happens to be looking at the output. The
+      becomes a judgment call made by whoever happens to be looking at the output. The
       proposal: the emitted command list is compared byte-for-byte against the same microcode
       run under a reference emulator, exactly as the CPU golden log is (ledger C-26). That
       turns "plausible" into "identical to an oracle", which is the standard the rest of this

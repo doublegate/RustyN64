@@ -9,7 +9,7 @@ committed build output, regenerable from the source.
 
 These boot only through the harness direct-load path (`rustyn64_test_harness::rom::load_direct`,
 which copies the payload to the entry point and jumps there). They carry no real
-IPL3, so they do **not** boot on hardware — they are rasteriser / scan-out
+IPL3, so they do **not** boot on hardware — they are rasterizer / scan-out
 fixtures, not games.
 
 ## `render_fill`

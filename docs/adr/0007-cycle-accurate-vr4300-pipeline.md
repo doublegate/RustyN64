@@ -64,7 +64,7 @@ manual's taxonomy in the very ADR that corrects `IF`/`DF` to `IC`/`DC`.
 
 `in_delay_slot` travels **with the instruction**, set when the branch is decoded and read at
 exception time several cycles later. It is not global CPU state: a multi-cycle stall between a
-branch and its delay slot desynchronises a global flag, and that is the classic bug in this
+branch and its delay slot desynchronizes a global flag, and that is the classic bug in this
 area. `Cause.BD` and `EPC` then fall out correctly for free.
 
 ### Reverse step order: WB → DC → EX → RF → IC
@@ -146,7 +146,7 @@ known source of one-cycle discrepancies.
 `BusPhase` itself is retained but demoted to what it actually is: the SysAD **bus protocol's**
 command-vs-data cycle, used by the bus model below, with no interrupt semantics attached.
 
-### The SysAD split is modelled at SClock, and this is where we exceed the references
+### The SysAD split is modeled at SClock, and this is where we exceed the references
 
 SClock = MClock = **62.5 MHz** = 2/3 of PClock, so one SysAD cycle is 1.5 PCycles — under
 ADR 0006, 3 master ticks against the CPU's 2. A bus transaction is a command cycle followed by
@@ -157,7 +157,7 @@ Neither reference implements this. CEN64 completes the entire access atomically 
 time and charges a flat constant (`// Currently using fixed values....` — 38 PClocks uncached,
 44 D-cache fill, 48 I-cache fill); ares charges different constants (40 for a D-cache fill).
 **The two most accurate N64 emulators disagree on that number and neither derived it from a
-spec.** Modelling the transaction properly is the specific place this project can be better
+spec.** Modeling the transaction properly is the specific place this project can be better
 rather than equal, and it is what makes the bus access an addressable point the scheduler
 interleaves around — the Phase 1 exit criterion.
 
@@ -171,7 +171,7 @@ interleaves around — the Phase 1 exit criterion.
   careful bookkeeping at each exception site.
 - The documented cost tables are encodable immediately; most of the timing model is transcription
   from a primary source rather than reverse engineering.
-- Bus contention and back-to-back access behaviour become expressible, which is where both
+- Bus contention and back-to-back access behavior become expressible, which is where both
   references currently lose accuracy.
 
 ### Negative / costs
@@ -182,9 +182,9 @@ interleaves around — the Phase 1 exit criterion.
   component step** at full speed. That figure is an estimate, not a measurement: 93.75M CPU +
   62.5M RSP = 156.25M component-steps/s against a ~5 GHz core, before the RDP. It needs a real
   benchmark in Sprint 1 to become a number worth defending. Hot-path discipline is a design input from the first line, not
-  a later optimisation pass: latches cache-resident, no per-cycle branching on cold conditions,
+  a later optimization pass: latches cache-resident, no per-cycle branching on cold conditions,
   no allocation in `tick`.
-- Two mechanisms for time (integer divisors, plus VI's accumulator) and two for bus cost (modelled
+- Two mechanisms for time (integer divisors, plus VI's accumulator) and two for bus cost (modeled
   SysAD cycles, plus `M` until it is measured).
 
 ### Risks
@@ -196,7 +196,7 @@ interleaves around — the Phase 1 exit criterion.
   exactly like `M`: a fitted constant recorded in the accuracy ledger with its provenance, never a
   number quoted as though the manual supplied it.
 - **`M` — memory access time in PCycles — is undocumented.** Both cache-miss formulas are
-  parameterised on it and no source gives a value; the only hints are informal ("RDRAM has about
+  parameterized on it and no source gives a value; the only hints are informal ("RDRAM has about
   10-20+ clock wait time"; RCP registers "5-6 PClock cycles"; MI registers "about 2 cycles";
   RSP DMEM/IMEM "4-5"). It must be fitted against test ROMs and recorded in the accuracy ledger
   as a measured constant, never quietly tuned to make a ROM pass.

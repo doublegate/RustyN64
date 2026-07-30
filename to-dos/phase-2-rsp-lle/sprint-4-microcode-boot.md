@@ -43,7 +43,7 @@ Rust and documentation.
 
 The RDP command stream leaves through the DPC FIFO, so the DPC register file is
 the capture seam. This sprint is its first real exercise and will likely surface
-the next DP behaviour to model (the FIFO drain, `CURRENT` advance, `SYNC_FULL` →
+the next DP behavior to model (the FIFO drain, `CURRENT` advance, `SYNC_FULL` →
 DP interrupt); those are tracked as they arise, not pre-built.
 
 ## Tickets
@@ -187,10 +187,10 @@ criterion.
 
 **Status: DONE.** `the_microcode_generates_a_set_fill_color_command`
 (`tests/microcode.rs`) feeds `RDPQCmd_SetFillColor32` (`0xD6`), which the handler
-*transforms* into a `SET_FILL_COLOR` RDP command (`[0xF700_0000, colour]`), and
+*transforms* into a `SET_FILL_COLOR` RDP command (`[0xF700_0000, color]`), and
 byte-compares the emission against a golden vector derived from the **documented**
 encoding — N64brew *Reality Display Processor/Commands* §`0x37 - Set Fill Color`
-(opcode `0x37` in bits 61:56; colour[31:0] verbatim) — not from another emulator
+(opcode `0x37` in bits 61:56; color[31:0] verbatim) — not from another emulator
 and not from the microcode (the `0xD6 → 0xF7` word0 transform is itself the
 witness that the microcode generated, rather than passed through, the command).
 
@@ -198,7 +198,7 @@ witness that the microcode generated, rather than passed through, the command).
 
 - [x] The golden RDP command bytes are derived from the documented encoding, with
       a per-command provenance note (wiki section / macro), committed as a golden
-      vector changed only on intentional, reviewed behaviour change.
+      vector changed only on intentional, reviewed behavior change.
 - [x] The harness asserts byte-equality over the **exact captured range** (the
       8-byte command in the RDP buffer + `DP_END` at `buffer + 8`), so a truncated
       or over-long emission fails rather than partially matching, with execution

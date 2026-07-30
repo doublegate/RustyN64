@@ -604,8 +604,8 @@ pub const fn execute(
         Op::Sh => mem_store!(StoreKind::Half),
         Op::Sw => mem_store!(StoreKind::Word),
         Op::Sd => mem_store!(StoreKind::Double),
-        // The synchronisation pair. `EX` treats them exactly like their ordinary
-        // counterparts; all the link-bit behaviour is in `DC`, because that is
+        // The synchronization pair. `EX` treats them exactly like their ordinary
+        // counterparts; all the link-bit behavior is in `DC`, because that is
         // where the bus access it is conditional on happens.
         Op::Ll => Ok(Executed {
             link: None,
@@ -759,14 +759,14 @@ pub const fn execute(
             })),
             ..NOTHING
         }),
-        // Two distinct cases that share one behaviour -- retire with no
+        // Two distinct cases that share one behavior -- retire with no
         // architectural effect -- and are merged only because clippy rejects
         // identical arms:
         //
         // - `Cop1Unimplemented`: a valid COP1 encoding we do not implement.
         //   Raising here would be wrong -- with `Status.CU1` SET hardware would
         //   execute it, so pretending otherwise would make Sprint 3's arrival a
-        //   behaviour change rather than an addition. The coprocessor-usable
+        //   behavior change rather than an addition. The coprocessor-usable
         //   check happens in the pipeline.
         // - `Cop0Extension`: a COP0 CO instruction in the emux `funct`
         //   0x20-0x3F extension range, inert on hardware (ledger C-8). Notably
@@ -844,7 +844,7 @@ pub const fn execute(
         }),
         // CACHE resolves its effective address like any load/store -- so it can
         // raise a TLB fault, and DC must perform the translation -- but performs
-        // no data transfer. Modelled as a zero-width probe: see `MemOp::Cache`.
+        // no data transfer. Modeled as a zero-width probe: see `MemOp::Cache`.
         Op::Cache => Ok(Executed {
             link: None,
             mem: Some(MemOp::Cache {

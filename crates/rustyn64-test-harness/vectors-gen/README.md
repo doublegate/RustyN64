@@ -1,6 +1,6 @@
 # RDP conformance vector generator (T-33-005)
 
-This is the **licence-clean** golden-vector generator for the ParaLLEl-RDP /
+This is the **license-clean** golden-vector generator for the ParaLLEl-RDP /
 Angrylion conformance gate (`../tests/rdp_conformance.rs`).
 
 ## What it does
@@ -26,7 +26,7 @@ swap), so both renderers see identical texels.
 
 ## Why the source isn't committed
 
-Angrylion-rdp-plus is under the **non-commercial MAME licence** — it is study-only
+Angrylion-rdp-plus is under the **non-commercial MAME license** — it is study-only
 and must not be vendored into this MIT / Apache-2.0 project (see
 `ref-proj/README.md`). So:
 

@@ -24,14 +24,14 @@ cargo test -p rustyn64-test-harness --release --test microcode_families \
 ## The selection rule: these were looked at
 
 Ledger **R-18** records that "lit pixel count" was cited for weeks as evidence
-of rendering and was **wrong** — uninitialised RDRAM is non-black, so a broken
+of rendering and was **wrong** — uninitialized RDRAM is non-black, so a broken
 machine scores 90%+ as easily as a working one. The corpus census proves it on
 its own data: **Rayman 2 and Namco Museum 64 report zero RDP commands with
 123,540 and 137,681 lit pixels.** Pure garbage, scanned out.
 
 So every file here was **rendered to PNG and viewed** before being committed,
 and frames that scored well but looked wrong were rejected — Blast Corps
-(garbled colour blocks), Turok (glitchy plane), Wave Race 64 (ambiguous),
+(garbled color blocks), Turok (glitchy plane), Wave Race 64 (ambiguous),
 GoldenEye and WCW/nWo (see *Known defects* below). **Do not add a screenshot
 here on a pixel count. Look at it first.**
 
@@ -41,7 +41,7 @@ here on a pixel count. Look at it first.**
 | --- | --- | --- |
 | `super-mario-64-title.png` | Super Mario 64 | The title screen — Mario's head, textured cap with the M logo, over the tiled *SUPER MARIO 64* background. 125,278 RDP commands. |
 | `pokemon-snap-3d-landscape.png` | Pokémon Snap | A full 3D landscape: sky, hills, a river and foliage, textured and shaded. |
-| `pokemon-stadium-n64-logo.png` | Pokémon Stadium | The *NINTENDO 64* wordmark with the coloured 3D "N" cube. |
+| `pokemon-stadium-n64-logo.png` | Pokémon Stadium | The *NINTENDO 64* wordmark with the colored 3D "N" cube. |
 | `mario-kart-64-attract-mode.png` | Mario Kart 64 | Attract mode — a checkered flag over the track, karts, sky and grass. |
 | `castlevania-legacy-of-darkness-menu.png` | Castlevania: Legacy of Darkness | The *"Controller Pak not inserted"* dialog, fully legible with its cursor. A text/UI path rather than 3D geometry. |
 | `bomberman-hero-3d-scene.png` | Bomberman Hero | A textured tower on a green landscape with a rainbow. |
@@ -62,13 +62,13 @@ completeness of the set, not because this change produced it.)
 
 | File | Title | What is wrong |
 | --- | --- | --- |
-| `banjo-kazooie-first-3d-scene.png` | Banjo-Kazooie | Geometry, textures and depth ordering are right; the colours carry a heavy blue/yellow cast. Open combiner / texel-format issue. |
-| `ocarina-of-time-night-sky.png` | Ocarina of Time | Hyrule Field at night — the moon over a dark horizon, recognisably correct, but the moon carries a **visible rectangular texture-clamp box**. An open clamp/border defect (R-13). |
+| `banjo-kazooie-first-3d-scene.png` | Banjo-Kazooie | Geometry, textures and depth ordering are right; the colors carry a heavy blue/yellow cast. Open combiner / texel-format issue. |
+| `ocarina-of-time-night-sky.png` | Ocarina of Time | Hyrule Field at night — the moon over a dark horizon, recognizably correct, but the moon carries a **visible rectangular texture-clamp box**. An open clamp/border defect (R-13). |
 | `paper-mario-first-commercial-frame.png` | Paper Mario | **The first frame ever rendered from a commercial cartridge** (2026-07-29), kept for that reason. 87 distinct RGBA5551 values; flat-shaded quads with clean edge-walked slopes, but early boot geometry rather than a title screen. |
 
 ## Known defects visible in rejected frames
 
-Recorded here because the *rejected* captures localise real bugs:
+Recorded here because the *rejected* captures localize real bugs:
 
 - **Mirrored text.** GoldenEye 007's "Nintendo" logo and WCW vs. nWo's
   "WCW World Championship Wrestling" banner both render **left-right flipped**.
@@ -89,8 +89,8 @@ Recorded here because the *rejected* captures localise real bugs:
   seam — in the geometry that produces the vertex X coordinates, i.e. the game's
   graphics microcode on the LLE RSP. A vertex transform, viewport scale, or
   vector-unit sign error there would flip a quad while every RDP command it then
-  emits is rasterised faithfully. See ledger R-18.
-- **Garbled colour blocks** (Blast Corps) and a **glitchy textured plane**
+  emits is rasterized faithfully. See ledger R-18.
+- **Garbled color blocks** (Blast Corps) and a **glitchy textured plane**
   (Turok) — both issue large command counts, so the failure is downstream of
   submission.
 

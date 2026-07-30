@@ -192,7 +192,7 @@ impl Cic {
         }
     }
 
-    /// The [`CicBootSecrets`] for this variant. All modelled variants are the
+    /// The [`CicBootSecrets`] for this variant. All modeled variants are the
     /// NTSC members; the 7xxx PAL twins share the same seeds and checksums, so
     /// region is a separate axis (the PIF SM5 ROM, not the CIC, is region-locked).
     #[must_use]
@@ -320,8 +320,8 @@ pub struct Cart {
     /// The normalized (big-endian) ROM image.
     ///
     /// **Excluded from save-states** (`#[serde(skip)]`): the ROM is immutable and
-    /// up to 64 MiB, so serialising it in every snapshot would make the rewind
-    /// ring enormous. A restore deserialises an empty ROM; the frontend re-attaches
+    /// up to 64 MiB, so serializing it in every snapshot would make the rewind
+    /// ring enormous. A restore deserializes an empty ROM; the frontend re-attaches
     /// the currently-loaded image via [`Cart::reattach_rom`]. A save-state is thus
     /// only valid alongside the same ROM — the normal emulator contract.
     #[serde(skip)]
@@ -366,7 +366,7 @@ impl Cart {
         })
     }
 
-    /// Re-attach a ROM image after a save-state restore (which deserialises an
+    /// Re-attach a ROM image after a save-state restore (which deserializes an
     /// empty ROM — the ROM field is `#[serde(skip)]`'d). The `rom` bytes are the
     /// normalized big-endian image (what `Cart::load` stores, i.e. what
     /// `rom_image` returns); the frontend keeps the loaded image and re-inserts it

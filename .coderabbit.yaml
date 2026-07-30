@@ -76,14 +76,14 @@ reviews:
   path_filters:
     # Immutable research and vendored reference material. `ref-proj/` is
     # gitignored, but list it so a stray commit is never reviewed as if it were
-    # ours — several of those clones are study-only for licence reasons and
+    # ours — several of those clones are study-only for license reasons and
     # must never be copied from (see ref-proj/README.md).
     - "!ref-docs/**"
     - "!ref-proj/**"
     - "!n64brew_wiki/**"
     # Only the EXTERNAL ROM tier. `tests/roms/n64-systemtest/` is committed
     # (MIT, with its upstream LICENSE beside it) and `tests/roms/README.md`
-    # carries the licence-tiering rules, so both stay reviewable.
+    # carries the license-tiering rules, so both stay reviewable.
     - "!tests/roms/external/**"
     - "!Cargo.lock"
     - "!target/**"
@@ -134,10 +134,10 @@ reviews:
         - The pipeline cascade running in REVERSE stage order
         (WB -> DC -> EX -> RF -> IC), ADR 0007.
 
-        - Reproduced VR4300 errata such as `sra`/`srav`. They are behaviour
+        - Reproduced VR4300 errata such as `sra`/`srav`. They are behavior
         software depends on, not defects to correct.
 
-        - NaN classification treating significand-MSB-SET as *signalling*. That
+        - NaN classification treating significand-MSB-SET as *signaling*. That
         is inverted from IEEE-754:2008 and is CORRECT for this processor — the
         legacy MIPS convention, accuracy ledger C-12.
 
@@ -198,7 +198,7 @@ reviews:
       instructions: >-
         Docs are the SPEC here, not a changelog. `docs/STATUS.md` is the single
         source of truth for counts and subsystem state; flag any number
-        elsewhere that contradicts it. A behaviour change with an untouched spec
+        elsewhere that contradicts it. A behavior change with an untouched spec
         is a finding. Claims of the form "X is undocumented" decay — flag them
         unless a page reference is cited. `docs/accuracy-ledger.md` is
         append-mostly: flag a superseded claim that was edited in place instead
@@ -392,7 +392,7 @@ reviews:
       - name: Oracle number is stated
         mode: warning
         instructions: >-
-          A change to emulation behaviour should state its measured effect on
+          A change to emulation behavior should state its measured effect on
           n64-systemtest's failing-assertion count, or say explicitly that it
           was not measured. Accuracy claims here are oracle numbers, not
           self-assessments — `docs/STATUS.md` carries the current figure. Pass
@@ -400,17 +400,17 @@ reviews:
       - name: Docs-as-spec sync
         mode: warning
         instructions: >-
-          If this PR changes observable behaviour in a chip crate
+          If this PR changes observable behavior in a chip crate
           (rustyn64-cpu, -rsp, -rdp, -audio, -cart, -core) rather than
           refactoring internals, the matching docs/<subsystem>.md should change
-          in the same PR. Fail if a behaviour change has no corresponding docs
+          in the same PR. Fail if a behavior change has no corresponding docs
           change and the PR body does not explain why none is needed.
       - name: CHANGELOG entry for user-visible changes
         mode: warning
         instructions: >-
           A user-visible change, new feature or user-facing fix should add an
           entry under [Unreleased] in CHANGELOG.md. Pass for pure-internal
-          refactors, dependency-only bumps with no behaviour change, and
+          refactors, dependency-only bumps with no behavior change, and
           CI/tooling-only changes.
       - name: Measured, never tuned
         mode: warning
@@ -419,7 +419,7 @@ reviews:
           (a) cited to a manual page or wiki article, or (b) recorded in
           docs/accuracy-ledger.md with how it was measured. A constant adjusted
           until a test ROM passes makes every later result built on it
-          unfalsifiable. This applies to invented BEHAVIOUR too — an incidental
+          unfalsifiable. This applies to invented BEHAVIOR too — an incidental
           state change with no cited authority.
       # `warning`, not `error`: an `error`-mode check only blocks when
       # `request_changes_workflow` is enabled, which it is not here — so

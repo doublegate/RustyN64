@@ -17,7 +17,7 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
   executes MIPS III (the integer set, COP0, the TLB, the exception model, the primary caches, and
   a soft-float COP1) as a five-stage pipeline off the canonical 187.5 MHz master clock; the **LLE
   RSP** runs real microcode (scalar + full vector unit — graphics *and* audio); the **LLE RDP**
-  rasterises through the texture / combiner / blender / coverage pipeline with VI scan-out; the
+  rasterizes through the texture / combiner / blender / coverage pipeline with VI scan-out; the
   **AI** DMAs the PCM the real libdragon mixer microcode produces on the RSP, resampled to the
   host by the frontend; and the **cartridge boots** — the PI/SI/PIF/CIC + four save backends,
   with both an HLE and a faithful real-PIF boot (real IPL1/IPL2, CIC-verified). A commercial ROM
@@ -46,9 +46,9 @@ Status markers here are plain text, not emoji — project policy (`CONTRIBUTING.
 ### Phase 0 — Foundation: COMPLETE
 
 **Goal:** the Cargo workspace and crate skeletons compile; CI green on stubs; the accuracy
-oracle and hardware references acquired and organised.
+oracle and hardware references acquired and organized.
 **Exit:** `cargo test --workspace` green; fmt/clippy/rustdoc/`no_std` gates green; test-ROM
-corpora staged with licence tiers enforced.
+corpora staged with license tiers enforced.
 → [overview](phase-0-foundation/overview.md)
 
 ### Phase 1 — CPU golden log: COMPLETE
@@ -69,7 +69,7 @@ without desync. Both met.
 
 ### Phase 3 — RDP LLE + VI: COMPLETE (v0.4.0)
 
-**Goal:** the software reference RDP rasterises the real command list through the texture,
+**Goal:** the software reference RDP rasterizes the real command list through the texture,
 combiner, blender, and Z/coverage pipeline; the VI scans the framebuffer out.
 **Exit:** a stable rendered frame from a real ROM; the ParaLLEl-RDP fuzz suite bit-matches the
 Angrylion reference. Both met (164 conformance vectors + a real-ROM golden frame).
@@ -78,10 +78,10 @@ Angrylion reference. Both met (164 conformance vectors + a real-ROM golden frame
 ### Phase 4 — AI audio: COMPLETE (v0.5.0)
 
 **Goal:** the AI DMAs the PCM buffer produced by the RSP audio microcode to the host, with the
-delayed-carry DAC behaviour modelled.
+delayed-carry DAC behavior modeled.
 **Exit (met):** the real libdragon mixer microcode runs on the LLE RSP and produces verified
 mixed PCM (`mixer_microcode.rs`); a real bare-metal ROM plays PCM through the AI end to end
-(`audio_play_rom.rs`); the AI register/DMA/rate/delayed-carry units are modelled; and the
+(`audio_play_rom.rs`); the AI register/DMA/rate/delayed-carry units are modeled; and the
 frontend resamples the stream to the host device. A real *game* driving the full path awaits
 cart boot (Phase 5). → [overview](phase-4-ai-audio/overview.md)
 
@@ -151,7 +151,7 @@ additive and off by default.
 
 These gate deeper planning and are carried from `ref-docs/research-report.md`:
 
-- **RDRAM/bus contention depth** — how precisely must CPU/RSP/RDP/DMA arbitration be modelled for
+- **RDRAM/bus contention depth** — how precisely must CPU/RSP/RDP/DMA arbitration be modeled for
   commercial-game correctness, versus for n64-systemtest alone? Needs a prototype to find the
   cost/accuracy knee. Bears on Phases 1 and 3.
 - **Boot strategy** — stub IPL3 (documented HLE boot) versus running the real PIF/IPL ROMs.

@@ -1,7 +1,7 @@
 name: Release
 
 # Builds the `rustyn64` frontend binary for each supported target, packages it
-# with its licences and docs, and publishes a GitHub Release with checksummed
+# with its licenses and docs, and publishes a GitHub Release with checksummed
 # assets.
 #
 # Triggered by a v* tag push. workflow_dispatch is available so the packaging
@@ -136,7 +136,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Verify tag matches Cargo.toml version
-        # A tag that disagrees with the manifest ships mislabelled artifacts.
+        # A tag that disagrees with the manifest ships mislabeled artifacts.
         run: |
           set -euo pipefail
           manifest=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)

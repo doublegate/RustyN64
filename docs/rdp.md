@@ -37,7 +37,7 @@ pub struct Rdp {
     pub color_image_format: u8,  // pixel format code (texture-format enum)
     pub color_image_width: u16,  // width in pixels (field + 1)
     pub z_image: u32,            // SET_Z_IMAGE base in RDRAM
-    pub fill_color: u32,         // Set Fill Color (FILL-mode colour register)
+    pub fill_color: u32,         // Set Fill Color (FILL-mode color register)
     pub scissor_ulx: u16,        // Set Scissor, u10.2 upper-left x
     pub scissor_uly: u16,        // .. upper-left y
     pub scissor_lrx: u16,        // .. lower-right x
@@ -89,7 +89,7 @@ against n64-systemtest's `RSP STATUS: start-valid` and `RDP START & END REG
   which is what lets software read and rewrite the registers without the FIFO
   moving.
 
-**Not modelled yet** (all read back as 0, which the frozen `start-valid` case
+**Not modeled yet** (all read back as 0, which the frozen `start-valid` case
 tolerates, but none are driven): the `SET_FLUSH`/`CLR_FLUSH`,
 `CLR_TMEM_BUSY`/`CLR_PIPE_BUSY`, `CLR_CMD_CTR`, and `CLR_CLOCK_CTR` status
 commands, and the `END_VALID`/`CMD_BUSY`/`PIPE_BUSY`/`CBUF_READY` read bits.
@@ -102,10 +102,10 @@ drain and the rasterizer — not with this register file.
 frozen, it reads the command word at `DPC_CURRENT` from RDRAM, decodes the opcode
 (bits 61:56), and advances `DPC_CURRENT` by the command's **full length**. It
 consumes one command per scheduler tick, so the FIFO drains gradually rather than
-in a burst. Every command is recognised, its length consumed, and a retired-work
+in a burst. Every command is recognized, its length consumed, and a retired-work
 counter (`commands_processed`) incremented. Dispatch to a handler currently
 covers only the four sync commands (see below); every other opcode is a
-recognised no-op until the rasterizer lands.
+recognized no-op until the rasterizer lands.
 
 Two stall conditions keep the decoder from acting on data that is not a valid
 command yet:
@@ -137,28 +137,28 @@ Processor/Commands*):
 
 Commands are read from RDRAM (the `XBUS` bit clear); the `XBUS`/DMEM command
 source is not yet wired, because the `rdpq` microcode that drives the DP today
-DMAs its list to RDRAM. Honouring the DMEM source (per *Edge cases* below)
+DMAs its list to RDRAM. Honoring the DMEM source (per *Edge cases* below)
 arrives with a bus seam for DMEM reads.
 
 ### The sync commands and the DP interrupt (T-31-002)
 
 The dispatcher (`Rdp::dispatch`, called by `tick` after a command is consumed)
-handles the four synchronisation commands; every other opcode is still a
-recognised no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
+handles the four synchronization commands; every other opcode is still a
+recognized no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
 
 - **`Sync Load`** (0x26), **`Sync Pipe`** (0x27), **`Sync Tile`** (0x28) each
   stall the pipeline for a **fixed, unconditional** number of GCLK cycles — 25,
   50, and 33 respectively (`SYNC_LOAD_GCLK` / `SYNC_PIPE_GCLK` /
   `SYNC_TILE_GCLK`). The stall does not wait on an internal signal: the RDP burns
   the full time whether or not the sync was needed, which is exactly why these
-  are constants rather than conditional waits. Modelled by a `stall` countdown
+  are constants rather than conditional waits. Modeled by a `stall` countdown
   (one GCLK per `tick`, one `tick` = one RCP/GCLK step) that holds the FIFO until
   it expires. These are documented values, so they live in the code with their
   citation, not in the accuracy ledger (which is for *undocumented* constants).
 - **`Sync Full`** (0x29) **raises the DP interrupt** (`bus.raise_dp_interrupt()`
   → `MI_INTR.dp`, asserting IP2 once masked in) — the only part of the command
   implemented. On hardware it also waits for all staged pipeline/memory work and
-  halts the pipeline counter; **neither is modelled** (there is no asynchronous
+  halts the pipeline counter; **neither is modeled** (there is no asynchronous
   pipeline work yet, and no pipeline counter), so the interrupt is raised as soon
   as the command is dispatched, after any *preceding* sync stall drains via the
   `stall` gate. The documented hazards — `Sync Full` must be the last command
@@ -169,7 +169,7 @@ recognised no-op. Provenance is N64brew *…/Commands* §0x26–0x29.
 **Measured oracle effect:** the n64-systemtest failing-assertion count is
 **unchanged at 93 suite-wide** (917 started) — the same as `v0.3.0`. Sync
 dispatch flips no assertion, because every remaining failure needs the RDP
-rasteriser (Phase 3) or the cart/PIF path (Phase 5), not sync handling; the
+rasterizer (Phase 3) or the cart/PIF path (Phase 5), not sync handling; the
 `Sync Full` interrupt has no isolated systemtest that was failing on its absence.
 Run: `cargo test -p rustyn64-test-harness --release --test systemtest --
 --ignored`.
@@ -183,12 +183,12 @@ is N64brew *…/Commands* §0x3F/0x37/0x2D/0x36 and *…/Pipeline* §Fill Pipeli
 - **`Set Color Image`** (0x3F) latches the framebuffer base, the pixel `size`
   (0 = 4-bit, 1 = 8-bit, 2 = 16-bit, 3 = 32-bit), the `format`, and the `width`
   (encoded field + 1). The row stride is `width * bytes_per_pixel`.
-- **`Set Fill Color`** (0x37) latches the 32-bit FILL colour register.
+- **`Set Fill Color`** (0x37) latches the 32-bit FILL color register.
 - **`Set Scissor`** (0x2D) latches the four `u10.2` bounds. The interlace
-  `field`/`odd` bits are parsed-away (not modelled).
-- **`Fill Rectangle`** (0x36) fills the rectangle ∩ scissor with the fill colour.
+  `field`/`odd` bits are parsed-away (not modeled).
+- **`Fill Rectangle`** (0x36) fills the rectangle ∩ scissor with the fill color.
   FILL mode "repeats the 32-bit value verbatim out to memory", which resolves per
-  pixel by size: **32-bit** writes the whole colour (4 bytes, big-endian);
+  pixel by size: **32-bit** writes the whole color (4 bytes, big-endian);
   **16-bit** writes the upper half for even pixels and the lower half for odd (so
   memory is still the 32-bit value repeated); **8-bit** writes byte `x & 3`.
   Coordinates are `u10.2`; FILL floors the upper-left and draws through the pixel
@@ -204,8 +204,8 @@ rectangle is an ordinary primitive and goes through the **combiner** (then
 alpha-compare and dither, exactly as the triangle path does); it carries no shade
 or texture block, so the combiner sees only its register inputs (prim/env/…) and
 the fill register is never consulted. Oracle-confirmed (**R-21**): vector
-`fill_rect_1cycle_16` renders a 1-cycle rectangle whose prim colour and fill
-register are deliberately different, and Angrylion produces the **prim** colour.
+`fill_rect_1cycle_16` renders a 1-cycle rectangle whose prim color and fill
+register are deliberately different, and Angrylion produces the **prim** color.
 
 Scope limits, honestly: the same question is **still open for a flat
 `Fill Triangle`** (0x08 with no shade/texture block), which selects the combiner on
@@ -304,7 +304,7 @@ The supported paths are byte-exact against hand-computed expectations (five unit
 
 ### The sampler and copy-mode Texture Rectangle (T-32-004)
 
-The first **textured picture**: `Texture Rectangle` (0x24) blits a tile into the colour
+The first **textured picture**: `Texture Rectangle` (0x24) blits a tile into the color
 image in copy mode, closing the Sprint-2 texture path. This is the first **two-word**
 command — `tick` now captures the command's RDRAM base address (before advancing the FIFO
 pointer) and passes it to `dispatch`, so a handler can read its later words
@@ -315,7 +315,7 @@ pointer) and passes it to `dispatch`, so a handler can read its later words
   `16−code`), subtract the tile origin `SL`, take the integer part (`>>5`), then **mirror**
   on alternate mask-sized spans and **mask** to `mask` bits (`mask == 0` = no wrap). Copy
   mode omits the clamp step. Matched to the ParaLLEl-RDP `texture.h` order.
-- **Copy-mode Texture Rectangle** rasterises the screen rectangle (lower-right inclusive),
+- **Copy-mode Texture Rectangle** rasterizes the screen rectangle (lower-right inclusive),
   stepping `T` down Y and copying **4 pixels per cycle** across X: each cycle reads a 64-bit
   TMEM word (4 consecutive 16-bit texels) and writes them to 4 output pixels. So the base
   texel is evaluated at each cycle's first column (`base = wrap(s_start + (DsDx·cycle_col >>
@@ -323,7 +323,7 @@ pointer) and passes it to `dispatch`, so a handler can read its later words
   the within-cycle offset is a direct `+0..3` TMEM increment — **not** a per-pixel step. A 1:1
   blit (`DsDx = 4.0`) reduces to `s = col`; a non-1:1 blit (e.g. `DsDx = 2.0`) reads texels
   `0,1,2,3,2,3,4,5`, not the naive `0,0,1,1,2,2,3,3`. The raw 16-bit texel is copied verbatim
-  into the colour image, clipped to the scissor.
+  into the color image, clipped to the scissor.
 
 Provenance: the command encoding, copy pipeline, and wrap order are cross-verified against
 the N64brew wiki and ParaLLEl-RDP (MIT). Validated by a **round-trip identity** test — a
@@ -332,7 +332,7 @@ the N64brew wiki and ParaLLEl-RDP (MIT). Validated by a **round-trip identity** 
 / `_offset_16` / `_8x8_16` (1:1) and `tex_rect_mag_16` (non-1:1 `DsDx = 2.0`) conformance
 vectors against Angrylion.
 
-Scope (**open residual R-8**): the 16-bit tile → 16-bit colour image path is wired, including
+Scope (**open residual R-8**): the 16-bit tile → 16-bit color image path is wired, including
 the 4-pixels-per-cycle non-1:1 selection. `Texture Rectangle Flip` (0x25), the 8/32-bit and TLUT
 copy paths, and the copy alpha-compare are deferred to the Sprint-3 fuzz; an
 unsupported configuration draws nothing. The oracle count stays **93** — the n64-systemtest
@@ -349,7 +349,7 @@ matched to the ParaLLEl-RDP read layout (`texture.h`, MIT).
   count, and latches the tile size. The base is written wherever `tmem_addr` points: the
   "upper half, 128-byte aligned" rule is a **programmer requirement**, not a hardware
   rejection (the sampler reads the palette from the upper half, so a misplaced TLUT is
-  simply not found). Enforcing a rejection would invent behaviour, so it is not done.
+  simply not found). Enforcing a rejection would invent behavior, so it is not done.
 - **`fetch_texel(tile, s, t) -> [u8; 4]`** decodes RGBA16 (5551, 5→8 replication),
   RGBA32 (from the split TMEM: R,G low half, B,A high half), IA16/IA8/IA4, I8/I4 (alpha =
   intensity), and CI8/CI4 through the TLUT (CI4 folds `tile.palette` in as the high nibble
@@ -378,11 +378,11 @@ load as 8-bit and render with a separate 4-bit tile — validated against Angryl
 oracle count stays **93** — `fetch_texel` now has runtime callers (the texture rectangle,
 T-32-004, and the textured triangle, T-33-004 2b-texture), but no systemtest drives the render path.
 
-### The flat-fill triangle rasteriser (T-33-001)
+### The flat-fill triangle rasterizer (T-33-001)
 
 The first Sprint-3 ticket and the foundation every later per-pixel ticket renders through:
 the edge-walked triangle. `Fill Triangle` (0x08) and its shade/texture/Z variants
-(0x09–0x0F) are decoded and rasterised, cross-verified against the N64brew wiki and the
+(0x09–0x0F) are decoded and rasterized, cross-verified against the N64brew wiki and the
 ParaLLEl-RDP reference (MIT, `interpolate_x`).
 
 - **Decode.** `yh/ym/yl` are `s11.2` (four sub-scanlines per pixel); the three edge base
@@ -395,24 +395,24 @@ ParaLLEl-RDP reference (MIT, `interpolate_x`).
   `x0 + (y − yh_base) * slope`; the major edge `H` (yh→yl) provides one span bound and the
   active minor edge (`M` above `ym`, `L` below) the other, `flip` deciding which is left. The
   span is reduced to whole pixels (`>> 16`), scissor-clipped, and filled with the FILL-mode
-  colour (via the shared `fill_pixel`, the same write as `Fill Rectangle`).
+  color (via the shared `fill_pixel`, the same write as `Fill Rectangle`).
 
 Scope (**open residual R-9**): this is a **flat fill** in FILL cycle mode — the sub-pixel
 coverage (ParaLLEl-RDP's `quantize_x` sticky-bit edge and the `do_offset` latch) and the
 shade/texture/Z attribute interpolation are deferred; the 0x09–0x0F variants fill flat, their
 coefficient words length-consumed only. The combiner (T-33-002), blender (T-33-003), and
-Z/coverage (T-33-004) then colour the triangle; the whole is graded bit-exact against the
+Z/coverage (T-33-004) then color the triangle; the whole is graded bit-exact against the
 ParaLLEl-RDP conformance vectors (T-33-005). Validated here by a right-triangle golden pinning
 the edge-walk and the fixed-point decode. Oracle unchanged at **93**.
 
-### The colour combiner (T-33-002)
+### The color combiner (T-33-002)
 
-`Set Combine Mode` (0x3C) and the `(A − B) * C + D` evaluation — the per-pixel colour mux,
+`Set Combine Mode` (0x3C) and the `(A − B) * C + D` evaluation — the per-pixel color mux,
 cross-verified against the N64brew wiki and ParaLLEl-RDP (MIT, `combiner.h`).
 
 - **Decode.** The single command word packs 16 input selects — RGB and alpha `A/B/C/D` for both
   cycles — into `CombineMode`. `Set Prim Color` (0x3A) and `Set Env Color` (0x3B) latch the two
-  constant-colour registers the combiner can select.
+  constant-color registers the combiner can select.
 - **The equation.** Per channel, `(A − B) * C + D` with the RDP's fixed-point rules: `A/B/D` go
   through the asymmetric 9-bit `special_expand` (subtract the `0x80` bias, sign-extend to 9 bits,
   add it back), `C` is a plain 9-bit value, a `+0x80` rounding bias is applied **before** the
@@ -428,11 +428,11 @@ shade, environment, one, zero, and the C-slot alpha taps) are wired, and so are 
 mul-select 15), each validated byte-for-byte against Angrylion (`tex_tri_primlodfrac_16`,
 `tex_tri_convert_k45_16`, and `tex_tri_convert_kneg_16` — the last a negative `K4 = −64`
 proving K4/K5 are stored raw `0..511` and sign-extended in the combiner, not at decode). The
-**chroma-key centre/scale** (`Set Key GB`/`Set Key R` → RGB sub-B / mul select 6) are likewise
+**chroma-key center/scale** (`Set Key GB`/`Set Key R` → RGB sub-B / mul select 6) are likewise
 wired, validated by unit tests (decode + mux routing) and the `tex_tri_chromakey_16` conformance
 vector byte-for-byte against Angrylion. The **chroma-key alpha compare** (`key_en`, Set Other Modes bit 40) is also wired: the combiner
-outputs the sub-A chromabypass colour and derives the pixel alpha from `chroma_key_min` over the
-17-bit combined colour + the `Set Key` widths (gated on `key_en`, common path byte-identical;
+outputs the sub-A chromabypass color and derives the pixel alpha from `chroma_key_min` over the
+17-bit combined color + the `Set Key` widths (gated on `key_en`, common path byte-identical;
 validated by `tex_tri_chromakey_alpha_16`). The remaining exotic inputs — **noise** (un-oracled),
 the derivative-computed **LOD fraction**, and the **YUV convert `K0`–`K3`** — still read as zero
 until the LOD/noise/YUV state lands. The arithmetic, the 16-field decode, the mux, and the 2-cycle
@@ -451,20 +451,20 @@ ParaLLEl-RDP (MIT, `shaders/blender.h`).
   Z-test/update enables and Z-mode, the coverage-destination mode, `image_read_en`, and the
   alpha-compare enable — all decoded into `OtherModes` so nothing silently reads as its default,
   even though the blend equation consumes only the subset below today. `Set Blend Color` (0x39)
-  and `Set Fog Color` (0x38) latch the two colour registers the blender can select.
+  and `Set Fog Color` (0x38) latch the two color registers the blender can select.
 - **The equation.** Per channel, `P * a0 + M * (a1 + 1)` then `>> 5`, where `P`/`M` select an RGB
   triple (pixel/memory/blend/fog) and `a0 = A >> 3`, `a1 = B >> 3` map the 8-bit alpha selects to
   the 5-bit blend weights. The `+ 1` on the `M` term is real hardware. This is the divide-free
   form the RDP uses for every non-anti-aliased-edge pixel.
 - **Cycles.** 1-cycle mode evaluates blend cycle 0 alone; 2-cycle mode feeds cycle 0's RGB back
-  as the pixel colour into cycle 1 (the alpha selects are unchanged between cycles).
+  as the pixel color into cycle 1 (the alpha selects are unchanged between cycles).
 
 - **Runtime wiring (T-33-004 PR-B 2b-blend).** `depth_span` now gives the blender its first
   runtime caller: for a shaded/textured triangle it reads the destination framebuffer pixel
   (`read_pixel`, the inverse of `write_pixel` for RGBA8888 and RGBA5551) and routes the combiner
-  colour through `blend` **when the depth test enabled blending** — which, until per-pixel coverage
+  color through `blend` **when the depth test enabled blending** — which, until per-pixel coverage
   exists, means `force_blend` is set. This mirrors the reference blender's `!blend_en` fast-path:
-  an opaque pixel keeps the combiner colour and only a translucent (later, AA-edge) pixel blends
+  an opaque pixel keeps the combiner color and only a translucent (later, AA-edge) pixel blends
   with memory. A translucent-triangle integration test proves a 50/50 blend of red over a green
   background reaches `0x7F7F00` (plain red would mean the memory read never happened).
 
@@ -497,7 +497,7 @@ ParaLLEl-RDP (MIT, `z_encode.h`, `depth_test.h`).
   for powers of two — the hardware's cheap `log2`).
 - **The depth test.** `depth_test` is a faithful port of `depth_test.h`: given the pixel's `z`/`dz` and
   the Z-buffer read (`DepthInputs`), it returns whether the pixel is written plus the blend/coverage
-  state (`DepthResult`). All four Z modes are modelled — **opaque** (nearer-passes, with a coplanar
+  state (`DepthResult`). All four Z modes are modeled — **opaque** (nearer-passes, with a coplanar
   same-surface coverage-increment path), **interpenetrating** (a decal-like intersect that *reduces*
   coverage), **transparent** (strictly-in-front), and **decal** (coplanar only) — including the
   stored-`dz` coplanar/precision-factor handling. Unit-tested by observable occluding-vs-occluded pairs
@@ -529,7 +529,7 @@ depth test or update — `depth_span` runs the real per-pixel path instead of th
   major-edge x — a faithful port of ParaLLEl-RDP's `interpolate_z` snap (`interpolation.h`) for the
   full-coverage, `do_offset == false` case (sub-pixel snapping is R-9).
 - **Test and write.** `depth_test` compares the interpolated depth against the Z-buffer entry
-  (`zbuffer_read`); only passing pixels write colour, and `zbuffer_write` stores the new depth when
+  (`zbuffer_read`); only passing pixels write color, and `zbuffer_write` stores the new depth when
   `z_update` is set. This is `depth_test`/`zbuffer_*`'s first runtime caller.
 
 Validated by an occluding-triangles test (a nearer triangle draws, a farther one is rejected, a
@@ -540,18 +540,18 @@ oracle stays **93** (no systemtest ROM drives rendering yet).
 
 ### The first shaded triangle (T-33-004, PR-B part 2b)
 
-`Fill Shaded Triangle` (opcode bit 58) now colours each pixel from the **combiner** fed the interpolated
+`Fill Shaded Triangle` (opcode bit 58) now colors each pixel from the **combiner** fed the interpolated
 shade, not the FILL register — the combiner's first runtime caller.
 
 - **Decode.** `decode_shade` reads the 8-word shade block (RGBA base + per-x `dx` and per-major-edge `de`
   deltas, `s15.16`; the base's int part is 9-bit signed, the deltas' 16-bit) into `ShadeSetup`.
 - **Interpolate and combine.** `interpolate_shade` (a port of ParaLLEl-RDP's `interpolate_rgba` snap)
   gives the per-pixel RGBA; `shaded_color` runs it through `Rdp::combine` with the prim/env registers,
-  and `write_pixel` packs the result to the colour image (RGBA8888 direct, RGBA5551 for 16-bit).
+  and `write_pixel` packs the result to the color image (RGBA8888 direct, RGBA5551 for 16-bit).
 
 This applies standalone and combined with the depth test. Validated by a hand-computed
 `decode_shade`/`interpolate_shade` test and a shaded-triangle test that renders the combiner output
-(not the FILL colour). **This closes the R-9 flat-fill for shaded triangles.** The oracle stays **93**.
+(not the FILL color). **This closes the R-9 flat-fill for shaded triangles.** The oracle stays **93**.
 
 ### The first textured triangle (T-33-004, PR-B part 2b-texture)
 
@@ -572,16 +572,16 @@ combiner.
 
 **Perspective-correct texturing.** When `Set Other Modes` `persp_tex_en` (bit 51) is set, `interpolate_st`
 interpolates `S`/`T`/`W` and runs the hardware perspective divide — a faithful port of ParaLLEl-RDP's
-`perspective_divide` (the 64-entry reciprocal LUT, the normalisation shift, the out-of-bounds
+`perspective_divide` (the 64-entry reciprocal LUT, the normalization shift, the out-of-bounds
 saturation, the `w <= 0` carry, the 17-bit clamp), validated by a hand-computed `perspective_divide`
 test. The **tile coordinate transform** (shift → tile-origin subtraction → clamp → mask/mirror) is now
 applied to the raw `s10.5` coordinate before the fetch (`sample_coord`, the ParaLLEl-RDP sampler order:
 clamp active when `clamp_s || mask_s == 0`, over-`SH` clamps to `(SH>>2)−(SL>>2)`, clamp *before* mask),
 validated against Angrylion by `tex_tri_clamp_16` and `tex_tri_wrap_16`. The N64's **3-point
-bilinear** filter (`sample_type = 1`) is now modelled too (`bilinear_3point`: four texels blended
+bilinear** filter (`sample_type = 1`) is now modeled too (`bilinear_3point`: four texels blended
 by `upper = (sfrac+tfrac) & 0x20`, the lower/upper triangle each a `+0x10 >> 5` round; the fraction
 is zeroed when the coordinate clamps), validated by `tex_tri_bilinear_16`. The **mask-wrap seam** is handled too (`mask_coupled`: the
-bilinear neighbour is `base + sdiff`/`tdiff` — `+1` / `0` at a seam / `-1` mirrored / wrap-to-0 —
+bilinear neighbor is `base + sdiff`/`tdiff` — `+1` / `0` at a seam / `-1` mirrored / wrap-to-0 —
 not a bare `+1`; validated by `tex_tri_bilinear_wrap_16`). **2-cycle mode** samples a second texel from `base_tile + 1`
 and swaps `texel0`/`texel1` before cycle 1 (validated by `tex_tri_2cycle_16`). The **primitive base
 tile** is threaded from the triangle command's `tile[2:0]` field (**bits 50:48**, N64brew *Reality
@@ -589,9 +589,9 @@ Display Processor / Commands* Edge-Coefficients word-0 table; `(ewdata[0] >> 16)
 `rasterizer.c`) into the sampler — `tiles[base_tile]` / `tiles[(base_tile + 1) & 7]`, not a
 hardwired tile 0/1 — validated against Angrylion by `tex_tri_base_tile_16` (the ramp loaded into
 tile 3 renders identically to tile 0; a `tiles[0]` read renders black). The **mid-texel** filter
-(Set Other Modes bit 44) is modelled too: at the exact texel centre (`sfrac == tfrac == 0x10`) the
-four neighbours are averaged instead of the 3-point pick (validated against Angrylion by
-`tex_tri_mid_texel_16` over a non-planar checkerboard, whose centre carries the midpoint value a
+(Set Other Modes bit 44) is modeled too: at the exact texel center (`sfrac == tfrac == 0x10`) the
+four neighbors are averaged instead of the 3-point pick (validated against Angrylion by
+`tex_tri_mid_texel_16` over a non-planar checkerboard, whose center carries the midpoint value a
 3-point pick never produces).
 
 **LOD fraction.** *Provenance: this rule is an **oracle-measured port**, not a documented hardware
@@ -599,7 +599,7 @@ fact — it is transcribed from the Angrylion study oracle (`tcoord.c`, `tclod_2
 `lodfrac_lodtile_signals` + `tclod_4x17_to_15`) and validated byte-for-byte by the conformance
 vector `tex_tri_lodfrac_16`; see `docs/accuracy-ledger.md` **R-13** for the full disposition.*
 
-In **2-cycle** mode the derivative-computed `lod_frac` is modelled: the LOD is the larger of the coordinate
+In **2-cycle** mode the derivative-computed `lod_frac` is modeled: the LOD is the larger of the coordinate
 deltas to the next pixel in **x** (`+dsdx`) and the next scanline in **y** (`+dsdy` — the true
 vertical gradient from texture-block words 5/7, *not* the major-edge `de` the scanline walk uses),
 each taken through the same perspective divide as the pixel's own coordinate; `lod_signals` then
@@ -615,23 +615,23 @@ the pair straddles the mip boundary (`base+level`, `base+level+1`) and collapses
 where there is nothing to blend toward (distant, or magnifying without `sharpen_tex_en`);
 `detail_tex_en` shifts both one level finer; indices wrap mod 8. Validated against Angrylion by
 `tex_tri_mip_tile_16`. Scope (**open residual R-13**): only the **1-cycle** LOD form remains — it
-compares the `x+1` and `x+2` taps and needs span-edge signals the rasteriser does not model, so it
+compares the `x+1` and `x+2` taps and needs span-edge signals the rasterizer does not model, so it
 reads zero rather than being approximated with the 2-cycle formula.
 
 > **Authoring note for 2-cycle textured vectors:** set **both** `bi_lerp0` (bit 11) *and*
 > `bi_lerp1` (bit 10). Cycle 1's filter is selected by `bi_lerp1`, and leaving it clear sends that
-> cycle down the YUV colour-convert path instead of the texel fetch.
+> cycle down the YUV color-convert path instead of the texel fetch.
 
 ### Sub-pixel coverage primitives (T-33-004, PR-B part 2c)
 
 The RDP anti-aliases by sampling 8 sub-positions per pixel (4 Y-subpixels × 2 X-samples) against the
 triangle's edges and counting how many fall inside — a bit-exact port of parallel-rdp `coverage.h`
-and `span_setup.comp`, the pure primitives ahead of wiring them into the rasteriser.
+and `span_setup.comp`, the pure primitives ahead of wiring them into the rasterizer.
 
 - **`quantize_x`.** Snaps a `s.16` edge X to the 3-fraction-bit (`s.3`) coverage domain with the RDP
   sticky bit: any discarded fraction bit forces the low output bit set, so a truncated-but-nonzero
   coordinate never lands exactly on a sub-pixel boundary — which is what keeps the half-open `<` /
-  `>=` edge tests exact. (parallel-rdp's `setup.xh` is `s.15` and quantises with `>> 12`; our raw
+  `>=` edge tests exact. (parallel-rdp's `setup.xh` is `s.15` and quantizes with `>> 12`; our raw
   command edges are `s.16`, one fraction bit wider, so `>> 13` — the same `s.3` result.)
 - **`compute_coverage`.** For a pixel column, tests the two X-samples of each of the 4 Y-subpixels
   against that Y-subpixel's `[xleft, xright)` span. The X-sample offsets alternate by Y-subpixel —
@@ -646,7 +646,7 @@ and `span_setup.comp`, the pure primitives ahead of wiring them into the rasteri
 
 Both primitives are pinned by hand-computed unit tests derived from the oracle's arithmetic
 (full/partial/empty masks, the sticky bit, the negative-coordinate arithmetic shift), **not** from
-this port's own output. They are now **wired into the 1-/2-cycle rasteriser** (`pixel_coverage`): the
+this port's own output. They are now **wired into the 1-/2-cycle rasterizer** (`pixel_coverage`): the
 edge-walk builds per-Y-subpixel `s.3` edges, and each pixel is gated by its coverage mask — with AA
 off, a pixel draws only when its top-left sub-sample is inside the span — with the coverage count
 stored in the pixel's alpha/coverage bits (`(count − 1) & 7`). FILL/COPY mode keeps the whole-pixel
@@ -662,9 +662,9 @@ no-Z and depth paths (R-11, `alpha_compare_16` / `alpha_compare_z_16`). **`cvg_d
 
 ### The conformance gate (T-33-005)
 
-The bit-exactness gate against Angrylion, the accuracy oracle. Licence-clean by construction: a
+The bit-exactness gate against Angrylion, the accuracy oracle. License-clean by construction: a
 standalone generator (`crates/rustyn64-test-harness/vectors-gen/`, our own MIT code) drives the
-Angrylion software RDP (non-commercial study licence, fetched into gitignored `ref-proj/`, never
+Angrylion software RDP (non-commercial study license, fetched into gitignored `ref-proj/`, never
 vendored) over hand-written RDP command lists and emits `.rvec` vectors carrying *only outputs* — the
 command stream plus Angrylion's rendered framebuffer, both freely committable. `tests/rdp_conformance.rs`
 replays each command stream through RustyN64's RDP and asserts a byte-for-byte framebuffer match.
@@ -705,7 +705,7 @@ the rest is still marked TODO:
   AA/coverage-accumulate details are still Sprint-3 residual R-11.
 - **Combiner latches** — the two-stage color/alpha mux input selects (**present**,
   T-33-002, via `Set Combine Mode` 0x3C).
-- **Blender latches** — the `P/A/M/B` selects + blend/fog colour registers
+- **Blender latches** — the `P/A/M/B` selects + blend/fog color registers
   (**present**, T-33-003). RGB dither is wired (T-33-004 2c); the AA-edge config is R-11.
 - **Depth registers** — the Z-buffer base (`Set Depth Image` 0x3E) and the primitive
   `z`/`dz` (`Set Primitive Depth` 0x2E) (**present**, T-33-004 PR-A). The Z-buffer
@@ -734,7 +734,7 @@ The RDP runs in one of four modes (`ref-docs/research-report.md` §4):
 | **copy** | fast rectangle blit (texture → framebuffer, no pipeline) |
 | **fill** | fast solid-color fill (clears) |
 
-Per-mode behaviour must be reproduced exactly — copy/fill take shortcuts that
+Per-mode behavior must be reproduced exactly — copy/fill take shortcuts that
 change the output vs running the full pipeline.
 
 ### The framebuffer and the 9th bit
@@ -806,8 +806,8 @@ order:
   filter (`vi_video_filter`, 6-tap penultimate-min/max) on partial-coverage pixels
   (`cvg < 7`); the **de-dither** restore (8-tap ±1 nudge, `VI_CTRL` bit 16) on
   fully-covered pixels; and the **divot** median-of-three (`VI_CTRL` bit 4) across
-  the pixel and its two horizontal neighbours — with the hardware's
-  **all-fully-covered early-return** (`(cen & left & right) cvg == 7` ⇒ the centre
+  the pixel and its two horizontal neighbors — with the hardware's
+  **all-fully-covered early-return** (`(cen & left & right) cvg == 7` ⇒ the center
   passes through unchanged, no median). The one format-specific primitive is
   `Bus::vi_read_cov`: **32-bit** coverage is alpha bits 7:5 (`(px >> 5) & 7`);
   **16-bit** combines the pixel's bit 0 with the two **hidden bits** of the 9-bit
@@ -819,7 +819,7 @@ order:
 **Still deferred in `scanout_scaled` (R-5/R-6):** gamma-**dither** (bit 2, noise
 based); the coverage filters under `aa_mode == 2` (RESAMP_ONLY forces `cvg = 7` on
 hardware, so de-dither can still apply — currently gated to `aa_mode ≤ 1`); and the
-R-6 field-rate / interlace serrate (only the progressive field is modelled).
+R-6 field-rate / interlace serrate (only the progressive field is modeled).
 `Bus::scanout_scaled` also has **no per-frame driver yet** — like `Bus::scanout` it
 is a pure method the run loop does not call (the R-12 land-ahead-of-caller
 precedent); the frontend wiring is a later slice.
@@ -851,14 +851,14 @@ frame (T-31-005); the deferred paths track against the ParaLLEl-RDP fuzz suite.
 - **Copy/fill skip the pipeline.** Don't route fill-mode through the combiner;
   the bit-exact output differs.
 - **The DP command list can live in DMEM or RDRAM** — `DPC_STATUS` selects the
-  source; honour both.
+  source; honor both.
 
 ## Test plan
 
 - **ParaLLEl-RDP conformance fuzz suite (~150 tests)** — generates RDP command
   streams and compares fixed-point outputs; "to pass we must get an exact match"
   (`ref-docs/research-report.md` §4, §7). This is the RDP gate.
-- **PeterLemon RDP demos** — the de-facto visual/behavioural reference for many
+- **PeterLemon RDP demos** — the de-facto visual/behavioral reference for many
   edge cases (`ref-docs/research-report.md` §7).
 - **Per-mode unit vectors** — 1-/2-cycle/copy/fill outputs; combiner mux
   permutations; blend modes; Z-test boundaries; coverage/AA on a known triangle.

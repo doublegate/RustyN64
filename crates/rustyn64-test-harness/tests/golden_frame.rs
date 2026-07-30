@@ -1,7 +1,7 @@
 //! T-31-005 — the first golden frame.
 //!
 //! Drives the whole Sprint-1 picture path end to end through the core's public
-//! API — an RDP FILL command list rasterised into a framebuffer in RDRAM, then
+//! API — an RDP FILL command list rasterized into a framebuffer in RDRAM, then
 //! the VI scanned out to RGBA8 — and pins the result against a **committed golden
 //! hash**. Any regression in the command decoder, the FILL pipeline, or the VI
 //! scan-out changes the frame bytes and so the hash, failing this test.
@@ -83,7 +83,7 @@ fn render_fill_frame() -> Vec<u8> {
 fn a_fill_rectangle_renders_the_committed_golden_frame() {
     let frame = render_fill_frame();
 
-    // The rasterised frame is byte-exact: every 32-bit pixel is the fill colour.
+    // The rasterized frame is byte-exact: every 32-bit pixel is the fill color.
     let expected: Vec<u8> = [0xAA, 0xBB, 0xCC, 0xDD].repeat(8);
     assert_eq!(frame, expected, "FILL -> scan-out is byte-exact");
 

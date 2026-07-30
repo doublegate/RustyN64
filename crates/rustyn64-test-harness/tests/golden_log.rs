@@ -18,7 +18,7 @@
 //! Everything earlier is PIF ROM and IPL3 — copyrighted Nintendo code plus
 //! libdragon's bootloader — which must not enter the repository. It is also
 //! where `RustyN64` begins executing, so the two streams are directly comparable
-//! without modelling the cartridge subsystem (that is Phase 5).
+//! without modeling the cartridge subsystem (that is Phase 5).
 //!
 //! # Why it is `#[ignore]`d
 //!

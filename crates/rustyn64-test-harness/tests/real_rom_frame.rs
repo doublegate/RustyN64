@@ -6,7 +6,7 @@
 //! then scans the framebuffer out through the **real VI** and pins the result.
 //!
 //! Unlike `golden_frame.rs` / `composite_frame.rs` (which poke a synthetic RDP
-//! command stream), nothing here is synthesised: the CPU executes the ROM's own
+//! command stream), nothing here is synthesized: the CPU executes the ROM's own
 //! instructions, which program the VI registers and write every pixel. It is the
 //! CPU → RDRAM → VI scan-out path end to end. No RDP/RSP/texture is involved, so
 //! this is orthogonal to the still-open texture work (ledger R-13).

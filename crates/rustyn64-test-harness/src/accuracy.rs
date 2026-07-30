@@ -10,7 +10,7 @@
 //! **Every probe's expected value comes from an external oracle, never from
 //! `RustyN64`'s own output.** The default battery
 //! ([`AccuracyScorer::default_battery`]) scores every committed Angrylion
-//! conformance vector — the RDP rasteriser set ([`crate::conformance::RDP_VECTORS`])
+//! conformance vector — the RDP rasterizer set ([`crate::conformance::RDP_VECTORS`])
 //! and the VI scan-out set ([`crate::conformance::VI_VECTORS`]): the expected output
 //! in each vector was rendered by Angrylion, so a probe passes only when `RustyN64`
 //! reproduces the oracle. **Exactness differs by suite:** the RDP probes are
@@ -106,7 +106,7 @@ impl AccuracyScorer {
     }
 
     /// The default probe battery: every committed Angrylion conformance vector —
-    /// both the **RDP** rasteriser set and the **VI** scan-out set — replayed
+    /// both the **RDP** rasterizer set and the **VI** scan-out set — replayed
     /// through `RustyN64` and scored against the oracle's golden output.
     ///
     /// Probes are named `rdp-conformance/<vector>` and `vi-conformance/<vector>`.

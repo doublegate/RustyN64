@@ -55,7 +55,7 @@ Provide **two** boot paths:
   `rustyn64-test-harness::rom::hle_boot`, and it ships in this PR.
 
 - **Real-PIF boot — an off-by-default, local-only path (staged, Sprint 2).** Execute the
-  user-supplied PIF ROM dump at `0x1FC0_0000` (IPL1/IPL2) with the CIC modelled
+  user-supplied PIF ROM dump at `0x1FC0_0000` (IPL1/IPL2) with the CIC modeled
   (seed/checksum; a decapped CIC-MCU ROM only if one is available, else the seed-based
   response). Because it needs the copyrighted PIF ROM, it is **behind an off-by-default
   flag, validated locally, and never CI-gated.** It is not implemented in this PR; it is
@@ -74,7 +74,7 @@ of it; the real-PIF path is the faithful reproduction for those who supply the R
   IPL3 leaves. Offering the real-PIF path (opt-in) is what lets an owner with the ROM check
   the HLE state against the genuine one.
 - **A per-game boot database.** Rejected by ADR 0003/0004 — the core must not consult a DB.
-  Boot is parameterised by save type + CIC + region (resolved outside the core), never by a
+  Boot is parameterized by save type + CIC + region (resolved outside the core), never by a
   game-keyed table.
 
 ## Consequences
@@ -82,7 +82,7 @@ of it; the real-PIF path is the faithful reproduction for those who supply the R
 - `rom::hle_boot` is the default retail boot and the one CI exercises; the n64-systemtest
   ELF-payload path (`seed_ipl3_handoff`) is unchanged for the accuracy suite.
 - The HLE seeds are a small set of **cited constants** (C-32); changing any of them fails
-  `hle_boot_seeds_retail_state`. The un-modelled remainder is bounded by the real-PIF path
+  `hle_boot_seeds_retail_state`. The un-modeled remainder is bounded by the real-PIF path
   (opt-in) and by whatever n64-systemtest boot-state coverage runs.
 - The real-PIF path introduces a **local-only, copyrighted input** (the PIF ROM), which the
   no-ROM guards keep out of the repository; it is off by default and never in a CI gate.
@@ -91,7 +91,7 @@ of it; the real-PIF path is the faithful reproduction for those who supply the R
 - **Booting is all-or-nothing and exercises the whole emulator.** A commercial ROM that
   boots may still not reach video because of *downstream* subsystems (the VI vblank loop,
   the RI/RDRAM interface, F3DEX graphics microcode) that are outside the cart boundary. That
-  gap is characterised honestly in `docs/accuracy-ledger.md` **R-18**, not hidden behind a
+  gap is characterized honestly in `docs/accuracy-ledger.md` **R-18**, not hidden behind a
   faked pass — the commercial-boot capstone asserts "boots and executes real code", and
   *reports* (does not assert) whether a frame was produced.
 
@@ -99,7 +99,7 @@ of it; the real-PIF path is the faithful reproduction for those who supply the R
 
 - **This PR — the HLE boot.** `rom::hle_boot`, the cited seeds (C-32), the boot-state test,
   and the commercial-boot capstone (local, `#[ignore]`d; R-18).
-- **Sprint 2 — the real-PIF path.** Execute the local PIF ROM with the CIC modelled, behind
+- **Sprint 2 — the real-PIF path.** Execute the local PIF ROM with the CIC modeled, behind
   an off-by-default flag; validate locally against the HLE state on ROMs the owner supplies.
   Never CI-gated.
 
@@ -115,11 +115,11 @@ is documented in `docs/accuracy-ledger.md` **C-33**. In short:
 - The **CIC is identified from the cartridge IPL3's CRC-32** (`Cic::from_ipl3`, cen64's
   fingerprint table), so the right per-CIC seed and 6-byte IPL2 checksum are used — not the
   legacy all-`0x3F` seed byte, which the real IPL2 would compute a mismatch against.
-- The **PIF-SM5 boot behaviours** IPL2 depends on are modelled behaviourally from the documented
+- The **PIF-SM5 boot behaviors** IPL2 depends on are modeled behaviorally from the documented
   protocol (`PIF-NUS.md`): the seed hand-off to PIF RAM `0x24`, the `0x10` ROM lockout, and the
   `0x20`/`0x40` checksum acquire/ack/run handshake — with an NMI freeze on a genuine mismatch.
   The SM5 firmware itself is **not** executed, and the post-boot running challenge (the 6105
-  X105 protocol) is not modelled — neither is needed to boot, and the boot checksum is the same
+  X105 protocol) is not modeled — neither is needed to boot, and the boot checksum is the same
   algorithm for all CICs.
 - **Validated locally:** every save-type representative in the commercial corpus (6102/6103/6105
   CICs) boots through the real IPL1→IPL2→IPL3 chain to game execution in RDRAM, with the

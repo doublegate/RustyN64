@@ -7,7 +7,7 @@
 //!   Driven through `SaveDevice::eeprom_read_block` etc. by the joybus module.
 //!
 //! Every backend round-trips a write and reload byte-for-byte — the accuracy
-//! oracle (the RustyNES battery-save analog). FlashRAM is modelled as its real
+//! oracle (the RustyNES battery-save analog). FlashRAM is modeled as its real
 //! erase/program/status machine (n64brew `Flash.md`), not a flat buffer, because
 //! a game that issues an erase-then-program sequence corrupts a flat store.
 #![allow(

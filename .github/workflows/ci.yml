@@ -1,6 +1,6 @@
 name: CI
 
-# Cost/time optimisation: the expensive legs (the macOS/Windows matrix and the
+# Cost/time optimization: the expensive legs (the macOS/Windows matrix and the
 # `test-roms` accuracy battery) run only on release-class events -- push to the
 # default branch, the merge queue, manual dispatch, a weekly drift-net cron, and
 # `release/*` PRs -- and are SKIPPED on ordinary feature PRs, which get only the
@@ -163,6 +163,20 @@ jobs:
       # with --no-verify, but not this. Scans the whole tracked tree, so it
       # also catches a ROM that slipped in via an earlier commit.
       - run: bash scripts/check_no_roms.sh
+
+  en-us-spelling:
+    name: en-US spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # In CI, not pre-commit only. A one-off spelling sweep decays because
+      # nothing fails when a single en-GB form comes back, so it survives review
+      # and the next one has precedent. This repo already has evidence of the
+      # pattern: markdownlint runs only in pre-commit, and an MD040 violation
+      # consequently sat unnoticed on main. Excludes the immutable/vendored
+      # trees; see the script header for the list and the reasons.
+      - run: bash scripts/check_en_us.sh
 
   microcode-blob:
     name: microcode blob integrity

@@ -26,9 +26,9 @@ const RESULT_REG: u8 = 30;
 /// Outcome of a `run_until_complete` run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionStatus {
-    /// The suite signalled success.
+    /// The suite signaled success.
     Passed,
-    /// The suite signalled failure, carrying the index of the failing test.
+    /// The suite signaled failure, carrying the index of the failing test.
     Failed(u64),
     /// The step budget was exhausted before any completion signal.
     Timeout,

@@ -10,7 +10,7 @@
 //! Both the **scalar unit** ([`su`]) and the full **8-lane vector unit** ([`vu`])
 //! run: the 48-bit accumulator, the `VRCP`/`VRSQ` reciprocal ROM tables, the
 //! clamping rules, and the whole vector load/store family are implemented, and
-//! the SP interface registers are modelled ([`sp`]). The RSP category of
+//! the SP interface registers are modeled ([`sp`]). The RSP category of
 //! n64-systemtest passes `Failed: 0` (Phase 2).
 //!
 //! The RSP never borrows the rest of the machine. [`Rsp::tick`] *returns* what
@@ -125,7 +125,7 @@ impl Rsp {
     #[must_use]
     #[expect(
         deprecated,
-        reason = "the vestigial `pc`/`halted` fields must still be initialised so                   the save-state layout is unchanged; they are never read"
+        reason = "the vestigial `pc`/`halted` fields must still be initialized so                   the save-state layout is unchanged; they are never read"
     )]
     pub fn new() -> Self {
         Self {
@@ -159,7 +159,7 @@ impl Rsp {
     /// The window at `0x0400_0000` is 8 KiB of real storage repeated all the way
     /// to `0x0404_0000` — n64-systemtest writes `0x3E000` and reads the result
     /// back at offset 0 (`sp_memory::SW (out of bounds)`), which is the same
-    /// 8 KiB seen for the 31st time. Masking is therefore the behaviour, not a
+    /// 8 KiB seen for the 31st time. Masking is therefore the behavior, not a
     /// bounds-check standing in for one: there is no out-of-range access to
     /// reject inside the window. Provenance is recorded in accuracy ledger
     /// **C-30** — the wiki documents only the first 8 KiB, so the mirroring

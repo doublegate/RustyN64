@@ -18,11 +18,11 @@ coprocessors (`ref-docs/research-report.md` §3, §Architecture options). The RS
 MIPS+SIMD core that runs game-supplied **microcode**, so two games can use entirely different
 rendering and audio pipelines.
 
-- **HLE** recognises a microcode binary by signature or CRC and substitutes a native
+- **HLE** recognizes a microcode binary by signature or CRC and substitutes a native
   reimplementation of its graphics or audio task. Fast — the Project64-plus-plugins norm — but
   **per-game fragile**: it breaks on unknown or custom microcode, mis-renders mid-frame
   coprocessor tricks, and needs perpetual per-game maintenance.
-- **LLE** executes the actual RSP instruction stream (scalar + vector ISA) and rasterises the
+- **LLE** executes the actual RSP instruction stream (scalar + vector ISA) and rasterizes the
   actual RDP command list. It is the accuracy bar — ares, CEN64, Gopher64, and ParaLLEl-RSP/RDP
   are all LLE — and the only path that reproduces custom microcode and the bit-exact framebuffer
   the test ROMs demand (§3, §4, §State of the art).
@@ -37,7 +37,7 @@ corpus specifically so this decision can be proven rather than asserted
 ## Decision
 
 RustyN64's core contract is **LLE RSP + LLE RDP**. The RSP executes the instruction stream; the
-RDP rasterises the real command list through a faithful per-pixel pipeline.
+RDP rasterizes the real command list through a faithful per-pixel pipeline.
 
 - **Audio comes for free.** The RSP audio microcode runs on the same LLE RSP core, so there is no
   per-game audio HLE and no separate audio DSP to write (`docs/audio.md`, §5). If audio is wrong
@@ -52,7 +52,7 @@ RDP rasterises the real command list through a faithful per-pixel pipeline.
 - **An HLE fast path may be added later behind an off-by-default feature flag** for speed — never
   the default, never the accuracy oracle.
 
-### Clean-room, and the actual licence position
+### Clean-room, and the actual license position
 
 Implement from primary documentation — the R4300i datasheet, the N64brew Wiki, Dillon's
 `n64-resources`, and the test ROMs. RustyN64 is MIT OR Apache-2.0, so the reference
@@ -63,16 +63,16 @@ The per-repo terms matter, and were recorded incorrectly in the original version
 which claimed "Angrylion-Plus is GPL and ParaLLEl-RDP is per-repo". Both were wrong, and the
 angrylion error *understated* the restriction. Verified against the clones in `ref-proj/`:
 
-| Reference | Actual licence | What that permits |
+| Reference | Actual license | What that permits |
 | --- | --- | --- |
-| **angrylion-rdp-plus** | **MAME licence** — ships `MAME License.txt` and **no `LICENSE` file at all**; `CREDITS.txt` states "The code comes under MAME license" | **Non-commercial.** Stricter than the GPL, and incompatible with MIT OR Apache-2.0 in *both* directions. Read to understand behaviour, then write your own — which the MAME licence text itself instructs. Compare outputs, never source. |
+| **angrylion-rdp-plus** | **MAME license** — ships `MAME License.txt` and **no `LICENSE` file at all**; `CREDITS.txt` states "The code comes under MAME license" | **Non-commercial.** Stricter than the GPL, and incompatible with MIT OR Apache-2.0 in *both* directions. Read to understand behavior, then write your own — which the MAME license text itself instructs. Compare outputs, never source. |
 | **ParaLLEl-RDP** | **MIT** (`Copyright (c) 2020 Themaister`) | Permissive. Vendorable with attribution, though the value here is its ~150-test fuzz suite as a bit-exactness oracle rather than its source. |
-| **CEN64** | BSD-3-Clause | Permissive. The closest reference for bus-level timing behaviour. |
+| **CEN64** | BSD-3-Clause | Permissive. The closest reference for bus-level timing behavior. |
 | **ares** | ISC | Permissive; the one full-system reference that may genuinely be vendored from. |
 
 The missing `LICENSE` file in angrylion-rdp-plus reads as unlicensed-and-therefore-free and is
 the single most dangerous misreading available in `ref-proj/`. It is also the reference software
-rasteriser the RDP will be graded against, so it is exactly the tree someone will want to open
+rasterizer the RDP will be graded against, so it is exactly the tree someone will want to open
 while chasing a bit-exactness failure. Full per-repo classification is in `ref-proj/README.md`.
 
 ## Consequences
@@ -99,7 +99,7 @@ while chasing a bit-exactness failure. Full per-repo classification is in `ref-p
 
 ### Risks
 
-- **The oracle is a licence hazard.** Grading against angrylion's *output* is fine; reading its
+- **The oracle is a license hazard.** Grading against angrylion's *output* is fine; reading its
   source to fix a mismatch is not — and that temptation peaks exactly when a bit-exactness
   failure is most frustrating.
 - **A fast GPU backend can quietly become the oracle.** Once the accelerator is faster and looks

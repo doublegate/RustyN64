@@ -100,7 +100,7 @@ the N64brew wiki) — so the same `DACRATE` yields a different rate per region.
 
 When the **last** sample of a transfer ends exactly on an `0x2000` (8 KiB) page
 boundary, the AI adds `0x2000` to the **next** buffer's address (wiki §Delayed-carry
-hardware bug; libdragon has a workaround). It is modelled — not corrected — as a
+hardware bug; libdragon has a workaround). It is modeled — not corrected — as a
 13-bit/11-bit address split with a one-sample-deferred carry (ares `ai.cpp`): the
 low 13 bits advance per word, and the carry out is applied at the *top of the next
 sample*, which lands on the next transfer when it wraps on the final word. A named
@@ -108,7 +108,7 @@ test (`delayed_carry_bug_bumps_the_next_buffer`) fails if the bug is "fixed".
 
 ### Underrun
 
-If software does not queue the next buffer before drain, the DAC starves. Modelled
+If software does not queue the next buffer before drain, the DAC starves. Modeled
 as **hold-and-decay toward silence** (deterministic integer decay of the last
 sample; ares uses an exponential decay), with an observable `underruns()` counter
 so a resampler cannot silently paper over a genuine AI-rate error.

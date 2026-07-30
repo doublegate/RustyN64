@@ -35,7 +35,7 @@ with dynamic rate control absorbing host clock drift.
 **Acceptance criteria:**
 
 - [ ] Audio is the real AI stream, not silence or a tone.
-- [ ] Dynamic rate control keeps the ring fed without pitch artefacts.
+- [ ] Dynamic rate control keeps the ring fed without pitch artifacts.
 - [ ] Underrun is surfaced in the status bar rather than silently concealed.
 - [ ] All pacing lives in the frontend; the core emits on the emulated timeline only.
 

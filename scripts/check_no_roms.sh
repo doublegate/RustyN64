@@ -69,7 +69,7 @@ for f in "${files[@]}"; do
     continue
   fi
 
-  # A committed ROM must ship its upstream licence alongside it, so the grant
+  # A committed ROM must ship its upstream license alongside it, so the grant
   # travels with the binary instead of living only in a README someone can
   # forget to update.
   if [ "$allowed" -eq 1 ] && printf '%s' "$f" | grep -qiE "$ROM_RE"; then

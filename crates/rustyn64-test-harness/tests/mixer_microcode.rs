@@ -285,12 +285,12 @@ fn drive_mixer() -> Vec<(i16, i16)> {
 /// Each pair is **stereo-symmetric** (a mono channel at equal L/R volume). The
 /// golden is not hand-derived from the filter arithmetic (that would reimplement
 /// the ucode); its correctness rests on it being the *real* libdragon mixer's
-/// output for a *known* input, recognisably the ramp under a rising envelope,
+/// output for a *known* input, recognizably the ramp under a rising envelope,
 /// and byte-identical across runs.
 #[test]
 fn the_mixer_mixes_a_waveform_into_pcm() {
     /// The mixed left-channel output (right is identical); captured from the real
-    /// mixer microcode. A change here is an intentional, reviewed behaviour change.
+    /// mixer microcode. A change here is an intentional, reviewed behavior change.
     const GOLDEN_L: [i16; NSAMPLES] = [
         0, 0, 0, 0, 0, 0, 0, 0, 222, 246, 271, 296, 320, 345, 370, 394, 786, 832, 878, 925, 971,
         1017, 1063, 1109, 1629, 1694, 1759, 1825, 1890, 1955, 2020, 2085,

@@ -63,7 +63,7 @@ the `MenuAction` dispatch, and the wgpu blit already exist from Phase 0.
 
 - **Save-states are where hidden state surfaces** — anything not in the snapshot is a silent
   divergence, and it shows up minutes later, far from the cause. Mitigated by ADR 0004's rule
-  that new hidden state must be reachable by the serialiser, and by testing restore with a
+  that new hidden state must be reachable by the serializer, and by testing restore with a
   two-run trace comparison rather than by eye.
 - **The frontend is the natural place to break determinism** — pacing, rate control, and
   run-ahead all want to consult the clock. Mitigated by the hard split: the core never learns
