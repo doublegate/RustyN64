@@ -186,7 +186,8 @@ impl ViSampler {
         let victim = match (self.row_y[0], self.row_y[1]) {
             (None, _) => 0,
             (_, None) => 1,
-            (Some(y0), Some(y1)) => usize::from(y1 < y0),
+            (Some(y0), Some(y1)) if y1 < y0 => 1,
+            (Some(_), Some(_)) => 0,
         };
         self.row_y[victim] = Some(y);
         let base = victim * self.span;
@@ -1110,7 +1111,10 @@ impl Bus {
         // `checked_sub` rather than `-`: both operands trace back to guest-controlled
         // VI registers, and the miss path is a fall-through, not an error — so an
         // extreme pair should decline the memo, not panic a debug build.
-        let Some(Ok(idx)) = x.checked_sub(s.x_lo).map(usize::try_from) else {
+        let Some(idx) = x
+            .checked_sub(s.x_lo)
+            .and_then(|offset| usize::try_from(offset).ok())
+        else {
             return self.vi_sample_direct(s, x, y);
         };
         if idx >= s.span {
@@ -2469,6 +2473,10 @@ mod tests {
                 let curry = y_start + oy * y_add;
                 let (sy, yfrac) = (curry >> 10, (curry >> 5) & 0x1F);
                 for ox in 0..wi {
+                    // `8` is `minhpass`: `VI_H_VIDEO`'s start is 108, the NTSC
+                    // overscan adjust takes it to `h_start = 0`, and an unclamped
+                    // `h_start` crops 8 columns. Output column 0 samples source
+                    // column 8.
                     let x_offs = x_start + (8 + ox) * x_add;
                     let (sx, xfrac) = (x_offs >> 10, (x_offs >> 5) & 0x1F);
                     let want = if xfrac != 0 || yfrac != 0 {
