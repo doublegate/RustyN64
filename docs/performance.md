@@ -366,6 +366,8 @@ attribution of the post-`6a6adfa` render capture says where that 16% actually si
 Line numbers are given for the capture that produced them and **will drift**; the
 function and the statement are the durable part.
 
+All six are in `crates/rustyn64-cpu/src/pipeline.rs`.
+
 | function | statement | line at capture | share |
 | --- | --- | --- | --- |
 | `ex_stage` | `self.ex_dc = out;` (EX → DC store) | 2061 | 3.68% |
@@ -433,7 +435,8 @@ needs the CPU golden-log 0-diff and n64-systemtest, not just `cargo test`.
 `core::mem`'s `replace` is **5.32%** of the frame on its own — 4.21% and 1.11% at lines
 930 and 929 of the **Rust standard library's** `library/core/src/mem/mod.rs`, inside the
 toolchain, not a file in this repository. About **6.7 ms of 125**, and all of it is the
-Bus split-borrow:
+Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
+`crates/rustyn64-core/src/bus.rs` (lines 539 and 548 at the time of writing):
 
 ```rust
 pub fn rdp_tick(&mut self) {
@@ -456,8 +459,8 @@ about 1.04 M steps a frame:
 At 125 ms a frame that is ~10.8 GB/s of memory traffic to satisfy the borrow checker,
 which is consistent with the 5.32% the profile attributes to `core::mem`.
 
-**The fix pattern is already in this repository.** `Bus::rsp_tick` used to do exactly
-this and no longer does; its comment records that the `take` was worse than the "no
+**The fix pattern is already in this repository.** `Bus::rsp_tick` (same file, line 519)
+used to do exactly this and no longer does; its comment records that the `take` was worse than the "no
 allocation" claim above it, because `take` needs `Default` and constructing an `Rsp`
 allocated 8 KiB of DMEM and IMEM **every RCP step**. `Rsp::tick` now *returns* what it
 wants done instead of borrowing its owner. `Rdp` and `Audio` were not converted.
