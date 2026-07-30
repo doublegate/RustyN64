@@ -96,6 +96,44 @@ project64/N64-Tests `DoubleShot`, which computes `(VI_NTSC_CLOCK / FREQ) − 1`,
 the N64brew wiki) — so the same `DACRATE` yields a different rate per region.
 `Region` selects the clock (default NTSC; wired from the cart header at ROM load).
 
+#### Before `AI_DACRATE` is written: the DAC still runs
+
+An unprogrammed `AI_DACRATE` falls back to **`DEFAULT_DAC_HZ = 44_100`**, not to a
+stopped DAC. **This is not cosmetic — it is a correctness requirement**, and the
+reason is structural rather than about audio:
+
+- a transfer is retired (`dma_count -= 1`) only inside the DAC's own sample step;
+- so a stopped DAC cannot advance the two-deep FIFO at all;
+- so `AI_STATUS.FULL` (`dma_count > 1`) latches permanently, and a title polling
+  it for a free DMA slot spins forever.
+
+World Driver Championship does exactly that — it queues two buffers and polls
+`FULL` *before* programming the DAC. Under the old zero-rate model it issued zero
+RDP commands under `real_pif_boot` where it issued 176,085 under `hle_boot`; the
+flag transitioned 48 times under HLE against **exactly once** under real-PIF.
+
+**Provenance, with the inference marked as one.** *Established:* ares (ISC,
+`ref-proj/ares/ares/n64/ai/`) runs its DAC from power-on — `AI::power()` sets
+`dac.frequency = 44100` and `AI::main()` calls `sample()` unconditionally.
+*Inferred* from that plus a divider having no "off" encoding: the hardware counter
+likewise has no stopped state. **Not established:** `AI_DACRATE`'s reset value,
+which no source this project mirrors gives — hence a *modeling default*, not a
+measured constant. Nothing observable should depend on the exact number, since
+every title programs the register before it plays anything.
+
+**Known simplification (ledger R-16):** the fallback branches on `dac_rate == 0`,
+so it cannot tell "never programmed" from "software wrote `0`". ares keeps those
+apart, honoring a literal zero as `max(1, video_clock / 1)` ≈ 48 MHz
+(`ai/io.cpp`). Separating them needs a `dac_rate_programmed` flag, which changes
+the save-state layout (ADR 0005) and so is not done in passing; no title requests
+a ~48 MHz DAC, so it is unobservable in practice.
+
+The rate must also **not** be derived as `video_clock / 1` for the unprogrammed
+case: that is ~48 MHz and floods the sink. `DEFAULT_DAC_HZ` avoids both failures,
+and `Audio::new()` initializes `sample_rate` to it directly — leaving it 0 there
+would reintroduce the stopped DAC on any machine that never triggers a rate
+recompute.
+
 ### The delayed-carry hardware bug
 
 When the **last** sample of a transfer ends exactly on an `0x2000` (8 KiB) page

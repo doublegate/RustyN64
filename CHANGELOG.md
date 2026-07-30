@@ -6,6 +6,50 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`AI_STATUS.FULL` could latch and never clear, so a game polling it for a
+  free audio DMA slot spun forever** (ledger R-16). An unprogrammed
+  `AI_DACRATE` mapped to a zero sample rate, which made `tick()` return before
+  `emit_sample` — and `emit_sample` is the only place a drained transfer is
+  retired, so the two-deep FIFO could not advance and `FULL` became permanent.
+
+  Found by root-causing **World Driver Championship**, which issued 176,085 RDP
+  commands under `hle_boot` and **zero** under `real_pif_boot`. The dominant
+  retiring instruction under real-PIF was a load of `AI_STATUS` followed by a
+  test of bit 31; counting *transitions* rather than sampling the flag showed 48
+  under HLE against **exactly one** under real-PIF.
+
+  An unprogrammed `AI_DACRATE` now falls back to a default rate rather than to
+  zero. Hardware has no stopped-DAC state to model, and ares (ISC) makes the
+  same choice structurally. The default is labeled in the ledger as a **modeling
+  default, not a measured value** — the register's reset value is undocumented.
+
+  Measured effect: WDC goes **0 → 175,815 RDP commands** under `real_pif_boot`,
+  near-exact parity with its 176,085 under `hle_boot`, and the two boot paths now
+  agree exactly at 29 render / 24 silent across the 66-title corpus — closing the
+  only title the boot path made worse. The Phase-4 golden PCM stream is unaffected
+  (810 workspace tests pass).
+
+  **It does not make WDC render.** The title lights zero pixels on both paths — it
+  submits a full command stream and rasterizes black. This closes the AI livelock,
+  not that title. (An earlier draft claimed a "real 625×237 frame"; that was
+  `scanout_scaled`'s *dimensions* read as content — retracted in ledger R-16.)
+
+  **n64-systemtest: not measured, and it cannot be** — the suite has zero AI
+  coverage, so its count is unchanged at 90 for that reason rather than from a
+  before/after comparison. Validated instead by ares' structure, a
+  mutation-checked regression test, and WDC's measured unblocking. Full rationale,
+  including a known `AI_DACRATE = 0` simplification, in ledger R-16 and
+  `docs/audio.md`.
+
+- Corrected two vector comments in `vectors-gen/driver.c` that described
+  `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel color ramp.
+  Their goldens are solid texel 0: `dx.S = 1` is 1/32 of a texel per pixel in
+  the s10.5 domain, so S never leaves the first texel. The vectors pass and
+  still cover what they cover — but they never pinned a gradient, and nothing
+  failed when the claim went stale.
+
 ### Changed
 
 - **The repo is now written in en-US throughout** — 1,505 spelling replacements
@@ -49,15 +93,6 @@ All notable changes to RustyN64 are documented here. The format is based on
   Both match RustyN64 byte-for-byte and are mutation-checked. Neither is the
   mirrored-text cause; with five RDP hypotheses now cleared, the defect is
   reclassified to the RSP/geometry side (see `docs/residuals/R-18.md`).
-
-### Fixed
-
-- Corrected two vector comments in `vectors-gen/driver.c` that described
-  `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel color ramp.
-  Their goldens are solid texel 0: `dx.S = 1` is 1/32 of a texel per pixel in
-  the s10.5 domain, so S never leaves the first texel. The vectors pass and
-  still cover what they cover — but they never pinned a gradient, and nothing
-  failed when the claim went stale.
 
 ## [0.8.0] - 2026-07-29 — "Breadth"
 
