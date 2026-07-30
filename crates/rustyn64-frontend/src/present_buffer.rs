@@ -296,14 +296,21 @@ impl PresentBuffer {
     /// Reset to the empty state on a ROM load / power cycle, so the next present
     /// shows black until a new frame arrives.
     ///
+    /// Afterwards [`Self::status`] reads exactly [`PresentStatus::default`] —
+    /// including `rom_loaded` and `paused`. Leaving those two to the producer looks
+    /// tempting (it republishes them every frame) but fails in the wrong direction:
+    /// closing a ROM would leave `rom_loaded = true` until something published
+    /// again, and with the `emu-thread` feature off nothing does. Clearing them
+    /// costs at most one UI frame of "no ROM" straight after a load, which the next
+    /// publish corrects; the alternative is a stale positive that can persist.
+    ///
     /// # Panics
     /// Only if the internal slots mutex is poisoned.
-    /// The ROM-loaded and paused flags are deliberately left alone: they are the
-    /// caller's state, not the handoff's, and the producer republishes them with
-    /// the next frame.
     pub fn reset(&self) {
         self.frames.store(0, Ordering::Relaxed);
         self.master_ticks.store(0, Ordering::Relaxed);
+        self.rom_loaded.store(false, Ordering::Relaxed);
+        self.paused.store(false, Ordering::Relaxed);
         // Every part of the frame handoff is cleared under the ONE lock that
         // `publish` and `take_into` also take, so a concurrent publish either
         // completes entirely before this reset or entirely after it.
@@ -480,12 +487,13 @@ mod tests {
         }
     }
 
-    /// The status readings round-trip, and `reset` zeroes the two counters while
-    /// leaving the ROM/pause flags to the caller that owns them — a closed ROM
-    /// must therefore republish `rom_loaded = false` rather than expect `reset` to
-    /// infer it.
+    /// The status readings round-trip, and `reset` really reaches the empty state
+    /// its doc claims — **every** field, not just the two counters. The flags are
+    /// the ones that matter: a `reset` leaving `rom_loaded` alone would report a
+    /// closed ROM as loaded for as long as nothing published again, which with the
+    /// `emu-thread` feature off is forever.
     #[test]
-    fn status_round_trips_and_reset_zeroes_only_the_counters() {
+    fn status_round_trips_and_reset_reaches_the_default() {
         let pb = PresentBuffer::new();
         assert_eq!(pb.status(), PresentStatus::default());
         pb.publish_status(42, 1_234_567, true, true);
@@ -499,12 +507,10 @@ mod tests {
             }
         );
         pb.reset();
-        let s = pb.status();
-        assert_eq!((s.frames, s.master_ticks), (0, 0), "counters restart");
-        assert!(
-            s.rom_loaded,
-            "reset does not decide whether a ROM is loaded"
+        assert_eq!(
+            pb.status(),
+            PresentStatus::default(),
+            "reset must clear the flags too, not only the counters"
         );
-        assert!(s.paused, "nor whether the core is paused");
     }
 }
