@@ -278,31 +278,31 @@ pub struct Latch {
     pub cop0: Option<Cop0Access>,
 }
 
-/// The inter-stage latch is **copied four times per emulated CPU cycle**, so its size is
-/// a performance fact and not merely a layout detail: at ~1.56 M steps a frame those
-/// copies are ~15% of the frame (`docs/performance.md` §"The latch copies, anatomized").
-///
-/// This pins it. `repr(Rust)` layout is not stable across compiler versions, and the
-/// measured breakdown in that document — 120 bytes, with the six scalars occupying
-/// exactly their naive sum, so no padding is wasted — would otherwise decay silently
-/// into a claim about a toolchain nobody is using any more.
-///
-/// **If this fires, do not just change the number.** Either a field was added, in which
-/// case re-measure and update the breakdown, or the layout algorithm moved, in which
-/// case the "no padding is wasted" conclusion needs re-deriving before it is re-quoted.
-///
-/// Deliberately **not** gated on `target_pointer_width`. Every field here is
-/// fixed-width — no `usize`, no references, no pointers — so 120 holds on 32-bit as
-/// well, and the workspace proves it rather than assuming it: the `no_std` gate builds
-/// this crate for `thumbv7em-none-eabihf`, where a divergence would fail the build. A
-/// `#[cfg]` would switch the guard off on exactly the target where a pointer-sized field
-/// would first change the answer.
-///
-/// `#[repr(C)]` is not the alternative either, and this was measured rather than
-/// reasoned: `repr(C)` lays fields out in declaration order, which costs **128 bytes**
-/// instead of 120 because the two `bool`s can no longer sit in alignment gaps. On a
-/// struct copied four times per emulated cycle that adds ~1.2 ms a frame, to exactly
-/// the copies `docs/performance.md` is trying to shrink.
+// The inter-stage latch is **copied four times per emulated CPU cycle**, so its size is
+// a performance fact and not merely a layout detail: at ~1.56 M steps a frame those
+// copies are ~15% of the frame (`docs/performance.md` §"The latch copies, anatomized").
+//
+// This pins it. `repr(Rust)` layout is not stable across compiler versions, and the
+// measured breakdown in that document — 120 bytes, with the six scalars occupying
+// exactly their naive sum, so no padding is wasted — would otherwise decay silently
+// into a claim about a toolchain nobody is using any more.
+//
+// **If this fires, do not just change the number.** Either a field was added, in which
+// case re-measure and update the breakdown, or the layout algorithm moved, in which
+// case the "no padding is wasted" conclusion needs re-deriving before it is re-quoted.
+//
+// Deliberately **not** gated on `target_pointer_width`. Every field here is
+// fixed-width — no `usize`, no references, no pointers — so 120 holds on 32-bit as
+// well, and the workspace proves it rather than assuming it: the `no_std` gate builds
+// this crate for `thumbv7em-none-eabihf`, where a divergence would fail the build. A
+// `#[cfg]` would switch the guard off on exactly the target where a pointer-sized field
+// would first change the answer.
+//
+// `#[repr(C)]` is not the alternative either, and this was measured rather than
+// reasoned: `repr(C)` lays fields out in declaration order, which costs **128 bytes**
+// instead of 120 because the two `bool`s can no longer sit in alignment gaps. On a
+// struct copied four times per emulated cycle that adds ~1.2 ms a frame, to exactly
+// the copies `docs/performance.md` is trying to shrink.
 const _: () = assert!(
     core::mem::size_of::<Latch>() == 120,
     "Latch changed size; docs/performance.md's copy-cost breakdown must be re-measured"
