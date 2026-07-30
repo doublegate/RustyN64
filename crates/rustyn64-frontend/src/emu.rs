@@ -304,6 +304,14 @@ impl EmuCore {
     pub fn publish_into(&self, present: &crate::present_buffer::PresentBuffer) {
         let (rgba, w, h) = self.frame_rgba();
         let need = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+        // Loud in debug, tolerant in release. `presentable_geometry` makes this
+        // unreachable today, so if it ever trips it is a core-side bug that deserves
+        // a panic in development rather than a silently frozen picture.
+        debug_assert!(
+            need > 0 && need <= rgba.len(),
+            "produce_frame yielded {w}x{h}, needing {need} bytes of {}",
+            rgba.len()
+        );
         if need > 0 && need <= rgba.len() {
             present.publish(&rgba[..need], (w, h));
         }

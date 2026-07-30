@@ -136,12 +136,19 @@ impl App {
         // Reads a plain image or unwraps a `.zip` — ROM sets ship one-ROM-per-zip,
         // so requiring a manual unpack would be friction with no upside.
         let raw = crate::romfile::read_rom(path).map_err(|e| AppError::Rom(e.to_string()))?;
-        if let Ok(mut core) = self.emu.lock() {
+        // A poisoned mutex means the emu thread panicked; there is nothing to load
+        // into, and this path has always carried on rather than abort.
+        let loaded = self.emu.lock().map_or(Ok(()), |mut core| {
             core.load_rom(&raw)
-                .map_err(|e| AppError::Rom(format!("{e:?}")))?;
-        }
+                .map_err(|e| AppError::Rom(format!("{e:?}")))
+        });
+        // Blank REGARDLESS of the outcome, before propagating the error.
+        // `EmuCore::load_rom` performs its warm reset BEFORE the fallible boot, so
+        // even a rejected ROM has already discarded the previous machine — and
+        // returning early here would leave the old ROM's picture on screen
+        // describing a core that no longer exists.
         self.blank_presentation();
-        Ok(())
+        loaded
     }
 
     /// Drop the outgoing ROM's frame — from the handoff **and** from this thread —
@@ -162,7 +169,12 @@ impl App {
     fn blank_presentation(&mut self) {
         self.present.reset();
         self.fb_dims = (crate::FB_DEFAULT_W, crate::FB_DEFAULT_H);
-        let len = (self.fb_dims.0 as usize) * (self.fb_dims.1 as usize) * 4;
+        // `saturating_mul` to match the other two framebuffer length computations
+        // (the upload guard below and `EmuCore::publish_into`); the defaults cannot
+        // overflow, but one form everywhere is cheaper to audit than three.
+        let len = (self.fb_dims.0 as usize)
+            .saturating_mul(self.fb_dims.1 as usize)
+            .saturating_mul(4);
         self.frame_staging.clear();
         self.frame_staging.resize(len, 0);
     }

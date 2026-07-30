@@ -52,8 +52,8 @@ while the emu thread held that same mutex across an entire emulated frame. Worse
 the pacer's fell-behind branch was `next = now` with **no sleep and no yield** —
 and this core is ~6.5x slower than real time, so that branch was taken on every
 iteration, leaving the emu thread holding the mutex ~100% of the time. Against an
-unfair mutex the UI starved for many frames at a stretch: menu clicks took 15-45
-seconds and roughly one frame was presented per 30-60 seconds.
+unfair mutex, the UI starved for many frames at a stretch: menu clicks took 15–45
+seconds and roughly one frame was presented per 30–60 seconds.
 
 ### Measured
 
@@ -86,7 +86,7 @@ dropped**, since every produced frame's samples are pushed to the ring.
 **Known cost, not yet optimized.** Because the core is behind every iteration, the
 snap imposes a full frame period of wait after each frame, so the effective rate is
 `1 / (frame_cost + period)` rather than `1 / frame_cost` — about 8.1 FPS against a
-~9.3 FPS core ceiling, ~13%. That is the ported behavior and it is what buys the UI
+~9.3 FPS core ceiling, ~13%. That is the ported behavior, and it is what buys the UI
 its window; whether a shorter yield is better is a question for the perf work, with
 `perf.rs` data, rather than a constant to tune by feel.
 
