@@ -87,10 +87,22 @@ plain="$(IFS='|'; echo "${PLAIN_STEMS[*]}")"
 ise="$(IFS='|'; echo "${ISE_STEMS[*]}")"
 export PATTERN="${plain}|(${ise})${ISE_ENDINGS}"
 
-# `git ls-files` so untracked scratch files and ignored trees never fail the
-# gate; -I skips binaries (the .rvec/.snap/.png fixtures).
+# Tracked files PLUS untracked-but-not-ignored ones. `-I` skips binaries (the
+# .rvec/.snap/.png fixtures) and `--exclude-standard` honors .gitignore, so
+# scratch files under an ignored path still never fail the gate.
+#
+# `--others` is load-bearing and was MISSING in the first version, which made the
+# gate give a **false PASS** on the very commit that introduced a violation: a
+# brand-new file is untracked until it is staged, `git ls-files` alone lists only
+# TRACKED files, so a new file was invisible to the check for exactly as long as
+# it took to `git add` it. `present_buffer.rs` shipped a `licence` that way, and
+# the pre-commit hook would not have caught it until the NEXT commit. A gate that
+# cannot see new files is worst precisely where new violations arrive.
 mapfile -d '' -t files < <(
-  git ls-files -z |
+  {
+    git ls-files -z
+    git ls-files -z --others --exclude-standard
+  } |
     grep -zvE '^(ref-docs|n64brew_wiki|ref-proj|third_party)/' |
     grep -zvE '^scripts/check_en_us\.sh$'
 )
@@ -140,4 +152,4 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-echo "en-US check passed: ${#files[@]} tracked files, no en-GB or malformed spellings."
+echo "en-US check passed: ${#files[@]} files (tracked + untracked), no en-GB or malformed spellings."

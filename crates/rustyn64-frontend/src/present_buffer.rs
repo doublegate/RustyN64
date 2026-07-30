@@ -3,18 +3,26 @@
 //!
 //! **Ported from `RustySNES/crates/rustysnes-frontend/src/present_buffer.rs`**,
 //! itself ported from `RustyNES` (same author throughout, so the port is
-//! licence-clean). The triple-buffer SPSC handoff has no console-specific
+//! license-clean). The triple-buffer SPSC handoff has no console-specific
 //! content; only the framebuffer sizing hint differs.
 //!
 //! ## The defect this fixes
 //!
 //! `RustyN64` shipped the `emu-thread` feature **without** this handoff, so it did
 //! exactly the thing `RustySNES`'s copy of this module documents as wrong: the
-//! winit present path called `EmuApp::snapshot()`, which took the **emu mutex**
+//! winit present path called `App::snapshot()`, which took the **emu mutex**
 //! every UI frame merely to clone the framebuffer — while the emu thread held
 //! that same mutex across its entire `coordinator.step()`. The UI therefore
 //! serialized against a whole emulated frame, which is precisely what the
 //! `emu-thread` feature exists to prevent.
+//!
+//! And the copy it was waiting for was far bigger than it needed to be.
+//! `Frame::blank` sizes `rgba` at `FB_MAX_W * FB_MAX_H * 4` = **1,228,800 bytes**
+//! and `produce_frame` never resizes it, so `frame.rgba.clone()` copied the whole
+//! backing store every UI frame whatever the active resolution. Publishing the
+//! `w * h * 4` **prefix** instead is both correct and the point: a 625x237 NTSC
+//! scan-out is 592,500 bytes, and 320x240 is 307,200 — a copy less than a quarter
+//! the size, and now off the emu mutex entirely.
 //!
 //! It was worse than a stall, because the emu thread also never yielded when it
 //! fell behind (and being ~6.5x slower than real time, it always did): it reset
@@ -108,7 +116,7 @@ pub struct PresentBuffer {
     // --- Status-bar readings, published beside the frame. ---
     //
     // These live here rather than in a second primitive for one reason: they are
-    // the OTHER thing the UI used to take the emu mutex for. `EmuApp::snapshot`
+    // the OTHER thing the UI used to take the emu mutex for. `App::snapshot`
     // read the frame *and* the frame count, master ticks, loaded and paused flags
     // in one locked closure, so decoupling only the bytes would have left the
     // starvation in place for the sake of a status line. Plain atomics, written
