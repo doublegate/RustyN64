@@ -372,8 +372,9 @@ ADR 0011 recorded that "latch copy/zero instructions" were ~16% of runtime and t
 removing them is "not safely possible", from a `perf annotate` view. Per-**line**
 attribution of the post-`6a6adfa` render capture says where that 16% actually sits:
 
-Line numbers are given for the capture that produced them and **will drift**; the
-function and the statement are the durable part.
+Line numbers are those of **commit `2abc817`**, the tree the capture was taken on, so
+they stay resolvable as a permalink even after they drift in `main`; the function and
+the statement are the durable part either way.
 
 All six are in `crates/rustyn64-cpu/src/pipeline.rs`.
 
@@ -454,8 +455,8 @@ toolchain, not a file in this repository. Those two lines are the `read_via_copy
 toolchain (`rust-toolchain.toml`), which is what makes a stdlib line number citable at
 all here; on any other toolchain, look for that pair rather than for the numbers. About **6.7 ms of 125**, and all of it is the
 Bus split-borrow — `Bus::rdp_tick` and `Bus::audio_tick` in
-`crates/rustyn64-core/src/bus.rs` (lines 539 and 548 at the time of writing; like the
-line numbers above, these drift and the function names are the durable part):
+`crates/rustyn64-core/src/bus.rs` (lines 539 and 548 as of commit `2abc817`, same
+convention as the table above):
 
 ```rust
 pub fn rdp_tick(&mut self) {
@@ -480,7 +481,8 @@ about 1.04 M steps a frame:
 At 125 ms a frame that is ~10.8 GB/s of memory traffic to satisfy the borrow checker,
 which is consistent with the 5.32% the profile attributes to `core::mem`.
 
-**The fix pattern is already in this repository.** `Bus::rsp_tick` (same file, line 519)
+**The fix pattern is already in this repository.** `Bus::rsp_tick` (same file, line 519
+at that commit)
 used to do exactly this and no longer does; its comment records that the `take` was worse than the "no
 allocation" claim above it, because `take` needs `Default` and constructing an `Rsp`
 allocated 8 KiB of DMEM and IMEM **every RCP step**. `Rsp::tick` now *returns* what it
