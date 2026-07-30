@@ -79,6 +79,16 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The maximal NATIVE feature set the `cargo full-build` alias uses. Identical
+      # to `default` today (`full = ["default"]`), so this costs a cache hit -- but
+      # the moment a feature is added to `full` and not to `default`, this is the
+      # only job that would notice it stopped compiling.
+      #
+      # Debug, not the alias: `cargo full-build` is a `--release` build with
+      # `lto = "fat"`, which is minutes on every PR to prove that a two-line config
+      # entry expands correctly. The alias itself runs in the FULL-run leg below,
+      # where that cost is already being paid.
+      - run: cargo build -p rustyn64-frontend --features full
 
   rustdoc:
     name: rustdoc (-D warnings)
@@ -132,6 +142,21 @@ jobs:
       # its harness crate, so the ROM-oracle gate ran nothing and still reported
       # green. An oracle that runs zero tests looks identical to one that passes,
       # so the exit code cannot distinguish them -- only the probe can.
+      # Run the alias the README tells people to use, rather than a hand-expanded
+      # equivalent: an alias that has silently stopped resolving is exactly the kind
+      # of thing nobody notices until they need it, and expanding it here by hand
+      # would exercise everything about it except the part that can break.
+      - run: cargo full-build
+      # And `full-run`, whose trailing `--` is the part that can break. `--help` is
+      # handled by the binary's own argv loop and exits before any window is opened,
+      # so it proves the forwarding works on a headless runner.
+      #
+      # NOTE the absence of a second `--`: the alias already ends in one, so
+      # `cargo full-run -- --help` passes a literal `--` through to the binary and
+      # exits 2 on an unknown option. That is the forwarding working, and it is worth
+      # recording, because writing the `--` out of habit is how this check would come
+      # to fail for a reason unrelated to what it tests.
+      - run: cargo full-run --help
       - name: Run the test-ROM battery, and prove the feature was on
         run: |
           set -euo pipefail
