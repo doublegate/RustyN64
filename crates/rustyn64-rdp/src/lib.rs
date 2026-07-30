@@ -1871,9 +1871,16 @@ impl Rdp {
             self.stall -= 1;
             return None;
         }
-        // An empty command FIFO. The *partially written* case cannot be decided
-        // here: its length comes from an opcode that lives in RDRAM, which is
-        // exactly why the check below is on the far side of the split.
+        // An empty command FIFO. A plain `>=` is right because these are RDRAM
+        // addresses, not ring indices: `DPC_START`/`DPC_END` are latched through
+        // `DPC_ADDR_MASK` in [`Rdp::dpc_write`], `cmd_current` only ever advances by a
+        // decoded command's length, and the hardware has no wrap — a driver that wants
+        // to restart writes `DPC_START` again. So there is no wrapped case for this
+        // comparison to get wrong.
+        //
+        // The *partially written* case cannot be decided here: its length comes from an
+        // opcode that lives in RDRAM, which is exactly why the check below is on the far
+        // side of the split.
         if self.cmd_current >= self.cmd_end {
             return None;
         }
