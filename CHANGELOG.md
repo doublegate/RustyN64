@@ -33,9 +33,15 @@ All notable changes to RustyN64 are documented here. The format is based on
 
   **It does not make WDC render.** The title lights zero pixels on both paths — it
   submits a full command stream and rasterizes black. This closes the AI livelock,
-  not that title. (An earlier draft of this entry claimed a "real 625×237 frame";
-  that was `scanout_scaled`'s *dimensions* read as content, and is retracted in
-  ledger R-16.)
+  not that title. (An earlier draft claimed a "real 625×237 frame"; that was
+  `scanout_scaled`'s *dimensions* read as content — retracted in ledger R-16.)
+
+  **n64-systemtest: not measured, and it cannot be** — the suite has zero AI
+  coverage, so its count is unchanged at 90 for that reason rather than from a
+  before/after comparison. Validated instead by ares' structure, a
+  mutation-checked regression test, and WDC's measured unblocking. Full rationale,
+  including a known `AI_DACRATE = 0` simplification, in ledger R-16 and
+  `docs/audio.md`.
 
 - Corrected two vector comments in `vectors-gen/driver.c` that described
   `tex_tri_16`/`tex_tri_base_tile_16` as rendering an eight-texel color ramp.

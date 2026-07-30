@@ -180,8 +180,11 @@ pub struct Audio {
     bit_rate: u8,
     /// The region video clock (Hz) the DAC rate divides.
     video_clock: u32,
-    /// Derived output sample rate in Hz, `video_clock / (dac_rate + 1)`, or 0
-    /// before `AI_DACRATE` is programmed.
+    /// Derived output sample rate in Hz, `video_clock / (dac_rate + 1)`, or
+    /// [`Audio::DEFAULT_DAC_HZ`] before `AI_DACRATE` is programmed.
+    ///
+    /// Never 0 on a constructed machine: a zero rate stops the DAC, and a
+    /// stopped DAC cannot retire a queued transfer (ledger R-16).
     sample_rate: u32,
 
     // --- Derived-timing emission (ADR 0006: everything off `master_ticks`). ---
@@ -426,11 +429,19 @@ impl Audio {
         // clear, and a game polling it for a free DMA slot spun forever. World
         // Driver Championship did exactly that (ledger R-16).
         //
-        // Hardware has no stopped-DAC state to model: the DAC counter runs off
-        // the video clock from power-on, whatever `AI_DACRATE` holds. ares (ISC,
-        // vendorable) makes the same choice structurally — `AI::power()` sets
-        // `dac.frequency = 44100` and `AI::main()` calls `sample()`
-        // unconditionally, so its identical retirement block runs from power-on.
+        // What is ESTABLISHED and what is INFERRED, kept apart deliberately —
+        // the reset semantics are admitted undocumented below, and an inference
+        // dressed as a hardware fact is what this ledger exists to prevent.
+        //
+        // ESTABLISHED (readable reference, ISC): ares runs its DAC from power-on.
+        // `AI::power()` sets `dac.frequency = 44100` and `AI::main()` calls
+        // `sample()` unconditionally, so its equivalent retirement block runs
+        // before any `AI_DACRATE` write.
+        // INFERRED (from that, plus a divider having no "off" encoding): the
+        // hardware DAC counter likewise has no stopped state.
+        // NOT ESTABLISHED: what `AI_DACRATE` holds at reset. No source this
+        // project mirrors says, which is exactly why the rate is labeled a
+        // modeling default and not a measured value.
         //
         // The naive alternative — letting `dac_rate == 0` compute
         // `video_clock / 1` ≈ 48 MHz — is what the old zero-gate was avoiding,
@@ -454,8 +465,13 @@ impl Audio {
         };
     }
 
-    /// Master ticks between output samples, `MASTER_HZ / sample_rate`, or 0 when
-    /// the rate is unprogrammed.
+    /// Master ticks between output samples, `MASTER_HZ / sample_rate`.
+    ///
+    /// Zero only when the video clock is unset, which cannot happen on a
+    /// constructed machine. It is **no longer** zero for an unprogrammed
+    /// `AI_DACRATE` — that falls back to [`Self::DEFAULT_DAC_HZ`], because a
+    /// stopped DAC cannot retire a transfer and latched `AI_STATUS.FULL`
+    /// (ledger R-16).
     fn period_ticks(&self) -> u64 {
         if self.sample_rate == 0 {
             0
@@ -474,7 +490,11 @@ impl Audio {
         self.last_tick = now;
         let period = self.period_ticks();
         if period == 0 {
-            return; // DAC not yet programmed — emit nothing.
+            // Unreachable on a constructed machine: `video_clock` is always
+            // set and an unprogrammed `AI_DACRATE` now yields
+            // `DEFAULT_DAC_HZ`, not zero (ledger R-16). Kept as a guard against
+            // a divide-by-zero rather than as a modeled DAC state.
+            return;
         }
         if self.next_sample_tick == 0 {
             // Anchor the first sample one period out so a large `now` does not
@@ -589,12 +609,32 @@ mod tests {
         ai
     }
 
+    /// **The FIRST `tick` only anchors the sample clock; it never emits.**
+    ///
+    /// This test used to be called `idle_tick_emits_nothing_before_dacrate` and
+    /// asserted "no rate programmed → no samples". It was **vacuous, and vacuous
+    /// before the DAC default landed**: a single `tick` returns at the
+    /// `next_sample_tick == 0` anchor branch regardless of the rate, so it passed
+    /// identically before and after a change to the very behavior it claimed to
+    /// pin — the "success and failure paths converge" trap. Renamed and re-aimed
+    /// at the rule it actually exercises, which is worth pinning on its own: the
+    /// anchor exists so a large first `now` cannot dump a backlog of silence.
     #[test]
-    fn idle_tick_emits_nothing_before_dacrate() {
+    fn the_first_tick_only_anchors_the_sample_clock() {
         let mut ai = Audio::new();
         let mut bus = TestBus::new(0x1000);
         ai.tick(1_000_000, &mut bus);
-        assert!(ai.drain().is_empty(), "no rate programmed → no samples");
+        assert!(
+            ai.drain().is_empty(),
+            "the anchoring tick must not emit a backlog"
+        );
+        // And the second tick DOES emit — without this half the test would pass
+        // just as well against a DAC that never emits anything at all.
+        ai.tick(1_000_000 + MASTER_HZ / 60, &mut bus);
+        assert!(
+            !ai.drain().is_empty(),
+            "the tick after the anchor must emit at the default rate"
+        );
     }
 
     #[test]
@@ -714,13 +754,23 @@ mod tests {
             ai.sample_rate()
         );
         let mut bus = TestBus::new(0x1000);
+        // Prime the sample clock first. Without this the single `tick` below
+        // returns at the `next_sample_tick == 0` anchor branch, `emitted` is
+        // always 0, and the upper bound passes even with the emission path
+        // completely broken — the vacuity `the_first_tick_only_anchors_the_sample_clock`
+        // documents. Raised in review on #205.
+        ai.tick(0, &mut bus);
         ai.tick(MASTER_HZ / 60, &mut bus); // one frame
         let emitted = ai.drain().len();
-        // ~44100/60 = 735. The bound that matters is that it is not the ~800k
-        // samples per frame a 48 MHz rate would produce.
+        // A TWO-SIDED bound, because only the pair is evidence: the upper bound
+        // rejects the ~800k samples/frame a video-clock rate would produce, and
+        // the lower bound rejects a DAC that emits nothing — which is the state
+        // that caused the R-16 livelock and which an upper bound alone accepts.
+        // 44100/60 = 735.
         assert!(
-            emitted < 5_000,
-            "one frame of an unprogrammed DAC must not flood the sink: {emitted}"
+            (500..5_000).contains(&emitted),
+            "one frame of an unprogrammed DAC must emit ~735 samples, not a flood \
+             and not silence: {emitted}"
         );
     }
 
