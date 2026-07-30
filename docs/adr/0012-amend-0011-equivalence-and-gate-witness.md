@@ -123,7 +123,9 @@ ADR 0006, which did not exist when 0001 was accepted. Immutability protects the
 **reasoning**, which is what later readers cite; a reader who arrives at 0011 and is not
 told 0012 exists has been misled by the omission, not protected by it.
 
-### 4. 0011's measured table is superseded by the paired re-measurement
+## Measurements
+
+### 0011's measured table is superseded by the paired re-measurement
 
 Every figure in 0011's *"The measurements this decision rests on"* was taken as a single
 run, and several were later found not to pair: its **7.7x** debug ratio divided a debug

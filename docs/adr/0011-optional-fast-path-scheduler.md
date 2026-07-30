@@ -5,9 +5,10 @@ immutable thereafter.
 Date: 2026-07-30
 Deciders: repo owner
 Supersedes: none · Superseded by: none
-Amended by: [ADR 0012](0012-amend-0011-equivalence-and-gate-witness.md) — Decision items
-**1 and 4 are narrowed** there and **3 and 6 gain requirements** (the gate's completion
-witness, and the typed bail-out enumeration); read them together.
+Amended by: [ADR 0012](0012-amend-0011-equivalence-and-gate-witness.md) — **this
+document's** Decision items **1 and 4 are narrowed** there, and **3 and 6 gain
+requirements** (the gate's completion witness, and the typed bail-out enumeration).
+0012 numbers its own sections separately; read the two together.
 Amends: ADR 0006 (one canonical master clock), ADR 0007 (cycle-accurate VR4300
 pipeline) — **without superseding either**; see *Relationship to 0006 and 0007*.
 
