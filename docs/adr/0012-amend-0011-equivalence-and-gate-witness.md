@@ -102,9 +102,8 @@ The witness is asserted, not printed for a human to notice.
 
 ### 3. Editorial
 
-0011's save-state-compatibility heading carries a comma before "because" that should not
-be there. Recorded here rather than fixed in place, since 0011 is immutable — and noted
-mainly so the discrepancy is not mistaken for a quotation error later.
+0011's save-state-compatibility heading carries a stray comma before "because". Noted
+only so a later quotation of that heading is not mistaken for a transcription error.
 
 ### 4. The pointer line is the one part of an immutable ADR that still changes
 
