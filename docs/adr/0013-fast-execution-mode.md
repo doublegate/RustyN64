@@ -94,11 +94,24 @@ precedence is settled here so it is not re-decided in each implementing PR, and 
 that "both features on" is a defined configuration rather than an accident. `--all-features`
 remains forbidden in this workspace; each feature carries its own CI entries.
 
-### 2. The sanctioned relaxation is exactly one thing, and it is cited, not invented
+### 2. The first sanctioned relaxation: instruction-granular timing, cited not invented
 
-In `fast-exec`, the CPU may charge **instruction-granular issue costs** — one cycle
-per instruction plus a documented per-class cost, plus cache-miss penalties — instead
-of advancing the five-stage cascade per cycle.
+**Two relaxations are sanctioned by this ADR, and both are enumerated.** This item is
+the first; the second — per-domain deficit counters, which depart from ADR 0006 — is
+in *Relationship to 0006, 0007 and 0011* below, because it is a departure from a
+different ADR and belongs with the document it amends. Nothing else is relaxed, and
+anything not on this list of two needs its own authorization.
+
+In `fast-exec`, the CPU may charge **instruction-granular issue costs** — a
+documented total cost per instruction class, plus cache-miss penalties — instead of
+advancing the five-stage cascade per cycle.
+
+**The tabled values are total issue costs, not addends to a one-cycle baseline.**
+`MULT` is 5 PCycles, not 1 + 5; the baseline is the table's own *"Integer ALU / most
+instructions | 1"* row, which the per-class rows replace rather than extend. Stating
+this is not pedantry: the additive reading yields 6 and 38 where `docs/cpu.md` and
+the supplement both say 5 and 37, and a cost model that is uniformly one cycle heavy
+would be indistinguishable from a correct one in every relative comparison.
 
 The cost table is **already in this repository and sourced**, in
 [`ref-docs/2026-07-20-vr4300-timing-supplement.md`](../../ref-docs/2026-07-20-vr4300-timing-supplement.md)
@@ -139,26 +152,50 @@ equality **cannot be the fast mode's verdict**, because the fast mode is deliber
 not `master_ticks`-identical. So:
 
 - **Architectural equality is required at instruction-retirement boundaries** — 0011
-  item 3's list: GPRs/`HI`/`LO`/PC, COP0 and the TLB, the FP register file and
-  `FCSR`, RSP DMEM/IMEM and vector state, RDP and VI register state, RDRAM, pending
-  interrupts, pending exception state.
+  item 3's list, minus the carve-out below: GPRs/`HI`/`LO`/PC, COP0 and the TLB, the
+  FP register file and `FCSR`, RSP DMEM/IMEM and vector state, RDP and VI register
+  state, RDRAM, pending interrupts, pending exception state.
 - **Timing divergence is measured, bounded, and reported** — not required to be zero.
   The bound is recorded in `docs/accuracy-ledger.md` **before it ships**, per 0011
   item 3's enumeration requirement. A divergence that grows without bound is a
   failure even when every architectural comparison passes.
-- **The timing-derived architectural registers are excluded from the equality
-  predicate and included in the divergence measurement instead.** COP0 `Count` is the
-  concrete case: it is architectural state a program can read with `MFC0`, and if
-  timing differs then `Count` differs, so demanding equality on it would demand the
-  very thing this mode gives up.
+- **The timing-derived state is excluded from the equality predicate and included in
+  the divergence measurement instead**, and the carve-out is **transitive**. It is
+  not one register:
+  - COP0 **`Count`** — architectural state a program reads with `MFC0`. If timing
+    differs then `Count` differs, so demanding equality on it would demand the very
+    thing this mode gives up.
+  - The **`Count == Compare` timer interrupt (`IP7`)** it raises, and therefore the
+    `Cause.IP` bit and any pending-interrupt or pending-exception state derived from
+    it. `Compare` itself is software-written and stays in the predicate; what leaves
+    it is *when the comparison fires*. Carving out `Count` while requiring unqualified
+    equality of "pending interrupts" would have been self-contradictory, and it took a
+    reviewer to notice — recorded because the same shape (a carve-out that does not
+    follow its own consequences) is worth recognizing next time.
+
+  Nothing else is carved out by implication. A future exclusion is an amendment to
+  this list, not a reading of it.
 
 That carve-out has a consequence worth naming here rather than discovering in a
-failing suite: **a program that branches on a timing-derived value can take a
-different path in the two modes, so the instruction streams themselves diverge.**
-That is a legitimate outcome of this decision, not a defect. The gate must *detect
-and report* it and **end the comparison for that fixture**, naming the point of
-divergence. What it must never do is absorb it silently, which would turn every
-subsequent "agreement" into a comparison of two unrelated runs.
+failing suite: **a program that branches on a timing-derived value — or is
+interrupted by the timer at a different instruction — can take a different path in
+the two modes, so the instruction streams themselves diverge.** That is a legitimate
+outcome of this decision, not a defect.
+
+The gate therefore has **three outcomes, not two**, and they must be distinguishable
+in its output:
+
+| outcome | meaning | verdict |
+| --- | --- | --- |
+| **agreement** | architectural state equal at every compared boundary, divergence within the recorded bound | pass |
+| **stream divergence** | the two modes stopped executing the same instructions; the first divergent retirement is named and the comparison **ends there for that fixture** | not a failure, but **not a pass either** — it is reported, and it does not count toward coverage |
+| **disagreement** | architectural state differs while the streams still match, or the divergence exceeds its bound | failure |
+
+What the gate must never do is absorb stream divergence silently, which would turn
+every subsequent "agreement" into a comparison of two unrelated runs. Nor may it
+report a fixture that diverged early as having compared anything: ADR 0012 §2's
+completion witness is about not mistaking "nothing happened" for success, and a
+fixture that diverges on its third instruction is precisely that.
 
 `fast-scheduler`'s existing whole-state tests keep their stricter predicate. They are
 grading a tick-identical path and would be weakened for nothing by relaxing them.
@@ -199,9 +236,9 @@ project has already paid for twice (0012's *Context*).
   around. A per-domain deficit counter — the mechanism this mode is expected to
   adopt — **is** an independently advanced position, which 0006's *"`master_ticks` is
   the only counter that is ever incremented"* forbids outright, and which
-  `CLAUDE.md` restates as a hard rule. This is the **second** sanctioned relaxation
-  in this ADR, and it is named here precisely because it would otherwise arrive as a
-  reviewer's objection to an already-written PR.
+  `CLAUDE.md` restates as a hard rule. This is the **second** of the two sanctioned
+  relaxations enumerated in Decision item 2, and it is named here precisely because
+  it would otherwise arrive as a reviewer's objection to an already-written PR.
 
   Two things bound it. `master_ticks` remains the mode's **single reported
   timebase** — what save-states record, what the divergence measurement is expressed
@@ -210,6 +247,16 @@ project has already paid for twice (0012's *Context*).
   drawn against the canonical clock rather than rival clocks. A deficit that is
   never reconciled is a rival clock, and would be a defect under this ADR, not a
   permitted consequence of it.
+
+  **`docs/architecture.md` §1 is left unqualified, deliberately, and that is an
+  obligation rather than an oversight.** It states the invariant flatly, and today it
+  is flatly true: no `fast-exec` code exists. Qualifying it now would document
+  behavior the emulator does not have, which is the class of claim this project keeps
+  finding stale precisely because nothing fails when it is wrong. The qualification
+  falls due in the PR that introduces the first deficit counter — the same PR that
+  makes it true — and that PR touches `docs/architecture.md` and therefore takes
+  `CONTRIBUTING.md`'s two-reviewer path. Raised in review, where the ADR-versus-doc
+  gap was correctly spotted; the disagreement is only about *when*.
 - **ADR 0011 and 0012** are unchanged in every respect. This ADR adds a mode
   alongside the one they describe; it does not alter the fast-path scheduler, its
   gate, or its promotion criteria.
