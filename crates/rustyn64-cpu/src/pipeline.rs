@@ -1988,7 +1988,6 @@ impl Pipeline {
         bus.write_sized(addr, width, value);
     }
 
-    /// `EX` — execute.
     /// The four checks an instruction must pass **before** it executes.
     ///
     /// Latch-independent, for the reason [`Self::fetch_word`] is: the caller
@@ -2052,16 +2051,17 @@ impl Pipeline {
             return Err(Exception::CoprocessorReserved { unit: 2 });
         }
         if decoded.op == crate::decode::Op::Cop1ReservedControl {
-            /// `FCSR.Cause`, bits 17:12.
-            const CAUSE_MASK: u32 = 0x3F << 12;
             let fcsr = self.cop1.fcsr();
-            self.cop1
-                .ctc1(31, (fcsr & !CAUSE_MASK) | crate::fpu::CAUSE_UNIMPLEMENTED);
+            self.cop1.ctc1(
+                31,
+                (fcsr & !crate::fpu::CAUSE_MASK) | crate::fpu::CAUSE_UNIMPLEMENTED,
+            );
             return Err(Exception::FloatingPoint);
         }
         Ok(())
     }
 
+    /// `EX` — execute.
     fn ex_stage(&mut self, regs: &Regs, next_pc: &mut u64) {
         let mut out = self.rf_ex;
         if out.occupied && out.abort.is_none() {
@@ -2321,7 +2321,6 @@ impl Pipeline {
         None
     }
 
-    /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
     /// Fetch the instruction word at `pc`: alignment, the segment map, the
     /// micro-ITLB and JTLB, `Status.RE`, and the I-cache.
     ///
@@ -2423,6 +2422,7 @@ impl Pipeline {
         })
     }
 
+    /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
     fn ic_stage<B: Bus>(&mut self, bus: &mut B, next_pc: &mut u64) {
         // An abort raised earlier this cycle flushes younger instructions. The
         // fetch happening now is younger than all of them, so it must not become
@@ -2518,10 +2518,14 @@ impl Pipeline {
     /// **The field is 17:12, not 16:12.** Bit 17 is `Cause.E`, Unimplemented
     /// Operation — part of `Cause` despite having no `Enable` bit and no sticky
     /// `Flags` twin, which means the mask is the *only* thing that ever clears
-    /// it. This comment said 16:12 while `CAUSE_MASK` covered 16:12 too, and
-    /// the result was a bit that could never be cleared once raised. Only the
-    /// five *maskable* conditions live in 16:12; that narrower range is what
-    /// the enable comparison below uses, and it is a different statement.
+    /// it. This comment said 16:12 while the mask covered 16:12 too, and the
+    /// result was a bit that could never be cleared once raised. Only the five
+    /// *maskable* conditions live in 16:12; that narrower range is what the
+    /// enable comparison below uses, and it is a different statement.
+    ///
+    /// The mask is now [`fpu::CAUSE_MASK`](crate::fpu::CAUSE_MASK), defined once.
+    /// It had reached **four** local copies of the same literal — in a file where
+    /// getting this exact constant wrong has already shipped a bug.
     ///
     /// # Enabled traps
     ///
@@ -2551,18 +2555,6 @@ impl Pipeline {
     /// `expected_unimplemented` cases still fail.
     fn fp_arith(&mut self, fmt: u8, funct: u8, ft: u8, fs: u8, fd: u8) -> bool {
         use crate::fpu;
-        /// `FCSR` Cause field, bits **17:12** — replaced wholesale per
-        /// operation.
-        ///
-        /// The range includes bit 17, `Unimplemented Operation`, which is part
-        /// of `Cause` even though it is not an IEEE exception and has no
-        /// corresponding `Enable` or sticky `Flags` bit. Masking only 16:12 —
-        /// which this did — leaves a *stale* bit 17 set forever, because no
-        /// later operation can clear a bit the mask does not cover. Software
-        /// reading `FCSR` after a successful conversion would then still see
-        /// the previous unimplemented operation.
-        const CAUSE_MASK: u32 = 0x3F << 12;
-
         let fr = fr_of(&self.cop0);
         // `fmt` is 16 (single) or 17 (double) -- decode admits no other value
         // into `FpArith`, so this is a two-way split, not a table.
@@ -2653,7 +2645,7 @@ impl Pipeline {
             // Cause only. The sticky `Flags` field is deliberately left
             // untouched — see the doc comment.
             self.cop1
-                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
+                .ctc1(31, (fcsr & !fpu::CAUSE_MASK) | (raised & fpu::CAUSE_MASK));
             self.abort_from(Stage::Wb, Exception::FloatingPoint);
             return true;
         }
@@ -2671,12 +2663,12 @@ impl Pipeline {
             // it. Confirmed against n64-systemtest's own `FCSR` bitfield rather
             // than inferred.
             FpCommit::Condition(c) => {
-                let base = (fcsr & !CAUSE_MASK & !FCSR_C) | raised;
+                let base = (fcsr & !fpu::CAUSE_MASK & !FCSR_C) | raised;
                 self.cop1.ctc1(31, base | if c { FCSR_C } else { 0 });
                 return false;
             }
         }
-        self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
+        self.cop1.ctc1(31, (fcsr & !fpu::CAUSE_MASK) | raised);
         false
     }
 
@@ -2691,9 +2683,6 @@ impl Pipeline {
     /// Unlike `MOV`, these REPLACE the `Cause` field — clearing it on success.
     fn fp_sign_op(&mut self, fmt: u8, funct: u8, fs: u8, fd: u8, fr: bool) -> bool {
         use crate::fpu;
-        /// `FCSR` Cause field, bits 17:12.
-        const CAUSE_MASK: u32 = 0x3F << 12;
-
         let fcsr = self.cop1.fcsr();
         let (commit, flags, unimplemented) = if fmt == 0o20 {
             let a = f32::from_bits(self.fpr.read_s_fs(fs, fr));
@@ -2741,13 +2730,13 @@ impl Pipeline {
             };
         if unimplemented {
             self.cop1
-                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
+                .ctc1(31, (fcsr & !fpu::CAUSE_MASK) | (raised & fpu::CAUSE_MASK));
             self.abort_from(Stage::Wb, Exception::FloatingPoint);
             return true;
         }
         if flags.invalid && self.cop1.enables() & (1 << 4) != 0 {
             self.cop1
-                .ctc1(31, (fcsr & !CAUSE_MASK) | (raised & CAUSE_MASK));
+                .ctc1(31, (fcsr & !fpu::CAUSE_MASK) | (raised & fpu::CAUSE_MASK));
             self.abort_from(Stage::Wb, Exception::FloatingPoint);
             return true;
         }
@@ -2756,7 +2745,7 @@ impl Pipeline {
         } else {
             self.fpr.write_d_arith(fd, fr, commit);
         }
-        self.cop1.ctc1(31, (fcsr & !CAUSE_MASK) | raised);
+        self.cop1.ctc1(31, (fcsr & !fpu::CAUSE_MASK) | raised);
         false
     }
 
