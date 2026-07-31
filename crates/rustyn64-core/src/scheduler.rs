@@ -501,6 +501,94 @@ impl System {
         FastRunReport { blocks, bailed }
     }
 
+    /// The **instruction-granular** counterpart to [`System::run_until`]
+    /// (ADR 0013), behind the default-off `fast-exec` feature.
+    ///
+    /// # How time advances here
+    ///
+    /// The accurate loop walks edge to edge and steps whichever domains are due.
+    /// This one lets the **CPU set the pace**: it executes one instruction, is told
+    /// what that cost in `PCycles`, advances `master_ticks` by that many CPU
+    /// periods, and runs the RCP over every one of its edges in the span that just
+    /// elapsed. The CPU therefore no longer lands on a derived edge at all — which
+    /// is precisely the relaxation ADR 0013 §2 authorizes and ADR 0011 §5 excludes.
+    ///
+    /// **ADR 0006 still holds.** `master_ticks` remains the only counter that is
+    /// ever incremented, and every other position — the RCP's edges, COP0 `Count` —
+    /// is still derived from it. What changed is *how far* it moves per step, not
+    /// who owns it.
+    ///
+    /// # It may land PAST `target`, and that is the divergence, not a defect
+    ///
+    /// A cost is only known after the instruction has run, so the last instruction
+    /// of a call can carry `master_ticks` beyond `target` — by at most one
+    /// instruction's cost. Nothing drifts: the next call's `target` is absolute, so
+    /// an overshoot simply means less work next time. This is the timing divergence
+    /// ADR 0013 §4 requires to be *measured and bounded* rather than eliminated,
+    /// and it is the reason this returns a report rather than nothing.
+    ///
+    /// # A halted CPU advances on RCP edges
+    ///
+    /// A failed real-PIF boot checksum freezes the CPU via NMI while the RCP keeps
+    /// running (`PIF-NUS.md`). With no instruction to time the advance with, this
+    /// steps to the next RCP edge instead. It is deliberately **not** a bail-out to
+    /// the accurate scheduler: forcing an ADR 0012 bail-out reason here would need
+    /// a fixture that can reach a checksum failure, and ADR 0011 §6 only sanctions
+    /// a test-only seam where a boundary *genuinely* cannot be reached — which is
+    /// not the case when the fast path can simply handle it.
+    ///
+    /// `fast-exec` consequently adds **no new [`BailOut`](crate::fastpath::BailOut)
+    /// variant**. Saying so plainly is better than inventing an exit to justify the
+    /// machinery; the enumeration exists so that a *real* one cannot be added
+    /// silently.
+    #[cfg(feature = "fast-exec")]
+    pub fn run_until_exec(&mut self, target: u64) -> crate::fastpath::FastRunReport {
+        use crate::fastpath::FastRunReport;
+
+        let mut report = FastRunReport::default();
+        while self.master_ticks < target {
+            if self.bus.boot_nmi_halt() {
+                let next = Self::next_edge_after(self.master_ticks, self.phases.rcp, RCP_DIVIDER);
+                if next > target {
+                    break;
+                }
+                self.master_ticks = next;
+                self.step_rcp();
+                continue;
+            }
+
+            // `count_ticks` is derived from `master_ticks` and sampled BEFORE the
+            // instruction runs, which is the same instant the accurate path samples
+            // it at the CPU edge that would issue this instruction.
+            let count_now = self.count_ticks();
+            let cost = self.cpu.step_instruction_at(&mut self.bus, count_now);
+            report.blocks = report.blocks.saturating_add(1);
+
+            // One `PCycle` is `CPU_DIVIDER` master ticks (ADR 0006). `saturating_mul`
+            // and `saturating_add` because the product is the one arithmetic here
+            // that is not already bounded by `target`.
+            let end = self
+                .master_ticks
+                .saturating_add(u64::from(cost).saturating_mul(CPU_DIVIDER));
+
+            // The RCP catches up over the span the instruction consumed, on its own
+            // edges. CPU-before-RCP still holds: the instruction has already run.
+            let mut rcp = Self::next_edge_after(self.master_ticks, self.phases.rcp, RCP_DIVIDER);
+            while rcp <= end {
+                self.master_ticks = rcp;
+                self.step_rcp();
+                rcp = Self::next_edge_after(rcp, self.phases.rcp, RCP_DIVIDER);
+            }
+            self.master_ticks = end;
+        }
+        // Only reachable through the halted branch's `break`; an executing CPU has
+        // already carried `master_ticks` to or past `target`.
+        if self.master_ticks < target {
+            self.master_ticks = target;
+        }
+        report
+    }
+
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the
     /// AI/interface DMA progress — all on the SAME `&mut self.bus`.
     fn step_rcp(&mut self) {

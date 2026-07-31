@@ -111,6 +111,14 @@ jobs:
       # deliberately not, so they are graded by different predicates.
       - run: cargo test -p rustyn64-cpu --features fast-exec
       - run: cargo clippy -p rustyn64-cpu --all-targets --features fast-exec -- -D warnings
+      # And the core + frontend wiring. `run_frame` picks one of THREE entry
+      # points by `cfg`, and an arm that stops compiling is invisible to every job
+      # that does not enable its feature -- which is how a `#[cfg]` arm rots.
+      - run: cargo clippy -p rustyn64-core --all-targets --features fast-exec -- -D warnings
+      - run: cargo clippy -p rustyn64-frontend --all-targets --features fast-exec -- -D warnings
+      # Both features together is a DEFINED configuration (ADR 0013 section 1
+      # settles the precedence), so it is built rather than left to chance.
+      - run: cargo check -p rustyn64-frontend --features fast-exec,fast-scheduler
 
   rustdoc:
     name: rustdoc (-D warnings)
@@ -207,6 +215,7 @@ jobs:
       # child module of `pipeline` and uses nothing beyond what the accurate path
       # already does, but "uses nothing" is a claim, and this is what checks it.
       - run: cargo build -p rustyn64-cpu --target thumbv7em-none-eabihf --no-default-features --features fast-exec
+      - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features --features fast-exec
 
   no-commercial-roms:
     name: no commercial ROMs

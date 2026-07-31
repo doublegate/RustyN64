@@ -263,9 +263,16 @@ impl EmuCore {
         // it is discarded explicitly rather than by the `#[must_use]` being absent —
         // an emulator that changed behavior on a diagnostic would be the ADR 0011 §6
         // defect of a released path shaped by its tests.
-        #[cfg(feature = "fast-scheduler")]
+        //
+        // `fast-exec` takes precedence where both are enabled (ADR 0013 §1), which
+        // is settled here rather than left to whichever `cfg` happens to be written
+        // first. The three arms are mutually exclusive by construction, so exactly
+        // one entry point is compiled in any configuration.
+        #[cfg(feature = "fast-exec")]
+        let _ = self.system.run_until_exec(target);
+        #[cfg(all(feature = "fast-scheduler", not(feature = "fast-exec")))]
         let _ = self.system.run_until_fast(target);
-        #[cfg(not(feature = "fast-scheduler"))]
+        #[cfg(not(any(feature = "fast-scheduler", feature = "fast-exec")))]
         self.system.run_until(target);
         self.frames = self.frames.wrapping_add(1);
         self.produce_frame();
