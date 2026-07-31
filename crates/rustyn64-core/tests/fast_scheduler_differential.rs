@@ -399,8 +399,21 @@ fn the_fast_path_agrees_while_running_a_real_rom() {
         "the two machines must be identical after boot"
     );
 
+    // Anchored to the post-boot tick, not to zero. `hle_boot` does not currently
+    // advance `master_ticks`, but if it ever did, targets computed from zero would
+    // land in the past and the early chunks would silently compare two machines
+    // that executed nothing — a vacuous pass wearing the shape of a real one.
+    // Raised in review; the fix costs one variable and removes the dependency on a
+    // property of `hle_boot` that this test has no business relying on.
+    let start = accurate.master_ticks();
+    assert_eq!(
+        start,
+        fast.master_ticks(),
+        "both machines start at the same tick"
+    );
+
     for chunk in 1..=CHUNKS {
-        let target = chunk * CHUNK;
+        let target = start + chunk * CHUNK;
         accurate.run_until(target);
         fast.run_until_fast(target);
 
@@ -420,6 +433,14 @@ fn the_fast_path_agrees_while_running_a_real_rom() {
                 describe_divergence(&a, &f)
             );
         }
+        // Progress, since this runs silently for 40M ticks otherwise and the only
+        // way to run it is interactively with `--nocapture`. It also makes the
+        // retired count visible per chunk, which is what distinguishes a run that
+        // reached game code from one that stalled early.
+        println!(
+            "chunk {chunk}/{CHUNKS} tick {target}: identical, {} retired",
+            accurate.cpu.retired
+        );
     }
 
     // Completion witness (ADR 0012): a run that executed nothing would agree just
