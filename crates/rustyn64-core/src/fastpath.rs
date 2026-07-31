@@ -194,6 +194,28 @@ impl FastRunReport {
     pub const fn engaged(self) -> bool {
         self.blocks > 0
     }
+
+    /// Accumulate another call's report: blocks **add**, reasons **union**.
+    ///
+    /// The rule lives here rather than at each call site because the two halves
+    /// fail differently. A caller that adds the counts and forgets the union still
+    /// compiles, still reports engagement, and **under-reports coverage** — which
+    /// is the one thing ADR 0012 §2's witness exists to catch, so a bug in the
+    /// accumulation would disable the check rather than trip it.
+    ///
+    /// `saturating_add` because a block count is a diagnostic: a wrapped total
+    /// could read as zero and turn "engaged constantly" into "never engaged". It
+    /// cannot be reached in practice — `u64::MAX` blocks is 6 x 2^64 master
+    /// ticks — but saturating is the failure that stays interpretable.
+    ///
+    /// (No `#[must_use]` here: the returned type already carries one, and clippy's
+    /// `double_must_use` rejects a second without a distinct message.)
+    pub const fn merge(self, other: Self) -> Self {
+        Self {
+            blocks: self.blocks.saturating_add(other.blocks),
+            bailed: self.bailed.union(other.bailed),
+        }
+    }
 }
 
 #[cfg(test)]

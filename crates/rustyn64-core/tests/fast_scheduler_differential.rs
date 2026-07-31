@@ -576,10 +576,7 @@ fn fixture_partial_period_tail() -> FastRunReport {
             state_digest(&fast),
             "tail {tail}: state diverged across the hand-off boundary"
         );
-        acc = FastRunReport {
-            blocks: acc.blocks + report.blocks,
-            bailed: acc.bailed.union(report.bailed),
-        };
+        acc = acc.merge(report);
     }
     acc
 }
@@ -705,12 +702,14 @@ fn the_gate_witnesses_its_own_completion() {
     );
 
     let started = std::time::Instant::now();
-    let mut covered = BailOutSet::new();
-    let mut blocks = 0u64;
+    // One accumulator through `FastRunReport::merge`, not a count beside a set:
+    // adding the blocks and forgetting the union compiles, still reports
+    // engagement, and silently under-reports coverage — disabling the very check
+    // this test is.
+    let mut total = FastRunReport::default();
     for fixture in &selected {
         let report = run_fixture(fixture);
-        covered = covered.union(report.bailed);
-        blocks += report.blocks;
+        total = total.merge(report);
         println!(
             "fixture {}: {} blocks, reasons {:?}",
             fixture.name, report.blocks, report.bailed
@@ -741,14 +740,14 @@ fn the_gate_witnesses_its_own_completion() {
          pass over nothing — the fast path must declare its exits"
     );
     assert!(
-        blocks > 0,
+        total.engaged(),
         "THE FAST PATH NEVER ENGAGED across {} fixtures: it deferred every stretch \
          to the accurate scheduler, so the whole suite compared that scheduler with \
          itself",
         selected.len()
     );
     assert!(
-        !covered.is_empty(),
+        !total.bailed.is_empty(),
         "NO BAIL-OUT BOUNDARY WAS REACHED across {} fixtures, so the hand-off to the \
          accurate scheduler — where ADR 0011 §6's bailout invariant lives — is \
          entirely unexercised",
@@ -757,7 +756,7 @@ fn the_gate_witnesses_its_own_completion() {
 
     let missing: Vec<&'static str> = BailOut::ALL
         .iter()
-        .filter(|r| !covered.contains(**r))
+        .filter(|r| !total.bailed.contains(**r))
         .map(|r| r.describe())
         .collect();
     assert!(
@@ -771,9 +770,10 @@ fn the_gate_witnesses_its_own_completion() {
     );
 
     println!(
-        "GATE COMPLETE: {} fixtures, {blocks} blocks executed, {}/{} bail-out \
+        "GATE COMPLETE: {} fixtures, {} blocks executed, {}/{} bail-out \
          reasons covered",
         selected.len(),
+        total.blocks,
         BailOut::ALL.len(),
         BailOut::ALL.len()
     );
