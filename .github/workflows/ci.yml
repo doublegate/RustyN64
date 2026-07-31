@@ -99,6 +99,10 @@ jobs:
       # it has to run on the PRs that change it, not only on push-to-main.
       - run: cargo test -p rustyn64-core --features fast-scheduler
       - run: cargo clippy -p rustyn64-core --all-targets --features fast-scheduler -- -D warnings
+      # The frontend forwards the feature, so the wiring in `run_frame` needs a
+      # build too -- a `#[cfg]` arm that stops compiling is invisible to every job
+      # that does not enable it.
+      - run: cargo clippy -p rustyn64-frontend --all-targets --features fast-scheduler -- -D warnings
 
   rustdoc:
     name: rustdoc (-D warnings)

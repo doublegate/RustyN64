@@ -212,8 +212,24 @@ loop re-derives it on every edge. The fast path computes that shape once and
 replays it: the same edges, in the same order, at the same `master_ticks`, so it is
 a different *enumeration* rather than a different schedule. The partial-period tail
 and the `master_ticks = target` landing still go through the accurate loop, which
-is where ADR 0011 §6's fallback now lives. Measured **1.0563x** on the run loop
-(`docs/performance.md`).
+is where ADR 0011 §6's fallback now lives. Measured **1.0563x** on the run loop and
+**1.0544x** on a real frame through the frontend (`docs/performance.md`).
+
+**It is reachable but still off by default.** `rustyn64-frontend` forwards the
+feature (`--features fast-scheduler`), so `run_frame` calls `run_until_fast` when it
+is compiled in and `run_until` otherwise — ADR 0011 §1 holds because the default
+build contains neither the branch nor the function. It is deliberately **not** in
+the frontend's `full` feature set: `full` is what the release aliases build, and
+promoting an alternate execution mode into a shipped artifact is an ADR 0011
+decision rather than a build-configuration one.
+
+The differential gate now also drives a **real commercial title** end to end
+(`the_fast_path_agrees_while_running_a_real_rom`, `#[ignore]`d and env-gated since
+ROMs are never committed): Super Mario 64, 20 compared chunks of 2M ticks,
+**13,951,609 instructions retired**, machine state byte-identical at every chunk
+boundary. That is the evidence ADR 0011's promotion criteria ask for — the synthetic
+reset-vector runs exercise the scheduler but not a real instruction mix, memory
+traffic, or RSP/RDP activity.
 
 Three structural choices, made so the later work cannot quietly violate the ADR:
 

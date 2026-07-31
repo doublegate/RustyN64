@@ -250,6 +250,17 @@ impl EmuCore {
             .system
             .master_ticks()
             .saturating_add(MASTER_TICKS_PER_FRAME);
+        // The ADR 0011 fast path when it is compiled in, the accurate scheduler
+        // otherwise. Additive and off by default: with `fast-scheduler` disabled
+        // this is `run_until` and the binary is unchanged, which is ADR 0011 §1.
+        //
+        // The two are not "approximately equal" — the block replays the same edge
+        // schedule rather than a different one, and the differential gate in
+        // `rustyn64-core` requires byte-identical machine state across every phase
+        // alignment, every partial-period tail, and a real commercial title.
+        #[cfg(feature = "fast-scheduler")]
+        self.system.run_until_fast(target);
+        #[cfg(not(feature = "fast-scheduler"))]
         self.system.run_until(target);
         self.frames = self.frames.wrapping_add(1);
         self.produce_frame();

@@ -350,3 +350,89 @@ fn probe_scheduler_dispatch_cost() {
         acc_best / fast_best
     );
 }
+
+/// **The same equivalence, driving a real commercial title.**
+///
+/// Everything above runs the reset-vector workload: no cart, no IPL3, no game code.
+/// That exercises the scheduler but not the instruction mix, the memory traffic, or
+/// the RSP/RDP activity a real title produces — and ADR 0011's promotion criteria
+/// are about the fast path being trustworthy on *real* workloads, not synthetic
+/// ones. This is that evidence.
+///
+/// Compared in **chunks** rather than once at the end, so a divergence is localized
+/// to the interval that produced it instead of being reported after millions of
+/// ticks of downstream consequences.
+///
+/// `#[ignore]`d and env-gated because commercial ROMs are never committed (ADR
+/// 0008). It **fails** rather than skips when `RUSTYN64_PROBE_ROM` is set but
+/// unusable — a silent skip on a misconfigured path is the vacuous pass this repo
+/// has shipped before.
+///
+/// ```text
+/// RUSTYN64_PROBE_ROM=/path/rom.z64 cargo test -p rustyn64-core --release \
+///   --features fast-scheduler --test fast_scheduler_differential -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs a local commercial ROM (never committed, ADR 0008)"]
+fn the_fast_path_agrees_while_running_a_real_rom() {
+    /// Ticks per compared interval, and how many. 20 x 2M ticks is ~0.2 s of
+    /// emulated time — well past the boot and into game code.
+    const CHUNK: u64 = 2_000_000;
+    const CHUNKS: u64 = 20;
+
+    let Ok(path) = std::env::var("RUSTYN64_PROBE_ROM") else {
+        println!("RUSTYN64_PROBE_ROM unset — set it to a local ROM to run this gate");
+        return;
+    };
+    let raw = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("RUSTYN64_PROBE_ROM is set but unreadable: {path}: {e}"));
+
+    let mut accurate = System::new(SEED);
+    let mut fast = System::new(SEED);
+    for sys in [&mut accurate, &mut fast] {
+        rustyn64_core::boot::hle_boot(sys, &raw)
+            .unwrap_or_else(|e| panic!("probe ROM did not boot: {path}: {e:?}"));
+    }
+    assert_eq!(
+        state_digest(&accurate),
+        state_digest(&fast),
+        "the two machines must be identical after boot"
+    );
+
+    for chunk in 1..=CHUNKS {
+        let target = chunk * CHUNK;
+        accurate.run_until(target);
+        fast.run_until_fast(target);
+
+        assert_eq!(
+            fast.master_ticks(),
+            accurate.master_ticks(),
+            "chunk {chunk}: correct-but-late — the fast path finished at a different tick"
+        );
+        assert_eq!(
+            fast.cpu.retired, accurate.cpu.retired,
+            "chunk {chunk}: the two paths retired different instruction counts"
+        );
+        if state_digest(&accurate) != state_digest(&fast) {
+            let (a, f) = (state_of(&accurate), state_of(&fast));
+            panic!(
+                "chunk {chunk} (tick {target}): {}",
+                describe_divergence(&a, &f)
+            );
+        }
+    }
+
+    // Completion witness (ADR 0012): a run that executed nothing would agree just
+    // as convincingly. A real title retires millions of instructions here.
+    assert!(
+        accurate.cpu.retired > 1_000_000,
+        "only {} instructions retired over {} ticks — this did not reach game code, \
+         so the comparison says nothing about a real workload",
+        accurate.cpu.retired,
+        CHUNKS * CHUNK
+    );
+    println!(
+        "real-ROM differential: {} chunks x {CHUNK} ticks, {} instructions retired, states identical",
+        CHUNKS, accurate.cpu.retired
+    );
+}
