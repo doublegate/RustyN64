@@ -829,6 +829,57 @@ enumeration, not a hardware-accuracy result — which is why it lives here and n
 
 The feature stays **default-off**, so no shipped build is affected by any of this.
 
+## The search for structural waste is exhausted — evidence, so it is not re-run
+
+Every bucket at or above 3% of a rendering frame has now been examined **line by
+line**, on the profile taken from `main` at 9e41f77 (64,357 samples, render phase).
+The conclusion is that **no remaining bucket contains a hotspot**, and the wins this
+project found were never hotspots to begin with.
+
+| bucket | share | hottest single line | what it is |
+| --- | --- | --- | --- |
+| `pipeline.rs` | 36.1% | 4.42% (`ex_dc = out`) | retired work charged to a stage's final store — **not** copy cost; see "Ruled out" item 6 |
+| RSP `vu.rs` + `su.rs` | 13.6% | **0.80%** (`su.rs`'s `Rsp::r`) | `r0`-pinned register read, then multiply-family match arms — interpreter dispatch |
+| `bus.rs` | 10.8% | **0.84%** | memory-access dispatch, spread over the whole address map |
+| `scheduler.rs` | 9.6% | 1.66% | edge derivation — **addressed** by the `fast-scheduler` block |
+| `decode.rs` | 3.6% | 0.36% | instruction decode, spread across the opcode space |
+| `vi.rs` | 3.4% | 2.34% | the half of `ticks_per_halfline` a global bound cannot skip |
+
+**The shape of every win this project actually landed** was a *structural* observation,
+not a hot line: a value recomputed every step that almost never changes (the AI's DAC
+period, the VI's half-line period, the scheduler's edge attribution), or work done
+before the check that made it unnecessary (both split-borrow takes). Searching for the
+tallest bar found none of them — and once, in the `Latch` case, actively misled.
+
+**That class is now empty.** There is no other per-step `MASTER_HZ /` divide in the
+core; the two split-borrows that had an idle majority are done, and the RSP's does
+not have one, because it executes microcode on essentially every step. What is left in each bucket above is
+the emulator computing what it is required to compute.
+
+**So the next increment is not an optimization.** Going further means changing *what*
+is computed rather than when or how often — the dynarec question, with its own ADR,
+its own correctness surface, and `unsafe` confined to where the repo already permits
+it. [`docs/adr/0011-optional-fast-path-scheduler.md`](adr/0011-optional-fast-path-scheduler.md)
+deliberately leaves that open; nothing here decides it.
+
+**Do not re-run this survey** expecting a different answer without a workload change.
+It is reproducible in full — the flags matter, and an incomplete command is not a
+reproducible one:
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --tests -p rustyn64-frontend
+RUSTYN64_PROBE_ROM=/path/rom.z64 RUSTYN64_PROBE_SKIP=1400 \
+  perf record -D 70000 -F 999 -g --call-graph=dwarf,4096 -o render.data \
+  -- target/release/deps/gameplay_phase_probe-* --ignored --nocapture \
+  does_a_retail_title_reach_a_rendering_phase
+perf report -i render.data -s srcline --full-source-path --no-children -g none \
+  --stdio --percent-limit 0
+```
+
+`-D 70000` is a delay in **milliseconds** — 70 s, which is what discards the boot
+phase and leaves a rendering-phase profile; `-F 999` is the sample rate in Hz.
+Aggregate per file by summing the per-line percentages.
+
 ## The render-phase map, re-measured after the VI and RDP work
 
 The attribution the earlier plan worked from was taken at **138.7 ms/frame**, before the
