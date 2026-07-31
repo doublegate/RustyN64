@@ -1275,20 +1275,24 @@ bucket is a step that had nothing to do*.
 larger lever of the two. On this evidence the plan's ordering is worth revisiting
 before either is begun — a maintainer's call, recorded here rather than taken.
 
-## The RSP's idle steps are already free, so removing them buys nothing
+## The RSP's idle steps are ~38% of the render phase and worth 0.45% at most
 
 The profile above ended with a question: *how much of the RSP bucket is a step that
 had nothing to do?* It is the measurement the deficit-counter scheduler has to be
 sized against, because that design's value is removing **visits**, and a visit is
 only worth removing if it costs something.
 
-Answer: **the idle steps are ~38% of render-phase steps and they are already
-free.**
+Answer: **~38% of render-phase steps are idle, and removing them entirely is worth
+0.45% on the window most favorable to it** — roughly half that where it would
+actually run. The visits are nearly free; there is no reservoir there.
 
 ### How many steps are idle
 
 Scratch instrumentation in `Bus::rsp_tick` counting halted versus executing steps
-over the 900-frame `gameplay_phase_probe` run. The **cumulative** share is
+over the 900-frame `gameplay_phase_probe` run. The table below is in **RSP steps**
+and the run is in **frames**; the two connect at roughly **1.0 M RCP steps per
+frame** (900 M steps over 900 frames), which is what makes the 100 M-step intervals
+read as ~100 frames each. The **cumulative** share is
 misleading and is the reason this is tabled per interval rather than quoted as one
 number — it starts above 80% and falls throughout, because boot is mostly a
 halted RSP and the render phase is not:
@@ -1310,7 +1314,7 @@ that is the steady state rather than a point on a curve. **Quoting the cumulativ
 56.9% would have overstated it by half**, and quoting the first interval's 82.9%
 by more than double.
 
-### Whether removing them is worth anything: no
+### Whether removing them is worth anything: 0.45% at best, and less in practice
 
 `Rsp::su_step` already returns immediately when halted. What a caller could still
 skip is the wrapper: `Bus::rsp_tick`'s call, the `StepResult::default()` it
@@ -1323,26 +1327,46 @@ pub fn rsp_tick(&mut self) {
         return;
     }
     let out = self.rsp.tick();
-    ...
+    if let Some(raise) = out.interrupt_change { /* ... */ }  // skipped
+    if let Some(dma) = out.dma { /* ... */ }                // skipped
+    if let Some((off, val)) = out.dp_write { /* ... */ }    // skipped
+    self.rcp_steps = self.rcp_steps.wrapping_add(1);
+}
 ```
 
-**A-B-A, `gameplay_phase_probe`, 900 frames, `--features fast-exec`:**
+**This was first measured on the wrong harness, and the first answer was wrong.**
+`gameplay_phase_probe` gave A 63.6/63.5, B 65.8/64.3, A 63.5/65.1 — overlapping
+legs, recorded as *neutral*. A reviewer pointed out that the probe's spread (2.5%
+within a leg) is wider than the effect being looked for, and that
+`examples/frame_bench.rs` has a ~1% floor. That is correct, and re-running it
+**reversed the result**:
 
-| leg | ms/frame |
+| leg | `frame_bench`, ms/frame |
 | --- | --- |
-| A (unmodified) | 63.6, 63.5 |
-| B (early-out) | 65.8, 64.3 |
-| A (restored) | 63.5, 65.1 |
+| A (unmodified) | 64.231, 64.392, 64.262, 64.401, 65.407 |
+| B (early-out) | 63.818, 63.896, 63.927, 63.941, ~~71.507~~ |
 
-**The legs overlap** — B's 64.3 sits inside A's 63.5-65.1 range — so this is
-**neutral**, and B's apparent regression is drift. Note this harness is noisier
-than `frame_bench` (2.5% spread within a leg against 1%), which is why the result
-is "neutral" rather than a number; it is precise enough to rule out a win of the
-size that would matter, and not precise enough for more.
+**One reading is excluded and named**: B's 71.507 ms is 11.8% above the rest of its
+own leg, which is contamination rather than variance — something else was running.
+Every other reading is kept, including A's 65.407, which is only 1.8% high and has
+no such excuse.
 
-The reading: **LLVM already elides the wrapper's work.** `su_step` returning a
-default `StepResult` inlines into `rsp_tick`, and the dead stores and the three
-`None` tests fold away. There was nothing there to remove.
+On that data the legs **do not overlap**: A's minimum (64.231) sits above B's
+maximum (63.941). Conservatively, **64.231 -> 63.941 ms = 0.45%**.
+
+**So it is a real effect, and it is small enough not to change anything.** Two
+reasons it is an upper bound rather than a result:
+
+- `frame_bench`'s window is **early boot**, where 80%+ of RSP steps are halted (the
+  first rows of the table above). The render phase runs at 38%, so expect roughly
+  half of 0.45% there.
+- It is within a factor of two of this harness's own noise floor, which is why five
+  readings per leg were needed to see it at all.
+
+**Not landed.** 0.45% on the most favorable window does not justify a change that
+also breaks `rcp_steps_for_test`'s count, and the reason to reach for it — that
+idle visits are expensive — is exactly what it disproves. The value here is the
+bound, not the patch.
 
 ### What that does to the deficit-counter scheduler's case
 
@@ -1365,7 +1389,8 @@ deficit-counter scheduler, and this measurement is the reason to prefer it.
 
 ### Ruled out
 
-**Do not re-try the `rsp_tick` halted early-out.** Measured neutral, A-B-A, above.
+**Do not re-try the `rsp_tick` halted early-out.** Measured at **0.45%** on the
+window most favorable to it, and about half that where it would actually run.
 The analogous change *was* a win for the RDP and the AI (#219/#221) because those
 avoid a `core::mem::take` of a large struct; the RSP's wrapper has no such
 payload, so the pattern does not transfer. Matching the shape of a past win is not
