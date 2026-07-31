@@ -582,7 +582,23 @@ impl System {
             // Overflowing means the timeline is exhausted, so the run ends; the
             // landing below carries `master_ticks` to `target` if it is not already
             // past it.
-            let Some(end) = u64::from(cost)
+            // **This loop's termination depends on `cost > 0`, and nothing here
+            // enforced it.** `Pipeline::step_instruction` charges one `PCycle` to
+            // issue before adding anything, so zero is not reachable today — but
+            // that is an invariant held in another crate, and a reader of *this*
+            // loop cannot see it. A zero would leave `end == master_ticks`, step no
+            // RCP edges, and spin forever. Raised in review as blocking, correctly:
+            // the hazard is that the guarantee is remote, not that it is absent.
+            //
+            // The `debug_assert` is the real check; the `max(1)` is a floor so a
+            // release build makes progress rather than hanging. It is deliberately
+            // NOT a fix — a zero cost would be a defect either way — but running
+            // one `PCycle` fast is a far better way to report one than a hang.
+            debug_assert!(
+                cost > 0,
+                "an instruction cost 0 PCycles, which cannot happen"
+            );
+            let Some(end) = u64::from(cost.max(1))
                 .checked_mul(CPU_DIVIDER)
                 .and_then(|span| self.master_ticks.checked_add(span))
             else {

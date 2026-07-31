@@ -119,6 +119,7 @@ jobs:
       - run: cargo clippy -p rustyn64-frontend --all-targets --features fast-exec -- -D warnings
       # Both features together is a DEFINED configuration (ADR 0013 section 1
       # settles the precedence), so it is built rather than left to chance.
+      - run: cargo test -p rustyn64-frontend --features fast-exec
       - run: cargo check -p rustyn64-frontend --features fast-exec,fast-scheduler
 
   rustdoc:
