@@ -916,6 +916,44 @@ frame (T-31-005); the deferred paths track against the ParaLLEl-RDP fuzz suite.
 - **The DP command list can live in DMEM or RDRAM** — `DPC_STATUS` selects the
   source; honor both.
 
+## The GPU backend (`gpu-rdp`, default-off, not yet built)
+
+[ADR 0014](adr/0014-gpu-backed-rdp.md) authorizes binding **parallel-rdp** (MIT)
+as an alternate rasterizer backend, behind a default-off `gpu-rdp` feature on the
+frontend, in a new `rustyn64-rdp-gpu` crate that is the only place `unsafe` is
+permitted.
+
+**Read the sizing before the design.** This rasterizer is **6.36% of a
+`fast-exec` frame** (`docs/performance.md`), so eliminating it entirely is
+**1.068x** against the 3.9x still needed for 60 FPS. **A GPU RDP is not a
+throughput answer on the current workload.** Its case is completeness and
+accuracy: the share is small partly *because this rasterizer is incomplete*
+(`TODO(T-31-004)`, deferred per-command timing, residual R-18), and a finished
+software pixel pipeline costs materially more than 6.36% — a liability the GPU
+route avoids rather than incurs.
+
+**Nothing here changes what this document specifies.** The software rasterizer
+stays the oracle: the Angrylion `.rvec` vectors, the golden frames and
+`rdp_conformance.rs` grade it and only it. A GPU result may be *compared* against
+it, and that comparison is worth having, but a disagreement is a GPU-backend bug
+until shown otherwise.
+
+Three constraints worth knowing before reading ADR 0014:
+
+- **Native-only.** The frontend's `wgpu 29` carries the `webgl` feature and WebGL
+  has no compute shaders; parallel-rdp is Vulkan compute.
+- **The first cut needs no Vulkan in the presenter.** Upstream's `scanout_sync()`
+  returns a CPU-side RGBA8 buffer, which the existing presenter takes as-is.
+- **Synchronization is where this gets dangerous.** A missing dirty-region sync is
+  a *race*: a wrong pixel occasionally, on some machines, invisible to every
+  deterministic gate. ADR 0004's contract binds — seed + ROM + input must still
+  give bit-identical AV — and a backend that cannot honor it is not shippable
+  whatever its frame rate.
+
+ADR 0014 carries written **kill criteria**, which is the point of scoping it as an
+experiment: determinism unachievable, no measured improvement on a real title, or
+a Vulkan dependency that cannot be made optional.
+
 ## Test plan
 
 - **ParaLLEl-RDP conformance fuzz suite (~150 tests)** — generates RDP command
