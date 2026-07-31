@@ -626,9 +626,9 @@ can.
    **neutral**, by the A-B-A above. Under `lto = "fat"` an inline hint has nothing to
    add — that is now two independent results, and the general form is *this workspace's
    release profile has already done the inlining*.
-5b. **`-C target-cpu=native`** — **neutral**, and the A-B-A caught it: the third
-   baseline leg came in below both native legs. See the codegen-levers section below
-   for the full table. Not instruction-selection-bound.
+5b. **`-C target-cpu=native`** — **neutral on this benchmark**, and the A-B-A caught
+   it: the third baseline leg came in below both native legs. See the codegen-levers
+   section below for the table and for what the result does *not* establish.
 5. **Reordering `vi_divot`'s early-out to test coverage first** — **10% worse**, measured.
 
    The *explanation* offered for that regression — that `cvg == 7` is rare, so the
@@ -850,14 +850,25 @@ fast-scheduler`, environment as tabled in §Measured (2026-07-30):
 
 **The third A leg came in below *both* B legs.** A two-leg comparison would have
 reported a ~0.5% win; the return leg shows it was drift. Mean A 93.178 against mean B
-93.227 — `0.9995x`, which is to say **neutral**, and the honest reading is that this
-workload is not instruction-selection-bound. That is unsurprising in hindsight: the hot
-code is scalar integer interpretation and pointer chasing, not the vectorizable
-arithmetic AVX2 would help.
+93.227 — `0.9995x`, which is to say **neutral**.
 
-So it is **not** adopted, and the portability cost never had to be argued: a
-`target-cpu=native` binary does not run on older hosts, which would be a real price for
-a measured nothing.
+**What that does and does not establish.** It establishes *no measurable gain on this
+benchmark*. It does **not** establish that the emulator is generally not
+instruction-selection-bound — a different title, or the same one in a different phase,
+could weight the subsystems differently, and an aggregate frame time conflates every
+cost in the frame. The tempting explanation — that the hot code is scalar integer
+interpretation and pointer chasing rather than the vectorizable arithmetic AVX2 helps —
+is **an inference, not a measurement**. It is consistent with the per-line survey below
+(no vectorizable inner loop appears anywhere in it) but nothing here isolates the
+mechanism, and confirming it would need differential profiling of the two builds rather
+than one number from each. Flagged because explaining a null result with an untested
+story is how a plausible mechanism becomes a repeated citation.
+
+So it is **not** adopted, and the portability cost is real enough not to need the
+performance argument: `target-cpu=native` may emit instructions an older host does not
+implement, and such a binary **may** fail there with an illegal instruction. Not
+guaranteed — it depends on which features LLVM actually selects and what the older host
+supports — but it is a real risk to take for a measured nothing.
 
 **PGO is the one codegen lever still untested.** It works on a different mechanism —
 branch layout and inlining decisions driven by an actual profile, rather than
