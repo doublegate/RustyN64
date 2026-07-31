@@ -648,6 +648,25 @@ fn compare_result(rel: Relation, cond: u8, snan: bool) -> Outcome<bool> {
     Outcome { value, flags }
 }
 
+/// `FCSR.Cause` — bits **17:12**, the field an operation replaces wholesale.
+///
+/// **UM §7.2.4, Figure 7-2** ("Control/Status Register Bit Assignments") gives
+/// `FCR31`'s layout with `Cause` spanning 17:12, six bits wide. **Figure 7-3**
+/// then names the bits, and the asymmetry below is visible in it directly:
+/// `Cause` carries `E V Z O U I` while `Enables` and `Flags` carry only
+/// `V Z O U I`.
+///
+/// **17:12, not 16:12.** That extra bit is `Cause.E`, Unimplemented Operation —
+/// part of `Cause` despite having no `Enable` bit and no sticky `Flags` twin,
+/// which makes this mask the *only* thing that ever clears it. A narrower 16:12
+/// mask left bit 17 permanently set once raised: a shipped bug in this project's
+/// history, and the reason the constant lives here rather than being written out
+/// at each site. It had reached four copies.
+///
+/// Only the five *maskable* conditions live in 16:12; that narrower range is what
+/// an enable comparison uses, and it is a different statement from this one.
+pub const CAUSE_MASK: u32 = 0x3F << 12;
+
 /// The `Unimplemented Operation` cause bit (`FCSR` bit 17).
 ///
 /// Distinct from Invalid: it means *"this processor cannot do this in

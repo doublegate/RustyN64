@@ -630,6 +630,60 @@ PCycle was a run cycle (UM §4.7.1) — exactly one recognition predicate exists
 the tree, since carrying two subtly different ones is a known source of
 one-cycle discrepancies in other emulators.
 
+### The latch-independent primitives (the ADR 0013 seam)
+
+Most of `pipeline.rs` reads and writes the four inter-stage latches, which is
+exactly right for the accurate path and useless to anything else. Three pieces
+are **not** latch-dependent, and are deliberately factored out so an alternate
+execution path can reuse the decisions instead of re-deriving them:
+
+| primitive | what it decides | what it deliberately does **not** do |
+| --- | --- | --- |
+| `Pipeline::fetch_word` | alignment, the segment map, micro-ITLB and JTLB, `Status.RE`, the I-cache | stamp a latch, raise an abort, or name a `Stage` |
+| `Pipeline::ex_gate` | the four pre-execution refusals — coprocessor usability, 64-bit-reserved, `Cop2ReservedControl`, `Cop1ReservedControl`, in that order | decide what a refusal means |
+| `Pipeline::sample_interrupt_lines` | asserts `Cause.IP2` from the MI and latches `IP7` on the timer edge | *recognize* an interrupt (`IE`/`EXL`/`ERL`/`IM` and the run-cycle gate stay in `dc_stage`) |
+
+They keep the side effects that belong to the operation rather than to the
+sequencing — an ITLB reload and its 3-`PCycle` stall, an I-cache fill, the `FCSR`
+write `Cop1ReservedControl` performs — because those happen on hardware whatever
+the caller does next.
+
+**Why factor rather than duplicate.** The instruction-granular path ADR 0013
+authorizes needs the same decisions with different consequences. A second copy of
+~100 lines of segment/TLB/cache logic would drift, and it would drift in the place
+hardest to read backwards: n64-systemtest would report a wrong *cause code* rather
+than a missing check. `exec::execute` was already pure, and `Pipeline::access`
+already takes a `MemOp` rather than a latch, so these three complete the set.
+
+**`ex_gate`'s first two refusals are disjoint, so their order cannot be
+observed** — a finding the extraction produced. The accurate path's comment says
+an unusable coprocessor is reported as such *"even when the encoding is also a
+64-bit one"*; swapping the two checks leaves n64-systemtest at exactly 0 failing
+in the Phase 1 categories and 90 suite-wide. The reason is stronger than a gap in
+the suite:
+
+- `Op::is_64_bit` covers only CPU integer and load/store operations (`Dadd` …
+  `Sdr`);
+- `unusable_coprocessor` answers only for COP0/COP1/COP2 encodings.
+
+**No encoding is in both sets**, so no input can reach the second check by way of
+the first. `ex_gates_first_two_refusals_cannot_both_apply` sweeps a structured
+slice of the encoding space to keep that true, rather than asserting against a
+copy of either list — a duplicated list stops covering what it duplicates the
+moment one side grows.
+
+An **open question, not a claim**: `DMFC1`/`DMTC1`/`DMFC0`/`DMTC0` *are* 64-bit
+operations and are absent from `is_64_bit`. Whether that omission is correct is
+unresolved here. If they are ever added, the sweep fails and the precedence has to
+be justified against the manual instead of inherited — which is the point of
+having the test rather than a comment.
+
+The **WB commit** is *not* in this list, and that is a decision rather than an
+oversight: it raises aborts through `abort_from(Stage::Wb, …)`, which selects the
+latch an exception's context is captured from. Extracting it means designing what
+an exception *means* without a pipeline — work that belongs with the path that
+needs it, where a real second caller can drive the shape.
+
 ### Exceptions
 
 Address-error (unaligned), TLB refill/invalid/modified, integer overflow
