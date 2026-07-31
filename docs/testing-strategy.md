@@ -15,7 +15,7 @@ self-validating oracle analogous to blargg/kevtris/AccuracyCoin for the NES
 
 | Suite | Lang | Role | Gate |
 | --- | --- | --- | --- |
-| **n64-systemtest** | Rust | CPU / COP0 / TLB / RSP, hardware-verified, self-judging | "Failed: 0" (strict) |
+| **n64-systemtest** | Rust | CPU / COP0 / TLB / RSP, hardware-verified, self-judging | `Failed: 0` (strict), asserted by **two** tests: `phase_1_categories_report_no_failures` (CPU/COP0/TLB/COP1) and `rsp_categories_report_no_failures` (`RSP` / `SP` (with its trailing space)). They are separate because the first **excludes** the RSP prefixes by design, so it cannot see a broken vector unit |
 | **ParaLLEl-RDP fuzz** | — | RDP bit-exactness vs Angrylion (~150 tests) | exact match (strict) |
 | **Dillonb n64-tests** | C/asm | targeted CPU/RSP, hardware-verified | result-code pass |
 | **PeterLemon/N64** | asm | bare-metal CPU/RSP/RDP/audio demos | visual/behavioral regression |
