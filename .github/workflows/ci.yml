@@ -199,10 +199,56 @@ jobs:
           fi
           echo "test-roms feature confirmed active in the harness"
 
+  gpu-rdp:
+    name: build (gpu-rdp feature)
+    # Compiles the vendored parallel-rdp C++ (ADR 0014). FULL-run only: it is a
+    # ~35k-line C++ build and the only job that needs the submodule, so making
+    # every feature PR pay for it would undo the light/full split above.
+    #
+    # It BUILDS but does not render. A GitHub runner has no GPU, so the smoke
+    # test takes its documented no-device branch. That is still worth running:
+    # it proves the shim links, the `extern "C"` signatures match, and the
+    # library loads -- and the step below asserts which branch was taken rather
+    # than letting "0 failed" stand in for "it worked". An untested feature is
+    # the gate-that-never-runs failure this project has been bitten by before;
+    # a test whose skip is silent is the same failure wearing a green tick.
+    needs: setup
+    if: ${{ needs.setup.outputs.full == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p rustyn64-rdp-gpu --all-targets --features gpu-rdp -- -D warnings
+      - name: Run the smoke test and report which branch it took
+        run: |
+          set -euo pipefail
+          cargo test -p rustyn64-rdp-gpu --features gpu-rdp -- --nocapture 2>&1 \
+            | tee /tmp/gpu-rdp.log
+          if grep -q "^SKIPPED" /tmp/gpu-rdp.log; then
+            echo "::notice::no Vulkan device on this runner -- the binding built \
+            and linked, but nothing about rendering was verified here"
+          elif grep -q "fill color occupies" /tmp/gpu-rdp.log; then
+            echo "a real frame was rendered and checked"
+          else
+            echo "::error::the smoke test neither rendered nor reported a skip; \
+            it is no longer witnessing either outcome"
+            exit 1
+          fi
+
   no_std:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Deliberately WITHOUT `submodules: true`, as in every job but `gpu-rdp`.
+      # ADR 0014 promises a default build needs neither the submodule nor a C++
+      # toolchain; these jobs are what make that a checked claim rather than an
+      # intention.
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.96.0
         with:

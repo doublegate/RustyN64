@@ -12,6 +12,7 @@ members = [
     "crates/rustyn64-cpu",
     "crates/rustyn64-rsp",
     "crates/rustyn64-rdp",
+    "crates/rustyn64-rdp-gpu",
     "crates/rustyn64-audio",
     "crates/rustyn64-cart",
     "crates/rustyn64-netplay",

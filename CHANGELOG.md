@@ -69,6 +69,35 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **`rustyn64-rdp-gpu` — the parallel-rdp binding** (ADR 0014), behind a
+  default-off `gpu-rdp` feature. `vendor/parallel-rdp-standalone` enters as a git
+  submodule (upstream MIT, attributed in `NOTICE` as an obligation in its own
+  right); an eight-function flat `extern "C"` shim compiles alongside it via
+  `cc`; and a safe Rust wrapper ties the command processor's lifetime to a
+  borrowed RDRAM slice, so "the memory outlives the device and nobody else
+  touches it" is a compile-time fact rather than a comment. Every `unsafe` block
+  carries a `// SAFETY:` naming its invariant, and this is the only crate outside
+  the frontend where `unsafe` is permitted — with the feature off it is
+  `forbid`den rather than merely absent.
+
+  **Witnessed, not assumed:** on an RTX 3090 the device initializes, the compute
+  shaders compile, a hand-written Fill Rectangle command list rasterizes, and
+  `scanout_sync` returns a 640x240 RGBA8 frame carrying 1,568 pixels of exactly
+  the fill color and no pixel of any other. The smoke test states which of its
+  two branches it took, and the CI job fails if it takes neither — a device-less
+  runner that silently passes is the same gate-that-never-runs failure this
+  project has already been bitten by.
+
+  **This is the binding only.** Nothing routes DPC commands to it, RDRAM is not
+  shared with a running machine, the frontend does not depend on it, and there is
+  no dirty-region synchronization and therefore no ADR 0004 determinism claim.
+  `docs/rdp.md` lists what is and is not done.
+
+  A default `cargo build` is unchanged: `build.rs` returns before naming the
+  vendor directory, so no C++ compiler and no submodule checkout are required —
+  which is ADR 0014's "the Vulkan dependency cannot be made optional" kill
+  criterion kept in a form every non-`gpu-rdp` CI job checks by construction.
+
 - `scripts/check_en_us.sh` plus an **`en-US spelling` CI job**, because a
   one-off sweep decays — nothing fails when a single en-GB form returns, so it
   survives review and the next one has precedent. This repo already has evidence
