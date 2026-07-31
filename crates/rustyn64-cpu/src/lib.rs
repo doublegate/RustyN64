@@ -292,6 +292,35 @@ impl Cpu {
             .advance_at(bus, &mut self.regs, &mut self.pc, count_now);
         self.retired = self.pipeline.retired;
     }
+
+    /// Execute one instruction (plus its delay slot, if it branches) and return
+    /// the `PCycle`s it cost — the **instruction-granular** path (ADR 0013),
+    /// behind the default-off `fast-exec` feature.
+    ///
+    /// A **separate entry point**, not a branch inside [`Cpu::tick_at`], for the
+    /// same reason `System::run_until_fast` is one: with the feature off this
+    /// function does not exist, so ADR 0011 §1's "default builds are unchanged" is
+    /// true by construction rather than by inspection, and the accurate path
+    /// carries no branch that exists only for its sibling.
+    ///
+    /// The unit differs from every other step function in this crate, and the
+    /// signature says so: [`Cpu::tick`] and [`Cpu::tick_at`] advance **one
+    /// `PClock`** and return nothing; this one advances **one instruction** and
+    /// returns what that cost. A caller that treats the return value as a tick
+    /// count will run the machine roughly five times too fast.
+    ///
+    /// `count_now` is the scheduler's derived COP0 `Count` position, passed in for
+    /// the same reason [`Cpu::tick_at`] takes it (ADR 0006).
+    #[cfg(feature = "fast-exec")]
+    #[must_use = "the return value is the instruction's cost in PCycles; \
+                  discarding it makes the machine run at one PCycle per instruction"]
+    pub fn step_instruction_at<B: Bus>(&mut self, bus: &mut B, count_now: u64) -> u32 {
+        let cost = self
+            .pipeline
+            .step_instruction(bus, &mut self.regs, &mut self.pc, count_now);
+        self.retired = self.pipeline.retired;
+        cost
+    }
 }
 
 /// Returns the crate version string.

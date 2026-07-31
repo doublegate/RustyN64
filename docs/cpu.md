@@ -684,6 +684,68 @@ latch an exception's context is captured from. Extracting it means designing wha
 an exception *means* without a pipeline — work that belongs with the path that
 needs it, where a real second caller can drive the shape.
 
+### The instruction-granular path (`fast-exec`, default-off)
+
+[ADR 0013](adr/0013-fast-execution-mode.md) authorizes a second execution mode.
+`Pipeline::step_instruction` (in the `pipeline::fastexec` child module) runs **one
+instruction to completion** — fetch, gate, execute, memory, commit — and returns
+what it cost in `PCycles`, instead of advancing the four latches once per `PClock`.
+
+**It executes the same instruction stream through the same semantics.** `decode`,
+`exec::execute`, `alu`, `cop0`, `tlb`, `addr`, `softfloat`, the caches, the TLB, and
+the exception model are shared, and the commit goes through the accurate path's own
+`wb_stage` by staging the instruction into `dc_wb` first. Nothing about *what* an
+instruction computes is reimplemented; only the timing model is relaxed.
+
+**The cost model is the accurate path's own stall requests.** This is the part
+worth internalizing: `alu::muldiv_stall_cycles`, `fpu::stall_cycles`,
+`tlb::ITLB_MISS_PCYCLES`, `M_RCP_REGISTER`, `M_ICACHE_FILL`/`M_DCACHE_FILL`, and
+`exception::EPILOGUE_STALL` already exist, and the accurate path *spends* them as
+cycles. The fast path drains `Pipeline::stall` after each phase and **charges** them
+instead. So there is no second cost table to keep in step, and no constant is
+invented — a number wrong here is wrong in the accurate path too, which is the only
+arrangement under which the two can be compared. Note the cache fills are **fitted,
+not measured** (ledger C-1); inheriting them is right, but a timing result from this
+mode is no more trustworthy than `M(RDRAM)` is.
+
+**A branch and its delay slot execute in the same call**, which is what lets the
+mode add no field to `Pipeline` — so the save-state layout is untouched and ADR 0011
+§4's mode marker is still not owed. A delay slot that is itself a branch continues
+the loop rather than recursing; MIPS calls that UNPREDICTABLE and the loop
+reproduces the cascade's sequence.
+
+Not modeled, each deliberately: the **bypass network** (sequential execution makes
+operands current), the **load interlock** (a load's value is always ready), the
+`prev_was_run` **interrupt gate** (an instruction boundary is always legal), and the
+**flush cascade** (nothing younger has been fetched). Every one of those is a timing
+structure, which is the layer ADR 0013 relaxes.
+
+#### What the differential gate can and cannot compare
+
+`crates/rustyn64-cpu/tests/fast_exec_differential.rs` compares architectural state
+at retirement boundaries. Two findings from building it are worth carrying:
+
+- **The fast path sets the boundaries and the accurate path follows.** One call can
+  retire *two* instructions (a taken branch and its delay slot), so the oracle is
+  advanced to meet the fast path rather than the reverse — which it structurally
+  could not do.
+- **Neither PC-like quantity is comparable.** `Cpu::pc` is the `IC` **fetch
+  pointer** and sits up to four instructions ahead of the retiring one in the
+  cascade; `dc_wb.pc` is off by exactly one, because the reverse cascade has already
+  moved the next instruction in by the end of the tick that retired. Both were
+  tried, and each reported a divergence on the first boundary of a run that agrees
+  on everything else. The architectural PC of a retiring instruction is simply not
+  observable from outside the pipeline in the accurate mode; `EPC` is where it
+  surfaces, and that *is* compared, as part of COP0. What carries the weight instead
+  is that each test program writes a distinct value to a distinct register per
+  instruction, so a skipped, repeated, or reordered instruction shows up in the GPRs
+  within one boundary.
+
+And one about the cost half: it is asserted as an **A/B difference** between two
+programs of the same length differing only in `MULT`/`DIV` versus `NOP`. A first
+version used a threshold on a single run and **passed with the charge deleted**,
+because eight cold I-cache fills cleared the bar on their own.
+
 ### Exceptions
 
 Address-error (unaligned), TLB refill/invalid/modified, integer overflow
