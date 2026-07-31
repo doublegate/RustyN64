@@ -257,6 +257,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p rustyn64-rdp-gpu --all-targets --features gpu-rdp -- -D warnings
+      - run: cargo clippy -p rustyn64-test-harness --all-targets --features gpu-rdp -- -D warnings
       - name: Run the smoke test and report which branch it took
         run: |
           set -euo pipefail
@@ -270,6 +271,20 @@ jobs:
           else
             echo "::error::the smoke test neither rendered nor reported a skip; \
             it is no longer witnessing either outcome"
+            exit 1
+          fi
+      - name: Run the .rvec parity census and report which branch it took
+        run: |
+          set -euo pipefail
+          cargo test -p rustyn64-test-harness --features gpu-rdp \
+            --test rdp_conformance_gpu -- --nocapture 2>&1 | tee /tmp/gpu-parity.log
+          if grep -q "^SKIPPED" /tmp/gpu-parity.log; then
+            echo "::notice::no Vulkan device on this runner -- GPU parity of the \
+            .rvec corpus was NOT verified here"
+          elif grep -q "^graded .* vectors" /tmp/gpu-parity.log; then
+            echo "the corpus was graded on both paths"
+          else
+            echo "::error::the parity census neither graded nor reported a skip"
             exit 1
           fi
 

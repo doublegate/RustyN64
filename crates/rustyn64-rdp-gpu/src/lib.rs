@@ -41,7 +41,6 @@ pub use backend::{GpuRdp, ScanoutFrame, ViRegister};
 
 #[cfg(feature = "gpu-rdp")]
 mod backend {
-    use core::ffi::c_void;
     use core::marker::PhantomData;
     use core::ptr::NonNull;
 
@@ -58,11 +57,7 @@ mod backend {
     // at run time. These are held correct by review, which is why the header is
     // kept short enough to diff by eye and why both are edited together.
     unsafe extern "C" {
-        fn prdp_create(
-            rdram: *mut c_void,
-            rdram_size: usize,
-            hidden_rdram_size: usize,
-        ) -> *mut PrdpCtx;
+        fn prdp_create(rdram_size: usize, hidden_rdram_size: usize) -> *mut PrdpCtx;
         fn prdp_destroy(ctx: *mut PrdpCtx);
         fn prdp_device_is_supported(ctx: *const PrdpCtx) -> i32;
         fn prdp_enqueue_command(ctx: *mut PrdpCtx, num_words: u32, words: *const u32) -> i32;
@@ -76,6 +71,9 @@ mod backend {
         ) -> usize;
         fn prdp_flush(ctx: *mut PrdpCtx) -> i32;
         fn prdp_idle(ctx: *mut PrdpCtx) -> i32;
+        fn prdp_rdram_ptr(ctx: *mut PrdpCtx) -> *mut u8;
+        fn prdp_end_write_rdram(ctx: *mut PrdpCtx) -> i32;
+        fn prdp_rdram_size(ctx: *const PrdpCtx) -> usize;
     }
 
     /// The VI registers `parallel-rdp` accepts, in its own enum order.
@@ -127,28 +125,37 @@ mod backend {
         pub pixels: usize,
     }
 
-    /// A `parallel-rdp` command processor over a borrowed RDRAM.
+    /// A `parallel-rdp` command processor and the RDRAM it renders into.
     ///
-    /// The borrow is the safety mechanism, not a convenience: `parallel-rdp`
-    /// reads and writes the buffer directly for as long as the context lives,
-    /// so the `&'r mut [u8]` makes "the memory outlives the context and nobody
-    /// else touches it" a compile-time fact rather than a comment.
-    pub struct GpuRdp<'r> {
+    /// The RDRAM is **owned by the backend**, not borrowed. That is a deliberate
+    /// reversal of the first design: it has to be page-aligned or the direct
+    /// host-import path is silently replaced by a staging copy, and a contract a
+    /// caller can satisfy by accident is worse than no contract. Owning it means
+    /// the alignment is a property of construction rather than of the caller
+    /// remembering. Reach it through [`GpuRdp::with_rdram`] and
+    /// [`GpuRdp::with_rdram_mut`].
+    pub struct GpuRdp {
         ctx: NonNull<PrdpCtx>,
-        rdram: PhantomData<&'r mut [u8]>,
+        /// `GpuRdp` is not `Send`/`Sync`, inherited from `NonNull` and left that
+        /// way on purpose: `Vulkan::Device` runs a worker thread and
+        /// `CommandProcessor` holds a command ring, and nothing upstream
+        /// documents that the handle may cross threads. Asserting `Send` on that
+        /// basis would be an `unsafe impl` justified by a guess, and the failure
+        /// mode is a data race rather than a wrong number.
+        _not_send: PhantomData<*const ()>,
     }
 
-    impl<'r> GpuRdp<'r> {
-        /// Create a headless Vulkan device and a command processor over `rdram`.
+    impl GpuRdp {
+        /// Create a headless Vulkan device and a command processor with
+        /// `rdram_size` bytes of RDRAM, zeroed as at power-on.
         ///
-        /// **Align `rdram` to a page.** parallel-rdp maps the buffer into the
-        /// GPU's address space via `VK_EXT_external_memory_host` when the
-        /// pointer meets the driver's `minImportedHostPointerAlignment` (4096
-        /// on the device this was developed against), and otherwise stages every
-        /// access through a copy. The fallback is **silent** — it logs and keeps
-        /// working, and nothing in the return value distinguishes the two. A
-        /// plain `Vec<u8>` does not meet it; `tests/smoke.rs` shows one way to
-        /// get an aligned buffer.
+        /// `rdram_size` must be a multiple of 4096; anything else returns `None`
+        /// rather than being rounded, since a rounded size would leave caller
+        /// and device disagreeing about how much RDRAM exists. The alignment
+        /// that requirement exists for is handled inside — parallel-rdp imports
+        /// host memory directly only when the pointer meets the driver's
+        /// `minImportedHostPointerAlignment`, and an unaligned buffer is not
+        /// rejected but **silently** staged through a copy instead.
         ///
         /// Returns `None` when Vulkan is unavailable, the device cannot run
         /// `parallel-rdp`, or initialization fails. There is deliberately no
@@ -156,19 +163,80 @@ mod backend {
         /// pointer, because an exception unwinding into Rust is undefined
         /// behavior and a lossy diagnosis beats an unsound one.
         #[must_use]
-        pub fn new(rdram: &'r mut [u8], hidden_rdram_size: usize) -> Option<Self> {
-            let len = rdram.len();
-            let ptr = rdram.as_mut_ptr().cast::<c_void>();
-            // SAFETY: `ptr`/`len` describe the live `&mut` borrow held for `'r`,
-            // which the returned value's lifetime ties the context to — so the
-            // pointer stays valid and unaliased for as long as the C++ side may
-            // use it. `prdp_create` is documented to return null rather than
-            // throw on any failure, so no unwind crosses the boundary.
-            let raw = unsafe { prdp_create(ptr, len, hidden_rdram_size) };
+        pub fn new(rdram_size: usize, hidden_rdram_size: usize) -> Option<Self> {
+            // SAFETY: `prdp_create` takes two sizes by value and allocates its
+            // own storage, so there is no pointer whose validity this call
+            // depends on. It is documented to return null rather than throw on
+            // every failure — including a size that is not a multiple of the
+            // alignment — so no unwind crosses the boundary.
+            let raw = unsafe { prdp_create(rdram_size, hidden_rdram_size) };
             Some(Self {
                 ctx: NonNull::new(raw)?,
-                rdram: PhantomData,
+                _not_send: PhantomData,
             })
+        }
+
+        /// The RDRAM size this context was created with.
+        #[must_use]
+        pub fn rdram_size(&self) -> usize {
+            // SAFETY: `self.ctx` came from `prdp_create` and is live; the call
+            // reads one POD field and cannot fail.
+            unsafe { prdp_rdram_size(self.ctx.as_ptr()) }
+        }
+
+        /// Read RDRAM.
+        ///
+        /// Scoped rather than returning a slice because the pointer is only
+        /// valid until the next call that touches the device, and a returned
+        /// `&[u8]` would have to borrow `self` in a way that made the backend
+        /// unusable while it lived.
+        ///
+        /// Call [`idle`](Self::idle) first if work may be in flight — this does
+        /// not synchronize on its own, and reading mid-render returns a
+        /// half-drawn frame rather than an error.
+        ///
+        /// `f` is not called, and `None` is returned, if the mapping fails.
+        pub fn with_rdram<R>(&mut self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+            let len = self.rdram_size();
+            // SAFETY: `prdp_rdram_ptr` returns either null or a pointer to
+            // `prdp_rdram_size` readable bytes — upstream's `begin_read_rdram`
+            // maps whichever buffer is live. No other reference to that region
+            // exists here: the C++ side owns it, `f` cannot escape the slice
+            // (it is higher-ranked over the borrow), and `&mut self` excludes
+            // any concurrent call through this handle.
+            unsafe {
+                let ptr = prdp_rdram_ptr(self.ctx.as_ptr());
+                if ptr.is_null() {
+                    return None;
+                }
+                Some(f(core::slice::from_raw_parts(ptr, len)))
+            }
+        }
+
+        /// Read and write RDRAM, publishing the writes back to the device.
+        ///
+        /// The publish (`end_write_rdram`) happens even if `f` writes nothing,
+        /// which is correct and cheap: it is what makes host writes visible when
+        /// the direct-import path is unavailable and the device is rendering
+        /// from a staging buffer.
+        ///
+        /// Returns `None` without calling `f` if the mapping fails.
+        pub fn with_rdram_mut<R>(&mut self, f: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+            let len = self.rdram_size();
+            // SAFETY: as `with_rdram`, and the region is writable — upstream
+            // pairs `begin_read_rdram` with `end_write_rdram` for exactly this.
+            // The `&mut` slice is unique: it is created from a pointer the C++
+            // side is not touching (no command is in flight that this handle did
+            // not submit), and `&mut self` excludes any other access through it.
+            unsafe {
+                let ptr = prdp_rdram_ptr(self.ctx.as_ptr());
+                if ptr.is_null() {
+                    return None;
+                }
+                let out = f(core::slice::from_raw_parts_mut(ptr, len));
+                prdp_end_write_rdram(self.ctx.as_ptr());
+                Some(out)
+            }
         }
 
         /// Whether the Vulkan device satisfies `parallel-rdp`'s requirements.
@@ -259,7 +327,7 @@ mod backend {
         }
     }
 
-    impl Drop for GpuRdp<'_> {
+    impl Drop for GpuRdp {
         fn drop(&mut self) {
             // SAFETY: `self.ctx` came from `prdp_create` and is destroyed
             // exactly once, here — `GpuRdp` is not `Clone` and hands out no

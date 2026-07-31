@@ -30,6 +30,10 @@
 
 pub mod accuracy;
 pub mod conformance;
+// `gpu-rdp` is the only feature here that pulls in the vendored C++ and a
+// Vulkan toolchain; the module documents itself.
+#[cfg(feature = "gpu-rdp")]
+pub mod conformance_gpu;
 pub mod frame;
 pub mod golden;
 pub mod rom;

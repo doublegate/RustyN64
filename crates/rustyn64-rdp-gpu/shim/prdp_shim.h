@@ -22,25 +22,26 @@ extern "C" {
 /* Opaque handle. The Rust side never dereferences it. */
 typedef struct prdp_ctx prdp_ctx;
 
-/* Create a headless Vulkan device and a CommandProcessor over `rdram`.
+/* Create a headless Vulkan device and a CommandProcessor with `rdram_size` bytes
+ * of RDRAM, which THIS SHIM ALLOCATES and owns until `prdp_destroy`.
  *
- * `rdram` must stay valid, and must not move, until `prdp_destroy`. parallel-rdp
- * reads and writes it directly — that is the whole point of handing it over
- * rather than copying.
- *
- * "Directly" is conditional on ALIGNMENT, and the failure is silent. The direct
- * path is `VK_EXT_external_memory_host`, which requires the pointer to meet the
+ * The allocation is the shim's rather than the caller's because it must be
+ * page-aligned and the failure to be is SILENT. parallel-rdp imports host memory
+ * directly through `VK_EXT_external_memory_host` only when the pointer meets the
  * driver's `minImportedHostPointerAlignment` (4096 on the NVIDIA device this was
- * developed against). An unaligned buffer is not rejected: parallel-rdp logs
- * "Host buffer is not aligned appropriately", falls back to staging every
- * access through a copy, and everything still works — slower, with nothing in
- * the return value to say so. A plain `Vec<u8>` does not meet it. Align the
- * buffer to a page, or accept the copy knowingly.
+ * developed against); an unaligned buffer is not rejected, it logs "Host buffer
+ * is not aligned appropriately", stages every access through a copy, and renders
+ * a byte-identical frame. Nothing in any return value distinguishes the two. A
+ * contract a caller can satisfy by accident is worse than no contract, so the
+ * caller does not get the chance to get it wrong.
  *
- * Returns NULL if Vulkan is unavailable, the device is unsupported, or the
- * CommandProcessor declines to initialize. A NULL return is the ONLY failure
- * signal: nothing here throws across the boundary. */
-prdp_ctx *prdp_create(void *rdram, size_t rdram_size, size_t hidden_rdram_size);
+ * Reach the memory through `prdp_rdram_ptr` / `prdp_end_write_rdram`, NOT through
+ * any pointer of your own -- see those.
+ *
+ * Returns NULL if Vulkan is unavailable, the device is unsupported, the
+ * allocation fails, or the CommandProcessor declines to initialize. A NULL
+ * return is the ONLY failure signal: nothing here throws across the boundary. */
+prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size);
 
 void prdp_destroy(prdp_ctx *ctx);
 
@@ -79,6 +80,32 @@ size_t prdp_scanout_sync(prdp_ctx *ctx, uint32_t *out, size_t out_capacity_pixel
 
 int prdp_flush(prdp_ctx *ctx);
 int prdp_idle(prdp_ctx *ctx);
+
+/* Map RDRAM for host access and return a pointer to `prdp_rdram_size` bytes.
+ *
+ * This is the ONLY correct way to reach RDRAM, and the reason is not obvious:
+ * when the host-import path is unavailable, `CommandProcessor` renders into a
+ * device-side buffer and the shim's own allocation is STALE. Upstream's
+ * `begin_read_rdram()` returns whichever is live. Reading the allocation
+ * directly would work on a machine where the import succeeded and silently
+ * return pre-render bytes on one where it did not -- the same class of
+ * machine-dependent wrong answer the alignment note above describes.
+ *
+ * Call `prdp_idle` first if any command may still be in flight; this does not
+ * synchronize on its own.
+ *
+ * Returns NULL if `ctx` is NULL or the mapping fails. The pointer is valid until
+ * the next `prdp_end_write_rdram`, `prdp_scanout_sync`, or `prdp_destroy`. */
+void *prdp_rdram_ptr(prdp_ctx *ctx);
+
+/* Publish host writes made through `prdp_rdram_ptr` back to the device.
+ *
+ * Required after WRITING; a pure read needs no matching call (upstream's own
+ * dump path reads without one). Returns non-zero on success. */
+int prdp_end_write_rdram(prdp_ctx *ctx);
+
+/* The RDRAM size the context was created with. 0 for a NULL `ctx`. */
+size_t prdp_rdram_size(const prdp_ctx *ctx);
 
 #ifdef __cplusplus
 }
