@@ -626,6 +626,10 @@ can.
    **neutral**, by the A-B-A above. Under `lto = "fat"` an inline hint has nothing to
    add — that is now two independent results, and the general form is *this workspace's
    release profile has already done the inlining*.
+5c. **PGO (`-Cprofile-generate` / `-Cprofile-use`)** — **4.96% SLOWER** on this
+   workload, with non-overlapping legs. See the codegen-levers section. Needed a
+   benchmark *binary* to measure at all, because a `#[test]` cannot be built with
+   `-Cprofile-use` under `panic = "abort"`.
 5b. **`-C target-cpu=native`** — **neutral on this benchmark**, and the A-B-A caught
    it: the third baseline leg came in below both native legs. See the codegen-levers
    section below for the table and for what the result does *not* establish.
@@ -870,7 +874,59 @@ implement, and such a binary **may** fail there with an illegal instruction. Not
 guaranteed — it depends on which features LLVM actually selects and what the older host
 supports — but it is a real risk to take for a measured nothing.
 
-**PGO is the one codegen lever still untested.** It works on a different mechanism —
+### PGO measures 5% SLOWER, which was not the expected answer
+
+The prediction in the paragraph this replaces was that PGO was the most promising
+untested lever, since interpreters are the workload it classically helps most. It was
+tested. It is a regression.
+
+First it needed a harness. `frame_cost_probe` is a `#[test]`, and a test **cannot** be
+built with `-Cprofile-use` in this workspace — tests require `panic = "unwind"` while
+the release profile is `panic = "abort"`, and `RUSTFLAGS` applies the flag to every
+crate in the graph:
+
+```text
+error: the crate `rustyn64_frontend` requires panic strategy `abort`
+       which is incompatible with this crate's strategy of `unwind`
+```
+
+That survives `cargo clean --release`, so it is structural rather than stale artifacts.
+The *binary* path has no such requirement, which is why
+`crates/rustyn64-frontend/examples/frame_bench.rs` exists: the same measurement shaped
+as an example, so it can be instrumented and rebuilt. An example rather than a `[[bin]]`
+so a plain `cargo build` does not carry a benchmark into every build.
+
+The full cycle — instrument, run, `llvm-profdata merge` (18.6 MB from 50 raw files),
+rebuild with `-Cprofile-use`, and A-B-A:
+
+| leg | variant | mean over 120 frames |
+| --- | --- | --- |
+| A | baseline | 98.323 ms |
+| B | **PGO** | **104.060 / 102.918 ms** |
+| A | baseline, again | 98.764 / 98.704 ms |
+
+**Mean A 98.597, mean B 103.489 — PGO is 4.96% slower.** The *worst* baseline leg is
+still faster than the *best* PGO leg, so the legs do not overlap and this is not the
+drift that caught `target-cpu=native`. The instrumented run itself cost 141.6 ms/frame,
+the expected ~44% instrumentation overhead, and every run retired an identical
+219,075,686 instructions, so the three builds executed exactly the same work.
+
+**Why is inference, not measurement**, and it is worth flagging as such because the
+tempting explanation is a story: this workspace already builds with `lto = "fat"` and
+`codegen-units = 1`, which gives LLVM whole-program visibility, and PGO's
+profile-driven inlining and block-layout decisions *override* choices fat LTO had
+already made globally. That is consistent with the result and with PGO's usual caveat
+about interacting badly with aggressive LTO — but nothing here isolates it, and
+confirming it would need a PGO-vs-no-PGO comparison at `lto = "thin"` or off. Recorded
+as a hypothesis so it is not cited later as a finding.
+
+**Not adopted**, and the ruled-out list gains item 5c. Note what this does *not* say:
+PGO is not useless in general, and a future build configuration — different LTO mode,
+a dynarec with different hot-path structure — could change the answer. It says PGO is a
+regression *for this configuration on this workload*, which is the only thing three
+paired runs can say.
+
+**With this, every reachable codegen lever is measured.** It works on a different mechanism —
 branch layout and inlining decisions driven by an actual profile, rather than
 instruction selection — and interpreters are the workload it classically helps most.
 It needs two full LTO rebuilds plus an instrumented run, and it changes the release
