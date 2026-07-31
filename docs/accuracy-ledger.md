@@ -13,6 +13,16 @@ Three things, and nothing else:
 2. **Open residuals** — known-wrong behavior we have chosen to document rather than point-fix.
 3. **Ruled-out approaches** — attempts that failed, with the reason, so nobody rediscovers them.
 
+**Host-performance figures do not belong here** — frame times, FPS, profile shares, and
+ruled-out *optimizations* live in `docs/performance.md`, which carries its own
+"Ruled out by measurement — do not retry" list and its own provenance rules. The three
+categories above are about the emulated machine: constants the hardware documentation
+does not supply, behavior known to be wrong, and accuracy approaches that failed. A
+compiler flag that changed no emulated behavior is not an entry here however carefully
+it was measured, and filing it here would blur what this file is for. Stated explicitly
+because review has asked for the move three times, which is a sign the boundary was
+discoverable only by reading both files.
+
 The rule that gives this file its value: **an entry here is honest, a per-quirk patch is not.**
 When a ROM fails and the fix would be a special case, the entry goes here instead (ADR 0005).
 
