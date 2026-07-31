@@ -1121,9 +1121,31 @@ same probe, over the **same emulated frames**.
 
 ### Method, and the two things that had to be recalibrated
 
-`gameplay_phase_probe` (the render-phase probe — `frame_cost_probe`'s window is
-early boot and puts the RDP at 0.00%), Super Mario 64, hash verified, `-F 999`,
-`perf report -s srcline --full-source-path`.
+`gameplay_phase_probe` — the **render-phase** probe; `frame_cost_probe`'s window is
+early boot and puts the RDP at 0.00%. Super Mario 64, hash verified against §Method
+before any number below was quoted.
+
+```bash
+ROOT=$(git rev-parse --show-toplevel)
+ROM="$ROOT/tests/roms/external/commercial/eeprom-4k/Super Mario 64.z64"
+
+# The build under test. Drop `--features fast-exec` for the accurate leg.
+BIN=$(CARGO_PROFILE_RELEASE_DEBUG=1 cargo test -p rustyn64-frontend --release \
+        --features fast-exec --no-run --test gameplay_phase_probe \
+        --message-format=json \
+      | jq -r 'select(.reason == "compiler-artifact"
+                     and .target.name == "gameplay_phase_probe"
+                     and .executable != null) | .executable' | tail -n 1)
+
+# -D 48600 for fast-exec, -D 70000 for the accurate leg: both land on frame ~763.
+# See the calibration note below — these are NOT interchangeable.
+RUSTYN64_PROBE_ROM="$ROM" RUSTYN64_PROBE_SKIP=900 \
+  perf record -F 999 -D 48600 -o "$ROOT/target/perf_fastexec.data" -- \
+  "$BIN" does_a_retail_title_reach_a_rendering_phase --ignored --nocapture
+
+perf report -i "$ROOT/target/perf_fastexec.data" -s srcline --full-source-path \
+  --no-children -g none --stdio
+```
 
 Two calibrations that a naive re-run gets wrong:
 
@@ -1153,14 +1175,14 @@ both windows is how a measurement becomes a slogan.
 
 | bucket | accurate | `fast-exec` (aligned) | control (`-D 45000`) | absolute change |
 | --- | --- | --- | --- | --- |
-| CPU | 50.24% | **32.29%** | 31.62% | **−55.3%** |
+| CPU | 50.24% | **32.29%** | 31.62% | **-55.3%** |
 | RSP | 13.29% | **21.42%** | 22.16% | +12.1% |
 | Bus | 11.07% | **18.06%** | 18.49% | +13.5% |
 | stdlib / inlined | 7.78% | 11.57% | 11.78% | +3.5% |
-| RDP | 4.47% | 6.36% | 6.88% | −1.0% |
-| scheduler | 9.26% | **5.05%** | 5.11% | **−62.1%** |
-| VI | 3.76% | 4.64% | 4.21% | −14.1% |
-| AI | 0.37% | 0.03% | 0.11% | −94.4% |
+| RDP | 4.47% | 6.36% | 6.88% | -1.0% |
+| scheduler | 9.26% | **5.05%** | 5.11% | **-62.1%** |
+| VI | 3.76% | 4.64% | 4.21% | -14.1% |
+| AI | 0.37% | 0.03% | 0.11% | -94.4% |
 
 The absolute column rescales by the 1.437x frame-cost ratio, so it answers *did
 this code get faster*, which the share column cannot.
@@ -1185,9 +1207,14 @@ operation"* applies to buckets too.
 
 ### The single hottest line is one this change introduced
 
-**`crates/rustyn64-cpu/src/pipeline/fastexec.rs:334` — 6.83%**, and it is
-`self.dc_wb = latch;`: the 120-byte `Latch` copy that stages an instruction into
-the accurate path's commit machinery so `wb_stage` can be reused verbatim.
+**`self.dc_wb = latch;` in `Pipeline::execute_one`** (`fastexec.rs`, line 334 at the
+time of writing) — **6.83%**. It is the 120-byte `Latch` copy that stages an
+instruction into the accurate path's commit machinery so `wb_stage` can be reused
+verbatim.
+
+The symbol is named ahead of the line number deliberately: a bare `file:line` in a
+document is a claim that decays silently on the next edit, which is the failure mode
+this repository keeps rediscovering. Search for the assignment, not the number.
 
 That reuse is deliberate and it is why the two paths cannot disagree about COP0
 writes, the TLB instructions, or retirement. Whether the copy is worth 6.8% is a
