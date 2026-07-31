@@ -1275,7 +1275,7 @@ bucket is a step that had nothing to do*.
 larger lever of the two. On this evidence the plan's ordering is worth revisiting
 before either is begun — a maintainer's call, recorded here rather than taken.
 
-## The RSP's idle steps are ~38% of the render phase and worth 0.45% at most
+## The RSP's idle steps are ~38% of the render phase and bounded at 0.45%
 
 The profile above ended with a question: *how much of the RSP bucket is a step that
 had nothing to do?* It is the measurement the deficit-counter scheduler has to be
@@ -1354,8 +1354,12 @@ no such excuse.
 On that data the legs **do not overlap**: A's minimum (64.231) sits above B's
 maximum (63.941). Conservatively, **64.231 -> 63.941 ms = 0.45%**.
 
-**So it is a real effect, and it is small enough not to change anything.** Two
-reasons it is an upper bound rather than a result:
+**What that does and does not establish.** The retained legs differ by 0.45% and do
+not overlap; that is an *observation*, not a demonstrated causal improvement. Five
+readings a side, an effect within a factor of two of the harness's own floor, and
+one excluded sample do not carry that weight. What it does establish is an **upper
+bound**: whatever removing idle visits is worth, it is not more than this. Two
+reasons the true figure is lower still:
 
 - `frame_bench`'s window is **early boot**, where 80%+ of RSP steps are halted (the
   first rows of the table above). The render phase runs at 38%, so expect roughly
@@ -1363,10 +1367,16 @@ reasons it is an upper bound rather than a result:
 - It is within a factor of two of this harness's own noise floor, which is why five
   readings per leg were needed to see it at all.
 
-**Not landed.** 0.45% on the most favorable window does not justify a change that
-also breaks `rcp_steps_for_test`'s count, and the reason to reach for it — that
-idle visits are expensive — is exactly what it disproves. The value here is the
-bound, not the patch.
+**Not landed**, on the size of the effect alone: an upper bound of 0.45% measured on
+the most favorable window, against a reason for reaching for it — that idle visits
+are expensive — which this is the evidence against. The value here is the bound, not
+the patch.
+
+(An earlier draft also claimed the change breaks `rcp_steps_for_test`. **That was
+wrong** — the experimental patch increments `rcp_steps` on the halted return, so the
+count is preserved and no test is affected. A reason invented to reinforce a
+conclusion already reached on other grounds; caught in review, and removed rather
+than quietly dropped.)
 
 ### What that does to the deficit-counter scheduler's case
 
@@ -1382,15 +1392,24 @@ proof for the RDP, AI, PI or VI, whose visits were not measured this way — but
 RSP was where the argument was strongest, since it is 21.4% of the frame and 38%
 of its steps do nothing.
 
-**So the RSP's 21.4% is real microcode execution, not dispatch overhead**, and the
-lever that reaches it is a faster interpreter (the plan's pre-decoded threaded
-design), not fewer visits. That is a different piece of work from the
-deficit-counter scheduler, and this measurement is the reason to prefer it.
+**What that supports, stated no more strongly than the evidence allows:** the
+*halted-visit overhead* inside the RSP bucket is small, so the bucket is
+predominantly work done while the RSP is running — microcode execution and the
+wrapper around it. This experiment touched **one** wrapper path; it does not
+decompose the running 62% into dispatch versus arithmetic versus register access,
+and it says nothing at all about the RDP, AI, PI or VI, whose visits were never
+measured this way.
+
+On that reading the lever likely to reach the bucket is a faster interpreter (the
+plan's pre-decoded threaded design) rather than fewer visits — but *likely* is the
+right word until the running share is decomposed, which is the next measurement
+rather than a conclusion of this one.
 
 ### Ruled out
 
-**Do not re-try the `rsp_tick` halted early-out.** Measured at **0.45%** on the
-window most favorable to it, and about half that where it would actually run.
+**Do not re-try the `rsp_tick` halted early-out.** Bounded at **0.45%** on the window
+most favorable to it, and about half that where it would actually run — an upper
+bound near the harness floor, not a demonstrated win.
 The analogous change *was* a win for the RDP and the AI (#219/#221) because those
 avoid a `core::mem::take` of a large struct; the RSP's wrapper has no such
 payload, so the pattern does not transfer. Matching the shape of a past win is not
