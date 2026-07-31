@@ -801,10 +801,23 @@ schedule.
 
 **What the number is and is not.** `run_until` executes the whole machine, so this
 is a **whole-system** figure rather than a share of one — but it is measured
-*headlessly*, with no VI scan-out and no frontend, so it is not a frame time and
-must not be compared against the ms/frame figures elsewhere in this document. Scan-out
-is outside `run_until`, so the frame-level effect is smaller than 5.6% by whatever
-share scan-out holds.
+*headlessly*, with no VI scan-out and no frontend, so it is not a frame time.
+
+**The frame-level figure, measured through the frontend.** With the feature
+forwarded from `rustyn64-frontend` (`--features fast-scheduler`, still default-off),
+A-B-A on the same probe and environment as the entries above:
+
+| leg | variant | frame mean |
+| --- | --- | --- |
+| A | accurate (default build) | 98.532 / 98.086 ms |
+| B | **`--features fast-scheduler`** | **93.643 / 92.472 ms** |
+| A | accurate, again | 97.753 ms |
+
+**98.12 → 93.06 ms, 1.0544x** (conservative pairing, best A over worst B: 1.0439x);
+**10.19 → 10.75 FPS**. The A legs span 0.80% and the B legs 1.27% — wider than the
+back-to-back floor, so the magnitude is loose — but all three A legs sit above both
+B legs, so the sign is not in question. It corroborates the headless 1.0563x and is
+slightly smaller, which is what the scan-out sitting outside `run_until` predicts.
 
 **Limitations, stated because best-of-3 in one process is weaker than the A-B-A
 protocol used for the frame measurements above.** No ROM is loaded, so this is the

@@ -28,6 +28,14 @@ default = ["emu-thread"]
 # UI/render stalls never disturb emulation cadence.
 emu-thread = []
 
+# ADR 0011 / 0012 — the block-based fast-path scheduler, forwarded to the core.
+# Off by default: with it disabled `run_frame` calls the accurate `run_until` and
+# the binary is byte-identical, which is ADR 0011 §1. Deliberately NOT in `full`
+# below: `full` is the maximal set the release aliases build, and promoting an
+# alternate execution mode into a shipped artifact is an ADR 0011 decision rather
+# than a build-configuration one.
+fast-scheduler = ["rustyn64-core/fast-scheduler"]
+
 # Roadmap placeholders (no code yet) — kept so downstream `--features` resolve.
 debug-hooks = []
 hd-pack = []
