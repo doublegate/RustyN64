@@ -626,6 +626,9 @@ can.
    **neutral**, by the A-B-A above. Under `lto = "fat"` an inline hint has nothing to
    add — that is now two independent results, and the general form is *this workspace's
    release profile has already done the inlining*.
+5b. **`-C target-cpu=native`** — **neutral**, and the A-B-A caught it: the third
+   baseline leg came in below both native legs. See the codegen-levers section below
+   for the full table. Not instruction-selection-bound.
 5. **Reordering `vi_divot`'s early-out to test coverage first** — **10% worse**, measured.
 
    The *explanation* offered for that regression — that `cvg == 7` is rare, so the
@@ -828,6 +831,41 @@ enumeration, not a hardware-accuracy result — which is why it lives here and n
 `docs/accuracy-ledger.md`, whose scope is measured hardware constants and residuals.
 
 The feature stays **default-off**, so no shipped build is affected by any of this.
+
+## Codegen levers: `target-cpu=native` measures neutral
+
+Source-level structural waste is one search; **how the compiler emits the code** is a
+separate one, and it was unexamined until now. Nothing in the workspace sets
+`target-cpu`, so every build targets baseline `x86-64` while this host offers AVX2 and
+BMI2 — which looks like free headroom.
+
+It is not. A-B-A, `frame_cost_probe` on Super Mario 64, `--release --features
+fast-scheduler`, environment as tabled in §Measured (2026-07-30):
+
+| leg | variant | frame mean |
+| --- | --- | --- |
+| A | baseline (`x86-64`) | 93.777 / 93.689 ms |
+| B | `RUSTFLAGS="-C target-cpu=native"` | 93.399 / 93.056 ms |
+| A | baseline, again | **92.068 ms** |
+
+**The third A leg came in below *both* B legs.** A two-leg comparison would have
+reported a ~0.5% win; the return leg shows it was drift. Mean A 93.178 against mean B
+93.227 — `0.9995x`, which is to say **neutral**, and the honest reading is that this
+workload is not instruction-selection-bound. That is unsurprising in hindsight: the hot
+code is scalar integer interpretation and pointer chasing, not the vectorizable
+arithmetic AVX2 would help.
+
+So it is **not** adopted, and the portability cost never had to be argued: a
+`target-cpu=native` binary does not run on older hosts, which would be a real price for
+a measured nothing.
+
+**PGO is the one codegen lever still untested.** It works on a different mechanism —
+branch layout and inlining decisions driven by an actual profile, rather than
+instruction selection — and interpreters are the workload it classically helps most.
+It needs two full LTO rebuilds plus an instrumented run, and it changes the release
+process rather than a config line, so it is named here as an open avenue rather than
+attempted in passing. **Do not assume it is neutral because this was**; the mechanisms
+do not overlap.
 
 ## The search for structural waste is exhausted — evidence, so it is not re-run
 
