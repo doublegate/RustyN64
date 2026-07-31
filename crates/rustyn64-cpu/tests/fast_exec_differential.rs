@@ -251,9 +251,15 @@ fn compare(name: &str, program: &[u32], target: u64) -> u64 {
     );
 
     let mut cost = 0u64;
-    // A budget, not a schedule: the accurate path needs at least five PCycles per
-    // instruction and stalls far longer on a `DIV`, so this is generous and its
-    // only job is to fail rather than hang if a program never retires.
+    // A budget, not a schedule. Its only job is to fail rather than hang if a
+    // program never retires, so it is deliberately far above the worst real case.
+    //
+    // Where 400 comes from, since a bare multiplier ages badly: the accurate path
+    // spends one `tick_at` per `PCycle`, and the most expensive single instruction
+    // here costs roughly `DDIV` 69 + an I-cache fill 46 + a D-cache fill 40 + the
+    // 5-stage fill and epilogue — call it under 200. Doubling that leaves room for
+    // an instruction that acquires a new stall without anyone remembering this
+    // line. Raised in review, which asked for the derivation rather than the number.
     let mut budget = target * 400;
 
     // **The fast path sets the pace, and the accurate path follows.** One call can

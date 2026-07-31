@@ -102,7 +102,12 @@ enum Flow {
     },
     /// Control has already been redirected — an exception vector, or `ERET`.
     /// Neither has a delay slot to run.
-    Redirected(u64),
+    ///
+    /// Deliberately **carries no target**. Everything that produces this variant
+    /// has already written `next_pc` (that is what redirecting *is*), so a payload
+    /// would be a second copy of the same fact and a place for the two to
+    /// disagree. Raised in review, which spotted the redundant write.
+    Redirected,
 }
 
 impl Pipeline {
@@ -124,6 +129,21 @@ impl Pipeline {
         next_pc: &mut u64,
         count_now: u64,
     ) -> u32 {
+        /// How many consecutive branch-in-delay-slot links to expect.
+        ///
+        /// The loop **terminates by construction** — every iteration retires an
+        /// instruction — so this is not a safety net against an infinite loop. It
+        /// is a bound on how long one call can run without returning to the
+        /// scheduler, which is a *scheduling* concern rather than a correctness
+        /// one: a chain of jumps each in the previous one's delay slot starves the
+        /// RCP for its duration.
+        ///
+        /// A release build **continues past it** rather than truncating, because
+        /// stopping mid-chain would execute the wrong instructions — a wrong answer
+        /// is worse than a long call. The real cap belongs in the wiring slice,
+        /// where the scheduler is the thing that cares. Raised in review.
+        const EXPECTED_CHAIN: u32 = 64;
+
         self.cop0.set_now(count_now);
         self.sample_interrupt_lines(bus);
 
@@ -151,14 +171,13 @@ impl Pipeline {
         let mut link = pc.wrapping_add(8);
         let mut in_delay_slot = false;
 
+        let mut links = 0u32;
+
         loop {
             let (c, flow) = self.execute_one(bus, regs, pc, in_delay_slot, link, next_pc);
             cost = cost.saturating_add(c);
             match flow {
-                Flow::Redirected(vector) => {
-                    *next_pc = vector;
-                    return cost;
-                }
+                Flow::Redirected => return cost,
                 Flow::Next => {
                     *next_pc = fall;
                     return cost;
@@ -174,6 +193,12 @@ impl Pipeline {
                     // Run the delay slot, then land on the target. A delay slot
                     // that branches continues this loop, reproducing the accurate
                     // path's sequence for the UNPREDICTABLE nested case.
+                    links += 1;
+                    debug_assert!(
+                        links < EXPECTED_CHAIN,
+                        "{links} consecutive branches in delay slots: correct, but \
+                         this call has not returned to the scheduler in a long time"
+                    );
                     pc = fall;
                     in_delay_slot = true;
                     fall = target;
@@ -207,7 +232,7 @@ impl Pipeline {
             Err(exc) => {
                 cost = cost.saturating_add(self.take_stall_cost());
                 let c = self.vector_to(exc, pc, in_delay_slot, pc, next_pc);
-                return (cost.saturating_add(c), Flow::Redirected(*next_pc));
+                return (cost.saturating_add(c), Flow::Redirected);
             }
         };
         // A micro-ITLB reload charged by `fetch_word` (UM §4.6.2).
@@ -216,7 +241,7 @@ impl Pipeline {
         let decoded = decode(word);
         if let Err(exc) = self.ex_gate(decoded) {
             let c = self.vector_to(exc, pc, in_delay_slot, 0, next_pc);
-            return (cost.saturating_add(c), Flow::Redirected(*next_pc));
+            return (cost.saturating_add(c), Flow::Redirected);
         }
 
         // Operands come straight from the register file. The accurate path
@@ -239,7 +264,7 @@ impl Pipeline {
             Ok(e) => e,
             Err(exc) => {
                 let c = self.vector_to(exc, pc, in_delay_slot, 0, next_pc);
-                return (cost.saturating_add(c), Flow::Redirected(*next_pc));
+                return (cost.saturating_add(c), Flow::Redirected);
             }
         };
         // Multiply and divide (UM Table 3-12), raised by `execute` itself.
@@ -291,7 +316,7 @@ impl Pipeline {
                 Err(exc) => {
                     cost = cost.saturating_add(self.take_stall_cost());
                     let c = self.vector_to(exc, pc, in_delay_slot, self.fault_vaddr, next_pc);
-                    return (cost.saturating_add(c), Flow::Redirected(*next_pc));
+                    return (cost.saturating_add(c), Flow::Redirected);
                 }
             }
             // An RCP register access, or any other cost `access` charged.
@@ -313,7 +338,7 @@ impl Pipeline {
         // them in `self.pending` rather than dispatching.
         if let Some(p) = self.pending.take() {
             let c = self.vector_to(p.exc, p.pc, p.in_delay_slot, p.bad_vaddr, next_pc);
-            return (cost.saturating_add(c), Flow::Redirected(*next_pc));
+            return (cost.saturating_add(c), Flow::Redirected);
         }
         // FP arithmetic rate (UM Table 7-14), raised by `wb_stage`.
         cost = cost.saturating_add(self.take_stall_cost());
@@ -323,7 +348,7 @@ impl Pipeline {
         if matches!(e.cop0, Some(Cop0Access::Eret)) {
             *next_pc = exception::eret(&mut self.cop0);
             self.ll_bit = false;
-            return (cost, Flow::Redirected(*next_pc));
+            return (cost, Flow::Redirected);
         }
 
         let flow = e.redirect.map_or(Flow::Next, |r| Flow::Branch {

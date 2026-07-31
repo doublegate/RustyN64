@@ -711,7 +711,7 @@ mode is no more trustworthy than `M(RDRAM)` is.
 **A branch and its delay slot execute in the same call**, which is what lets the
 mode add no field to `Pipeline` — so the save-state layout is untouched and ADR 0011
 §4's mode marker is still not owed. A delay slot that is itself a branch continues
-the loop rather than recursing; MIPS calls that UNPREDICTABLE and the loop
+the loop rather than recursing; MIPS calls that UNPREDICTABLE, and the loop
 reproduces the cascade's sequence.
 
 Not modeled, each deliberately: the **bypass network** (sequential execution makes
@@ -731,8 +731,8 @@ at retirement boundaries. Two findings from building it are worth carrying:
   could not do.
 - **Neither PC-like quantity is comparable.** `Cpu::pc` is the `IC` **fetch
   pointer** and sits up to four instructions ahead of the retiring one in the
-  cascade; `dc_wb.pc` is off by exactly one, because the reverse cascade has already
-  moved the next instruction in by the end of the tick that retired. Both were
+  cascade; `dc_wb.pc` is off by exactly one because the reverse cascade has already moved
+  the next instruction in by the end of the tick that retired. Both were
   tried, and each reported a divergence on the first boundary of a run that agrees
   on everything else. The architectural PC of a retiring instruction is simply not
   observable from outside the pipeline in the accurate mode; `EPC` is where it
@@ -743,7 +743,7 @@ at retirement boundaries. Two findings from building it are worth carrying:
 
 And one about the cost half: it is asserted as an **A/B difference** between two
 programs of the same length differing only in `MULT`/`DIV` versus `NOP`. A first
-version used a threshold on a single run and **passed with the charge deleted**,
+version used a threshold on a single run and **passed with the charge deleted**
 because eight cold I-cache fills cleared the bar on their own.
 
 ### Exceptions
