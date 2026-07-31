@@ -9,6 +9,10 @@ Amended by: [ADR 0012](0012-amend-0011-equivalence-and-gate-witness.md) — **th
 document's** Decision items **1 and 4 are narrowed** there, and **3 and 6 gain
 requirements** (the gate's completion witness, and the typed bail-out enumeration).
 0012 numbers its own sections separately; read the two together.
+Extended by: [ADR 0013](0013-fast-execution-mode.md) — which authorizes a *second*
+mode whose timing model is relaxed. **Nothing in this document changes.** 0013 exists
+because **this document's** Decision item **5** (*"a scheduling change, not a change
+to what the CPU computes"*) excludes that relaxation in terms.
 Amends: ADR 0006 (one canonical master clock), ADR 0007 (cycle-accurate VR4300
 pipeline) — **without superseding either**; see *Relationship to 0006 and 0007*.
 

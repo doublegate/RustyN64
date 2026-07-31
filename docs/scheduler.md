@@ -257,6 +257,24 @@ The gate runs in CI on the light leg (`cargo test -p rustyn64-core --features
 fast-scheduler`), because feature-gated code is invisible to every other job —
 CI runs clippy exactly once and not with this feature.
 
+### `fast-exec` is a different feature, and a different predicate
+
+[ADR 0013](adr/0013-fast-execution-mode.md) authorizes a **second** default-off
+mode, `fast-exec`, in which the CPU charges documented instruction-granular issue
+costs instead of advancing the pipeline per cycle. It is **not** `fast-scheduler`
+with more in it, and the two features are independent:
+
+| | `fast-scheduler` | `fast-exec` |
+| --- | --- | --- |
+| relation to the accurate run | **tick-identical** — same edges, same order, same `master_ticks` | timing deliberately diverges |
+| gate predicate | whole serialized state, every tick | architectural state at retirement boundaries; timing divergence measured and bounded |
+| `master_ticks` equality | asserted | **not** asserted — it is the quantity being relaxed |
+| ADR 0006 | unchanged | amended for that mode only (per-domain deficit counters) |
+
+Where both features are enabled, `fast-exec`'s scheduler is the one that runs
+(ADR 0013 §1). The whole-state tests above keep their stricter predicate: they grade
+a tick-identical path and would be weakened for nothing by relaxing them.
+
 ## Test plan
 
 - **The residue invariant (the important one):** sample the affine offsets

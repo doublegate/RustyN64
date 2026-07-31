@@ -4,6 +4,12 @@
 
 Accepted (2026-07-20). Depends on [ADR 0006](0006-one-canonical-master-clock.md).
 
+**Amended by [ADR 0013](0013-fast-execution-mode.md), for the optional `fast-exec` mode
+only.** The five-stage cascade below remains the definition of the CPU's behavior and is
+what the default (accurate) mode executes and what every accuracy oracle grades. 0013
+authorizes an opt-in mode that charges documented instruction-granular issue costs
+instead, in exchange for a measured and bounded timing divergence.
+
 ## Context
 
 The project targets **sustained, fully cycle-accurate emulation at full speed**. That rules out
