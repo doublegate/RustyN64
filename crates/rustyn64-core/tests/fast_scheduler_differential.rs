@@ -233,7 +233,7 @@ fn the_fast_path_agrees_at_every_phase_alignment() {
             let mut accurate = System::new(seed);
             let mut fast = System::new(seed);
             accurate.run_until(target);
-            blocks += fast.run_until_fast(target).blocks;
+            blocks += fast.run_until_fast(target).work_units;
 
             assert!(
                 accurate.cpu.retired > 0,
@@ -711,8 +711,8 @@ fn the_gate_witnesses_its_own_completion() {
         let report = run_fixture(fixture);
         total = total.merge(report);
         println!(
-            "fixture {}: {} blocks, reasons {:?}",
-            fixture.name, report.blocks, report.bailed
+            "fixture {}: {} work units, reasons {:?}",
+            fixture.name, report.work_units, report.bailed
         );
         assert!(
             started.elapsed() < SUITE_TIMEOUT,
@@ -770,10 +770,10 @@ fn the_gate_witnesses_its_own_completion() {
     );
 
     println!(
-        "GATE COMPLETE: {} fixtures, {} blocks executed, {}/{} bail-out \
+        "GATE COMPLETE: {} fixtures, {} work units executed, {}/{} bail-out \
          reasons covered",
         selected.len(),
-        total.blocks,
+        total.work_units,
         BailOut::ALL.len(),
         BailOut::ALL.len()
     );

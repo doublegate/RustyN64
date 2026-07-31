@@ -35,6 +35,11 @@ emu-thread = []
 # alternate execution mode into a shipped artifact is an ADR 0011 decision rather
 # than a build-configuration one.
 fast-scheduler = ["rustyn64-core/fast-scheduler"]
+# ADR 0013's instruction-granular execution mode. Forwarded so `run_frame` can
+# reach it and `examples/frame_bench.rs` can measure it; still absent from `full`,
+# because promoting an alternate execution mode into a shipped artifact is an
+# ADR 0013 decision rather than a build-configuration one.
+fast-exec = ["rustyn64-core/fast-exec"]
 
 # Roadmap placeholders (no code yet) — kept so downstream `--features` resolve.
 debug-hooks = []

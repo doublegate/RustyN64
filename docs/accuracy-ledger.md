@@ -62,6 +62,8 @@ bug, and a number that appeared without one is the failure this file exists to p
 | C-5 | `DIV` quotient when divisor bits 63 and 31 differ | *32x35 division* | **guessed** | needs hardware |
 | C-6 | Divide-by-zero `HI`/`LO` values | conventional | **guessed** | needs hardware |
 
+| C-16 | `fast-exec` timing divergence — instructions retired over 120 frames, versus the accurate path | **+1.04%** (173,254,496 vs 171,471,972) | **measured**, Super Mario 64, `examples/frame_bench.rs`, 120 frames after the VI comes up | **the ADR 0013 §4 bound; re-measure whenever the cost model changes** |
+
 ### C-1 — `M`, memory access time in PCycles
 
 The single most load-bearing unknown. Both documented cache-miss formulas are parameterized on
@@ -270,6 +272,49 @@ open.** No regression from the D-cache charge: golden-log 0-diff (it keys on ret
 not stalls), the residue invariant, determinism, and the 950-test functional suite (Phase-1
 `Failed: 0`, still 90 suite-wide, `Random` timing tests pass, runs to `xioctl(EXIT)`) are all
 unchanged; two unit tests that stepped fixed cycles for a cached load had their budgets widened.
+
+### C-16 — the `fast-exec` timing divergence bound
+
+ADR 0013 §4 requires the divergence between the two execution modes to be
+**measured, bounded, and recorded here before it ships** — not required to be zero,
+because a relaxed timing model that agreed exactly would not be a relaxed timing
+model. This is that measurement.
+
+**What is measured.** Instructions retired over an identical run: the same ROM, the
+same seed, the same 120 frames after the VI comes up. Both modes present the same
+number of frames, so a difference in retired instructions is a difference in how
+much emulated work fell inside a frame — which is exactly the timing model's
+effect, expressed in the one quantity both modes count identically.
+
+| mode | instructions retired, 120 frames |
+| --- | --- |
+| accurate (five-stage cascade) | 171,471,972 |
+| `fast-exec` (instruction-granular) | 173,254,496 |
+| **divergence** | **+1,782,524 — +1.04%** |
+
+**Method.** `cargo run --release --example frame_bench [--features fast-exec]`,
+Super Mario 64, 120 timed frames after 36 warm-up frames. Both figures are stable
+to the digit across repeated runs (the counter is deterministic; only the wall
+clock varies), so this is a reading rather than a sample.
+
+**Why it is above zero, and what would move it.** The instruction-granular model
+charges the documented per-class costs but not the five-stage structures the
+accurate path carries — the bypass network, the load interlock, `prev_was_run`, the
+flush cascade (`docs/cpu.md` §The instruction-granular path). Those are the missing
+cycles. The gap is dominated by the *load-delay interlock*, which the accurate path
+charges and this does not; adding it back would narrow the bound at some cost in
+throughput, and that trade is not yet measured.
+
+**When to re-measure.** Whenever the cost model changes — a new stall, a changed
+constant, a measured `M(RDRAM)` replacing the fitted cache fills (C-1). A bound
+that is not re-derived after the model moves is a number describing a model that no
+longer exists.
+
+**What this does *not* bound.** Architectural agreement, which is a separate and
+stricter claim graded by `crates/rustyn64-cpu/tests/fast_exec_differential.rs` —
+equality of GPRs, `HI`/`LO`, COP0, the FPRs, `FCSR`, and memory at instruction
+retirement boundaries. A timing divergence of 1% is sanctioned; a divergence in
+what an instruction computes is not.
 
 ### C-2 — exception epilogue cost — **RESOLVED, and this entry was wrong**
 

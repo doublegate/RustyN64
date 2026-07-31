@@ -313,7 +313,7 @@ with more in it, and the two features are independent:
 | relation to the accurate run | **tick-identical** — same edges, same order, same `master_ticks` | timing deliberately diverges |
 | gate predicate | whole serialized state, every tick | architectural state at retirement boundaries, **minus the timing-derived carve-out**; timing divergence measured and bounded |
 | `master_ticks` equality | asserted | **not** asserted — it is the quantity being relaxed |
-| ADR 0006 | unchanged | amended for that mode only (per-domain deficit counters) |
+| ADR 0006 | unchanged | **unchanged as implemented.** ADR 0013 *authorizes* per-domain deficit counters for this mode; the implementation has none, and `master_ticks` is still the only incremented counter. The authorization falls due with the deficit-counter scheduler, not before. |
 
 Where both features are enabled, `fast-exec`'s scheduler is the one that runs
 (ADR 0013 §1). The whole-state tests above keep their stricter predicate: they grade
@@ -333,6 +333,34 @@ raise at the same tick, so once both modes have passed a deadline its *effects* 
 the DMA'd bytes, the register writes, the eventual interrupt — must agree. The
 predicate is therefore anchored in **time as well as instructions**. ADR 0013 §4
 is authoritative.
+
+`System::run_until_exec` is the entry point, and it inverts who sets the pace: the
+**CPU executes one instruction**, reports what it cost in `PCycles`,
+`master_ticks` advances by that many CPU periods, and the RCP runs every one of its
+edges in the span that just elapsed. The CPU therefore no longer lands on a derived
+edge — which is the relaxation, stated plainly.
+
+**ADR 0006 still holds.** `master_ticks` is still the only incremented counter and
+every other position is still derived from it; what changed is how far it moves per
+step, not who owns it.
+
+Three consequences worth knowing before reading the code:
+
+- **It can land past `target`**, by at most one instruction's cost, because a cost
+  is only known after the instruction has run. Nothing drifts — the next call's
+  target is absolute — and this is the timing divergence ADR 0013 §4 requires to be
+  measured rather than eliminated. Measured: **+1.04%** over 120 frames
+  (`docs/accuracy-ledger.md` C-16).
+- **A halted CPU advances on RCP edges.** A failed real-PIF boot checksum freezes
+  the CPU while the RCP keeps running; with no instruction to time the advance
+  with, the loop steps to the next RCP edge. Deliberately *not* a bail-out:
+  ADR 0011 §6 sanctions a test-only seam only where a boundary genuinely cannot be
+  reached, and this one can simply be handled.
+- **`fast-exec` therefore adds no new `BailOut` variant.** Saying so is better than
+  inventing an exit to justify the machinery; the enumeration exists so a *real*
+  one cannot be added silently.
+
+Measured **1.53x** on a real frame (`docs/performance.md`).
 
 This is **`fast-exec` policy, not a hardware claim.** The VR4300 has one timeline,
 so the hardware has no opinion about how two emulated modes should be compared;

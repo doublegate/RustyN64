@@ -1061,6 +1061,58 @@ number* needs restating: "as fast as the cycle-accurate model can go" is reachab
 what the remaining work delivers; "60 FPS with the cycle-accurate model" is not, on this
 host, by these means.
 
+## `fast-exec`: the instruction-granular path measures 1.53x
+
+The first number from ADR 0013's second execution mode, and the first result in this
+document that comes from changing **what is computed** rather than when.
+
+**A-B-A, one sitting, `main` at the wiring commit**, Super Mario 64, 120 timed
+frames after the VI comes up, `examples/frame_bench.rs`:
+
+| leg | build | mean frame |
+| --- | --- | --- |
+| A1 | accurate | 100.582 ms |
+| A2 | accurate | 99.847 ms |
+| B1 | `--features fast-exec` | **64.822 ms** |
+| B2 | `--features fast-exec` | **65.321 ms** |
+| A3 | accurate | 99.712 ms |
+| A4 | accurate | 99.598 ms |
+
+**The legs do not overlap.** Every A is above 99.5 ms and every B below 65.4 ms, so
+this is not drift: the four A readings span 0.99%, which is the ordinary
+within-session spread this document records elsewhere, and the gap to B is thirty
+times that.
+
+Quoting the **conservative** pairing — best A over worst B — as this document does
+throughout:
+
+- **99.598 → 65.321 ms, 1.525x**
+- **10.04 → 15.31 FPS**
+
+The return legs matter here for the reason they always do: a two-leg comparison
+would have reported 1.55x from A1, and the third-time-lucky lesson in §*Ruled out*
+5b is that the return leg is what tells drift from effect.
+
+**Why the accurate figure is ~99.6 ms and not the 93.06 ms recorded above.** That
+earlier number was measured **with `fast-scheduler` enabled**; the accurate baseline
+in the same pairing was 98.12 ms. So ~99.6 ms is that baseline plus ordinary
+cross-session drift, not a regression. Comparing a featured build against an
+unfeatured one is the mistake this note exists to prevent.
+
+**What it costs.** The two modes retire different instruction counts over the same
+120 frames — 173,254,496 versus 171,471,972, **+1.04%** — which is the timing
+divergence ADR 0013 §4 requires to be measured and bounded rather than eliminated.
+It is recorded as **C-16** in `docs/accuracy-ledger.md` with its method and the
+conditions that would move it.
+
+**What it does not do.** 60 FPS needs 16.67 ms. At 65.3 ms this is **3.92x** short,
+and the ceiling arithmetic in §*The 60 FPS target is out of reach* is unchanged in
+kind: the CPU pipeline was the largest single bucket and it has now been addressed,
+so the remaining work is in the buckets that were never the biggest. The next
+measurement to take is a fresh profile of the **fast-exec** frame — the shares
+above were taken on the accurate path and no longer describe what this build
+spends its time on.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit

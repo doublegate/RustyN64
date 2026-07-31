@@ -17,6 +17,11 @@ std = []
 # not needed yet; that becomes due only when the fast path acquires state of its
 # own.
 fast-scheduler = []
+# ADR 0013: the instruction-granular execution mode. INDEPENDENT of
+# `fast-scheduler` — neither implies the other, because one is tick-identical and
+# one deliberately is not, so they are graded by different predicates (ADR 0013
+# §1). Where both are enabled, `fast-exec`'s scheduler is the one that runs.
+fast-exec = ["rustyn64-cpu/fast-exec"]
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

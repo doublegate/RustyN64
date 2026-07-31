@@ -19,11 +19,15 @@ pub mod boot;
 pub mod bus;
 /// The fast path's hand-off enumeration and run report (ADR 0012 §2).
 ///
-/// Present only with the default-off `fast-scheduler` feature, so the default
-/// build gains nothing at all — ADR 0011 §1 by construction, the same way
-/// [`scheduler::System::run_until_fast`] is a separate entry point rather than a
-/// branch.
-#[cfg(feature = "fast-scheduler")]
+/// Present only with a fast path compiled in — `fast-scheduler` or `fast-exec` —
+/// so a default build gains nothing at all. ADR 0011 §1 by construction, the same
+/// way [`scheduler::System::run_until_fast`] is a separate entry point rather than
+/// a branch.
+///
+/// Shared by both modes because [`fastpath::FastRunReport`] answers the same
+/// question for each — did the fast path engage, and where did it hand back — even
+/// though the two are graded by different predicates (ADR 0013 §1).
+#[cfg(any(feature = "fast-scheduler", feature = "fast-exec"))]
 pub mod fastpath;
 pub mod scheduler;
 pub mod vi;
