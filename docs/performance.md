@@ -1491,6 +1491,98 @@ tail calls stabilize, or if a decomposition of `su.rs`'s 10.38% finds the cost i
 dispatch after all — which the two failed experiments above did **not** establish
 either way.
 
+## The SIMD question is premature: the VU is not vectorized, and the blocker is shape
+
+The plan asks where `unsafe` may live so the RSP's vector unit can use SIMD
+(`std::arch` needs it; `rustyn64-rsp` carries `#![forbid(unsafe_code)]`;
+`core::simd` is unstable). **That is the wrong question to answer first.** The VU is
+not vectorized today, and the reason is the shape of the code rather than the
+tools available to it.
+
+### Evidence: 30 sixteen-bit-lane instructions in the entire shipped binary
+
+Counted in the disassembly of `target/release/examples/frame_bench` (fat LTO,
+whole program):
+
+| form | count |
+| --- | --- |
+| `vpaddw`, `vpsubw`, `vpmullw` | 6, 1, 2 |
+| `vpsllw`, `vpsrlw` | 7, 5 |
+| `vpackssdw`, `vpunpcklwd` | 7, 2 |
+| `vpmulhw`, `vpcmpgtw`, `vpcmpeqw`, `vpsraw`, `vpminsw`, `vpmaxsw` | 0 |
+| **total 16-bit-lane arithmetic** | **30** |
+
+The VU has ~80 opcode arms, each operating on **eight `u16` lanes**. A vectorized
+VU would show dozens of these per family; thirty in the whole binary is incidental
+— plausibly the RDP's color math or the VI's filter, not the RSP.
+
+The binary is **not** SIMD-free in general: it carries 95 `vpand`, 85 `vpor`, 76
+`vpxor`, 36 `vpaddq`, 29 `vpaddd` and so on. LLVM vectorizes this codebase where it
+can. It does not do so for the thing most obviously shaped like a vector.
+
+**A first version of this check was misleading and is recorded rather than
+discarded.** Emitting assembly for `rustyn64-rsp` alone (`cargo rustc --emit=asm`)
+showed **zero** SIMD instructions of any kind, which is a stronger claim — and not a
+valid one, because that build has no LTO and none of the inlining the shipped
+binary does. The conclusion survived; the evidence for it had to be replaced.
+
+### Why: the opcode dispatch is inside the lane loop
+
+`Rsp::vu_compute` is shaped like this:
+
+```rust
+for lane in 0..8 {
+    let out = match op {                       // <- ~12 arms here
+        0x00..=0x0F => self.multiply_lane(op, lane, ..),   // <- ~10 more arms inside
+        0x10 | 0x11 => { ..self.vu_ctrl.vco.. }
+        ..
+    };
+    ..
+}
+```
+
+Two properties, either of which alone defeats the vectorizer:
+
+- **The dispatch is per lane.** A multiply runs the opcode match **sixteen** times
+  per instruction — eight outer, eight inner. There is no straight-line body of
+  eight identical operations for LLVM to widen.
+- **Each iteration touches `&mut self`**: `set_acc_low(lane, ..)`, `self.vu_ctrl.vco`,
+  `self.vu_regs[..][lane]`. Cross-lane state read and written inside the loop is
+  what alias analysis cannot prove independent.
+
+### What that means for the decision
+
+**The `unsafe` question does not need answering yet.** The prerequisite is a
+restructure that needs neither `unsafe` nor an unstable feature: hoist the dispatch
+**out** of the lane loop, so each opcode family gets a tight eight-iteration body
+over plain arrays. That is the shape LLVM autovectorizes on its own.
+
+Whether it actually does is **empirical and unmeasured**, and would want one
+experiment on one family before the other ~80 arms are touched.
+
+**And there is no gate to run it against, which has to be fixed first.** The RSP
+category did reach `Failed: 0` at v0.3.0 (Phase 2's cut criterion), but the
+committed runner does **not** assert it:
+`crates/rustyn64-test-harness/tests/systemtest.rs` excludes `"RSP"` and `"SP "`
+through its `LATER_PHASES` list, so `phase_1_categories_report_no_failures` would
+stay green through an arbitrarily broken vector unit. An earlier draft of this
+section cited that suite as the refactor's gate; **it is not one.** Caught in
+review.
+
+So the first slice of any VU work is an **RSP-scoped assertion** of the same shape
+as the Phase 1 one — named ROM, `Failed: 0` acceptance, and a witness that the
+category actually ran, since an empty run reports zero failures just as
+convincingly. Building the gate before the thing it grades is a rule this project
+already has, and this is a case where it was about to be skipped.
+
+**If the restructure does not vectorize**, the question returns — and the plan's
+recorded answer is wrong for this case. Moving the VU into a new crate that permits
+`unsafe` is not available: the VU's state (`vu_regs`, `vu_acc`, `vu_ctrl`) lives in
+`Rsp`, and splitting it out is the chip-to-chip dependency the crate graph forbids
+(`docs/architecture.md`). The realistic options would be `core::simd` behind a
+nightly-only feature, or a narrowly scoped `unsafe` exception for `rustyn64-rsp`
+— an ADR-level decision either way, and not one this measurement makes.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
