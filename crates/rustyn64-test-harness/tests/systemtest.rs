@@ -49,13 +49,22 @@ const BUDGET_TICKS: u64 = 4_000_000_000;
 /// CPU/COP0/TLB/COP1 — Phase 1's scope. Matching on what to *exclude* is
 /// deliberate: a new CPU-side category added upstream then lands inside the gate
 /// automatically, where an allowlist would silently ignore it.
+/// The RSP's own category prefixes.
+///
+/// A **subset** of [`LATER_PHASES`], deliberately narrower: `"RSP"` is the vector
+/// and scalar unit's tests and `"SP "` the DMA/status ones, which is what the VU
+/// work in `docs/performance.md` needs a gate over. The RDP, MI, VI, AI, PI, SI
+/// and cart entries in that list belong to other subsystems and are not asserted
+/// here.
+const RSP_CATEGORIES: [&str; 2] = ["RSP", "SP "];
+
 const LATER_PHASES: [&str; 11] = [
     "RSP", "SP ", "RDP", "MI ", "cart", "spmem", "pifram", "VI", "AI", "PI ", "SI ",
 ];
 
 /// Run the suite and return `(phase-1 failures, suite-wide failures, tests
 /// started, guest reached EXIT, output)`.
-fn run() -> (Vec<String>, usize, usize, bool, String) {
+fn run() -> Report {
     let image = std::fs::read(ROM).expect("the committed n64-systemtest ROM");
     let mut sys = System::new(0);
 
@@ -105,12 +114,21 @@ fn run() -> (Vec<String>, usize, usize, bool, String) {
     };
 
     let mut phase1 = Vec::new();
+    let mut rsp = Vec::new();
+    let mut rsp_started = 0usize;
     let mut failures = 0usize;
     // `Running <name>...` is printed once per test as it STARTS; `Test '<name>'
     // failed:` only on failure. Counting the former is what witnesses execution
     // -- counting failures cannot, since zero of them is exactly what a run that
     // never started also produces.
     let started = text.lines().filter(|l| l.starts_with("Running ")).count();
+    // The RSP's own started-count, for the same reason `started` exists: zero
+    // failures in a category that never ran is not a pass.
+    rsp_started += text
+        .lines()
+        .filter_map(|l| l.strip_prefix("Running "))
+        .filter(|n| RSP_CATEGORIES.iter().any(|p| n.starts_with(p)))
+        .count();
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("Test '") else {
             continue;
@@ -120,8 +138,41 @@ fn run() -> (Vec<String>, usize, usize, bool, String) {
         if !LATER_PHASES.iter().any(|p| name.starts_with(p)) {
             phase1.push(line.to_string());
         }
+        if RSP_CATEGORIES.iter().any(|p| name.starts_with(p)) {
+            rsp.push(line.to_string());
+        }
     }
-    (phase1, failures, started, exited, text)
+    Report {
+        phase1,
+        rsp,
+        rsp_started,
+        failures,
+        started,
+        exited,
+        text,
+    }
+}
+
+/// What one suite run reported.
+///
+/// A struct rather than the tuple this used to return: the tuple reached five
+/// fields and a sixth was being added, at which point every call site is a
+/// positional puzzle and a swapped pair compiles.
+struct Report {
+    /// Failures outside [`LATER_PHASES`] — Phase 1's scope.
+    phase1: Vec<String>,
+    /// Failures in the RSP's own categories.
+    rsp: Vec<String>,
+    /// RSP tests that STARTED, which is what witnesses the category ran.
+    rsp_started: usize,
+    /// Failures suite-wide.
+    failures: usize,
+    /// Tests started suite-wide.
+    started: usize,
+    /// Did the guest reach its own `xioctl(EXIT)`?
+    exited: bool,
+    /// The captured console text.
+    text: String,
 }
 
 /// Phase 1's cut criterion: `Failed: 0` in the CPU/COP0/TLB/COP1 categories.
@@ -131,7 +182,14 @@ fn run() -> (Vec<String>, usize, usize, bool, String) {
 #[test]
 #[ignore = "~2 minutes in --release; run explicitly (see the module docs)"]
 fn phase_1_categories_report_no_failures() {
-    let (phase1, failures, started, exited, text) = run();
+    let Report {
+        phase1,
+        failures,
+        started,
+        exited,
+        text,
+        ..
+    } = run();
 
     // Witness that the suite actually RAN before trusting a zero. An empty
     // output produces zero failures just as convincingly as a passing run, which
@@ -175,5 +233,70 @@ fn phase_1_categories_report_no_failures() {
         "Phase 1 categories: 0 failing (suite ran to xioctl(EXIT)). {failures} \
          failing suite-wide across {started} tests started (the remainder are \
          RSP/RCP -- Phase 2's criterion)."
+    );
+}
+
+/// **Phase 2's cut criterion: `Failed: 0` in the RSP's own categories.**
+///
+/// This gate did not exist until now, and its absence was found the hard way: a
+/// performance note cited "n64-systemtest's RSP category" as what would guard a
+/// vector-unit refactor, and a reviewer pointed out that
+/// [`phase_1_categories_report_no_failures`] **excludes** `"RSP"` and `"SP "`
+/// through [`LATER_PHASES`]. The RSP did reach `Failed: 0` at v0.3.0 — that is
+/// `to-dos/VERSION-PLAN.md` §v0.3.0's criterion and the `MET` row in
+/// `docs/STATUS.md` — but nothing committed asserted it, so the vector unit could
+/// have regressed arbitrarily with every gate green.
+///
+/// Same shape as the Phase 1 assertion, for the same reasons: witness that output
+/// exists, that the suite ran to `xioctl(EXIT)`, and **that the RSP category
+/// itself started**. That last one is not redundant with the suite-wide count —
+/// a change that made every RSP test fail to *start* would leave zero RSP
+/// failures, which is the vacuous pass this project keeps re-encountering.
+#[test]
+#[ignore = "~2 minutes in --release; run explicitly (see the module docs)"]
+fn rsp_categories_report_no_failures() {
+    let Report {
+        rsp,
+        rsp_started,
+        failures,
+        started,
+        exited,
+        text,
+        ..
+    } = run();
+
+    assert!(
+        text.contains("Running "),
+        "the suite produced no output at all -- it did not run, so a zero RSP \
+         failure count means nothing (captured {} bytes)",
+        text.len()
+    );
+    assert!(
+        exited,
+        "the suite did not reach xioctl(EXIT) ({started} tests started, \
+         {failures} suite-wide failures) -- it hung mid-run, so the RSP count \
+         below is measured against a partial pass (see ledger R-19)"
+    );
+    // The RSP's OWN witness. A regression that stopped these tests starting would
+    // otherwise read as a perfect pass.
+    assert!(
+        rsp_started > 20,
+        "only {rsp_started} RSP-category tests started; the category did not run, \
+         so its zero failure count says nothing about the vector unit"
+    );
+
+    assert!(
+        rsp.is_empty(),
+        "the RSP categories must report no failures (VERSION-PLAN §v0.3.0).\n\
+         {} failing, of {failures} suite-wide across {started} tests \
+         ({rsp_started} RSP):\n{}",
+        rsp.len(),
+        rsp.join("\n")
+    );
+
+    eprintln!(
+        "RSP categories: 0 failing across {rsp_started} RSP tests started \
+         (suite ran to xioctl(EXIT); {failures} failing suite-wide across \
+         {started} started)."
     );
 }
