@@ -897,7 +897,10 @@ as an example, so it can be instrumented and rebuilt. An example rather than a `
 so a plain `cargo build` does not carry a benchmark into every build.
 
 The full cycle — instrument, run, `llvm-profdata merge` (18.6 MB from 50 raw files),
-rebuild with `-Cprofile-use`, and A-B-A:
+rebuild with `-Cprofile-use`, and A-B-A **in one sitting** (the legs are only
+comparable to each other — a later verification run of the same binary read 101.6 ms
+after an hour of heavy building, which is drift of the kind §"A-B-A, when a session
+drifts under you" describes and is why the return legs are the control):
 
 | leg | variant | mean over 120 frames |
 | --- | --- | --- |
@@ -926,13 +929,9 @@ a dynarec with different hot-path structure — could change the answer. It says
 regression *for this configuration on this workload*, which is the only thing three
 paired runs can say.
 
-**With this, every reachable codegen lever is measured.** It works on a different mechanism —
-branch layout and inlining decisions driven by an actual profile, rather than
-instruction selection — and interpreters are the workload it classically helps most.
-It needs two full LTO rebuilds plus an instrumented run, and it changes the release
-process rather than a config line, so it is named here as an open avenue rather than
-attempted in passing. **Do not assume it is neutral because this was**; the mechanisms
-do not overlap.
+**With this, every reachable codegen lever is measured** — instruction selection
+neutral, PGO negative, and the `fast-scheduler` block's 1.054x already merged. What
+remains is architectural rather than a build setting.
 
 ## The search for structural waste is exhausted — evidence, so it is not re-run
 

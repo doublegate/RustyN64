@@ -77,18 +77,25 @@ fn main() {
         "the VI never came up in {warm} frames — this would time the boot path, not a frame"
     );
 
+    // `run_frame` already includes the scan-out: it is `run_until` + `produce_frame`
+    // (which calls `scanout_scaled`) + `produce_audio`. The extra `scanout_scaled`
+    // above is only the VI-liveness probe for the warm-up loop and is deliberately
+    // outside the timed region — counting it there would bill the presentation
+    // pipeline twice. Raised in review, which read the warm-up call as the only one.
+    let retired_before = core.system().cpu.retired;
     let t0 = Instant::now();
     for _ in 0..FRAMES {
         core.run_frame();
     }
     let mean_ms = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(FRAMES);
 
-    // Witness that the run actually executed: a machine that stalled would report a
-    // very fast "frame" just as confidently.
-    let retired = core.system().cpu.retired;
+    // Witness that the TIMED window executed, not merely that the process did: the
+    // cumulative counter includes the warm-up, so a timed loop that stalled entirely
+    // would still show millions retired and report a very fast "frame".
+    let retired = core.system().cpu.retired - retired_before;
     assert!(
         retired > 0,
-        "no instructions retired — the measurement is vacuous"
+        "no instructions retired during the timed window — the measurement is vacuous"
     );
 
     println!("frames={FRAMES} warm={warm} retired={retired} mean={mean_ms:.3}ms");
