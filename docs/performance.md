@@ -1155,7 +1155,18 @@ Two calibrations that a naive re-run gets wrong:
 2. **Matching wall-clock is not matching workload.** The delay has to land on the
    same *emulated frame*, or the two profiles cover different game content.
    Accurate `-D 70000` starts at frame ~763; `fast-exec` needs **`-D 48600`** to
-   start there too. A first capture at `-D 45000` (frame ~706) is kept below as a
+   start there too.
+
+   **That frame number is derived, not asserted, and the distinction matters.**
+   `perf record -D` takes wall-clock milliseconds while `RUSTYN64_PROBE_SKIP`
+   counts frames, so the alignment is arithmetic — `70.0 s / 91.65 ms = 763`
+   and `48.6 s / 63.70 ms = 763` — using each leg's *whole-run mean* frame
+   cost. Frame cost is not uniform across the run (boot frames are cheaper), so the
+   real start frames differ from 763 and from each other by an unmeasured amount.
+   Making this exact means having the probe print its frame index when the capture
+   begins, and that is the right fix if these numbers ever need to be quoted more
+   precisely than they are here. The control capture below is what bounds the error
+   in the meantime. A first capture at `-D 45000` (frame ~706) is kept below as a
    control — it agrees to within a point on every bucket, which is what says the
    shares are stable rather than an artifact of where the window fell.
 
@@ -1193,17 +1204,31 @@ that is itself 30% smaller.
 
 ### The RSP and Bus buckets appear to grow, and that is not yet explained
 
-+12% and +13% in absolute terms, where both should be **flat** — neither does
-different work. The +1.04% extra retired instructions (ledger C-16) accounts for
-about a twelfth of it.
++12% and +13% in absolute terms.
 
-*Hypothesis, not measurement:* **attribution shift from inlining.** With
+**The expectation that they should be flat is itself unverified, and stating it as
+fact would be the very mistake this section is about.** The reasoning is that
+neither subsystem's *job* changes between modes — but the two runs demonstrably do
+**not** execute identical work: they retire 1.04% more instructions (ledger C-16),
+so the RSP and Bus are driven by a machine in a slightly different state. Matching
+emulated frame numbers is not the same as matching emulated work. And a sampled
+attribution rescaled by a frame-cost ratio cannot separate *this code got slower*
+from *this code ran more often* from *the compiler charged it differently*.
+
+*Leading hypothesis, not measurement:* **attribution shift from inlining.** With
 `fast-exec` the five-stage cascade is never called, so LLVM inlines a different
 graph, and memory accesses that previously folded into `pipeline.rs` may now be
 charged to `bus.rs`. This document already records one instance of exactly that
 (`step_due_here` reading as 63.9% because the whole pipeline inlined into it), so
 it is the leading candidate — but it is untested, and *"a hot line is not a hot
 operation"* applies to buckets too.
+
+**What would settle it** is a work-unit count rather than a sampled share: RSP
+instructions executed and bus accesses serviced, per frame, in both modes. Those
+are counters the machine can keep and nothing currently reports. Until they exist,
+**these two rows must not be used to argue that anything got slower** — they are
+recorded because an unexplained 12% is worth knowing about, not because they
+support a conclusion.
 
 ### The single hottest line is one this change introduced
 
@@ -1225,22 +1250,30 @@ final store). **The test before any refactor is to make the copy bigger** — pa
 `Latch` and see whether the share tracks. If it does not, the line is a parking
 spot, not a cost.
 
-### What this means for the plan, which is the point of measuring
+### What this means for the optimization plan, which is the point of measuring
 
-**Phase 2 — the deficit-counter scheduler — is undercut as a throughput play.**
+**A naming collision to clear up first**, because a reviewer hit it: the items
+below belong to the **optimization plan**, not to the project phases in
+`docs/STATUS.md`. That file is the single source of truth for project phase state
+and records its Phase 2 (RSP microcode) and Phase 4 (AI audio) as **complete**;
+those are different work items that happened to share numbers with the plan's. The
+plan's items are named rather than numbered from here on.
+
+**The deficit-counter scheduler is undercut as a throughput play.**
 `scheduler.rs` is now **5.05%**; eliminating it entirely buys 1.05x. That is not
 what the plan projected, because the plan was sized against the 9.26% share.
 
 **But the share bounds only the code it names.** `step_rcp` dispatches into the
 RSP, RDP, AI, PI and VI on *every* RCP edge, and that cost is charged to those
 buckets rather than to `scheduler.rs`. Coarse work units would remove visits, not
-just dispatch arithmetic. So Phase 2 is **not** refuted — what is refuted is sizing
+just dispatch arithmetic. So it is **not** refuted — what is refuted is sizing
 it from `scheduler.rs`. The measurement it needs first is *how much of the RSP
 bucket is a step that had nothing to do*.
 
-**Phase 4 — the RSP — is now the largest single remaining bucket at 21.4%**, ahead
-of Bus at 18.1%. On this evidence the plan's ordering should be revisited before
-Phase 2 is started.
+**The RSP is now the largest single remaining bucket at 21.4%**, ahead of Bus at
+18.1%, which makes the plan's RSP work (a pre-decoded threaded interpreter) the
+larger lever of the two. On this evidence the plan's ordering is worth revisiting
+before either is begun — a maintainer's call, recorded here rather than taken.
 
 ## The AI recomputed its DAC period 1.04 M times a frame
 
