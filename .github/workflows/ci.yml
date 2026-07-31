@@ -114,6 +114,7 @@ jobs:
       # And the core + frontend wiring. `run_frame` picks one of THREE entry
       # points by `cfg`, and an arm that stops compiling is invisible to every job
       # that does not enable its feature -- which is how a `#[cfg]` arm rots.
+      - run: cargo test -p rustyn64-core --features fast-exec
       - run: cargo clippy -p rustyn64-core --all-targets --features fast-exec -- -D warnings
       - run: cargo clippy -p rustyn64-frontend --all-targets --features fast-exec -- -D warnings
       # Both features together is a DEFINED configuration (ADR 0013 section 1

@@ -173,29 +173,41 @@ impl BailOutSet {
 /// *"the fast path never engaged"* and *"no bail-out boundary was reached"* — and
 /// both would otherwise look exactly like success.
 ///
-/// `blocks` is the engagement half: a fast path that quietly deferred everything to
-/// the accurate scheduler would agree with it perfectly and prove nothing, which is
-/// literally what #224 shipped on purpose while the gate was being built. It is a
-/// count and not a flag because "engaged once over a whole suite" and "engaged
-/// throughout" are worth telling apart in a failure message.
+/// `work_units` is the engagement half: a fast path that quietly deferred
+/// everything to the accurate scheduler would agree with it perfectly and prove
+/// nothing, which is literally what #224 shipped on purpose while the gate was
+/// being built. It is a count and not a flag because "engaged once over a whole
+/// suite" and "engaged throughout" are worth telling apart in a failure message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[must_use = "the run report is ADR 0012's completion witness; a caller that drops \
               it should say so explicitly with `let _ =`"]
 pub struct FastRunReport {
-    /// Whole edge periods the block executor ran itself.
-    pub blocks: u64,
+    /// How much work the fast path did itself — **in a unit the mode defines**.
+    ///
+    /// | mode | one unit is |
+    /// | --- | --- |
+    /// | `fast-scheduler` (`System::run_until_fast`) | one whole edge period (`EDGE_PERIOD` ticks) |
+    /// | `fast-exec` (`System::run_until_exec`) | one CPU instruction |
+    ///
+    /// **Do not compare it across modes**, and do not read it as a metric. It
+    /// answers ADR 0012 §2's question — *did the fast path engage* — for which any
+    /// positive count means the same thing either way, and a comparison of
+    /// magnitudes between two different units means nothing at all. Named
+    /// `work_units` rather than `blocks` precisely because "blocks" reads as a
+    /// single unit and it is not one; raised in review.
+    pub work_units: u64,
     /// Reasons the accurate scheduler was handed a stretch.
     pub bailed: BailOutSet,
 }
 
 impl FastRunReport {
-    /// Did the block executor run at all?
+    /// Did the fast path do any work itself?
     #[must_use]
     pub const fn engaged(self) -> bool {
-        self.blocks > 0
+        self.work_units > 0
     }
 
-    /// Accumulate another call's report: blocks **add**, reasons **union**.
+    /// Accumulate another call's report: work units **add**, reasons **union**.
     ///
     /// The rule lives here rather than at each call site because the two halves
     /// fail differently. A caller that adds the counts and forgets the union still
@@ -203,16 +215,17 @@ impl FastRunReport {
     /// is the one thing ADR 0012 §2's witness exists to catch, so a bug in the
     /// accumulation would disable the check rather than trip it.
     ///
-    /// `saturating_add` because a block count is a diagnostic: a wrapped total
-    /// could read as zero and turn "engaged constantly" into "never engaged". It
-    /// cannot be reached in practice — `u64::MAX` blocks is 6 x 2^64 master
-    /// ticks — but saturating is the failure that stays interpretable.
+    /// `saturating_add` because the count is a diagnostic: a wrapped total could
+    /// read as zero and turn "engaged constantly" into "never engaged". It cannot
+    /// be reached in practice — `u64::MAX` units is more emulated time than the
+    /// tick counter itself can express — but saturating is the failure that stays
+    /// interpretable.
     ///
     /// (No `#[must_use]` here: the returned type already carries one, and clippy's
     /// `double_must_use` rejects a second without a distinct message.)
     pub const fn merge(self, other: Self) -> Self {
         Self {
-            blocks: self.blocks.saturating_add(other.blocks),
+            work_units: self.work_units.saturating_add(other.work_units),
             bailed: self.bailed.union(other.bailed),
         }
     }
@@ -268,19 +281,22 @@ mod tests {
         }
     }
 
-    /// A report with no blocks has not engaged, whatever else it says.
+    /// A report with no work units has not engaged, whatever else it says.
     #[test]
-    fn engagement_is_about_blocks_not_bailouts() {
+    fn engagement_is_about_work_units_not_bailouts() {
         let mut bailed = BailOutSet::new();
         bailed.insert(BailOut::PartialPeriodTail);
-        let deferred = FastRunReport { blocks: 0, bailed };
+        let deferred = FastRunReport {
+            work_units: 0,
+            bailed,
+        };
         assert!(
             !deferred.engaged(),
             "a run that executed no block has not engaged, even having handed off"
         );
         assert!(
             FastRunReport {
-                blocks: 1,
+                work_units: 1,
                 ..deferred
             }
             .engaged()

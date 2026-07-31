@@ -498,7 +498,10 @@ impl System {
         }
         self.run_until(target);
 
-        FastRunReport { blocks, bailed }
+        FastRunReport {
+            work_units: blocks,
+            bailed,
+        }
     }
 
     /// The **instruction-granular** counterpart to [`System::run_until`]
@@ -562,14 +565,29 @@ impl System {
             // it at the CPU edge that would issue this instruction.
             let count_now = self.count_ticks();
             let cost = self.cpu.step_instruction_at(&mut self.bus, count_now);
-            report.blocks = report.blocks.saturating_add(1);
+            report.work_units = report.work_units.saturating_add(1);
 
-            // One `PCycle` is `CPU_DIVIDER` master ticks (ADR 0006). `saturating_mul`
-            // and `saturating_add` because the product is the one arithmetic here
-            // that is not already bounded by `target`.
-            let end = self
-                .master_ticks
-                .saturating_add(u64::from(cost).saturating_mul(CPU_DIVIDER));
+            // One `PCycle` is `CPU_DIVIDER` master ticks (ADR 0006).
+            //
+            // **`checked`, not `saturating`.** Saturating was the first version and
+            // it is a real hazard here rather than a theoretical one: it can put
+            // `end` at `u64::MAX` *without the machine ever having run there*, and
+            // `next_edge_after` then evaluates `tick + 1` at `u64::MAX` — a panic in
+            // debug, and in release a wrap to a low tick that keeps `rcp <= end`
+            // true forever. That is the difference between this and the accurate
+            // loop, whose top-of-range is unreachable because reaching it means
+            // emulating three thousand years (the note in the fast-scheduler gate).
+            // Raised in review.
+            //
+            // Overflowing means the timeline is exhausted, so the run ends; the
+            // landing below carries `master_ticks` to `target` if it is not already
+            // past it.
+            let Some(end) = u64::from(cost)
+                .checked_mul(CPU_DIVIDER)
+                .and_then(|span| self.master_ticks.checked_add(span))
+            else {
+                break;
+            };
 
             // The RCP catches up over the span the instruction consumed, on its own
             // edges. CPU-before-RCP still holds: the instruction has already run.
@@ -577,6 +595,9 @@ impl System {
             while rcp <= end {
                 self.master_ticks = rcp;
                 self.step_rcp();
+                // `end` is a real tick because it came from `checked_add` above, so
+                // this cannot be asked for an edge past `u64::MAX`: the loop
+                // condition fails at or before it.
                 rcp = Self::next_edge_after(rcp, self.phases.rcp, RCP_DIVIDER);
             }
             self.master_ticks = end;

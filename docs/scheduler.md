@@ -313,7 +313,7 @@ with more in it, and the two features are independent:
 | relation to the accurate run | **tick-identical** — same edges, same order, same `master_ticks` | timing deliberately diverges |
 | gate predicate | whole serialized state, every tick | architectural state at retirement boundaries, **minus the timing-derived carve-out**; timing divergence measured and bounded |
 | `master_ticks` equality | asserted | **not** asserted — it is the quantity being relaxed |
-| ADR 0006 | unchanged | amended for that mode only (per-domain deficit counters) |
+| ADR 0006 | unchanged | **unchanged as implemented.** ADR 0013 *authorizes* per-domain deficit counters for this mode; the implementation has none, and `master_ticks` is still the only incremented counter. The authorization falls due with the deficit-counter scheduler, not before. |
 
 Where both features are enabled, `fast-exec`'s scheduler is the one that runs
 (ADR 0013 §1). The whole-state tests above keep their stricter predicate: they grade
