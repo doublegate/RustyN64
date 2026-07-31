@@ -62,8 +62,15 @@ const LATER_PHASES: [&str; 11] = [
     "RSP", "SP ", "RDP", "MI ", "cart", "spmem", "pifram", "VI", "AI", "PI ", "SI ",
 ];
 
-/// Run the suite and return `(phase-1 failures, suite-wide failures, tests
-/// started, guest reached EXIT, output)`.
+/// Run the suite once and report everything both gates need.
+///
+/// Returns a [`Report`] rather than a tuple: this used to return five positional
+/// values and was gaining a sixth, at which point a swapped pair still compiles.
+/// Each field is documented on the struct.
+///
+/// One run serves both assertions, which is why the failure lists are partitioned
+/// here rather than at the call sites — the suite takes ~25 s in `--release`, and
+/// two tests each running it would double that for no added coverage.
 fn run() -> Report {
     let image = std::fs::read(ROM).expect("the committed n64-systemtest ROM");
     let mut sys = System::new(0);
