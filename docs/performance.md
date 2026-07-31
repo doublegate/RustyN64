@@ -1558,9 +1558,22 @@ restructure that needs neither `unsafe` nor an unstable feature: hoist the dispa
 over plain arrays. That is the shape LLVM autovectorizes on its own.
 
 Whether it actually does is **empirical and unmeasured**, and would want one
-experiment on one family before the other ~80 arms are touched. Note the VU is at
-`Failed: 0` on n64-systemtest's RSP category, so this is accuracy-critical code
-where a mechanical refactor has to be gated on that suite, not on unit tests.
+experiment on one family before the other ~80 arms are touched.
+
+**And there is no gate to run it against, which has to be fixed first.** The RSP
+category did reach `Failed: 0` at v0.3.0 (Phase 2's cut criterion), but the
+committed runner does **not** assert it:
+`crates/rustyn64-test-harness/tests/systemtest.rs` excludes `"RSP"` and `"SP "`
+through its `LATER_PHASES` list, so `phase_1_categories_report_no_failures` would
+stay green through an arbitrarily broken vector unit. An earlier draft of this
+section cited that suite as the refactor's gate; **it is not one.** Caught in
+review.
+
+So the first slice of any VU work is an **RSP-scoped assertion** of the same shape
+as the Phase 1 one — named ROM, `Failed: 0` acceptance, and a witness that the
+category actually ran, since an empty run reports zero failures just as
+convincingly. Building the gate before the thing it grades is a rule this project
+already has, and this is a case where it was about to be skipped.
 
 **If the restructure does not vectorize**, the question returns — and the plan's
 recorded answer is wrong for this case. Moving the VU into a new crate that permits
