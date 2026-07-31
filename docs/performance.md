@@ -1628,7 +1628,16 @@ RSP categories: 0 failing across 224 RSP tests started
 
 ### And it is worth nothing
 
-Six readings a side, `frame_bench`, `--features fast-exec`, one sitting:
+Six readings a side, `frame_bench`, `--features fast-exec`, **one sitting, in the
+order A x3 -> B x3 -> B x3 -> A x3** (the two B blocks are contiguous because the
+rebuild between configurations is what costs time, not the runs). Host, OS,
+toolchain, profile and ROM hash are the ones recorded once in §Method; revision is
+`main` at the RSP-gate commit. Command:
+
+```bash
+RUSTYN64_PROBE_ROM="$ROM" cargo run --release --example frame_bench \
+  --features fast-exec
+```
 
 | leg | ms/frame |
 | --- | --- |
@@ -1656,25 +1665,40 @@ This was the strongest available test of *"the per-lane dispatch is what stops t
 VU going fast"*, run on the family that is 61% of the work and carries double the
 dispatch. It moved nothing.
 
-Taken with the decode sizing above (**0.29%** for a perfect decode cache), the
-conclusion for the vector unit is:
+**What is established**, and no more than this: hoisting the **multiply family's**
+dispatch out of the lane loop is neutral on **this workload** (Super Mario 64's
+render phase). Taken with the decode sizing above (0.29% for a perfect decode
+cache), two of the three things a pre-decoded threaded interpreter would do have
+now been measured, and both are worth about nothing here.
 
-**Its 8.54% of a frame is the arithmetic itself, not the dispatch around it.** No
-amount of restructuring the interpreter reaches it. What remains is either genuine
-SIMD — eight `u16` lanes per operation, which is what the hardware is and what
-`core::simd` or `std::arch` would express — or nothing.
+**What is hypothesis, and is recorded as such** — each needing its own measurement
+before it is acted on:
 
-That makes the `unsafe`/nightly decision (`docs/performance.md` §*The SIMD
-question*) the real gate on further VU work, rather than something to defer behind
-a restructure. It is an ADR-level call and this measurement does not make it; what
-it does is remove the cheaper alternative that was standing in front of it.
+- That the VU's 8.54% is *predominantly the arithmetic itself*. Plausible after
+  two negative results, but neither experiment decomposed the per-lane body.
+- That **no** interpreter restructuring helps. Not established: one family was
+  hoisted, not all of them, and a full per-opcode specialization (which also
+  hoists `multiply_lane`'s inner match) is a different change from this one.
+- That the remaining families can only measure smaller. They are smaller in
+  frequency and singly dispatched, which is a reason to expect it — not a
+  measurement of it.
+- That SIMD is what remains. It is the obvious candidate given the hardware is
+  eight `u16` lanes, and it is untried.
+
+What this **does** do is remove the cheapest of those candidates from the front of
+the queue. The `unsafe`/nightly decision (§*The SIMD question*) is no longer
+deferrable behind "restructure first, it is free" — because the free restructure
+was tried on its best case and did nothing. That decision remains ADR-level and
+this measurement does not make it.
 
 ### Ruled out
 
-**Do not hoist VU opcode families out of the lane loop for performance.** Measured
-neutral on the largest family (61% of ops, double dispatch), with accuracy
-verified. The remaining families are smaller and singly-dispatched, so they can
-only measure smaller.
+**Do not hoist VU opcode families out of the lane loop for performance without a
+new reason.** Measured neutral on the largest family (61% of ops, double
+dispatch), with accuracy verified. The remaining families are smaller in frequency
+and singly dispatched, which is a reason to *expect* a smaller effect rather than a
+measurement of one — so this rules out repeating the same experiment, not the
+different change of specializing `multiply_lane` per opcode.
 
 ## The AI recomputed its DAC period 1.04 M times a frame
 
