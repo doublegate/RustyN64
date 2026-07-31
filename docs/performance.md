@@ -1113,6 +1113,108 @@ measurement to take is a fresh profile of the **fast-exec** frame — the shares
 above were taken on the accurate path and no longer describe what this build
 spends its time on.
 
+## The fast-exec frame, profiled — and the plan's next phase is undercut by it
+
+The shares in this document were all taken on the accurate path. They no longer
+describe the `fast-exec` build, so here is a **paired** capture of both, on the
+same probe, over the **same emulated frames**.
+
+### Method, and the two things that had to be recalibrated
+
+`gameplay_phase_probe` (the render-phase probe — `frame_cost_probe`'s window is
+early boot and puts the RDP at 0.00%), Super Mario 64, hash verified, `-F 999`,
+`perf report -s srcline --full-source-path`.
+
+Two calibrations that a naive re-run gets wrong:
+
+1. **`-D 70000` discards the entire `fast-exec` run.** The recorded delay is
+   calibrated to a 82.5 s accurate run; `fast-exec` finishes the same 900 frames in
+   57.3 s. Left alone, the capture would be empty.
+2. **Matching wall-clock is not matching workload.** The delay has to land on the
+   same *emulated frame*, or the two profiles cover different game content.
+   Accurate `-D 70000` starts at frame ~763; `fast-exec` needs **`-D 48600`** to
+   start there too. A first capture at `-D 45000` (frame ~706) is kept below as a
+   control — it agrees to within a point on every bucket, which is what says the
+   shares are stable rather than an artifact of where the window fell.
+
+### The render-phase frame, and a third ratio
+
+| | accurate | `fast-exec` |
+| --- | --- | --- |
+| in-window frame cost | **91.2 ms** | **63.4 ms** |
+| ratio | — | **1.437x** |
+
+**This is not the 1.53x figure above, and both are right.** That one is
+`frame_bench`'s window (frames 37–156, early boot); this is the render phase. A
+speedup is a property of a workload, not of a build, and quoting one number for
+both windows is how a measurement becomes a slogan.
+
+### Where the time goes now
+
+| bucket | accurate | `fast-exec` (aligned) | control (`-D 45000`) | absolute change |
+| --- | --- | --- | --- | --- |
+| CPU | 50.24% | **32.29%** | 31.62% | **−55.3%** |
+| RSP | 13.29% | **21.42%** | 22.16% | +12.1% |
+| Bus | 11.07% | **18.06%** | 18.49% | +13.5% |
+| stdlib / inlined | 7.78% | 11.57% | 11.78% | +3.5% |
+| RDP | 4.47% | 6.36% | 6.88% | −1.0% |
+| scheduler | 9.26% | **5.05%** | 5.11% | **−62.1%** |
+| VI | 3.76% | 4.64% | 4.21% | −14.1% |
+| AI | 0.37% | 0.03% | 0.11% | −94.4% |
+
+The absolute column rescales by the 1.437x frame-cost ratio, so it answers *did
+this code get faster*, which the share column cannot.
+
+**The CPU and the scheduler are what moved**, which is what the change was for.
+Together they were **59.5%** of the accurate frame and are now **37.3%** of a frame
+that is itself 30% smaller.
+
+### The RSP and Bus buckets appear to grow, and that is not yet explained
+
++12% and +13% in absolute terms, where both should be **flat** — neither does
+different work. The +1.04% extra retired instructions (ledger C-16) accounts for
+about a twelfth of it.
+
+*Hypothesis, not measurement:* **attribution shift from inlining.** With
+`fast-exec` the five-stage cascade is never called, so LLVM inlines a different
+graph, and memory accesses that previously folded into `pipeline.rs` may now be
+charged to `bus.rs`. This document already records one instance of exactly that
+(`step_due_here` reading as 63.9% because the whole pipeline inlined into it), so
+it is the leading candidate — but it is untested, and *"a hot line is not a hot
+operation"* applies to buckets too.
+
+### The single hottest line is one this change introduced
+
+**`crates/rustyn64-cpu/src/pipeline/fastexec.rs:334` — 6.83%**, and it is
+`self.dc_wb = latch;`: the 120-byte `Latch` copy that stages an instruction into
+the accurate path's commit machinery so `wb_stage` can be reused verbatim.
+
+That reuse is deliberate and it is why the two paths cannot disagree about COP0
+writes, the TLB instructions, or retirement. Whether the copy is worth 6.8% is a
+**separate question from whether that line is hot**: this project has been misled
+by precisely this reading once already (the `Latch` refutation in §*Ruled out* 6,
+where 16.1% on the latch copies turned out to be retired work charged to a stage's
+final store). **The test before any refactor is to make the copy bigger** — pad
+`Latch` and see whether the share tracks. If it does not, the line is a parking
+spot, not a cost.
+
+### What this means for the plan, which is the point of measuring
+
+**Phase 2 — the deficit-counter scheduler — is undercut as a throughput play.**
+`scheduler.rs` is now **5.05%**; eliminating it entirely buys 1.05x. That is not
+what the plan projected, because the plan was sized against the 9.26% share.
+
+**But the share bounds only the code it names.** `step_rcp` dispatches into the
+RSP, RDP, AI, PI and VI on *every* RCP edge, and that cost is charged to those
+buckets rather than to `scheduler.rs`. Coarse work units would remove visits, not
+just dispatch arithmetic. So Phase 2 is **not** refuted — what is refuted is sizing
+it from `scheduler.rs`. The measurement it needs first is *how much of the RSP
+bucket is a step that had nothing to do*.
+
+**Phase 4 — the RSP — is now the largest single remaining bucket at 21.4%**, ahead
+of Bus at 18.1%. On this evidence the plan's ordering should be revisited before
+Phase 2 is started.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
