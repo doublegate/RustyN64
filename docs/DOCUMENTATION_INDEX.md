@@ -46,7 +46,7 @@ corrected.
 
 | Directory | Contents |
 | --------- | -------- |
-| [adr/](adr/) | Architecture Decision Records (Michael Nygard format), `0001`-`0013`. Load-bearing ones: `0006` the canonical 187.5 MHz master clock (supersedes `0001`), `0007` the cycle-accurate five-stage VR4300 pipeline, `0011`+`0012` the default-off `fast-scheduler`, `0013` the `fast-exec` timing relaxation. Each file states its own supersession and amendment links; read those rather than this cell. |
+| [adr/](adr/) | Architecture Decision Records (Michael Nygard format), `0001`-`0014`. Load-bearing ones: `0006` the canonical 187.5 MHz master clock (supersedes `0001`), `0007` the cycle-accurate five-stage VR4300 pipeline, `0011`+`0012` the default-off `fast-scheduler`, `0013` the `fast-exec` timing relaxation, `0014` the GPU-backed RDP (default-off, binding rather than porting). Each file states its own supersession and amendment links; read those rather than this cell. |
 
 ## Related, outside `docs/`
 
