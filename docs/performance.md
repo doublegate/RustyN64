@@ -839,7 +839,7 @@ project found were never hotspots to begin with.
 | bucket | share | hottest single line | what it is |
 | --- | --- | --- | --- |
 | `pipeline.rs` | 36.1% | 4.42% (`ex_dc = out`) | retired work charged to a stage's final store — **not** copy cost; see "Ruled out" item 6 |
-| RSP `vu.rs` + `su.rs` | 13.6% | **0.80%** (`Rsp::r`) | `r0`-pinned register read, then multiply-family match arms — interpreter dispatch |
+| RSP `vu.rs` + `su.rs` | 13.6% | **0.80%** (`su.rs`'s `Rsp::r`) | `r0`-pinned register read, then multiply-family match arms — interpreter dispatch |
 | `bus.rs` | 10.8% | **0.84%** | memory-access dispatch, spread over the whole address map |
 | `scheduler.rs` | 9.6% | 1.66% | edge derivation — **addressed** by the `fast-scheduler` block |
 | `decode.rs` | 3.6% | 0.36% | instruction decode, spread across the opcode space |
@@ -852,18 +852,33 @@ before the check that made it unnecessary (both split-borrow takes). Searching f
 tallest bar found none of them — and once, in the `Latch` case, actively misled.
 
 **That class is now empty.** There is no other per-step `MASTER_HZ /` divide in the
-core; the two split-borrows that had an idle majority are done, and the RSP's does not
-(it executes microcode on essentially every step). What is left in each bucket above is
+core; the two split-borrows that had an idle majority are done, and the RSP's does
+not have one, because it executes microcode on essentially every step. What is left in each bucket above is
 the emulator computing what it is required to compute.
 
 **So the next increment is not an optimization.** Going further means changing *what*
 is computed rather than when or how often — the dynarec question, with its own ADR,
 its own correctness surface, and `unsafe` confined to where the repo already permits
-it. `docs/adr/0011` deliberately leaves that open; nothing here decides it.
+it. [`docs/adr/0011-optional-fast-path-scheduler.md`](adr/0011-optional-fast-path-scheduler.md)
+deliberately leaves that open; nothing here decides it.
 
 **Do not re-run this survey** expecting a different answer without a workload change.
-It is reproducible: `gameplay_phase_probe` under `perf record -D 70000`, aggregated per
-file and then per line with `perf report -s srcline --full-source-path`.
+It is reproducible in full — the flags matter, and an incomplete command is not a
+reproducible one:
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --tests -p rustyn64-frontend
+RUSTYN64_PROBE_ROM=/path/rom.z64 RUSTYN64_PROBE_SKIP=1400 \
+  perf record -D 70000 -F 999 -g --call-graph=dwarf,4096 -o render.data \
+  -- target/release/deps/gameplay_phase_probe-* --ignored --nocapture \
+  does_a_retail_title_reach_a_rendering_phase
+perf report -i render.data -s srcline --full-source-path --no-children -g none \
+  --stdio --percent-limit 0
+```
+
+`-D 70000` is a delay in **milliseconds** — 70 s, which is what discards the boot
+phase and leaves a rendering-phase profile; `-F 999` is the sample rate in Hz.
+Aggregate per file by summing the per-line percentages.
 
 ## The render-phase map, re-measured after the VI and RDP work
 
