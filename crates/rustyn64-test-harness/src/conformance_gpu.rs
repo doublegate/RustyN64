@@ -301,7 +301,46 @@ pub fn census() -> Result<Census, Unavailable> {
 
 #[cfg(test)]
 mod tests {
-    use super::swap_words_into;
+    use super::{read_region, swap_words_into, write_region};
+
+    /// `write_region` then `read_region` must return exactly what went in, at
+    /// **any** address and **any** length.
+    ///
+    /// The cases are chosen to break an implementation that assumes alignment:
+    /// a 2-byte payload is the one a committed vector actually carries and the
+    /// one that broke the word-wise path, and the odd base addresses catch a
+    /// mapping that is only correct from a word boundary.
+    #[test]
+    fn regions_round_trip_at_any_address_and_length() {
+        let mut rdram = vec![0u8; 64];
+        for addr in [0usize, 1, 2, 3, 4, 7, 16] {
+            for len in [1usize, 2, 3, 4, 5, 8, 9] {
+                let src: Vec<u8> = (0..len).map(|i| (i + 1) as u8).collect();
+                rdram.fill(0);
+                write_region(&mut rdram, addr, &src);
+                let mut back = vec![0u8; len];
+                read_region(&rdram, addr, &mut back);
+                assert_eq!(back, src, "round trip failed at addr {addr} len {len}");
+            }
+        }
+    }
+
+    /// Where both apply, `write_region` must agree with [`swap_words_into`].
+    ///
+    /// This is the assertion that keeps the two mechanisms from drifting: the
+    /// per-byte `^ 3` helper is used for vector regions and the word-wise swap
+    /// for whole buffers, and nothing else forces them to describe the same
+    /// permutation. A round-trip test alone would not — two mutually inverse but
+    /// *wrong* functions round-trip perfectly.
+    #[test]
+    fn write_region_agrees_with_the_word_swap_where_both_apply() {
+        let src: Vec<u8> = (0u8..32).collect();
+        let mut by_region = vec![0u8; 32];
+        write_region(&mut by_region, 0, &src);
+        let mut by_words = vec![0u8; 32];
+        swap_words_into(&mut by_words, &src);
+        assert_eq!(by_region, by_words);
+    }
 
     /// The swap must be its own inverse, which is what lets one function serve
     /// both directions.
