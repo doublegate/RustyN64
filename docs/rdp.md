@@ -916,7 +916,7 @@ frame (T-31-005); the deferred paths track against the ParaLLEl-RDP fuzz suite.
 - **The DP command list can live in DMEM or RDRAM** — `DPC_STATUS` selects the
   source; honor both.
 
-## The GPU backend (`gpu-rdp`, default-off, not yet built)
+## The GPU backend (`gpu-rdp`, default-off, bound but not wired)
 
 [ADR 0014](adr/0014-gpu-backed-rdp.md) authorizes binding **parallel-rdp** (MIT)
 as an alternate rasterizer backend, behind a default-off `gpu-rdp` feature on the
@@ -953,6 +953,69 @@ Three constraints worth knowing before reading ADR 0014:
 ADR 0014 carries written **kill criteria**, which is the point of scoping it as an
 experiment: determinism unachievable, no measured improvement on a real title, or
 a Vulkan dependency that cannot be made optional.
+
+### What exists today
+
+The **binding**, and nothing downstream of it:
+
+| piece | state |
+| --- | --- |
+| `vendor/parallel-rdp-standalone` | submodule, upstream MIT, attributed in `NOTICE` |
+| `crates/rustyn64-rdp-gpu/shim/` | flat `extern "C"` surface, 8 entry points, POD-only |
+| the shim's failure contract | every fallible entry point returns a status; nothing returns `void` |
+| `crates/rustyn64-rdp-gpu/src/lib.rs` | `GpuRdp` — every `unsafe` block carries its `// SAFETY:` |
+| `tests/smoke.rs` | renders a Fill Rectangle and checks the picture |
+| CI job `gpu-rdp` | full-run only; builds and links, and asserts which branch the smoke test took |
+
+**Verified locally on an RTX 3090:** the device initializes, parallel-rdp's
+compute shaders compile, a 64x32 Fill Rectangle rasterizes, and `scanout_sync`
+returns a 640x240 RGBA8 frame in which 1,568 pixels carry exactly the fill color
+and no pixel carries any other. That is the whole of the evidence — it is a
+command list submitted by hand, not by the emulator.
+
+**No entry point returns `void`.** Submission, VI programming, flush and idle all
+return a status, and the Rust wrapper surfaces each as a `#[must_use] bool`. This
+was a review finding and it was right: the C++ side can fail at runtime — device
+loss, out of memory, a command buffer that cannot be allocated — and a `void`
+turns that into a dropped RDP command that surfaces as a wrong picture many
+frames later with nothing pointing back at the submission. The exception still
+cannot cross into Rust; it just no longer vanishes.
+
+One guard here is **not** exercised by any test: `prdp_set_vi_register` refuses an
+index outside `VIRegister` rather than casting it, and the `ViRegister` enum
+cannot express an out-of-range value, so the check is reachable only from C. It
+is worth having and it is not evidence of anything.
+
+**Explicitly NOT done, and each is a separate piece of work:**
+
+- **No `Bus` integration.** Nothing routes DPC commands here; the software
+  rasterizer is still the only one the machine can use.
+- **No shared RDRAM.** The binding borrows a buffer for its own lifetime, which
+  is what makes the safety argument tractable, and is *not* how a running
+  machine's RDRAM is owned.
+- **No frontend feature.** `gpu-rdp` is a feature of `rustyn64-rdp-gpu` only.
+  The frontend does not depend on the crate at all yet, so nothing pulls C++
+  into a default build. When it does gain the feature it stays out of `full`,
+  on the same reasoning that keeps `fast-scheduler` out: promoting an alternate
+  backend into a shipped artifact is an ADR decision, not a build-configuration
+  one.
+- **No dirty-region synchronization**, and therefore **no determinism claim**.
+  ADR 0004 is not yet satisfied and this cannot ship until it is.
+
+One correction to the plan this came from: the plan proposed `bindgen`. It is
+not used and not needed — the shim is eight functions, so hand-written
+declarations are shorter than the tooling to generate them, and they are the
+thing a reviewer must read either way.
+
+Their risk is **drift from the header, and nothing here detects it.** An earlier
+version of this paragraph claimed `cargo test --features gpu-rdp` caught it; that
+was wrong, and the correction is the point. Linking resolves *symbols*. A
+declaration whose parameter types, order, or return type disagree with the C
+header links exactly as cleanly as a correct one and then corrupts the stack at
+run time. The eight declarations are held correct by review against
+`prdp_shim.h`, which is why that header is kept short enough to diff by eye. If
+this surface grows, that stops being sufficient and `bindgen` becomes the right
+answer after all.
 
 ## Test plan
 

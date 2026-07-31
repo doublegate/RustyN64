@@ -1,0 +1,24 @@
+[package]
+name = "rustyn64-rdp-gpu"
+version = "0.8.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RustyN64: optional GPU-backed RDP, binding parallel-rdp (ADR 0014)"
+
+[features]
+default = []
+# ADR 0014: compile and link the vendored parallel-rdp. Default-OFF, and the
+# ONLY thing that pulls in a C++ compiler, a Vulkan-capable toolchain, or the
+# `vendor/parallel-rdp-standalone` submodule. With it off this crate is a handful
+# of declarations that compile in a fraction of a second, which is what keeps
+# `cargo build` at the repo root working for someone who never initialized the
+# submodule.
+gpu-rdp = []
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

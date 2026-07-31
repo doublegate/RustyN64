@@ -2383,6 +2383,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustyn64-rdp-gpu"
+version = "0.8.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "rustyn64-rsp"
 version = "0.8.0"
 dependencies = [

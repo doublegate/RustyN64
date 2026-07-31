@@ -42,6 +42,7 @@ jobs:
     outputs:
       os: ${{ steps.pick.outputs.os }}
       full: ${{ steps.pick.outputs.full }}
+      gpu: ${{ steps.pick.outputs.gpu }}
     steps:
       - id: pick
         shell: bash
@@ -50,14 +51,45 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ] && [[ "$HEAD_REF" != release/* ]]; then
-            echo 'full=false' >> "$GITHUB_OUTPUT"
+            full=false
             echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'full=true' >> "$GITHUB_OUTPUT"
+            full=true
             echo 'os=["ubuntu-latest", "macos-latest", "windows-latest"]' >> "$GITHUB_OUTPUT"
           fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+          # `gpu-rdp` is normally full-run only: it compiles ~35k lines of
+          # vendored C++ and is the only job needing the submodule, so making
+          # every feature PR pay for it would undo the light/full split. But a PR
+          # that CHANGES the binding must not merge with that job never having
+          # run -- the PR introducing it needed a manual `workflow_dispatch` to
+          # get its own C++ built even once, which is precisely the
+          # gate-that-never-runs shape this repo has been bitten by. So: full
+          # runs, plus any PR touching the binding or its inputs.
+          # This FAILS OPEN. If the file list cannot be fetched -- rate limit,
+          # restricted token on a fork PR -- the job runs rather than being
+          # skipped. A gate that quietly turns itself off when a side query
+          # fails is worse than one that occasionally costs a C++ build: the
+          # skip is invisible, and the whole reason this output exists is that
+          # a silently-skipped gate already happened here once.
+          gpu=$full
+          if [ "$full" != "true" ] && [ -n "${PR_NUMBER:-}" ]; then
+            if ! files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+                           --jq '.[].filename'); then
+              echo "::warning::could not list changed files; running gpu-rdp rather than skipping it"
+              gpu=true
+            elif printf '%s\n' "$files" \
+               | grep -qE '^(crates/rustyn64-rdp-gpu/|vendor/parallel-rdp-standalone|\.gitmodules$|\.github/workflows/ci\.yml$)'; then
+              gpu=true
+            fi
+          fi
+          echo "gpu=$gpu" >> "$GITHUB_OUTPUT"
 
   test:
     name: test (${{ matrix.os }})
@@ -199,10 +231,56 @@ jobs:
           fi
           echo "test-roms feature confirmed active in the harness"
 
+  gpu-rdp:
+    name: build (gpu-rdp feature)
+    # Compiles the vendored parallel-rdp C++ (ADR 0014). Runs on a full run, and
+    # on any PR that touches the binding -- see the `gpu` output in `setup` for
+    # why the second half matters.
+    #
+    # It BUILDS but does not render. A GitHub runner has no GPU, so the smoke
+    # test takes its documented no-device branch. That is still worth running:
+    # it proves the shim links, the `extern "C"` signatures match, and the
+    # library loads -- and the step below asserts which branch was taken rather
+    # than letting "0 failed" stand in for "it worked". An untested feature is
+    # the gate-that-never-runs failure this project has been bitten by before;
+    # a test whose skip is silent is the same failure wearing a green tick.
+    needs: setup
+    if: ${{ needs.setup.outputs.gpu == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p rustyn64-rdp-gpu --all-targets --features gpu-rdp -- -D warnings
+      - name: Run the smoke test and report which branch it took
+        run: |
+          set -euo pipefail
+          cargo test -p rustyn64-rdp-gpu --features gpu-rdp -- --nocapture 2>&1 \
+            | tee /tmp/gpu-rdp.log
+          if grep -q "^SKIPPED" /tmp/gpu-rdp.log; then
+            echo "::notice::no Vulkan device on this runner -- the binding built \
+            and linked, but nothing about rendering was verified here"
+          elif grep -q "fill color occupies" /tmp/gpu-rdp.log; then
+            echo "a real frame was rendered and checked"
+          else
+            echo "::error::the smoke test neither rendered nor reported a skip; \
+            it is no longer witnessing either outcome"
+            exit 1
+          fi
+
   no_std:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Deliberately WITHOUT `submodules: true`, as in every job but `gpu-rdp`.
+      # ADR 0014 promises a default build needs neither the submodule nor a C++
+      # toolchain; these jobs are what make that a checked claim rather than an
+      # intention.
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
