@@ -655,16 +655,28 @@ hardest to read backwards: n64-systemtest would report a wrong *cause code* rath
 than a missing check. `exec::execute` was already pure, and `Pipeline::access`
 already takes a `MemOp` rather than a latch, so these three complete the set.
 
-**`ex_gate`'s check order is preserved but is not oracle-verified**, and the
-extraction is what established that. Swapping the first two checks — coprocessor
-usability and 64-bit-reserved — leaves n64-systemtest at exactly 0 failing in the
-Phase 1 categories and 90 suite-wide, so the suite evidently never reaches an
-encoding that is simultaneously 64-bit *and* on an unusable coprocessor in a mode
-where both would refuse. The order is kept because it is what the accurate path
-has always done and changing it on the strength of an *absent* test would be
-worse; what is missing is evidence, and saying so is the point. "The order
-matters" is the shape of claim this project keeps finding stale, because nothing
-fails when it is wrong.
+**`ex_gate`'s first two refusals are disjoint, so their order cannot be
+observed** — a finding the extraction produced. The accurate path's comment says
+an unusable coprocessor is reported as such *"even when the encoding is also a
+64-bit one"*; swapping the two checks leaves n64-systemtest at exactly 0 failing
+in the Phase 1 categories and 90 suite-wide. The reason is stronger than a gap in
+the suite:
+
+- `Op::is_64_bit` covers only CPU integer and load/store operations (`Dadd` …
+  `Sdr`);
+- `unusable_coprocessor` answers only for COP0/COP1/COP2 encodings.
+
+**No encoding is in both sets**, so no input can reach the second check by way of
+the first. `ex_gates_first_two_refusals_cannot_both_apply` sweeps a structured
+slice of the encoding space to keep that true, rather than asserting against a
+copy of either list — a duplicated list stops covering what it duplicates the
+moment one side grows.
+
+An **open question, not a claim**: `DMFC1`/`DMTC1`/`DMFC0`/`DMTC0` *are* 64-bit
+operations and are absent from `is_64_bit`. Whether that omission is correct is
+unresolved here. If they are ever added, the sweep fails and the precedence has to
+be justified against the manual instead of inherited — which is the point of
+having the test rather than a comment.
 
 The **WB commit** is *not* in this list, and that is a decision rather than an
 oversight: it raises aborts through `abort_from(Stage::Wb, …)`, which selects the
