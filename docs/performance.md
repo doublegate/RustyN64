@@ -1583,6 +1583,99 @@ recorded answer is wrong for this case. Moving the VU into a new crate that perm
 nightly-only feature, or a narrowly scoped `unsafe` exception for `rustyn64-rsp`
 — an ADR-level decision either way, and not one this measurement makes.
 
+## The VU family hoist: built, accurate, and measured NEUTRAL
+
+The experiment the SIMD section asked for. It was run against the RSP gate that
+now exists, and the result **reverts** under this document's own rule.
+
+### Which family, measured rather than guessed
+
+An opcode histogram in `Rsp::vu_compute`, Super Mario 64, 900 frames — **125 M VU
+compute ops, ~139 k per frame**:
+
+| op | share | |
+| --- | --- | --- |
+| `0x0e` | 17.8% | multiply family |
+| `0x0f` | 15.2% | multiply family |
+| `0x0d` | 8.7% | multiply family |
+| `0x10` | 8.7% | `VADD` |
+| `0x04` | 7.9% | multiply family |
+| `0x00` | 6.0% | multiply family |
+| `0x06` | 5.3% | multiply family |
+| `0x11` | 4.4% | `VSUB` |
+| `0x23` | 3.4% | |
+| `0x15` | 3.1% | `VSUBC` |
+
+**The multiply family (`0x00..=0x0F`) is ~61% of every VU compute op** — and it is
+the one that dispatched **twice** per lane, once on the outer match and again
+inside `multiply_lane`, so the opcode was decoded **sixteen times per
+instruction**. If dispatch-in-the-loop were the constraint, this is where it would
+show.
+
+### The change, and that it is correct
+
+A dedicated eight-lane loop for `op <= 0x0F`, removing eight of the sixteen
+dispatches and leaving LLVM a loop body with one call rather than a sixty-way
+branch. It returns directly: the multiplies write no `VCC`, no `VCO`, and fall
+outside the `0x28..=0x2D` accumulator range, so none of the shared tail applies.
+
+**Accuracy held**, on the gate added for exactly this:
+
+```text
+RSP categories: 0 failing across 224 RSP tests started
+(suite ran to xioctl(EXIT); 90 failing suite-wide across 950 started).
+```
+
+### And it is worth nothing
+
+Six readings a side, `frame_bench`, `--features fast-exec`, one sitting:
+
+| leg | ms/frame |
+| --- | --- |
+| A (baseline) | 64.114, 64.303, 64.183, 64.110, 63.744, 63.899 |
+| B (hoisted) | 63.840, 64.182, 64.040, 63.473, 63.775, 63.517 |
+
+| | A | B |
+| --- | --- | --- |
+| range | 63.744 — 64.303 | 63.473 — 64.182 |
+| mean | 64.059 | 63.804 |
+
+**The ranges overlap heavily.** The means differ by 0.40% in the hoist's favor,
+while the conservative pairing (best A against worst B) says it is **0.68%
+slower**. When the sign of the result depends on which pairing you quote, the
+result is **neutral** — the same standard applied to the `rsp_tick` early-out
+above, and the same conclusion.
+
+**Reverted**, per this document's standing rule: *revert anything neutral or
+worse*, as was done for the `next_edge` hoist, the `vi_divot` reorder,
+`target-cpu=native` and PGO.
+
+### What it settles
+
+This was the strongest available test of *"the per-lane dispatch is what stops the
+VU going fast"*, run on the family that is 61% of the work and carries double the
+dispatch. It moved nothing.
+
+Taken with the decode sizing above (**0.29%** for a perfect decode cache), the
+conclusion for the vector unit is:
+
+**Its 8.54% of a frame is the arithmetic itself, not the dispatch around it.** No
+amount of restructuring the interpreter reaches it. What remains is either genuine
+SIMD — eight `u16` lanes per operation, which is what the hardware is and what
+`core::simd` or `std::arch` would express — or nothing.
+
+That makes the `unsafe`/nightly decision (`docs/performance.md` §*The SIMD
+question*) the real gate on further VU work, rather than something to defer behind
+a restructure. It is an ADR-level call and this measurement does not make it; what
+it does is remove the cheaper alternative that was standing in front of it.
+
+### Ruled out
+
+**Do not hoist VU opcode families out of the lane loop for performance.** Measured
+neutral on the largest family (61% of ops, double dispatch), with accuracy
+verified. The remaining families are smaller and singly-dispatched, so they can
+only measure smaller.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
