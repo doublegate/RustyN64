@@ -72,10 +72,19 @@ jobs:
           # get its own C++ built even once, which is precisely the
           # gate-that-never-runs shape this repo has been bitten by. So: full
           # runs, plus any PR touching the binding or its inputs.
+          # This FAILS OPEN. If the file list cannot be fetched -- rate limit,
+          # restricted token on a fork PR -- the job runs rather than being
+          # skipped. A gate that quietly turns itself off when a side query
+          # fails is worse than one that occasionally costs a C++ build: the
+          # skip is invisible, and the whole reason this output exists is that
+          # a silently-skipped gate already happened here once.
           gpu=$full
           if [ "$full" != "true" ] && [ -n "${PR_NUMBER:-}" ]; then
-            if gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
-                 --jq '.[].filename' \
+            if ! files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+                           --jq '.[].filename'); then
+              echo "::warning::could not list changed files; running gpu-rdp rather than skipping it"
+              gpu=true
+            elif printf '%s\n' "$files" \
                | grep -qE '^(crates/rustyn64-rdp-gpu/|vendor/parallel-rdp-standalone|\.gitmodules$|\.github/workflows/ci\.yml$)'; then
               gpu=true
             fi

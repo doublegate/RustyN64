@@ -145,11 +145,20 @@ fn main() {
     // link error — and it is what makes the CI job above meaningful on a runner
     // with no GPU.
     //
-    // `-ldl` comes from upstream's `config.mk`, and only off Windows. The
-    // condition is on the TARGET, not on the host: `#[cfg(unix)]` in a build
+    // `-ldl` comes from upstream's `config.mk`, which adds it on everything
+    // except Windows. Narrowed here to Linux and Android, where `libdl` is a
+    // real separate library: macOS has no `libdl` at all — `dlopen` lives in
+    // `libSystem` — so `-ldl` there is a link error rather than a no-op, and
+    // upstream's own condition would have produced one. Unverified on macOS
+    // either way, since the `gpu-rdp` CI job is ubuntu-only.
+    //
+    // The condition reads the TARGET, not the host: `#[cfg(unix)]` in a build
     // script describes the machine doing the compiling, which is the wrong
     // question when cross-compiling.
-    if std::env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("unix") {
+    if matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("linux" | "android")
+    ) {
         println!("cargo:rustc-link-lib=dylib=dl");
     }
 }
