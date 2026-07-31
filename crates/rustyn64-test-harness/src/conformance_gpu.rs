@@ -315,7 +315,9 @@ mod tests {
         let mut rdram = vec![0u8; 64];
         for addr in [0usize, 1, 2, 3, 4, 7, 16] {
             for len in [1usize, 2, 3, 4, 5, 8, 9] {
-                let src: Vec<u8> = (0..len).map(|i| (i + 1) as u8).collect();
+                let src: Vec<u8> = (0..len)
+                    .map(|i| u8::try_from(i + 1).expect("len stays under 256"))
+                    .collect();
                 rdram.fill(0);
                 write_region(&mut rdram, addr, &src);
                 let mut back = vec![0u8; len];
