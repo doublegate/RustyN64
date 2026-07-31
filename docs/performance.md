@@ -1275,6 +1275,102 @@ bucket is a step that had nothing to do*.
 larger lever of the two. On this evidence the plan's ordering is worth revisiting
 before either is begun — a maintainer's call, recorded here rather than taken.
 
+## The RSP's idle steps are already free, so removing them buys nothing
+
+The profile above ended with a question: *how much of the RSP bucket is a step that
+had nothing to do?* It is the measurement the deficit-counter scheduler has to be
+sized against, because that design's value is removing **visits**, and a visit is
+only worth removing if it costs something.
+
+Answer: **the idle steps are ~38% of render-phase steps and they are already
+free.**
+
+### How many steps are idle
+
+Scratch instrumentation in `Bus::rsp_tick` counting halted versus executing steps
+over the 900-frame `gameplay_phase_probe` run. The **cumulative** share is
+misleading and is the reason this is tabled per interval rather than quoted as one
+number — it starts above 80% and falls throughout, because boot is mostly a
+halted RSP and the render phase is not:
+
+| steps (millions) | idle in interval | share |
+| --- | --- | --- |
+| 0-100 | 82,856,525 | 82.86% |
+| 100-200 | 70,561,600 | 70.56% |
+| 200-300 | 90,565,572 | 90.57% |
+| 300-400 | 64,101,175 | 64.10% |
+| 400-500 | 46,854,407 | 46.85% |
+| 500-600 | 40,118,503 | 40.12% |
+| 600-700 | 40,948,739 | 40.95% |
+| 700-800 | 38,661,898 | 38.66% |
+| 800-900 | 37,707,875 | 37.71% |
+
+The last four intervals sit at **37.7-41.0%** and are flat, which is what says
+that is the steady state rather than a point on a curve. **Quoting the cumulative
+56.9% would have overstated it by half**, and quoting the first interval's 82.9%
+by more than double.
+
+### Whether removing them is worth anything: no
+
+`Rsp::su_step` already returns immediately when halted. What a caller could still
+skip is the wrapper: `Bus::rsp_tick`'s call, the `StepResult::default()` it
+constructs, the three `Option` tests on the result, and the step counter. So:
+
+```rust
+pub fn rsp_tick(&mut self) {
+    if self.rsp.halted() {                                  // the experiment
+        self.rcp_steps = self.rcp_steps.wrapping_add(1);
+        return;
+    }
+    let out = self.rsp.tick();
+    ...
+```
+
+**A-B-A, `gameplay_phase_probe`, 900 frames, `--features fast-exec`:**
+
+| leg | ms/frame |
+| --- | --- |
+| A (unmodified) | 63.6, 63.5 |
+| B (early-out) | 65.8, 64.3 |
+| A (restored) | 63.5, 65.1 |
+
+**The legs overlap** — B's 64.3 sits inside A's 63.5-65.1 range — so this is
+**neutral**, and B's apparent regression is drift. Note this harness is noisier
+than `frame_bench` (2.5% spread within a leg against 1%), which is why the result
+is "neutral" rather than a number; it is precise enough to rule out a win of the
+size that would matter, and not precise enough for more.
+
+The reading: **LLVM already elides the wrapper's work.** `su_step` returning a
+default `StepResult` inlines into `rsp_tick`, and the dead stores and the three
+`None` tests fold away. There was nothing there to remove.
+
+### What that does to the deficit-counter scheduler's case
+
+Its two justifications were sized separately, and both are now measured:
+
+1. **`scheduler.rs` per-edge dispatch arithmetic — 5.05%.** Eliminating it entirely
+   buys 1.05x.
+2. **Per-edge chip visits, whose cost is charged to the chip buckets —
+   measured here as ~nothing for the RSP**, the largest of them.
+
+That is the second justification failing on its largest single case. It is not
+proof for the RDP, AI, PI or VI, whose visits were not measured this way — but the
+RSP was where the argument was strongest, since it is 21.4% of the frame and 38%
+of its steps do nothing.
+
+**So the RSP's 21.4% is real microcode execution, not dispatch overhead**, and the
+lever that reaches it is a faster interpreter (the plan's pre-decoded threaded
+design), not fewer visits. That is a different piece of work from the
+deficit-counter scheduler, and this measurement is the reason to prefer it.
+
+### Ruled out
+
+**Do not re-try the `rsp_tick` halted early-out.** Measured neutral, A-B-A, above.
+The analogous change *was* a win for the RDP and the AI (#219/#221) because those
+avoid a `core::mem::take` of a large struct; the RSP's wrapper has no such
+payload, so the pattern does not transfer. Matching the shape of a past win is not
+evidence.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
