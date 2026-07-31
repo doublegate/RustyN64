@@ -172,9 +172,31 @@ not `master_ticks`-identical. So:
     equality of "pending interrupts" would have been self-contradictory, and it took a
     reviewer to notice — recorded because the same shape (a carve-out that does not
     follow its own consequences) is worth recognizing next time.
+  - **Every interrupt whose *delivery point* the scheduler times** — PI, SI, AI, VI,
+    DP and SP completion, arriving through MI. Two reviewers reached this from
+    different directions, and following it through is what turns the carve-out from
+    a list into a rule.
 
-  Nothing else is carved out by implication. A future exclusion is an amendment to
-  this list, not a reading of it.
+  **The rule, since the list was the symptom.** A retirement boundary is an
+  *instruction index*, and the two modes reach instruction N at **different
+  `master_ticks`**. So any state whose evolution is driven by the **clock** rather
+  than by the **instruction stream** may legitimately differ at that boundary.
+  `Count` is only the most visible instance. Note what this does *not* say: the
+  devices still raise at the same tick — deadlines stay in `master_ticks` and the
+  event queue is not relaxed — so the divergence is in *which instruction sees the
+  raise*, not in when the hardware acted.
+
+  **What it therefore does not license.** Once both modes have passed a deadline,
+  its *effects* must agree: the DMA'd bytes in RDRAM, the register writes, the
+  eventual interrupt. A carve-out on delivery timing is not a license for divergent
+  results. The predicate is consequently anchored **in time as well as in
+  instructions** — compare at boundaries where both modes have passed the same set
+  of scheduled deadlines. The exact anchoring is left to the implementing PR, but
+  it must *be* an anchoring: a carve-out list that grows each time the gate
+  disagrees is how a differential gate becomes a formality.
+
+  Nothing is carved out by implication. A future exclusion amends this section
+  rather than being read out of it.
 
 That carve-out has a consequence worth naming here rather than discovering in a
 failing suite: **a program that branches on a timing-derived value — or is

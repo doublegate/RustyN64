@@ -46,7 +46,7 @@ corrected.
 
 | Directory | Contents |
 |-----------|----------|
-| [adr/](adr/) | Architecture Decision Records (Michael Nygard format), `0001`-`0013` — the original lockstep scheduler (`0001`, **superseded**), the LLE-coprocessor decision, no-board-tiering/no-honesty-gate, the determinism contract, the deferred sub-PClock bus refactor, the canonical 187.5 MHz master clock (`0006`, supersedes `0001`), the cycle-accurate five-stage VR4300 pipeline (`0007`), the microcode boot harness, HLE vs real-PIF boot, retail boot in core, and the two execution modes — the default-off `fast-scheduler` (`0011`, amended by `0012`) and the `fast-exec` timing relaxation (`0013`, extends `0011`, amends `0006`/`0007` for that mode only). |
+| [adr/](adr/) | Architecture Decision Records (Michael Nygard format), `0001`-`0013`. Load-bearing ones: `0006` the canonical 187.5 MHz master clock (supersedes `0001`), `0007` the cycle-accurate five-stage VR4300 pipeline, `0011`+`0012` the default-off `fast-scheduler`, `0013` the `fast-exec` timing relaxation. Each file states its own supersession and amendment links; read those rather than this cell. |
 
 ## Related, outside `docs/`
 

@@ -319,13 +319,20 @@ Where both features are enabled, `fast-exec`'s scheduler is the one that runs
 (ADR 0013 §1). The whole-state tests above keep their stricter predicate: they grade
 a tick-identical path and would be weakened for nothing by relaxing them.
 
-**The carve-out is transitive, and that is the part that is easy to get wrong.** It
-is not just COP0 `Count`: it is `Count`, the `Count == Compare` timer interrupt
-(`IP7`) it raises, and the `Cause.IP` / pending-interrupt / pending-exception state
-derived from that. `Compare` is software-written and stays in the predicate; what
-leaves it is *when the comparison fires*. Carving out `Count` while still demanding
-unqualified equality of "pending interrupts" is self-contradictory, and the first
-draft of ADR 0013 did exactly that.
+**The carve-out is a rule, not a list, and that is the part that is easy to get
+wrong.** A retirement boundary is an *instruction index*, and the two modes reach
+instruction N at **different `master_ticks`** — so any state driven by the **clock**
+rather than by the **instruction stream** may differ there. `Count` is the visible
+instance; the `Count == Compare` timer interrupt and the `Cause.IP` state derived
+from it follow, and so does every interrupt whose delivery the scheduler times
+(PI, SI, AI, VI, DP, SP through MI). `Compare` is software-written and stays in the
+predicate; what leaves it is *when the comparison fires*.
+
+What that does **not** license: deadlines stay in `master_ticks` and devices still
+raise at the same tick, so once both modes have passed a deadline its *effects* —
+the DMA'd bytes, the register writes, the eventual interrupt — must agree. The
+predicate is therefore anchored in **time as well as instructions**. ADR 0013 §4
+is authoritative.
 
 Because the timer can interrupt at a different instruction, **the two modes'
 instruction streams may legitimately diverge**. The `fast-exec` gate therefore has
