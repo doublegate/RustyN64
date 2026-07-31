@@ -962,6 +962,7 @@ The **binding**, and nothing downstream of it:
 | --- | --- |
 | `vendor/parallel-rdp-standalone` | submodule, upstream MIT, attributed in `NOTICE` |
 | `crates/rustyn64-rdp-gpu/shim/` | flat `extern "C"` surface, 8 entry points, POD-only |
+| the shim's failure contract | every fallible entry point returns a status; nothing returns `void` |
 | `crates/rustyn64-rdp-gpu/src/lib.rs` | `GpuRdp` — every `unsafe` block carries its `// SAFETY:` |
 | `tests/smoke.rs` | renders a Fill Rectangle and checks the picture |
 | CI job `gpu-rdp` | full-run only; builds and links, and asserts which branch the smoke test took |
@@ -971,6 +972,19 @@ compute shaders compile, a 64x32 Fill Rectangle rasterizes, and `scanout_sync`
 returns a 640x240 RGBA8 frame in which 1,568 pixels carry exactly the fill color
 and no pixel carries any other. That is the whole of the evidence — it is a
 command list submitted by hand, not by the emulator.
+
+**No entry point returns `void`.** Submission, VI programming, flush and idle all
+return a status, and the Rust wrapper surfaces each as a `#[must_use] bool`. This
+was a review finding and it was right: the C++ side can fail at runtime — device
+loss, out of memory, a command buffer that cannot be allocated — and a `void`
+turns that into a dropped RDP command that surfaces as a wrong picture many
+frames later with nothing pointing back at the submission. The exception still
+cannot cross into Rust; it just no longer vanishes.
+
+One guard here is **not** exercised by any test: `prdp_set_vi_register` refuses an
+index outside `VIRegister` rather than casting it, and the `ViRegister` enum
+cannot express an out-of-range value, so the check is reachable only from C. It
+is worth having and it is not evidence of anything.
 
 **Explicitly NOT done, and each is a separate piece of work:**
 

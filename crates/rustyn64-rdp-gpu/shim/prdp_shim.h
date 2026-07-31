@@ -40,11 +40,21 @@ void prdp_destroy(prdp_ctx *ctx);
  * this" are different diagnoses for a user. */
 int prdp_device_is_supported(const prdp_ctx *ctx);
 
-/* Submit `num_words` of RDP command stream. */
-void prdp_enqueue_command(prdp_ctx *ctx, unsigned num_words, const uint32_t *words);
+/* The operations below return non-zero on success and 0 on failure.
+ *
+ * They return a status rather than `void` because the C++ side can fail at
+ * runtime — device loss, out of memory, a command buffer that cannot be
+ * allocated — and swallowing that in a `void` leaves the caller unable to tell
+ * a dropped command from a submitted one. A dropped RDP command surfaces as a
+ * wrong picture much later, in a place that gives no hint where it came from. */
 
-/* Set one VI register, indexed as parallel-rdp's `VIRegister` enum. */
-void prdp_set_vi_register(prdp_ctx *ctx, unsigned reg, uint32_t value);
+/* Submit `num_words` of RDP command stream. */
+int prdp_enqueue_command(prdp_ctx *ctx, uint32_t num_words, const uint32_t *words);
+
+/* Set one VI register, indexed as parallel-rdp's `VIRegister` enum. Returns 0
+ * for an index outside that enum rather than casting it, since the cast would
+ * be a value the C++ side never defined. */
+int prdp_set_vi_register(prdp_ctx *ctx, uint32_t reg, uint32_t value);
 
 /* Rasterize and read back one frame into `out` as RGBA8.
  *
@@ -56,10 +66,10 @@ void prdp_set_vi_register(prdp_ctx *ctx, unsigned reg, uint32_t value);
  * This is the synchronous path ADR 0014 §5 names: it hands back a CPU-side
  * buffer, so the first working version needs no Vulkan in the presenter. */
 size_t prdp_scanout_sync(prdp_ctx *ctx, uint32_t *out, size_t out_capacity_pixels,
-                         unsigned *width, unsigned *height);
+                         uint32_t *width, uint32_t *height);
 
-void prdp_flush(prdp_ctx *ctx);
-void prdp_idle(prdp_ctx *ctx);
+int prdp_flush(prdp_ctx *ctx);
+int prdp_idle(prdp_ctx *ctx);
 
 #ifdef __cplusplus
 }

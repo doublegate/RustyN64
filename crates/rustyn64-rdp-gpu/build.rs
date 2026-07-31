@@ -70,6 +70,16 @@ fn main() {
         root.display()
     );
 
+    // Rebuild when the vendored tree changes — a submodule bump, or a local
+    // edit while debugging. Emitted here rather than beside the shim's own
+    // triggers above, because naming a path that does not exist makes cargo
+    // rerun this script unconditionally, and the path only exists once the
+    // submodule is checked out. Cargo walks a directory recursively, so the
+    // four source roots cover every file actually compiled below.
+    for dir in ["parallel-rdp", "vulkan", "util", "volk"] {
+        println!("cargo:rerun-if-changed={}", root.join(dir).display());
+    }
+
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -123,11 +133,23 @@ fn main() {
 
     build.compile("parallel_rdp_shim");
 
-    // Upstream's `config.mk` links these; volk dlopen's the loader at runtime,
-    // so there is deliberately no `-lvulkan` here — that is what lets a build
-    // succeed on a machine with no Vulkan ICD and fail at `prdp_create` instead,
-    // which is a far better diagnostic than a link error.
-    println!("cargo:rustc-link-lib=dylib=stdc++");
-    #[cfg(unix)]
-    println!("cargo:rustc-link-lib=dylib=dl");
+    // The C++ standard library is NOT linked by hand. `cc` already emits it for
+    // a `.cpp(true)` build and picks the right one per target — `libstdc++` on
+    // Linux, `libc++` on macOS. Naming `stdc++` here, as an earlier version did,
+    // would have broken the macOS leg of the CI matrix while looking correct on
+    // the machine it was written on.
+    //
+    // There is also deliberately no `-lvulkan`: volk `dlopen`s the loader at
+    // runtime. That is what lets a build succeed on a machine with no Vulkan ICD
+    // and fail at `prdp_create` instead, which is a far better diagnostic than a
+    // link error — and it is what makes the CI job above meaningful on a runner
+    // with no GPU.
+    //
+    // `-ldl` comes from upstream's `config.mk`, and only off Windows. The
+    // condition is on the TARGET, not on the host: `#[cfg(unix)]` in a build
+    // script describes the machine doing the compiling, which is the wrong
+    // question when cross-compiling.
+    if std::env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("unix") {
+        println!("cargo:rustc-link-lib=dylib=dl");
+    }
 }

@@ -48,6 +48,17 @@ const fn is_background(px: u32) -> bool {
     px == 0x0000_0000 || px == 0xFF00_0000
 }
 
+/// Assert a submission was accepted.
+///
+/// `enqueue_command` and `set_vi_register` are `#[must_use]` precisely so a
+/// dropped submission cannot pass unnoticed, and this is the test honoring that
+/// rather than routing around it with a `let _ =`. A refused command would
+/// otherwise show up only as a wrong picture, several assertions later.
+#[track_caller]
+fn submit(accepted: bool) {
+    assert!(accepted, "the backend refused a submission");
+}
+
 #[test]
 fn a_filled_rectangle_reaches_the_scanout() {
     let mut rdram = vec![0u8; RDRAM_SIZE];
@@ -67,32 +78,32 @@ fn a_filled_rectangle_reaches_the_scanout() {
     println!("device is supported; rendering a real frame");
 
     // Set Color Image (0x3F): 32-bit RGBA, width-1, at FB_ADDR.
-    gpu.enqueue_command(&[
+    submit(gpu.enqueue_command(&[
         0x3F00_0000 | (0b11 << 19) | (0b11 << 16) | (FB_WIDTH - 1),
         FB_ADDR,
-    ]);
+    ]));
     // Set Scissor (0x2D) over the whole framebuffer, in 10.2 fixed point.
-    gpu.enqueue_command(&[0x2D00_0000, ((FB_WIDTH << 2) << 12) | (FB_HEIGHT << 2)]);
+    submit(gpu.enqueue_command(&[0x2D00_0000, ((FB_WIDTH << 2) << 12) | (FB_HEIGHT << 2)]));
     // Set Other Modes (0x2F) with cycle type = FILL (0b11 at bit 52).
-    gpu.enqueue_command(&[0x2F00_0000 | (0b11 << 20), 0x0000_0000]);
+    submit(gpu.enqueue_command(&[0x2F00_0000 | (0b11 << 20), 0x0000_0000]));
     // Set Fill Color (0x37) — in 32bpp FILL mode this word is one whole pixel.
-    gpu.enqueue_command(&[0x3700_0000, FILL_RGBA]);
+    submit(gpu.enqueue_command(&[0x3700_0000, FILL_RGBA]));
     // Fill Rectangle (0x36): xh/yh in the low word, xl/yl in the high word,
     // all 10.2 fixed point.
-    gpu.enqueue_command(&[
+    submit(gpu.enqueue_command(&[
         0x3600_0000 | (((FB_WIDTH - 1) << 2) << 12) | ((FB_HEIGHT - 1) << 2),
         0,
-    ]);
+    ]));
     // Sync Full (0x29) so the rasterizer is drained before scan-out.
-    gpu.enqueue_command(&[0x2900_0000, 0]);
+    submit(gpu.enqueue_command(&[0x2900_0000, 0]));
 
-    gpu.set_vi_register(ViRegister::Control, VI_CONTROL_32BPP);
-    gpu.set_vi_register(ViRegister::Origin, FB_ADDR);
-    gpu.set_vi_register(ViRegister::Width, FB_WIDTH);
-    gpu.set_vi_register(ViRegister::XScale, 0x0000_0400); // 1:1
-    gpu.set_vi_register(ViRegister::YScale, 0x0000_0400); // 1:1
-    gpu.set_vi_register(ViRegister::HStart, (108 << 16) | (108 + FB_WIDTH));
-    gpu.set_vi_register(ViRegister::VStart, (34 << 16) | (34 + FB_HEIGHT * 2));
+    submit(gpu.set_vi_register(ViRegister::Control, VI_CONTROL_32BPP));
+    submit(gpu.set_vi_register(ViRegister::Origin, FB_ADDR));
+    submit(gpu.set_vi_register(ViRegister::Width, FB_WIDTH));
+    submit(gpu.set_vi_register(ViRegister::XScale, 0x0000_0400)); // 1:1
+    submit(gpu.set_vi_register(ViRegister::YScale, 0x0000_0400)); // 1:1
+    submit(gpu.set_vi_register(ViRegister::HStart, (108 << 16) | (108 + FB_WIDTH)));
+    submit(gpu.set_vi_register(ViRegister::VStart, (34 << 16) | (34 + FB_HEIGHT * 2)));
 
     let mut out = vec![0u32; 1024 * 1024];
     let Some(ScanoutFrame {

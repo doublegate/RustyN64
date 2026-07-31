@@ -102,36 +102,50 @@ int prdp_device_is_supported(const prdp_ctx *ctx)
     }
 }
 
-void prdp_enqueue_command(prdp_ctx *ctx, unsigned num_words, const uint32_t *words)
+int prdp_enqueue_command(prdp_ctx *ctx, uint32_t num_words, const uint32_t *words)
 {
     if (!ctx || !ctx->processor || !words || num_words == 0)
-        return;
+        return 0;
     try {
         ctx->processor->enqueue_command(num_words, words);
+        return 1;
     } catch (...) {
-        // Swallowed deliberately: there is no channel to report on, and an
-        // exception crossing into Rust is undefined behavior. A dropped command
-        // shows up as a wrong picture, which the differential comparison against
-        // the software rasterizer is there to catch.
+        // The exception still cannot cross into Rust — that is undefined
+        // behavior — but it no longer vanishes: the caller gets 0 and can say
+        // so at the point of failure rather than discovering a wrong picture
+        // several frames later with nothing pointing back here.
+        return 0;
     }
 }
 
-void prdp_set_vi_register(prdp_ctx *ctx, unsigned reg, uint32_t value)
+int prdp_set_vi_register(prdp_ctx *ctx, uint32_t reg, uint32_t value)
 {
     if (!ctx || !ctx->processor)
-        return;
+        return 0;
+    // Refuse an index outside the enum rather than casting it. `VIRegister` has
+    // no fixed underlying type, so a cast of an out-of-range value is not a
+    // number the C++ side ever defined — and this entry point is reachable from
+    // C with anything, not only from the Rust enum.
+    if (reg >= static_cast<uint32_t>(RDP::VIRegister::Count))
+        return 0;
     try {
         ctx->processor->set_vi_register(static_cast<RDP::VIRegister>(reg), value);
+        return 1;
     } catch (...) {
+        return 0;
     }
 }
 
 size_t prdp_scanout_sync(prdp_ctx *ctx, uint32_t *out, size_t out_capacity_pixels,
-                         unsigned *width, unsigned *height)
+                         uint32_t *width, uint32_t *height)
 {
     if (!ctx || !ctx->processor || !out || !width || !height)
         return 0;
     try {
+        // `unsigned`, not `uint32_t`: upstream takes `unsigned &`, and a
+        // reference will not bind through a typedef that is a different type.
+        // They are the same type on every target here, and relying on that
+        // silently is exactly the assumption the header stopped making.
         unsigned w = 0, h = 0;
         ctx->scratch.clear();
         ctx->processor->scanout_sync(ctx->scratch, w, h);
@@ -145,30 +159,34 @@ size_t prdp_scanout_sync(prdp_ctx *ctx, uint32_t *out, size_t out_capacity_pixel
             return 0;
 
         std::memcpy(out, ctx->scratch.data(), pixels * sizeof(uint32_t));
-        *width = w;
-        *height = h;
+        *width = static_cast<uint32_t>(w);
+        *height = static_cast<uint32_t>(h);
         return pixels;
     } catch (...) {
         return 0;
     }
 }
 
-void prdp_flush(prdp_ctx *ctx)
+int prdp_flush(prdp_ctx *ctx)
 {
     if (!ctx || !ctx->processor)
-        return;
+        return 0;
     try {
         ctx->processor->flush();
+        return 1;
     } catch (...) {
+        return 0;
     }
 }
 
-void prdp_idle(prdp_ctx *ctx)
+int prdp_idle(prdp_ctx *ctx)
 {
     if (!ctx || !ctx->processor)
-        return;
+        return 0;
     try {
         ctx->processor->idle();
+        return 1;
     } catch (...) {
+        return 0;
     }
 }

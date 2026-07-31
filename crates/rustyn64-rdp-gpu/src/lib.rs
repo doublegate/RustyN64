@@ -62,8 +62,8 @@ mod backend {
         ) -> *mut PrdpCtx;
         fn prdp_destroy(ctx: *mut PrdpCtx);
         fn prdp_device_is_supported(ctx: *const PrdpCtx) -> i32;
-        fn prdp_enqueue_command(ctx: *mut PrdpCtx, num_words: u32, words: *const u32);
-        fn prdp_set_vi_register(ctx: *mut PrdpCtx, reg: u32, value: u32);
+        fn prdp_enqueue_command(ctx: *mut PrdpCtx, num_words: u32, words: *const u32) -> i32;
+        fn prdp_set_vi_register(ctx: *mut PrdpCtx, reg: u32, value: u32) -> i32;
         fn prdp_scanout_sync(
             ctx: *mut PrdpCtx,
             out: *mut u32,
@@ -71,8 +71,8 @@ mod backend {
             width: *mut u32,
             height: *mut u32,
         ) -> usize;
-        fn prdp_flush(ctx: *mut PrdpCtx);
-        fn prdp_idle(ctx: *mut PrdpCtx);
+        fn prdp_flush(ctx: *mut PrdpCtx) -> i32;
+        fn prdp_idle(ctx: *mut PrdpCtx) -> i32;
     }
 
     /// The VI registers `parallel-rdp` accepts, in its own enum order.
@@ -172,27 +172,36 @@ mod backend {
             unsafe { prdp_device_is_supported(self.ctx.as_ptr()) != 0 }
         }
 
-        /// Submit RDP command words.
+        /// Submit RDP command words. `false` if the command was not accepted.
         ///
-        /// A command list longer than `u32::MAX` words is refused rather than
-        /// truncated; truncation would submit a syntactically valid prefix and
-        /// render a plausible wrong picture.
-        pub fn enqueue_command(&mut self, words: &[u32]) {
+        /// Two ways to get `false`, and neither is silent: a list longer than
+        /// `u32::MAX` words (refused rather than truncated — truncation would
+        /// submit a syntactically valid prefix and render a plausible wrong
+        /// picture), and a runtime failure on the C++ side such as device loss.
+        ///
+        /// `#[must_use]` on purpose. A dropped RDP command surfaces as a wrong
+        /// picture many frames later with nothing pointing back at the
+        /// submission, so the caller has to say what it wants to happen.
+        #[must_use]
+        pub fn enqueue_command(&mut self, words: &[u32]) -> bool {
             let Ok(num_words) = u32::try_from(words.len()) else {
-                return;
+                return false;
             };
             // SAFETY: `words.as_ptr()` is valid for `num_words` reads for the
             // duration of the call, which is the whole extent of the C++ side's
             // access — `enqueue_command` copies into its own ring before
             // returning.
-            unsafe { prdp_enqueue_command(self.ctx.as_ptr(), num_words, words.as_ptr()) }
+            unsafe { prdp_enqueue_command(self.ctx.as_ptr(), num_words, words.as_ptr()) != 0 }
         }
 
-        /// Set one VI register.
-        pub fn set_vi_register(&mut self, reg: ViRegister, value: u32) {
+        /// Set one VI register. `false` if it was not accepted.
+        #[must_use]
+        pub fn set_vi_register(&mut self, reg: ViRegister, value: u32) -> bool {
             // SAFETY: `reg as u32` is one of the enum's transcribed
-            // discriminants, all of which are valid `VIRegister` values.
-            unsafe { prdp_set_vi_register(self.ctx.as_ptr(), reg as u32, value) }
+            // discriminants, all of which are valid `VIRegister` values. The
+            // shim range-checks it regardless, because the C entry point is
+            // reachable with anything.
+            unsafe { prdp_set_vi_register(self.ctx.as_ptr(), reg as u32, value) != 0 }
         }
 
         /// Rasterize and read one frame back into `out` as RGBA8.
@@ -223,16 +232,18 @@ mod backend {
             })
         }
 
-        /// Submit pending work without waiting for it.
-        pub fn flush(&mut self) {
+        /// Submit pending work without waiting for it. `false` on failure.
+        #[must_use]
+        pub fn flush(&mut self) -> bool {
             // SAFETY: as `device_is_supported`.
-            unsafe { prdp_flush(self.ctx.as_ptr()) }
+            unsafe { prdp_flush(self.ctx.as_ptr()) != 0 }
         }
 
-        /// Wait until every submitted command has completed.
-        pub fn idle(&mut self) {
+        /// Wait until every submitted command has completed. `false` on failure.
+        #[must_use]
+        pub fn idle(&mut self) -> bool {
             // SAFETY: as `device_is_supported`.
-            unsafe { prdp_idle(self.ctx.as_ptr()) }
+            unsafe { prdp_idle(self.ctx.as_ptr()) != 0 }
         }
     }
 
