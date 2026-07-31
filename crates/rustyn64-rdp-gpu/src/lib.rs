@@ -125,6 +125,23 @@ mod backend {
         pub pixels: usize,
     }
 
+    /// Publishes host writes back to the device when dropped — **including on
+    /// the unwind path**.
+    ///
+    /// `with_rdram_mut`'s closure can panic (the conformance harness's word swap
+    /// asserts on a length mismatch, for one), and a panic caught higher up would
+    /// otherwise skip `end_write_rdram` and leave the device rendering from stale
+    /// memory with nothing having reported an error.
+    struct Publish<'a>(&'a mut GpuRdp);
+
+    impl Drop for Publish<'_> {
+        fn drop(&mut self) {
+            // SAFETY: the guard borrows the `GpuRdp` that owns the context, so
+            // the context is live for the guard's whole lifetime.
+            unsafe { prdp_end_write_rdram(self.0.ctx.as_ptr()) };
+        }
+    }
+
     /// A `parallel-rdp` command processor and the RDRAM it renders into.
     ///
     /// The RDRAM is **owned by the backend**, not borrowed. That is a deliberate
@@ -233,9 +250,9 @@ mod backend {
                 if ptr.is_null() {
                     return None;
                 }
-                let out = f(core::slice::from_raw_parts_mut(ptr, len));
-                prdp_end_write_rdram(self.ctx.as_ptr());
-                Some(out)
+                let slice = core::slice::from_raw_parts_mut(ptr, len);
+                let _publish = Publish(self);
+                Some(f(slice))
             }
         }
 

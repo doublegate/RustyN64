@@ -18,12 +18,16 @@
 #include <cstring>
 #include <cstdlib>
 
-// The alignment `VK_EXT_external_memory_host` needs to import host memory
-// directly. See the note on `prdp_create` in the header: getting this wrong is
-// not an error, it is a silent fallback to staging every access through a copy.
-// 4096 is the value on the device this was developed against; a driver asking
-// for more would fall back again, and would do so quietly.
-#define PRDP_RDRAM_ALIGN 4096u
+// The floor for the RDRAM allocation's alignment. The ACTUAL requirement is
+// queried from the device (`query_import_alignment`); this is only the minimum
+// and the fallback for a driver that reports nothing.
+//
+// It used to be the whole story, hardcoded, and that was a real defect a review
+// caught: `VK_EXT_external_memory_host` needs the pointer to meet the device's
+// `minImportedHostPointerAlignment`, and a device asking for more than 4096
+// would have fallen back to staging every access through a copy -- silently,
+// rendering a byte-identical frame, with nothing in any return value to say so.
+#define PRDP_RDRAM_ALIGN_MIN 4096u
 
 namespace {
 
@@ -60,6 +64,26 @@ struct Ctx {
     std::vector<RDP::RGBA> scratch;
 };
 
+// What `VK_EXT_external_memory_host` requires of an imported host pointer on
+// THIS device, floored at `PRDP_RDRAM_ALIGN_MIN`.
+//
+// Granite does not surface this, so it is queried from Vulkan directly. A device
+// that does not support the extension reports 0, in which case the floor stands
+// and the import will fail for a different reason -- also a fallback, but not one
+// caused by an alignment this code could have got right.
+size_t query_import_alignment(Vulkan::Context &context)
+{
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props = {};
+    host_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 props = {};
+    props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props.pNext = &host_props;
+    vkGetPhysicalDeviceProperties2(context.get_gpu(), &props);
+
+    size_t align = static_cast<size_t>(host_props.minImportedHostPointerAlignment);
+    return align > PRDP_RDRAM_ALIGN_MIN ? align : PRDP_RDRAM_ALIGN_MIN;
+}
+
 } // namespace
 
 struct prdp_ctx : Ctx {};
@@ -76,23 +100,14 @@ prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size)
         if (!Vulkan::Context::init_loader(nullptr))
             return nullptr;
 
-        if (rdram_size == 0 || rdram_size % PRDP_RDRAM_ALIGN != 0)
+        if (rdram_size == 0 || rdram_size % PRDP_RDRAM_ALIGN_MIN != 0)
             return nullptr;
 
         auto ctx = std::make_unique<prdp_ctx>();
 
-        // `aligned_alloc` requires the size to be a multiple of the alignment,
-        // which the check above enforces rather than rounding up silently -- a
-        // rounded size would leave the caller and the device disagreeing about
-        // how much RDRAM exists.
-        ctx->rdram.ptr = std::aligned_alloc(PRDP_RDRAM_ALIGN, rdram_size);
-        if (!ctx->rdram.ptr)
-            return nullptr;
-        ctx->rdram.size = rdram_size;
-        // Power-on RDRAM is zero, and an uninitialized read here would make a
-        // frame depend on whatever the allocator handed back.
-        std::memset(ctx->rdram.ptr, 0, rdram_size);
-
+        // The device comes up BEFORE the allocation, because the allocation's
+        // alignment is a property of the device.
+        //
         // Headless: no instance or device extensions, because the first cut
         // reads pixels back on the CPU (ADR 0014 §5) and therefore needs no
         // surface, swapchain or windowing integration at all.
@@ -100,6 +115,21 @@ prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size)
             return nullptr;
 
         ctx->device.set_context(ctx->context);
+
+        const size_t align = query_import_alignment(ctx->context);
+        // `aligned_alloc` requires the size to be a multiple of the alignment.
+        // Refuse rather than round up: a rounded size would leave the caller and
+        // the device disagreeing about how much RDRAM exists, which is a wrong
+        // picture at the top of the address space rather than an error.
+        if (align == 0 || rdram_size % align != 0)
+            return nullptr;
+        ctx->rdram.ptr = std::aligned_alloc(align, rdram_size);
+        if (!ctx->rdram.ptr)
+            return nullptr;
+        ctx->rdram.size = rdram_size;
+        // Power-on RDRAM is zero, and an uninitialized read here would make a
+        // frame depend on whatever the allocator handed back.
+        std::memset(ctx->rdram.ptr, 0, rdram_size);
 
         RDP::CommandProcessorFlags flags = 0;
         ctx->processor = std::make_unique<RDP::CommandProcessor>(

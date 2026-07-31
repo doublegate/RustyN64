@@ -74,6 +74,26 @@ pub fn swap_words_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+/// Write `src` into RDRAM at logical address `addr`, in parallel-rdp's layout.
+///
+/// Per byte, using the `^ 3` mapping directly, so it holds for **any** address
+/// and **any** length — unlike [`swap_words_into`], which needs whole words at a
+/// word-aligned base. That generality is not theoretical: a committed vector
+/// carries a 2-byte texture preload.
+fn write_region(rdram: &mut [u8], addr: usize, src: &[u8]) {
+    for (i, &b) in src.iter().enumerate() {
+        rdram[(addr + i) ^ 3] = b;
+    }
+}
+
+/// Read `out.len()` bytes from RDRAM at logical address `addr`, converting back
+/// to RustyN64's layout. The inverse of [`write_region`].
+fn read_region(rdram: &[u8], addr: usize, out: &mut [u8]) {
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = rdram[(addr + i) ^ 3];
+    }
+}
+
 /// Why a GPU replay could not run. Distinct from "it ran and disagreed".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unavailable {
@@ -120,16 +140,24 @@ pub fn replay(v: &Vector<'_>) -> Result<Vec<u8>, Unavailable> {
         "vector addresses exceed RDRAM ({RDRAM_SIZE} bytes)"
     );
 
-    // Stage the whole of RDRAM in RustyN64's layout first, then swap it across
-    // in one pass. Assembling in the target layout directly would mean applying
-    // the `^ 3` to every individual store, which is the same transform written
-    // once per call site instead of once — and each site could get it wrong
-    // independently.
-    let mut staged = vec![0u8; RDRAM_SIZE];
-    staged[pre..pre + v.preload.len()].copy_from_slice(v.preload);
-    staged[base..base + v.cmds.len()].copy_from_slice(v.cmds);
+    // Write the preload and the command list STRAIGHT into the mapped RDRAM.
+    //
+    // An earlier version staged an 8 MiB copy in RustyN64's layout and swapped
+    // that across: two full passes and a 16 MiB allocation per vector, 43 times
+    // over. The equivalent fusion in the frontend measured **3.3x** faster
+    // (`docs/performance.md`), so this is not hypothetical tidiness.
+    //
+    // Per-byte through [`write_region`] rather than [`swap_words_into`], because
+    // a region is not necessarily a whole number of words — a committed vector
+    // carries a **2-byte** preload, and the word-wise version asserted on it. The
+    // comment here previously claimed every region was 4-byte aligned; the assert
+    // is what proved otherwise.
     if gpu
-        .with_rdram_mut(|rdram| swap_words_into(rdram, &staged))
+        .with_rdram_mut(|rdram| {
+            rdram.fill(0);
+            write_region(rdram, pre, v.preload);
+            write_region(rdram, base, v.cmds);
+        })
         .is_none()
     {
         return Err(Unavailable::RdramUnmappable);
@@ -151,14 +179,16 @@ pub fn replay(v: &Vector<'_>) -> Result<Vec<u8>, Unavailable> {
     // Read back through the coherency handshake, not through any pointer of our
     // own: when the host-import path is unavailable the device renders into its
     // own buffer and the shim's allocation is stale.
-    let mut out = vec![0u8; RDRAM_SIZE];
+    //
+    // Only the framebuffer region, not all 8 MiB — the rest is not compared.
+    let mut out = vec![0u8; fb_len];
     if gpu
-        .with_rdram(|rdram| swap_words_into(&mut out, rdram))
+        .with_rdram(|rdram| read_region(rdram, fb, &mut out))
         .is_none()
     {
         return Err(Unavailable::RdramUnmappable);
     }
-    Ok(out[fb..fb + fb_len].to_vec())
+    Ok(out)
 }
 
 /// Split a big-endian command stream into individual commands.
@@ -168,6 +198,10 @@ pub fn replay(v: &Vector<'_>) -> Result<Vec<u8>, Unavailable> {
 /// command ends and the next begins. A trailing partial command is dropped, as
 /// `Rdp::tick_with_bus` also refuses to consume one.
 fn split_commands(cmds: &[u8]) -> Vec<Vec<u32>> {
+    /// `command_len_words` counts 64-bit RDP command doublewords; the shim takes
+    /// 32-bit words.
+    const U32_PER_DOUBLEWORD: usize = 2;
+
     let words: Vec<u32> = cmds
         .chunks_exact(4)
         .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
@@ -176,7 +210,7 @@ fn split_commands(cmds: &[u8]) -> Vec<Vec<u32>> {
     let mut i = 0usize;
     while i < words.len() {
         let opcode = rustyn64_rdp::command::opcode_of(words[i]);
-        let len = rustyn64_rdp::command::command_len_words(opcode) as usize * 2;
+        let len = rustyn64_rdp::command::command_len_words(opcode) as usize * U32_PER_DOUBLEWORD;
         if len == 0 || i + len > words.len() {
             break;
         }
