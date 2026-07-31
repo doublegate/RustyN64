@@ -195,6 +195,21 @@ not `master_ticks`-identical. So:
   it must *be* an anchoring: a carve-out list that grows each time the gate
   disagrees is how a differential gate becomes a formality.
 
+  **All of the above is `fast-exec` policy, not a hardware claim, and it carries
+  no provenance because none exists to carry.** A reviewer asked for manual or
+  wiki citations for the delivery-timing rule. There are none available in
+  principle: the VR4300 has **one** timeline, so the hardware has no opinion about
+  how two emulated modes should be compared to each other. Citing a manual section
+  here would be borrowing authority from a document that does not address the
+  question — the failure mode `docs/engineering-lessons.md` describes, where a
+  citation makes a policy read as a measurement.
+
+  What **is** owed to `docs/accuracy-ledger.md` is the **divergence bound**, and it
+  is owed as a *measurement*, per Decision item 4 above and the ledger's own
+  measured-never-tuned rule. It cannot be written yet, because nothing has been
+  measured yet: `fast-exec` does not exist. An entry recorded now would be a
+  number with no provenance, which is exactly what the ledger is for preventing.
+
   Nothing is carved out by implication. A future exclusion amends this section
   rather than being read out of it.
 

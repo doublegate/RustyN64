@@ -334,6 +334,12 @@ the DMA'd bytes, the register writes, the eventual interrupt — must agree. The
 predicate is therefore anchored in **time as well as instructions**. ADR 0013 §4
 is authoritative.
 
+This is **`fast-exec` policy, not a hardware claim.** The VR4300 has one timeline,
+so the hardware has no opinion about how two emulated modes should be compared;
+there is no manual section to cite, and citing one would make a policy read as a
+measurement. What *is* owed to `docs/accuracy-ledger.md` is the measured divergence
+bound, and it falls due when there is something to measure.
+
 Because the timer can interrupt at a different instruction, **the two modes'
 instruction streams may legitimately diverge**. The `fast-exec` gate therefore has
 three outcomes rather than two — agreement (pass), **stream divergence** (reported,
