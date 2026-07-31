@@ -42,6 +42,7 @@ jobs:
     outputs:
       os: ${{ steps.pick.outputs.os }}
       full: ${{ steps.pick.outputs.full }}
+      gpu: ${{ steps.pick.outputs.gpu }}
     steps:
       - id: pick
         shell: bash
@@ -50,14 +51,36 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ] && [[ "$HEAD_REF" != release/* ]]; then
-            echo 'full=false' >> "$GITHUB_OUTPUT"
+            full=false
             echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'full=true' >> "$GITHUB_OUTPUT"
+            full=true
             echo 'os=["ubuntu-latest", "macos-latest", "windows-latest"]' >> "$GITHUB_OUTPUT"
           fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+          # `gpu-rdp` is normally full-run only: it compiles ~35k lines of
+          # vendored C++ and is the only job needing the submodule, so making
+          # every feature PR pay for it would undo the light/full split. But a PR
+          # that CHANGES the binding must not merge with that job never having
+          # run -- the PR introducing it needed a manual `workflow_dispatch` to
+          # get its own C++ built even once, which is precisely the
+          # gate-that-never-runs shape this repo has been bitten by. So: full
+          # runs, plus any PR touching the binding or its inputs.
+          gpu=$full
+          if [ "$full" != "true" ] && [ -n "${PR_NUMBER:-}" ]; then
+            if gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+                 --jq '.[].filename' \
+               | grep -qE '^(crates/rustyn64-rdp-gpu/|vendor/parallel-rdp-standalone|\.gitmodules$|\.github/workflows/ci\.yml$)'; then
+              gpu=true
+            fi
+          fi
+          echo "gpu=$gpu" >> "$GITHUB_OUTPUT"
 
   test:
     name: test (${{ matrix.os }})
@@ -201,9 +224,9 @@ jobs:
 
   gpu-rdp:
     name: build (gpu-rdp feature)
-    # Compiles the vendored parallel-rdp C++ (ADR 0014). FULL-run only: it is a
-    # ~35k-line C++ build and the only job that needs the submodule, so making
-    # every feature PR pay for it would undo the light/full split above.
+    # Compiles the vendored parallel-rdp C++ (ADR 0014). Runs on a full run, and
+    # on any PR that touches the binding -- see the `gpu` output in `setup` for
+    # why the second half matters.
     #
     # It BUILDS but does not render. A GitHub runner has no GPU, so the smoke
     # test takes its documented no-device branch. That is still worth running:
@@ -213,7 +236,7 @@ jobs:
     # the gate-that-never-runs failure this project has been bitten by before;
     # a test whose skip is silent is the same failure wearing a green tick.
     needs: setup
-    if: ${{ needs.setup.outputs.full == 'true' }}
+    if: ${{ needs.setup.outputs.gpu == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

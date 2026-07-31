@@ -51,9 +51,12 @@ mod backend {
         _private: [u8; 0],
     }
 
-    // Mirrors `shim/prdp_shim.h` exactly. A signature that drifts from the
-    // header is undefined behavior that no test would catch, so the header is
-    // kept short enough to diff by eye and both are edited together.
+    // Mirrors `shim/prdp_shim.h` exactly, and **nothing checks that** — not the
+    // compiler, not the linker, not any test here. Linking resolves symbols; a
+    // declaration whose parameter types, order, or return type disagree with the
+    // header links exactly as cleanly as a correct one, then corrupts the stack
+    // at run time. These are held correct by review, which is why the header is
+    // kept short enough to diff by eye and why both are edited together.
     unsafe extern "C" {
         fn prdp_create(
             rdram: *mut c_void,
@@ -137,6 +140,15 @@ mod backend {
 
     impl<'r> GpuRdp<'r> {
         /// Create a headless Vulkan device and a command processor over `rdram`.
+        ///
+        /// **Align `rdram` to a page.** parallel-rdp maps the buffer into the
+        /// GPU's address space via `VK_EXT_external_memory_host` when the
+        /// pointer meets the driver's `minImportedHostPointerAlignment` (4096
+        /// on the device this was developed against), and otherwise stages every
+        /// access through a copy. The fallback is **silent** — it logs and keeps
+        /// working, and nothing in the return value distinguishes the two. A
+        /// plain `Vec<u8>` does not meet it; `tests/smoke.rs` shows one way to
+        /// get an aligned buffer.
         ///
         /// Returns `None` when Vulkan is unavailable, the device cannot run
         /// `parallel-rdp`, or initialization fails. There is deliberately no

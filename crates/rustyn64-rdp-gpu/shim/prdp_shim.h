@@ -28,6 +28,15 @@ typedef struct prdp_ctx prdp_ctx;
  * reads and writes it directly — that is the whole point of handing it over
  * rather than copying.
  *
+ * "Directly" is conditional on ALIGNMENT, and the failure is silent. The direct
+ * path is `VK_EXT_external_memory_host`, which requires the pointer to meet the
+ * driver's `minImportedHostPointerAlignment` (4096 on the NVIDIA device this was
+ * developed against). An unaligned buffer is not rejected: parallel-rdp logs
+ * "Host buffer is not aligned appropriately", falls back to staging every
+ * access through a copy, and everything still works — slower, with nothing in
+ * the return value to say so. A plain `Vec<u8>` does not meet it. Align the
+ * buffer to a page, or accept the copy knowingly.
+ *
  * Returns NULL if Vulkan is unavailable, the device is unsupported, or the
  * CommandProcessor declines to initialize. A NULL return is the ONLY failure
  * signal: nothing here throws across the boundary. */

@@ -1005,8 +1005,17 @@ is worth having and it is not evidence of anything.
 One correction to the plan this came from: the plan proposed `bindgen`. It is
 not used and not needed — the shim is eight functions, so hand-written
 declarations are shorter than the tooling to generate them, and they are the
-thing a reviewer must read either way. Their risk is drift from the header,
-which `cargo test --features gpu-rdp` catches at link time.
+thing a reviewer must read either way.
+
+Their risk is **drift from the header, and nothing here detects it.** An earlier
+version of this paragraph claimed `cargo test --features gpu-rdp` caught it; that
+was wrong, and the correction is the point. Linking resolves *symbols*. A
+declaration whose parameter types, order, or return type disagree with the C
+header links exactly as cleanly as a correct one and then corrupts the stack at
+run time. The eight declarations are held correct by review against
+`prdp_shim.h`, which is why that header is kept short enough to diff by eye. If
+this surface grows, that stops being sufficient and `bindgen` becomes the right
+answer after all.
 
 ## Test plan
 

@@ -19,5 +19,5 @@ parallel-rdp-standalone
   touch it and does not require the submodule to be checked out.
 
   This is an obligation in its own right, separate from any other attribution
-  in this file: distributing a binary built with `gpu-rdp` on must carry the
-  above copyright notice and the MIT permission notice.
+  in this file: distributing a binary built with the `gpu-rdp` feature enabled
+  must carry the above copyright notice and the MIT permission notice.

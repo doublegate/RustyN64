@@ -19,6 +19,21 @@ use rustyn64_rdp_gpu::{GpuRdp, ScanoutFrame, ViRegister};
 
 /// 4 MiB is enough RDRAM for a small framebuffer and matches the base N64.
 const RDRAM_SIZE: usize = 4 * 1024 * 1024;
+
+/// The alignment parallel-rdp needs to import host memory directly.
+///
+/// `VK_EXT_external_memory_host` maps the caller's buffer into the GPU's
+/// address space instead of staging every access through a copy — which is the
+/// whole reason the shim hands RDRAM over rather than copying it. The driver's
+/// `minImportedHostPointerAlignment` is 4096 on the NVIDIA device this was
+/// developed against, and a plain `Vec<u8>` does not meet it: the first version
+/// of this test produced `Host buffer is not aligned appropriately` /
+/// `falling back to a slower path` in parallel-rdp's own log while otherwise
+/// passing. 4096 is a page and is the common value, but it is a *property of
+/// the driver*, not a constant of the API — a device requiring more would fall
+/// back again, silently, exactly as this did.
+const PAGE: usize = 4096;
+
 /// parallel-rdp's hidden RDRAM is one byte per RDRAM half-word.
 const HIDDEN_RDRAM_SIZE: usize = RDRAM_SIZE / 2;
 
@@ -61,8 +76,20 @@ fn submit(accepted: bool) {
 
 #[test]
 fn a_filled_rectangle_reaches_the_scanout() {
-    let mut rdram = vec![0u8; RDRAM_SIZE];
-    let Some(mut gpu) = GpuRdp::new(&mut rdram, HIDDEN_RDRAM_SIZE) else {
+    // Over-allocate and slice to the next page boundary. Deliberately NOT a
+    // `repr(align)` type reinterpreted as bytes: that needs `unsafe`, and this
+    // needs none — an aligned buffer is a property of the address, and the
+    // address is something safe code can inspect.
+    let mut backing = vec![0u8; RDRAM_SIZE + PAGE];
+    let offset = backing.as_ptr().align_offset(PAGE);
+    let rdram = &mut backing[offset..offset + RDRAM_SIZE];
+    assert_eq!(
+        rdram.as_ptr() as usize % PAGE,
+        0,
+        "the RDRAM backing is not page-aligned, so the direct-import path would \
+         silently fall back to staging"
+    );
+    let Some(mut gpu) = GpuRdp::new(rdram, HIDDEN_RDRAM_SIZE) else {
         println!(
             "SKIPPED: prdp_create returned null — no usable Vulkan device here. \
              Nothing about rendering was verified."
@@ -77,11 +104,13 @@ fn a_filled_rectangle_reaches_the_scanout() {
     );
     println!("device is supported; rendering a real frame");
 
-    // Set Color Image (0x3F): 32-bit RGBA, width-1, at FB_ADDR.
-    submit(gpu.enqueue_command(&[
-        0x3F00_0000 | (0b11 << 19) | (0b11 << 16) | (FB_WIDTH - 1),
-        FB_ADDR,
-    ]));
+    // Set Color Image (0x3F). In the 64-bit command: format at [55:53], size at
+    // [52:51], width-1 at [41:32], address in the low word — so in this high
+    // word, format at [23:21] (0 = RGBA), size at [20:19] (3 = 32bpp), width-1
+    // at [9:0]. Bits [18:10] are unused and are left clear: a review caught an
+    // earlier `(0b11 << 16)` here, which set two of them for no reason, and a
+    // backend that ignores undefined bits would have passed the test regardless.
+    submit(gpu.enqueue_command(&[0x3F00_0000 | (0b11 << 19) | (FB_WIDTH - 1), FB_ADDR]));
     // Set Scissor (0x2D) over the whole framebuffer, in 10.2 fixed point.
     submit(gpu.enqueue_command(&[0x2D00_0000, ((FB_WIDTH << 2) << 12) | (FB_HEIGHT << 2)]));
     // Set Other Modes (0x2F) with cycle type = FILL (0b11 at bit 52).
