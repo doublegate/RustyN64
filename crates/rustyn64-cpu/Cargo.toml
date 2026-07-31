@@ -9,6 +9,13 @@ authors.workspace = true
 [features]
 default = ["std"]
 std = []
+# ADR 0013: the instruction-granular execution path. Default-OFF and additive —
+# with it disabled this crate contains no behavior change at all, because the fast
+# path is a separate entry point (`Cpu::step_instruction_at`) in a module that does
+# not exist without the feature, rather than a branch inside `tick_at`. It adds no
+# field to `Pipeline`, so the save-state layout is identical either way and ADR
+# 0011 §4's mode marker is not owed yet.
+fast-exec = []
 
 [dependencies]
 bitflags = { version = "2", features = ["serde"] }

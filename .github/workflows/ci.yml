@@ -103,6 +103,14 @@ jobs:
       # build too -- a `#[cfg]` arm that stops compiling is invisible to every job
       # that does not enable it.
       - run: cargo clippy -p rustyn64-frontend --all-targets --features fast-scheduler -- -D warnings
+      # The ADR 0013 instruction-granular execution path and its CPU-level
+      # differential gate. Same reasoning as `fast-scheduler` above, and the same
+      # leg: it is the test that grades the fast execution mode, so it has to run
+      # on the PRs that change it. A separate feature, not an extension of the
+      # other one -- `fast-scheduler` is tick-identical and `fast-exec` is
+      # deliberately not, so they are graded by different predicates.
+      - run: cargo test -p rustyn64-cpu --features fast-exec
+      - run: cargo clippy -p rustyn64-cpu --all-targets --features fast-exec -- -D warnings
 
   rustdoc:
     name: rustdoc (-D warnings)
@@ -195,6 +203,10 @@ jobs:
       # nothing else builds this crate for a bare-metal target -- so the no_std
       # claim for `fast-scheduler` is only true if it is checked here.
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features --features fast-scheduler
+      # And the CPU crate with the instruction-granular path on. `fastexec` is a
+      # child module of `pipeline` and uses nothing beyond what the accurate path
+      # already does, but "uses nothing" is a claim, and this is what checks it.
+      - run: cargo build -p rustyn64-cpu --target thumbv7em-none-eabihf --no-default-features --features fast-exec
 
   no-commercial-roms:
     name: no commercial ROMs

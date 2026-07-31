@@ -402,6 +402,14 @@ struct Pending {
     bad_vaddr: u64,
 }
 
+/// The instruction-granular execution path (ADR 0013), behind `fast-exec`.
+///
+/// A child module so it can reach `Pipeline`'s private fields — privacy extends to
+/// descendants — without widening the surface for anyone else. Absent entirely
+/// with the feature off, so the default build gains nothing (ADR 0011 §1).
+#[cfg(feature = "fast-exec")]
+mod fastexec;
+
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 // The bools are independent hardware lines and latches -- `prev_was_run`,
@@ -866,93 +874,25 @@ impl Pipeline {
         self.dc_wb.occupied = false;
     }
 
-    /// `DC` — the data-cache access, and the interrupt sampling point.
+    /// Perform the COP0/COP1 **reads** an instruction resolved, leaving the value
+    /// in the latch's `write_back` for the commit to store.
     ///
-    /// The stage placement is documented, not inherited from a reference
-    /// implementation: UM Figure 4-12 puts `INTR` in the `DC` column and §4.7.6
-    /// "DC-Stage Interlock and Exception Priorities" lists the interrupt
-    /// exception among them.
-    /// Update the `Cause.IP` lines from the hardware: the RCP's aggregate
-    /// interrupt and the `Count == Compare` timer edge.
+    /// The fourth latch-independent primitive (`docs/cpu.md`), and the one PR #231
+    /// deliberately left alone: at that point it had a single caller, and the shape
+    /// of a seam guessed without a second caller is a guess. `fast-exec`'s
+    /// sequential path is that caller, so the extraction is now driven rather than
+    /// speculative.
     ///
-    /// **Asserting a line is not recognizing an interrupt**, and separating the
-    /// two is the point. The `IP` bits track what the hardware is *asserting*
-    /// regardless of masks; recognition then applies `IE`/`EXL`/`ERL`/`IM` and is
-    /// the caller's business. Folding them together would make a masked interrupt
-    /// invisible to `MFC0 Cause`, which software polls.
+    /// It takes the latch **by reference** rather than the fields by value because
+    /// the three reads each replace `write_back` wholesale, and threading four
+    /// values in and one out would be a worse signature than the one the accurate
+    /// path already has.
     ///
-    /// Latch-independent, like [`Self::fetch_word`] and [`Self::ex_gate`]: it
-    /// stamps nothing and names no [`Stage`]. Asserting a line happens on
-    /// hardware whether or not the CPU is in a position to take the interrupt, so
-    /// the instruction-granular path (ADR 0013) needs exactly this and nothing
-    /// more.
-    ///
-    /// `IP2` is the RCP's aggregate line from the MI (libdragon `cop0.h`:
-    /// `C0_INTERRUPT_RCP = C0_INTERRUPT_2`; ledger U-4). `IP3` is CART, `IP4`
-    /// PRENMI, `IP7` the timer; the rest are unused on this board.
-    fn sample_interrupt_lines<B: Bus>(&mut self, bus: &mut B) {
-        self.cop0.set_ip(2, bus.poll_irq());
-        // IP7 is LATCHED on the match and stays set until `Compare` is written
-        // (UM §6.4.18, p. 200) -- note the one-way `if`, with no `else` clearing
-        // it. Modeling it as a level tied to `Count == Compare` looks tidier
-        // and silently DROPS any timer interrupt that fires while `EXL` is set,
-        // because the equality holds for one tick and the handler never sees it.
-        //
-        // The trigger is the rising EDGE of the match, not the standing
-        // equality: both `Count` and `Compare` reset to zero, so an equality
-        // test latches `IP7` before a single instruction retires. See
-        // `Cop0::timer_edge`.
-        if self.cop0.timer_edge() {
-            self.cop0.set_ip(7, true);
-        }
-    }
-
-    fn dc_stage<B: Bus>(&mut self, bus: &mut B) {
-        // Sample the lines once per PCycle here. `sample_interrupt_lines` carries
-        // why asserting and recognizing are two different steps; what follows is
-        // the recognition half.
-        self.sample_interrupt_lines(bus);
-
-        // Accepted only if the previous PCycle was a run cycle (UM §4.7.1). This
-        // is the ONLY interrupt recognition predicate in the tree -- carrying two
-        // subtly different ones is a known source of one-cycle discrepancies in
-        // other emulators.
-
-        // NMI is checked FIRST and without consulting `interrupt_pending`.
-        // *"Unlike all other interrupts, this interrupt is not maskable; it
-        // occurs regardless of the settings of the EXL, ERL, and the IE bits"*
-        // (UM SS6.4.6). Only the run-cycle gate applies, because NMI is still
-        // *"taken only at instruction boundaries"* -- which is exactly what
-        // `prev_was_run` expresses (UM SS4.7.1).
-        if self.prev_was_run && self.nmi_pending {
-            self.nmi_pending = false;
-            self.abort_from(Stage::Dc, Exception::Nmi);
-        } else if self.prev_was_run
-            && self.cop0.interrupt_pending()
-            && self.interrupt_has_an_instruction_to_charge()
-        {
-            self.abort_from(Stage::Dc, Exception::Interrupt);
-        }
-        // The memory access. This is the point the scheduler interleaves the RCP
-        // around -- the whole reason the pipeline is modeled at all (ADR 0007).
-        let mut out = self.ex_dc;
-        if out.occupied
-            && out.abort.is_none()
-            && let Some(op) = out.mem
-        {
-            match self.access(bus, op) {
-                Ok(wb) => out.write_back = wb,
-                // Stamp before the latch move so the abort travels with the
-                // instruction that caused it -- see `abort_from`.
-                Err(exc) => {
-                    self.abort_with(Stage::Dc, exc, self.fault_vaddr);
-                    out = self.ex_dc;
-                }
-            }
-        }
-        // The COP0 READ happens here, in DC (UM §4.6.9). The write does not --
-        // it happens in WB, and keeping them in different stages is what makes
-        // the CP0 bypass interlock expressible at all.
+    /// A **read** happens here, in `DC`; a **write** happens at `WB`. They are
+    /// split across the two stages because UM §4.6.9 defines the CP0 bypass
+    /// interlock in terms of a write reaching `WB` while the next instruction reads
+    /// in `DC` — a rule that cannot be expressed if both happen in one stage.
+    fn apply_cop0_read(&self, out: &mut Latch) {
         if out.occupied
             && out.abort.is_none()
             && let Some(Cop0Access::Cop1(Cop1Access::ReadFpr { src, dest, wide })) = out.cop0
@@ -1000,6 +940,96 @@ impl Pipeline {
             };
             out.write_back = WriteBack::Gpr { dest, value };
         }
+    }
+
+    /// Update the `Cause.IP` lines from the hardware: the RCP's aggregate
+    /// interrupt and the `Count == Compare` timer edge.
+    ///
+    /// **Asserting a line is not recognizing an interrupt**, and separating the
+    /// two is the point. The `IP` bits track what the hardware is *asserting*
+    /// regardless of masks; recognition then applies `IE`/`EXL`/`ERL`/`IM` and is
+    /// the caller's business. Folding them together would make a masked interrupt
+    /// invisible to `MFC0 Cause`, which software polls.
+    ///
+    /// Latch-independent, like [`Self::fetch_word`] and [`Self::ex_gate`]: it
+    /// stamps nothing and names no [`Stage`]. Asserting a line happens on
+    /// hardware whether or not the CPU is in a position to take the interrupt, so
+    /// the instruction-granular path (ADR 0013) needs exactly this and nothing
+    /// more.
+    ///
+    /// `IP2` is the RCP's aggregate line from the MI (libdragon `cop0.h`:
+    /// `C0_INTERRUPT_RCP = C0_INTERRUPT_2`; ledger U-4). `IP3` is CART, `IP4`
+    /// PRENMI, `IP7` the timer; the rest are unused on this board.
+    fn sample_interrupt_lines<B: Bus>(&mut self, bus: &mut B) {
+        self.cop0.set_ip(2, bus.poll_irq());
+        // IP7 is LATCHED on the match and stays set until `Compare` is written
+        // (UM §6.4.18, p. 200) -- note the one-way `if`, with no `else` clearing
+        // it. Modeling it as a level tied to `Count == Compare` looks tidier
+        // and silently DROPS any timer interrupt that fires while `EXL` is set,
+        // because the equality holds for one tick and the handler never sees it.
+        //
+        // The trigger is the rising EDGE of the match, not the standing
+        // equality: both `Count` and `Compare` reset to zero, so an equality
+        // test latches `IP7` before a single instruction retires. See
+        // `Cop0::timer_edge`.
+        if self.cop0.timer_edge() {
+            self.cop0.set_ip(7, true);
+        }
+    }
+
+    /// `DC` — the data-cache access, and the interrupt sampling point.
+    ///
+    /// The stage placement is documented, not inherited from a reference
+    /// implementation: UM Figure 4-12 puts `INTR` in the `DC` column and §4.7.6
+    /// "DC-Stage Interlock and Exception Priorities" lists the interrupt
+    /// exception among them.
+    fn dc_stage<B: Bus>(&mut self, bus: &mut B) {
+        // Sample the lines once per PCycle here. `sample_interrupt_lines` carries
+        // why asserting and recognizing are two different steps; what follows is
+        // the recognition half.
+        self.sample_interrupt_lines(bus);
+
+        // Accepted only if the previous PCycle was a run cycle (UM §4.7.1). This
+        // is the ONLY interrupt recognition predicate in the tree -- carrying two
+        // subtly different ones is a known source of one-cycle discrepancies in
+        // other emulators.
+
+        // NMI is checked FIRST and without consulting `interrupt_pending`.
+        // *"Unlike all other interrupts, this interrupt is not maskable; it
+        // occurs regardless of the settings of the EXL, ERL, and the IE bits"*
+        // (UM SS6.4.6). Only the run-cycle gate applies, because NMI is still
+        // *"taken only at instruction boundaries"* -- which is exactly what
+        // `prev_was_run` expresses (UM SS4.7.1).
+        if self.prev_was_run && self.nmi_pending {
+            self.nmi_pending = false;
+            self.abort_from(Stage::Dc, Exception::Nmi);
+        } else if self.prev_was_run
+            && self.cop0.interrupt_pending()
+            && self.interrupt_has_an_instruction_to_charge()
+        {
+            self.abort_from(Stage::Dc, Exception::Interrupt);
+        }
+        // The memory access. This is the point the scheduler interleaves the RCP
+        // around -- the whole reason the pipeline is modeled at all (ADR 0007).
+        let mut out = self.ex_dc;
+        if out.occupied
+            && out.abort.is_none()
+            && let Some(op) = out.mem
+        {
+            match self.access(bus, op) {
+                Ok(wb) => out.write_back = wb,
+                // Stamp before the latch move so the abort travels with the
+                // instruction that caused it -- see `abort_from`.
+                Err(exc) => {
+                    self.abort_with(Stage::Dc, exc, self.fault_vaddr);
+                    out = self.ex_dc;
+                }
+            }
+        }
+        // The COP0 READ happens here, in DC (UM §4.6.9). The write does not --
+        // it happens in WB, and keeping them in different stages is what makes
+        // the CP0 bypass interlock expressible at all.
+        self.apply_cop0_read(&mut out);
         self.dc_wb = out;
         self.ex_dc.occupied = false;
     }
