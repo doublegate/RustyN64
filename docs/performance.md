@@ -1275,6 +1275,146 @@ bucket is a step that had nothing to do*.
 larger lever of the two. On this evidence the plan's ordering is worth revisiting
 before either is begun — a maintainer's call, recorded here rather than taken.
 
+## The RSP's idle steps are ~38% of the render phase and bounded at 0.45%
+
+The profile above ended with a question: *how much of the RSP bucket is a step that
+had nothing to do?* It is the measurement the deficit-counter scheduler has to be
+sized against, because that design's value is removing **visits**, and a visit is
+only worth removing if it costs something.
+
+Answer: **~38% of render-phase steps are idle, and removing them entirely is worth
+0.45% on the window most favorable to it** — roughly half that where it would
+actually run. The visits are nearly free; there is no reservoir there.
+
+### How many steps are idle
+
+Scratch instrumentation in `Bus::rsp_tick` counting halted versus executing steps
+over the 900-frame `gameplay_phase_probe` run. The table below is in **RSP steps**
+and the run is in **frames**; the two connect at roughly **1.0 M RCP steps per
+frame** (900 M steps over 900 frames), which is what makes the 100 M-step intervals
+read as ~100 frames each. The **cumulative** share is
+misleading and is the reason this is tabled per interval rather than quoted as one
+number — it starts above 80% and falls throughout, because boot is mostly a
+halted RSP and the render phase is not:
+
+| steps (millions) | idle in interval | share |
+| --- | --- | --- |
+| 0-100 | 82,856,525 | 82.86% |
+| 100-200 | 70,561,600 | 70.56% |
+| 200-300 | 90,565,572 | 90.57% |
+| 300-400 | 64,101,175 | 64.10% |
+| 400-500 | 46,854,407 | 46.85% |
+| 500-600 | 40,118,503 | 40.12% |
+| 600-700 | 40,948,739 | 40.95% |
+| 700-800 | 38,661,898 | 38.66% |
+| 800-900 | 37,707,875 | 37.71% |
+
+The last four intervals sit at **37.7-41.0%** and are flat, which is what says
+that is the steady state rather than a point on a curve. **Quoting the cumulative
+56.9% would have overstated it by half**, and quoting the first interval's 82.9%
+by more than double.
+
+### Whether removing them is worth anything: 0.45% at best, and less in practice
+
+`Rsp::su_step` already returns immediately when halted. What a caller could still
+skip is the wrapper: `Bus::rsp_tick`'s call, the `StepResult::default()` it
+constructs, the three `Option` tests on the result, and the step counter. So:
+
+```rust
+pub fn rsp_tick(&mut self) {
+    if self.rsp.halted() {                                  // the experiment
+        self.rcp_steps = self.rcp_steps.wrapping_add(1);
+        return;
+    }
+    let out = self.rsp.tick();
+    if let Some(raise) = out.interrupt_change { /* ... */ }  // skipped
+    if let Some(dma) = out.dma { /* ... */ }                // skipped
+    if let Some((off, val)) = out.dp_write { /* ... */ }    // skipped
+    self.rcp_steps = self.rcp_steps.wrapping_add(1);
+}
+```
+
+**This was first measured on the wrong harness, and the first answer was wrong.**
+`gameplay_phase_probe` gave A 63.6/63.5, B 65.8/64.3, A 63.5/65.1 — overlapping
+legs, recorded as *neutral*. A reviewer pointed out that the probe's spread (2.5%
+within a leg) is wider than the effect being looked for, and that
+`examples/frame_bench.rs` has a ~1% floor. That is correct, and re-running it
+**reversed the result**:
+
+| leg | `frame_bench`, ms/frame |
+| --- | --- |
+| A (unmodified) | 64.231, 64.392, 64.262, 64.401, 65.407 |
+| B (early-out) | 63.818, 63.896, 63.927, 63.941, ~~71.507~~ |
+
+**One reading is excluded and named**: B's 71.507 ms is 11.8% above the rest of its
+own leg, which is contamination rather than variance — something else was running.
+Every other reading is kept, including A's 65.407, which is only 1.8% high and has
+no such excuse.
+
+On that data the legs **do not overlap**: A's minimum (64.231) sits above B's
+maximum (63.941). Conservatively, **64.231 -> 63.941 ms = 0.45%**.
+
+**What that does and does not establish.** The retained legs differ by 0.45% and do
+not overlap; that is an *observation*, not a demonstrated causal improvement. Five
+readings a side, an effect within a factor of two of the harness's own floor, and
+one excluded sample do not carry that weight. What it does establish is an **upper
+bound**: whatever removing idle visits is worth, it is not more than this. Two
+reasons the true figure is lower still:
+
+- `frame_bench`'s window is **early boot**, where 80%+ of RSP steps are halted (the
+  first rows of the table above). The render phase runs at 38%, so expect roughly
+  half of 0.45% there.
+- It is within a factor of two of this harness's own noise floor, which is why five
+  readings per leg were needed to see it at all.
+
+**Not landed**, on the size of the effect alone: an upper bound of 0.45% measured on
+the most favorable window, against a reason for reaching for it — that idle visits
+are expensive — which this is the evidence against. The value here is the bound, not
+the patch.
+
+(An earlier draft also claimed the change breaks `rcp_steps_for_test`. **That was
+wrong** — the experimental patch increments `rcp_steps` on the halted return, so the
+count is preserved and no test is affected. A reason invented to reinforce a
+conclusion already reached on other grounds; caught in review, and removed rather
+than quietly dropped.)
+
+### What that does to the deficit-counter scheduler's case
+
+Its two justifications were sized separately, and both are now measured:
+
+1. **`scheduler.rs` per-edge dispatch arithmetic — 5.05%.** Eliminating it entirely
+   buys 1.05x.
+2. **Per-edge chip visits, whose cost is charged to the chip buckets —
+   measured here as ~nothing for the RSP**, the largest of them.
+
+That is the second justification failing on its largest single case. It is not
+proof for the RDP, AI, PI or VI, whose visits were not measured this way — but the
+RSP was where the argument was strongest, since it is 21.4% of the frame and 38%
+of its steps do nothing.
+
+**What that supports, stated no more strongly than the evidence allows:** the
+*halted-visit overhead* inside the RSP bucket is small, so the bucket is
+predominantly work done while the RSP is running — microcode execution and the
+wrapper around it. This experiment touched **one** wrapper path; it does not
+decompose the running 62% into dispatch versus arithmetic versus register access,
+and it says nothing at all about the RDP, AI, PI or VI, whose visits were never
+measured this way.
+
+On that reading the lever likely to reach the bucket is a faster interpreter (the
+plan's pre-decoded threaded design) rather than fewer visits — but *likely* is the
+right word until the running share is decomposed, which is the next measurement
+rather than a conclusion of this one.
+
+### Ruled out
+
+**Do not re-try the `rsp_tick` halted early-out.** Bounded at **0.45%** on the window
+most favorable to it, and about half that where it would actually run — an upper
+bound near the harness floor, not a demonstrated win.
+The analogous change *was* a win for the RDP and the AI (#219/#221) because those
+avoid a `core::mem::take` of a large struct; the RSP's wrapper has no such
+payload, so the pattern does not transfer. Matching the shape of a past win is not
+evidence.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
