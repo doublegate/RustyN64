@@ -25,6 +25,7 @@
 
 #![cfg(feature = "fast-scheduler")]
 
+use rustyn64_core::fastpath::{BailOut, BailOutSet, FastRunReport};
 use rustyn64_core::scheduler::{EDGE_PERIOD, System};
 
 /// A seed with no special structure — the phase alignment it derives is what makes
@@ -153,7 +154,16 @@ fn the_fast_path_lands_where_the_accurate_path_would() {
     );
 
     accurate.run_until(TICKS);
-    fast.run_until_fast(TICKS);
+    let report = fast.run_until_fast(TICKS);
+
+    // Engagement (ADR 0012 §2). Before #225 this function deferred *everything* to
+    // the accurate scheduler, and every assertion below passed — correctly, and
+    // uselessly. The report is what tells the two apart.
+    assert!(
+        report.engaged(),
+        "the fast path executed no block; it deferred the whole run and this \
+         comparison grades nothing"
+    );
 
     // Completion witness (ADR 0012): a run that did nothing would agree just as
     // convincingly as one that did everything. Assert the machines actually
@@ -216,13 +226,14 @@ fn the_fast_path_agrees_at_every_phase_alignment() {
     const BASE: u64 = 24_000;
     const { assert!(BASE.is_multiple_of(EDGE_PERIOD)) };
 
+    let mut blocks = 0u64;
     for seed in PHASE_SEEDS {
         for tail in 0..EDGE_PERIOD {
             let target = BASE + tail;
             let mut accurate = System::new(seed);
             let mut fast = System::new(seed);
             accurate.run_until(target);
-            fast.run_until_fast(target);
+            blocks += fast.run_until_fast(target).blocks;
 
             assert!(
                 accurate.cpu.retired > 0,
@@ -245,6 +256,17 @@ fn the_fast_path_agrees_at_every_phase_alignment() {
             }
         }
     }
+
+    // Engagement across the whole sweep (ADR 0012 §2). Asserted once at the end
+    // rather than per case: `BASE` is thousands of periods, so every case engages,
+    // and a per-case assertion would only add noise to a loop that already reports
+    // seed and tail on failure.
+    assert!(
+        blocks > 0,
+        "no case in the sweep executed a single block — the fast path deferred \
+         everything and none of the {} comparisons above graded it",
+        (PHASE_SEEDS.end - PHASE_SEEDS.start) * EDGE_PERIOD
+    );
 }
 
 // **The top of the tick range is guarded by construction, not by a test — and this
@@ -271,10 +293,18 @@ fn the_fast_path_agrees_at_every_phase_alignment() {
 #[test]
 fn a_target_already_reached_is_a_no_op() {
     let mut sys = System::new(SEED);
-    sys.run_until_fast(10_000);
+    let _ = sys.run_until_fast(10_000);
     let (ticks, retired) = (sys.master_ticks(), sys.cpu.retired);
-    sys.run_until_fast(ticks);
-    sys.run_until_fast(ticks - 1);
+    for report in [sys.run_until_fast(ticks), sys.run_until_fast(ticks - 1)] {
+        // A no-op is neither engagement nor a hand-off, and the report must say so
+        // (ADR 0012 §2). Counting a reached target as a bail-out would let a suite
+        // of nothing but redundant calls satisfy the coverage witness.
+        assert_eq!(
+            report,
+            FastRunReport::default(),
+            "a reached target executed no block and handed nothing back"
+        );
+    }
     assert_eq!(
         sys.master_ticks(),
         ticks,
@@ -342,7 +372,7 @@ fn probe_scheduler_dispatch_cost() {
 
         let mut f = System::new(SEED);
         let t = Instant::now();
-        f.run_until_fast(TICKS);
+        let _ = f.run_until_fast(TICKS);
         fast_best = fast_best.min(t.elapsed().as_secs_f64());
     }
     println!(
@@ -415,8 +445,13 @@ fn the_fast_path_agrees_while_running_a_real_rom() {
     for chunk in 1..=CHUNKS {
         let target = start + chunk * CHUNK;
         accurate.run_until(target);
-        fast.run_until_fast(target);
+        let report = fast.run_until_fast(target);
 
+        assert!(
+            report.engaged(),
+            "chunk {chunk}: the fast path executed no block, so this chunk compared \
+             the accurate scheduler against itself"
+        );
         assert_eq!(
             fast.master_ticks(),
             accurate.master_ticks(),
@@ -455,5 +490,339 @@ fn the_fast_path_agrees_while_running_a_real_rom() {
     println!(
         "real-ROM differential: {} chunks x {CHUNK} ticks, {} instructions retired, states identical",
         CHUNKS, accurate.cpu.retired
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The completion witness (ADR 0012 §2)
+// ---------------------------------------------------------------------------
+//
+// Everything above compares two schedulers. None of it can tell you whether the
+// gate *ran* — and ADR 0012 §2 is explicit that "a gate that hangs mid-suite is
+// indistinguishable from a gate that passed, because both produce no failure".
+// This section is the part that reports having finished.
+//
+// **Why boundary fixtures are separate from the equivalence sweeps above.** The
+// sweeps are long by design (96 machine pairs, ~60 s debug); re-running them here
+// to collect coverage would double the suite for information they already have but
+// do not aggregate. ADR 0011 §6 asks for something different anyway: "fixtures —
+// crafted machine states and instruction sequences that reach each boundary —
+// driven through the ordinary public entry points". Crafted and cheap is the
+// point. Each fixture below still asserts equivalence for its own state, so
+// coverage is never bought with a run that grades nothing.
+
+/// One crafted machine state that reaches a specific boundary.
+///
+/// A plain `fn` pointer rather than a closure so the driver can move it to a
+/// worker thread without a `Box<dyn ...>` dance.
+struct Fixture {
+    /// Reported in every failure message, and the value `RUSTYN64_GATE_FIXTURE`
+    /// matches against.
+    name: &'static str,
+    /// Runs the crafted case, asserts its own equivalence, and returns what the
+    /// fast path reported doing.
+    run: fn() -> FastRunReport,
+}
+
+/// Per-fixture wall-clock limit (ADR 0012 §2: "carry a timeout per fixture and for
+/// the suite, so a hang fails rather than hanging").
+///
+/// Deliberately generous — two orders of magnitude above what these cost even in a
+/// debug build on a loaded machine. The timeout exists to convert a **hang** into a
+/// failure, not to police performance: a tight wall-clock bound in CI is a flake
+/// generator, and a flaky gate gets disabled, which is strictly worse than a slow
+/// one. `probe_scheduler_dispatch_cost` is where speed is measured.
+const FIXTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+
+/// Whole-suite limit, so a pathology spread thinly across fixtures still fails.
+const SUITE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
+
+/// Environment variable that restricts the run to fixtures whose name contains it.
+///
+/// A filtered run **cannot satisfy a suite-wide expectation and must not pretend
+/// to** (ADR 0012 §2): it reports that the witness did not apply, and it is the
+/// unfiltered run in CI that gates.
+const FILTER_ENV: &str = "RUSTYN64_GATE_FIXTURE";
+
+/// **Boundary: a partial period remains**, so the accurate scheduler runs the tail.
+///
+/// Reaches [`BailOut::PartialPeriodTail`].
+fn fixture_partial_period_tail() -> FastRunReport {
+    const BASE: u64 = 6_000;
+    const { assert!(BASE.is_multiple_of(EDGE_PERIOD)) };
+
+    let mut acc = FastRunReport::default();
+    // Every non-zero remainder, not just one: the tail length is the thing that
+    // decides how much the accurate scheduler is handed, and a hand-off correct at
+    // one remainder is not thereby correct at another.
+    for tail in 1..EDGE_PERIOD {
+        let target = BASE + tail;
+        let mut accurate = System::new(SEED);
+        let mut fast = System::new(SEED);
+        accurate.run_until(target);
+        let report = fast.run_until_fast(target);
+
+        assert!(
+            report.bailed.contains(BailOut::PartialPeriodTail),
+            "tail {tail}: a partial period remained and was not reported as a hand-off"
+        );
+        assert_eq!(
+            fast.master_ticks(),
+            accurate.master_ticks(),
+            "tail {tail}: correct-but-late across the hand-off boundary (ADR 0011 §6)"
+        );
+        assert_eq!(
+            state_digest(&accurate),
+            state_digest(&fast),
+            "tail {tail}: state diverged across the hand-off boundary"
+        );
+        acc = FastRunReport {
+            blocks: acc.blocks + report.blocks,
+            bailed: acc.bailed.union(report.bailed),
+        };
+    }
+    acc
+}
+
+/// **Boundary: the target lands exactly on a period edge**, so nothing is handed
+/// back beyond the landing.
+///
+/// Reaches no reason at all, which is the point. If `PartialPeriodTail` were ever
+/// reported unconditionally — the natural mistake, since `run_until` is called on
+/// every path — the coverage witness would still be satisfied and would have stopped
+/// meaning anything. This fixture is the mutation guard for that: it fails on the
+/// buggy version and passes on the correct one.
+fn fixture_whole_periods_only() -> FastRunReport {
+    const TARGET: u64 = 6_000;
+    const { assert!(TARGET.is_multiple_of(EDGE_PERIOD)) };
+
+    let mut accurate = System::new(SEED);
+    let mut fast = System::new(SEED);
+    accurate.run_until(TARGET);
+    let report = fast.run_until_fast(TARGET);
+
+    assert!(
+        report.bailed.is_empty(),
+        "a target on a period boundary handed nothing back, yet the report claims \
+         {:?} — a reason reported on every call is a reason that distinguishes \
+         nothing",
+        report.bailed
+    );
+    assert!(
+        report.engaged(),
+        "the fixture that proves the no-bail-out case must itself run blocks, or it \
+         proves only that nothing happened"
+    );
+    assert_eq!(
+        state_digest(&accurate),
+        state_digest(&fast),
+        "state diverged on a whole-period run"
+    );
+    report
+}
+
+/// Every boundary fixture. The driver walks this; nothing else may.
+const FIXTURES: &[Fixture] = &[
+    Fixture {
+        name: "partial_period_tail",
+        run: fixture_partial_period_tail,
+    },
+    Fixture {
+        name: "whole_periods_only",
+        run: fixture_whole_periods_only,
+    },
+];
+
+/// Run one fixture under a timeout, converting **any** abnormal end into a verdict.
+///
+/// ADR 0012 §2: "An abnormal termination is a gate failure, never an uncounted
+/// exit. A panic, an abort, or a fixture that hits its timeout is not a bail-out
+/// reason and must not be absorbed as one." The two failure modes are told apart by
+/// the channel: a panic drops the sender (`Disconnected`), a hang does not
+/// (`Timeout`). Both fail; they get different messages because they need different
+/// investigations.
+///
+/// The worker thread is deliberately **not** joined on timeout — it cannot be
+/// killed, and blocking on it would reproduce the hang this is here to convert.
+fn run_fixture(fixture: &Fixture) -> FastRunReport {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let run = fixture.run;
+    let name = fixture.name;
+    std::thread::Builder::new()
+        .name(format!("gate:{name}"))
+        .spawn(move || {
+            let _ = tx.send(run());
+        })
+        .unwrap_or_else(|e| panic!("fixture {name}: could not spawn a worker: {e}"));
+
+    match rx.recv_timeout(FIXTURE_TIMEOUT) {
+        Ok(report) => report,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+            "fixture {name}: HUNG — no result after {FIXTURE_TIMEOUT:?}. A gate that \
+             hangs is indistinguishable from one that passed, so this is a failure \
+             (ADR 0012 §2)"
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!(
+            "fixture {name}: terminated abnormally (its panic is printed above). An \
+             abnormal termination is a gate failure, never an uncounted exit \
+             (ADR 0012 §2)"
+        ),
+    }
+}
+
+/// **The gate reports having finished, and what it covered** (ADR 0012 §2).
+///
+/// Three suite-wide conditions, each of which would otherwise look exactly like
+/// success:
+///
+/// 1. **Every bail-out reason was reached.** The expected set is
+///    [`BailOut::ALL`], generated from the same list as the enum, so adding a
+///    reason without a fixture that reaches it fails here and **nobody has to
+///    remember to bump a total**. A literal expected count drifts the moment the
+///    suite grows, which converts the witness into decoration.
+/// 2. **The fast path engaged.** A run that deferred everything agrees with the
+///    accurate scheduler perfectly — #224 shipped exactly that, on purpose.
+/// 3. **A boundary was reached at all.** Distinct from (1) only when the reason
+///    set is empty, which is why the set being empty is itself a failure: a
+///    coverage assertion over nothing passes.
+///
+/// Engagement and coverage are **suite-wide, not per-fixture**, per ADR 0012: "a
+/// fixture that runs start to finish on the fast path without ever handing back is
+/// a legitimate and valuable case", which `whole_periods_only` is.
+#[test]
+fn the_gate_witnesses_its_own_completion() {
+    let filter = std::env::var(FILTER_ENV).ok();
+    let selected: Vec<&Fixture> = FIXTURES
+        .iter()
+        .filter(|f| filter.as_ref().is_none_or(|p| f.name.contains(p.as_str())))
+        .collect();
+
+    assert!(
+        !selected.is_empty(),
+        "{FILTER_ENV}={:?} matched no fixture; the run would report success having \
+         checked nothing",
+        filter.as_deref().unwrap_or("")
+    );
+
+    let started = std::time::Instant::now();
+    let mut covered = BailOutSet::new();
+    let mut blocks = 0u64;
+    for fixture in &selected {
+        let report = run_fixture(fixture);
+        covered = covered.union(report.bailed);
+        blocks += report.blocks;
+        println!(
+            "fixture {}: {} blocks, reasons {:?}",
+            fixture.name, report.blocks, report.bailed
+        );
+        assert!(
+            started.elapsed() < SUITE_TIMEOUT,
+            "the suite exceeded {SUITE_TIMEOUT:?} after fixture {} — failing rather \
+             than continuing, since a gate that never finishes reports nothing",
+            fixture.name
+        );
+    }
+
+    if filter.is_some() {
+        // A filtered run cannot satisfy a suite-wide expectation and must not
+        // pretend to (ADR 0012 §2). It says so out loud; CI runs unfiltered.
+        println!(
+            "{FILTER_ENV} is set — {} of {} fixtures ran, so the suite-wide witness \
+             DID NOT APPLY and was not asserted. The unfiltered run is what gates.",
+            selected.len(),
+            FIXTURES.len()
+        );
+        return;
+    }
+
+    assert!(
+        !BailOut::ALL.is_empty(),
+        "the bail-out enumeration is empty, so the coverage assertion below would \
+         pass over nothing — the fast path must declare its exits"
+    );
+    assert!(
+        blocks > 0,
+        "THE FAST PATH NEVER ENGAGED across {} fixtures: it deferred every stretch \
+         to the accurate scheduler, so the whole suite compared that scheduler with \
+         itself",
+        selected.len()
+    );
+    assert!(
+        !covered.is_empty(),
+        "NO BAIL-OUT BOUNDARY WAS REACHED across {} fixtures, so the hand-off to the \
+         accurate scheduler — where ADR 0011 §6's bailout invariant lives — is \
+         entirely unexercised",
+        selected.len()
+    );
+
+    let missing: Vec<&'static str> = BailOut::ALL
+        .iter()
+        .filter(|r| !covered.contains(**r))
+        .map(|r| r.describe())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} of {} bail-out reasons were never reached by any fixture:\n  - {}\n\
+         Add a fixture that reaches each, or the gate reports agreement about a \
+         hand-off nobody exercised (ADR 0012 §2).",
+        missing.len(),
+        BailOut::ALL.len(),
+        missing.join("\n  - ")
+    );
+
+    println!(
+        "GATE COMPLETE: {} fixtures, {blocks} blocks executed, {}/{} bail-out \
+         reasons covered",
+        selected.len(),
+        BailOut::ALL.len(),
+        BailOut::ALL.len()
+    );
+}
+
+/// The witness must be able to **fail**, which a passing run cannot demonstrate.
+///
+/// Two mutations, checked directly rather than by hand-editing the gate: a
+/// coverage set missing a reason must be detected, and an empty one must be too.
+/// Without this, a `contains` that returned `true` unconditionally — or a
+/// `BailOut::ALL` that was somehow empty — would leave the witness green forever
+/// while asserting nothing, which is the exact shape ADR 0012 §2 was written about.
+#[test]
+fn the_completion_witness_detects_a_coverage_hole() {
+    let mut full = BailOutSet::new();
+    for &reason in BailOut::ALL {
+        full.insert(reason);
+    }
+    assert!(
+        BailOut::ALL.iter().all(|r| full.contains(*r)),
+        "a set built from every reason must cover every reason"
+    );
+
+    // Drop exactly one reason and require the check that the witness performs to
+    // notice. Done per reason, so this stays true as the enumeration grows.
+    for &dropped in BailOut::ALL {
+        let mut partial = BailOutSet::new();
+        for &reason in BailOut::ALL {
+            if reason != dropped {
+                partial.insert(reason);
+            }
+        }
+        assert!(
+            !partial.contains(dropped),
+            "the coverage set claims {dropped:?} was reached when it was omitted"
+        );
+        let missing = BailOut::ALL
+            .iter()
+            .filter(|r| !partial.contains(**r))
+            .count();
+        assert_eq!(
+            missing, 1,
+            "omitting {dropped:?} must leave exactly one reason uncovered"
+        );
+    }
+
+    assert!(
+        BailOutSet::new().is_empty(),
+        "an empty coverage set must report itself empty, or the \"no boundary was \
+         reached\" failure can never fire"
     );
 }

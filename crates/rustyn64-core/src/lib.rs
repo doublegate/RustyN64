@@ -17,6 +17,14 @@ extern crate alloc;
 
 pub mod boot;
 pub mod bus;
+/// The fast path's hand-off enumeration and run report (ADR 0012 §2).
+///
+/// Present only with the default-off `fast-scheduler` feature, so the default
+/// build gains nothing at all — ADR 0011 §1 by construction, the same way
+/// [`scheduler::System::run_until_fast`] is a separate entry point rather than a
+/// branch.
+#[cfg(feature = "fast-scheduler")]
+pub mod fastpath;
 pub mod scheduler;
 pub mod vi;
 

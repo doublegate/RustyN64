@@ -390,8 +390,25 @@ impl System {
     /// A later slice that skips or reorders work will have to earn the invariant
     /// instead of inheriting it, and the differential gate is what will say whether
     /// it did.
+    ///
+    /// # The return value is ADR 0012's completion witness
+    ///
+    /// [`FastRunReport`](crate::fastpath::FastRunReport) says how many whole blocks
+    /// ran and which
+    /// [`BailOut`](crate::fastpath::BailOut) reasons handed a stretch back. ADR
+    /// 0012 §2 makes both suite-wide gate failures — *"the fast path never
+    /// engaged"* and *"no bail-out boundary was reached"* — and neither is
+    /// observable from the outside otherwise: a fast path that quietly deferred
+    /// everything would agree with the accurate one perfectly, which is exactly
+    /// what #224 shipped on purpose while the gate was being written.
+    ///
+    /// It is a **return value, not a field and not a hook**. A field would make
+    /// ADR 0011 §4's save-state mode marker fall due; a hook compiled into a
+    /// release build for its tests is what ADR 0011 §6 forbids. A return value
+    /// adds neither state nor a branch — the function already knows both numbers.
     #[cfg(feature = "fast-scheduler")]
-    pub fn run_until_fast(&mut self, target: u64) {
+    pub fn run_until_fast(&mut self, target: u64) -> crate::fastpath::FastRunReport {
+        use crate::fastpath::{BailOut, BailOutSet, FastRunReport};
         // The edge schedule is PERIODIC. A domain steps when
         // `(tick + phase) % divider == 0`, so the pattern of which domains are due
         // repeats every `lcm(CPU_DIVIDER, RCP_DIVIDER)` ticks — and the phases are
@@ -408,8 +425,14 @@ impl System {
         // because nothing ever diverged.
         // Nothing to do, and saying so up front keeps every addition below inside a
         // range the loop condition has already bounded.
+        //
+        // This is NOT a bail-out: nothing is handed to the accurate scheduler,
+        // because there is nothing to run on either path. Recording it as a reason
+        // would put a variant in the coverage witness that says only "someone
+        // called this twice", and ADR 0012 §2's enumeration is about exits to the
+        // accurate scheduler, not about every early return.
         if target <= self.master_ticks {
-            return;
+            return FastRunReport::default();
         }
 
         // Only the two predicates are stored: the offset is always `index + 1`, so
@@ -443,6 +466,7 @@ impl System {
         // bounded by something else. Overflow ends the loop, which is correct —
         // there is no whole period left below `target`.
         let mut base = self.master_ticks;
+        let mut blocks = 0u64;
         while base
             .checked_add(EDGE_PERIOD)
             .is_some_and(|end| end <= target)
@@ -455,13 +479,26 @@ impl System {
                 }
             }
             base += EDGE_PERIOD;
+            blocks += 1;
         }
 
         // The tail — a partial period, plus the `master_ticks = target` landing —
         // goes through the accurate path. It is at most `EDGE_PERIOD` ticks, so the
         // fallback costs nothing measurable, and reusing it means the two paths
         // cannot disagree about the end of a run.
+        //
+        // The reason is recorded on the tail being non-empty, NOT on this call
+        // happening: `run_until(target)` runs unconditionally, and when `target`
+        // falls exactly on a period boundary all it does is the landing assignment.
+        // Reporting `PartialPeriodTail` there would make the witness true of every
+        // call, which is the same as it being true of none.
+        let mut bailed = BailOutSet::new();
+        if target > base {
+            bailed.insert(BailOut::PartialPeriodTail);
+        }
         self.run_until(target);
+
+        FastRunReport { blocks, bailed }
     }
 
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the

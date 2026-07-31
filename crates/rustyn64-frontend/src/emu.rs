@@ -258,8 +258,13 @@ impl EmuCore {
         // schedule rather than a different one, and the differential gate in
         // `rustyn64-core` requires byte-identical machine state across every phase
         // alignment, every partial-period tail, and a real commercial title.
+        // The run report is ADR 0012's gate witness (which blocks ran, which
+        // bail-out reasons were reached). The frontend has nothing to do with it, so
+        // it is discarded explicitly rather than by the `#[must_use]` being absent —
+        // an emulator that changed behavior on a diagnostic would be the ADR 0011 §6
+        // defect of a released path shaped by its tests.
         #[cfg(feature = "fast-scheduler")]
-        self.system.run_until_fast(target);
+        let _ = self.system.run_until_fast(target);
         #[cfg(not(feature = "fast-scheduler"))]
         self.system.run_until(target);
         self.frames = self.frames.wrapping_add(1);
