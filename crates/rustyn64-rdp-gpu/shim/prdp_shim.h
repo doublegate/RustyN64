@@ -38,8 +38,10 @@ typedef struct prdp_ctx prdp_ctx;
  * Reach the memory through `prdp_rdram_ptr` / `prdp_end_write_rdram`, NOT through
  * any pointer of your own -- see those.
  *
- * Returns NULL if Vulkan is unavailable, the device is unsupported, the
- * allocation fails, or the CommandProcessor declines to initialize. A NULL
+ * Returns NULL if Vulkan is unavailable, the device is unsupported,
+ * `rdram_size` is zero or is not a multiple of the alignment the device
+ * requires, the allocation fails, or the CommandProcessor declines to
+ * initialize. A NULL
  * return is the ONLY failure signal: nothing here throws across the boundary. */
 prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size);
 

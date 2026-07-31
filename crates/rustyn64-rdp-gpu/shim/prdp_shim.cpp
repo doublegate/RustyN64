@@ -39,13 +39,27 @@ static_assert(sizeof(RDP::RGBA) == sizeof(uint32_t),
 static_assert(alignof(RDP::RGBA) <= alignof(uint32_t),
               "RDP::RGBA over-aligns for a uint32_t copy");
 
-// `free`-on-destruction wrapper for the aligned RDRAM allocation, so an early
+// Aligned allocate/free. MSVC does NOT provide `std::aligned_alloc` at any
+// language level -- its `free` cannot handle an over-aligned block, so the CRT
+// offers `_aligned_malloc`/`_aligned_free` as a separate pair and mixing them
+// with `free` is undefined. Untested here (the `gpu-rdp` CI job is Linux-only),
+// but a build that cannot compile is a worse first experience than one that can.
+#ifdef _MSC_VER
+#include <malloc.h>
+#define PRDP_ALIGNED_ALLOC(align, size) _aligned_malloc((size), (align))
+#define PRDP_ALIGNED_FREE(p) _aligned_free(p)
+#else
+#define PRDP_ALIGNED_ALLOC(align, size) std::aligned_alloc((align), (size))
+#define PRDP_ALIGNED_FREE(p) std::free(p)
+#endif
+
+// Free-on-destruction wrapper for the aligned RDRAM allocation, so an early
 // return anywhere in `prdp_create` cannot leak it.
 struct AlignedBuffer {
     void *ptr = nullptr;
     size_t size = 0;
 
-    ~AlignedBuffer() { std::free(ptr); }
+    ~AlignedBuffer() { PRDP_ALIGNED_FREE(ptr); }
     AlignedBuffer() = default;
     AlignedBuffer(const AlignedBuffer &) = delete;
     AlignedBuffer &operator=(const AlignedBuffer &) = delete;
@@ -123,7 +137,7 @@ prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size)
         // picture at the top of the address space rather than an error.
         if (align == 0 || rdram_size % align != 0)
             return nullptr;
-        ctx->rdram.ptr = std::aligned_alloc(align, rdram_size);
+        ctx->rdram.ptr = PRDP_ALIGNED_ALLOC(align, rdram_size);
         if (!ctx->rdram.ptr)
             return nullptr;
         ctx->rdram.size = rdram_size;

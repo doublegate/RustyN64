@@ -22,6 +22,12 @@
 
 use rustyn64_test_harness::conformance_gpu::{Unavailable, census};
 
+/// Vectors in `conformance::RDP_VECTORS`.
+const EXPECTED_TOTAL: usize = 43;
+
+/// Vectors both paths reproduce from the Angrylion golden.
+const EXPECTED_BOTH: usize = 42;
+
 // The one known divergence, and it is NOT a plumbing defect on this side.
 //
 // `tex_tri_chromakey_alpha_16` exercises the `key_en` chroma-key alpha
@@ -66,10 +72,21 @@ fn gpu_matches_angrylion_across_the_corpus() {
     println!("  GPU only                    : {:?}", c.gpu_only);
     println!("  neither                     : {:?}", c.neither);
 
-    assert!(
-        c.total() >= 35,
-        "the corpus shrank to {} vectors; the census would be grading almost nothing",
-        c.total()
+    // The committed measurement, asserted EXACTLY. A `>=` threshold was here
+    // first and was the weaker half of a pair whose other half — this file's
+    // header and `docs/rdp.md` — claimed the census was pinned: a vector leaving
+    // the corpus entirely would have passed while the prose still said 42 of 43.
+    // Both numbers move together, by hand, when a vector is added.
+    assert_eq!(
+        c.total(),
+        EXPECTED_TOTAL,
+        "the corpus changed size; update EXPECTED_TOTAL and EXPECTED_BOTH together \
+         with the prose in docs/rdp.md that quotes them"
+    );
+    assert_eq!(
+        c.both.len(),
+        EXPECTED_BOTH,
+        "the number of vectors both paths reproduce changed"
     );
 
     assert_eq!(

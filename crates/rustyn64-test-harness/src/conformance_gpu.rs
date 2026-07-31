@@ -8,13 +8,15 @@
 //! implementations independently matching a third does.
 //!
 //! So a disagreement here is diagnosable rather than merely alarming. There are
-//! three outcomes for a vector and they mean different things:
+//! **four** outcomes for a vector and they mean different things — one per
+//! bucket of [`Census`], which is the point of there being four buckets:
 //!
 //! | software | GPU | reading |
 //! | --- | --- | --- |
 //! | matches | matches | the feature is right on both paths |
 //! | matches | differs | a GPU-backend or plumbing defect |
 //! | differs | matches | a software-rasterizer gap the GPU already covers |
+//! | differs | differs | the **vector or the oracle** is suspect, not either rasterizer |
 //!
 //! The third row is expected to be non-empty. parallel-rdp is a far more
 //! complete RDP than this project's software rasterizer, so "the GPU has all the

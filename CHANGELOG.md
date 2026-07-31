@@ -109,9 +109,10 @@ All notable changes to RustyN64 are documented here. The format is based on
   default-off `gpu-rdp` feature. `vendor/parallel-rdp-standalone` enters as a git
   submodule (upstream MIT, attributed in `NOTICE` as an obligation in its own
   right); an eight-function flat `extern "C"` shim compiles alongside it via
-  `cc`; and a safe Rust wrapper ties the command processor's lifetime to a
-  borrowed RDRAM slice, so "the memory outlives the device and nobody else
-  touches it" is a compile-time fact rather than a comment. Every `unsafe` block
+  `cc`; and a safe Rust wrapper owns its RDRAM and hands it out only
+  through `with_rdram` / `with_rdram_mut`, so the page alignment the direct
+  host-import path needs is a property of construction rather than of the caller
+  remembering. Every `unsafe` block
   carries a `// SAFETY:` naming its invariant, and this is the only crate outside
   the frontend where `unsafe` is permitted — with the feature off it is
   `forbid`den rather than merely absent.

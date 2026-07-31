@@ -41,6 +41,7 @@ pub use backend::{GpuRdp, ScanoutFrame, ViRegister};
 
 #[cfg(feature = "gpu-rdp")]
 mod backend {
+    use core::cell::Cell;
     use core::marker::PhantomData;
     use core::ptr::NonNull;
 
@@ -126,19 +127,29 @@ mod backend {
     }
 
     /// Publishes host writes back to the device when dropped — **including on
-    /// the unwind path**.
+    /// the unwind path** — and records whether that succeeded.
     ///
     /// `with_rdram_mut`'s closure can panic (the conformance harness's word swap
     /// asserts on a length mismatch, for one), and a panic caught higher up would
     /// otherwise skip `end_write_rdram` and leave the device rendering from stale
     /// memory with nothing having reported an error.
-    struct Publish<'a>(&'a mut GpuRdp);
+    ///
+    /// The outcome goes into a `Cell` rather than being returned, because `drop`
+    /// cannot return anything — and it must be *recorded* rather than discarded:
+    /// a failed publish means the host writes never reached the device, which is
+    /// exactly the "dropped operation resurfacing as a wrong picture later" that
+    /// every other entry point returns a status to prevent.
+    struct Publish<'a> {
+        ctx: NonNull<PrdpCtx>,
+        published: &'a Cell<bool>,
+    }
 
     impl Drop for Publish<'_> {
         fn drop(&mut self) {
-            // SAFETY: the guard borrows the `GpuRdp` that owns the context, so
-            // the context is live for the guard's whole lifetime.
-            unsafe { prdp_end_write_rdram(self.0.ctx.as_ptr()) };
+            // SAFETY: the guard is created from a live `GpuRdp`'s context and
+            // dropped before that `GpuRdp` can be, so the context is valid here.
+            self.published
+                .set(unsafe { prdp_end_write_rdram(self.ctx.as_ptr()) } != 0);
         }
     }
 
@@ -237,7 +248,10 @@ mod backend {
         /// the direct-import path is unavailable and the device is rendering
         /// from a staging buffer.
         ///
-        /// Returns `None` without calling `f` if the mapping fails.
+        /// Returns `None` without calling `f` if the mapping fails, and `None`
+        /// *after* calling `f` if the publish fails — in that case the writes
+        /// reached the mapping but not the device, so the result is not usable
+        /// and saying so is the whole point of the return value.
         pub fn with_rdram_mut<R>(&mut self, f: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
             let len = self.rdram_size();
             // SAFETY: as `with_rdram`, and the region is writable — upstream
@@ -251,8 +265,15 @@ mod backend {
                     return None;
                 }
                 let slice = core::slice::from_raw_parts_mut(ptr, len);
-                let _publish = Publish(self);
-                Some(f(slice))
+                let published = Cell::new(false);
+                let out = {
+                    let _guard = Publish {
+                        ctx: self.ctx,
+                        published: &published,
+                    };
+                    f(slice)
+                };
+                published.get().then_some(out)
             }
         }
 

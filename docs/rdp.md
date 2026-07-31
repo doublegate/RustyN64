@@ -1026,9 +1026,11 @@ is worth having and it is not evidence of anything.
 
 - **No `Bus` integration.** Nothing routes DPC commands here; the software
   rasterizer is still the only one the machine can use.
-- **No shared RDRAM.** The binding borrows a buffer for its own lifetime, which
-  is what makes the safety argument tractable, and is *not* how a running
-  machine's RDRAM is owned.
+- **No shared RDRAM.** The binding allocates and owns its own RDRAM, reached
+  only through `with_rdram` / `with_rdram_mut`, which is what makes the safety
+  argument tractable — and is *not* how a running machine's RDRAM is owned. (It
+  borrowed a buffer at first; owning it is what makes the page alignment a
+  property of construction rather than of the caller remembering.)
 - **No frontend feature.** `gpu-rdp` is a feature of `rustyn64-rdp-gpu` only.
   The frontend does not depend on the crate at all yet, so nothing pulls C++
   into a default build. When it does gain the feature it stays out of `full`,
