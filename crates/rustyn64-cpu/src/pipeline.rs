@@ -872,20 +872,25 @@ impl Pipeline {
     /// implementation: UM Figure 4-12 puts `INTR` in the `DC` column and §4.7.6
     /// "DC-Stage Interlock and Exception Priorities" lists the interrupt
     /// exception among them.
-    fn dc_stage<B: Bus>(&mut self, bus: &mut B) {
-        // Sample interrupts once per PCycle here. Accepted only if the previous
-        // PCycle was a run cycle (UM §4.7.1). This is the ONLY interrupt
-        // recognition predicate in the tree -- carrying two subtly different ones
-        // is a known source of one-cycle discrepancies in other emulators.
-        //
-        // Two steps, and they are different things: the IP bits track what the
-        // hardware is *asserting* regardless of masks, and recognition then
-        // applies IE/EXL/ERL/IM. Folding them together would make a masked
-        // interrupt invisible to `MFC0 Cause`, which software polls.
-        //
-        // IP2 is the RCP's aggregate line from the MI (libdragon `cop0.h`:
-        // `C0_INTERRUPT_RCP = C0_INTERRUPT_2`; ledger U-4). IP3 is CART, IP4
-        // PRENMI, IP7 the timer; the rest are unused on this board.
+    /// Update the `Cause.IP` lines from the hardware: the RCP's aggregate
+    /// interrupt and the `Count == Compare` timer edge.
+    ///
+    /// **Asserting a line is not recognizing an interrupt**, and separating the
+    /// two is the point. The `IP` bits track what the hardware is *asserting*
+    /// regardless of masks; recognition then applies `IE`/`EXL`/`ERL`/`IM` and is
+    /// the caller's business. Folding them together would make a masked interrupt
+    /// invisible to `MFC0 Cause`, which software polls.
+    ///
+    /// Latch-independent, like [`Self::fetch_word`] and [`Self::ex_gate`]: it
+    /// stamps nothing and names no [`Stage`]. Asserting a line happens on
+    /// hardware whether or not the CPU is in a position to take the interrupt, so
+    /// the instruction-granular path (ADR 0013) needs exactly this and nothing
+    /// more.
+    ///
+    /// `IP2` is the RCP's aggregate line from the MI (libdragon `cop0.h`:
+    /// `C0_INTERRUPT_RCP = C0_INTERRUPT_2`; ledger U-4). `IP3` is CART, `IP4`
+    /// PRENMI, `IP7` the timer; the rest are unused on this board.
+    fn sample_interrupt_lines<B: Bus>(&mut self, bus: &mut B) {
         self.cop0.set_ip(2, bus.poll_irq());
         // IP7 is LATCHED on the match and stays set until `Compare` is written
         // (UM §6.4.18, p. 200) -- note the one-way `if`, with no `else` clearing
@@ -900,6 +905,18 @@ impl Pipeline {
         if self.cop0.timer_edge() {
             self.cop0.set_ip(7, true);
         }
+    }
+
+    fn dc_stage<B: Bus>(&mut self, bus: &mut B) {
+        // Sample the lines once per PCycle here. `sample_interrupt_lines` carries
+        // why asserting and recognizing are two different steps; what follows is
+        // the recognition half.
+        self.sample_interrupt_lines(bus);
+
+        // Accepted only if the previous PCycle was a run cycle (UM §4.7.1). This
+        // is the ONLY interrupt recognition predicate in the tree -- carrying two
+        // subtly different ones is a known source of one-cycle discrepancies in
+        // other emulators.
 
         // NMI is checked FIRST and without consulting `interrupt_pending`.
         // *"Unlike all other interrupts, this interrupt is not maskable; it
@@ -1972,6 +1989,73 @@ impl Pipeline {
     }
 
     /// `EX` — execute.
+    /// The four checks an instruction must pass **before** it executes.
+    ///
+    /// Latch-independent, for the reason [`Self::fetch_word`] is: the caller
+    /// decides what a refusal means. `ex_stage` turns an `Err` into an `Ex`-stage
+    /// abort; the instruction-granular path (ADR 0013) needs the same four
+    /// decisions with different consequences. Keeping one copy is what stops the
+    /// two paths disagreeing about *which* exception an encoding raises — a
+    /// disagreement n64-systemtest would report as a wrong cause code rather than
+    /// as a missing check, which is much harder to read backwards.
+    ///
+    /// **The order is preserved exactly** — but note what that is and is not
+    /// worth. The original rationale is carried below verbatim (an unusable
+    /// coprocessor is reported as such even when the encoding is also 64-bit).
+    /// It was **mutation-checked while extracting this**, and swapping the first
+    /// two checks changes **nothing**: n64-systemtest still reports 0 failing in
+    /// the Phase 1 categories and 90 suite-wide. So the ordering is a *reasoned*
+    /// claim, not an oracle-verified one — the suite evidently never reaches an
+    /// encoding that is simultaneously 64-bit and on an unusable coprocessor in a
+    /// mode where both would refuse.
+    ///
+    /// Recorded rather than asserted away, because "the order matters" is exactly
+    /// the shape of claim this project keeps finding stale: nothing fails when it
+    /// is wrong. Preserving the order is still correct — it is what the accurate
+    /// path has always done, and changing it on the strength of an *absent* test
+    /// would be worse. What is not available is evidence.
+    ///
+    /// # Errors
+    ///
+    /// One of [`Exception::CoprocessorUnusable`], [`Exception::ReservedInstruction`],
+    /// [`Exception::CoprocessorReserved`], or [`Exception::FloatingPoint`].
+    fn ex_gate(&mut self, decoded: Decoded) -> Result<(), Exception> {
+        // Coprocessor usability is checked BEFORE execution, in EX (UM §4.7.5
+        // lists CPU among the EX-stage exceptions). COP0 is exempt in kernel mode
+        // regardless of `CU0`, which is why the CPU can run exception handlers
+        // before any `Status` setup has happened.
+        if let Some(unit) = self.unusable_coprocessor(decoded) {
+            return Err(Exception::CoprocessorUnusable { unit });
+        }
+        // A 64-bit operation is RESERVED in 32-bit User or Supervisor mode.
+        // Kernel may use them at any width, which is why this cannot be a
+        // property of `Status.KX` alone.
+        //
+        // Checked after coprocessor usability, not before: an unusable
+        // coprocessor is reported as such even when the encoding is also a
+        // 64-bit one, and the suite distinguishes the two causes.
+        if decoded.op.is_64_bit() && self.sixty_four_bit_is_reserved() {
+            return Err(Exception::ReservedInstruction);
+        }
+        // `DCFC1`/`DCTC1` are usable-but-unimplemented: the `CU1` check above has
+        // already passed, so this is the *other* outcome. The whole `Cause` field
+        // is replaced, leaving only bit 17 -- the suite pre-loads unrelated cause
+        // bits specifically to check they clear. COP2's equivalent declines
+        // differently: Reserved Instruction, and `FCSR` is not involved at all.
+        if decoded.op == crate::decode::Op::Cop2ReservedControl {
+            return Err(Exception::CoprocessorReserved { unit: 2 });
+        }
+        if decoded.op == crate::decode::Op::Cop1ReservedControl {
+            /// `FCSR.Cause`, bits 17:12.
+            const CAUSE_MASK: u32 = 0x3F << 12;
+            let fcsr = self.cop1.fcsr();
+            self.cop1
+                .ctc1(31, (fcsr & !CAUSE_MASK) | crate::fpu::CAUSE_UNIMPLEMENTED);
+            return Err(Exception::FloatingPoint);
+        }
+        Ok(())
+    }
+
     fn ex_stage(&mut self, regs: &Regs, next_pc: &mut u64) {
         let mut out = self.rf_ex;
         if out.occupied && out.abort.is_none() {
@@ -1980,51 +2064,11 @@ impl Pipeline {
             out.rs_val = self.bypass(out.decoded.rs, regs);
             out.rt_val = self.bypass(out.decoded.rt, regs);
             let hilo = self.bypass_hi_lo(regs);
-            // Coprocessor usability is checked BEFORE execution, in EX (UM
-            // §4.7.5 lists CPU among the EX-stage exceptions). COP0 is exempt in
-            // kernel mode regardless of `CU0`, which is why the CPU can run
-            // exception handlers before any `Status` setup has happened.
-            if let Some(unit) = self.unusable_coprocessor(out.decoded) {
-                self.abort_from(Stage::Ex, Exception::CoprocessorUnusable { unit });
-                out = self.rf_ex;
-                self.rf_ex.occupied = false;
-                self.ex_dc = out;
-                return;
-            }
-            // A 64-bit operation is RESERVED in 32-bit User or Supervisor mode.
-            // Kernel may use them at any width, which is why this cannot be a
-            // property of `Status.KX` alone.
-            //
-            // Checked after coprocessor usability, not before: an unusable
-            // coprocessor is reported as such even when the encoding is also a
-            // 64-bit one, and the suite distinguishes the two causes.
-            if out.decoded.op.is_64_bit() && self.sixty_four_bit_is_reserved() {
-                self.abort_from(Stage::Ex, Exception::ReservedInstruction);
-                out = self.rf_ex;
-                self.rf_ex.occupied = false;
-                self.ex_dc = out;
-                return;
-            }
-            // `DCFC1`/`DCTC1` are usable-but-unimplemented: the `CU1` check
-            // above has already passed, so this is the *other* outcome. The
-            // whole `Cause` field is replaced, leaving only bit 17 -- the suite
-            // pre-loads unrelated cause bits specifically to check they clear.
-            // COP2's equivalent declines differently: Reserved Instruction,
-            // and `FCSR` is not involved at all.
-            if out.decoded.op == crate::decode::Op::Cop2ReservedControl {
-                self.abort_from(Stage::Ex, Exception::CoprocessorReserved { unit: 2 });
-                out = self.rf_ex;
-                self.rf_ex.occupied = false;
-                self.ex_dc = out;
-                return;
-            }
-            if out.decoded.op == crate::decode::Op::Cop1ReservedControl {
-                /// `FCSR.Cause`, bits 17:12.
-                const CAUSE_MASK: u32 = 0x3F << 12;
-                let fcsr = self.cop1.fcsr();
-                self.cop1
-                    .ctc1(31, (fcsr & !CAUSE_MASK) | crate::fpu::CAUSE_UNIMPLEMENTED);
-                self.abort_from(Stage::Ex, Exception::FloatingPoint);
+            // The pre-execution refusals, all four of which are EX-stage
+            // exceptions (UM §4.7.5). `ex_gate` holds the checks and the order
+            // they must run in; here is only what an `Ex`-stage refusal *does*.
+            if let Err(exc) = self.ex_gate(out.decoded) {
+                self.abort_from(Stage::Ex, exc);
                 out = self.rf_ex;
                 self.rf_ex.occupied = false;
                 self.ex_dc = out;
@@ -2272,6 +2316,107 @@ impl Pipeline {
     }
 
     /// `IC` — instruction-cache fetch, and where the delay-slot flag is set.
+    /// Fetch the instruction word at `pc`: alignment, the segment map, the
+    /// micro-ITLB and JTLB, `Status.RE`, and the I-cache.
+    ///
+    /// **Latch-independent on purpose.** Everything here is a function of `pc`
+    /// and the CPU's own state — it stamps no latch, raises no abort, and names
+    /// no [`Stage`] — so the caller decides what a failure means. `ic_stage`
+    /// turns an `Err` into an `Ic`-stage abort; the instruction-granular path
+    /// (ADR 0013) needs the same fetch with different consequences, and
+    /// duplicating 100 lines of segment/TLB/cache logic to get it is how the two
+    /// paths would drift apart in exactly the place a test would not notice.
+    ///
+    /// The side effects it *does* keep are the ones that belong to fetching
+    /// rather than to sequencing: an ITLB reload and its 3-`PCycle` stall, and an
+    /// I-cache fill. Those happen on hardware whatever the caller does next.
+    ///
+    /// # Errors
+    ///
+    /// - [`Exception::AddressError`] — `pc` is not word-aligned, or the segment
+    ///   is not valid in the current mode. The bus is **not** touched in either
+    ///   case: the access itself is what is invalid.
+    /// - A TLB exception from [`Self::tlb_exception`] on a JTLB miss or an
+    ///   invalid entry. An instruction fetch is a load, so `TLBL`, never `TLBS`.
+    fn fetch_word<B: Bus>(&mut self, bus: &mut B, pc: u64) -> Result<u32, Exception> {
+        // An instruction fetch must be word-aligned. An unaligned PC raises an
+        // address error (AdEL) rather than fetching.
+        //
+        // Not reachable from straight-line execution, which advances by 4 from an
+        // aligned reset vector. It becomes reachable with the jump and branch
+        // family (T-11-004), where a computed target can be unaligned, and it is
+        // already reachable through the public `Cpu::set_pc` the golden-log
+        // harness uses.
+        if !pc.is_multiple_of(4) {
+            return Err(Exception::AddressError { store: false });
+        }
+
+        // The fetch itself goes through the I-cache (see below); what is still
+        // outstanding is the COST.
+        // TODO(T-11-003): charge the I-cache miss cost (14..=15 + M PCycles, UM
+        // Table 11-2) once `M` is measured -- accuracy-ledger C-1.
+        // Every address handed to the Bus is PHYSICAL (`docs/cpu.md`); the
+        // segment map is applied here, in the CPU, not by the Bus.
+        // Instruction fetch goes through the micro-ITLB in front of the JTLB
+        // (UM §1.5.1). A micro-TLB miss is a STALL of 3 PCycles (UM §4.6.2); a
+        // JTLB miss is an exception. Only the mapped segments involve either --
+        // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
+        let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
+        let fetch_access = self.access_mode();
+        let (phys, cached) = match crate::addr::segment(pc, fetch_access) {
+            crate::addr::Segment::Direct { addr, cached } => (addr, cached),
+            // Not a valid address in this mode: an address error, raised without
+            // consulting the TLB at all.
+            crate::addr::Segment::Invalid => {
+                return Err(Exception::AddressError { store: false });
+            }
+            crate::addr::Segment::Mapped => {
+                // The 3-PCycle penalty is "incurred when the micro-TLB is
+                // updated from the JTLB" (UM §4.6.2) -- so it is charged only
+                // when a reload can actually happen. A fetch that misses BOTH
+                // levels goes straight to its exception without paying for a
+                // reload that never occurred.
+                if !self.tlb.itlb_probe(pc, asid) && self.tlb.jtlb_has_match(pc, asid) {
+                    self.tlb.itlb_fill(pc, asid);
+                    self.stall_for(crate::tlb::ITLB_MISS_PCYCLES, Interlock::Itm);
+                }
+                match self.tlb.lookup(pc, asid, false) {
+                    Ok(t) => (
+                        t.addr,
+                        if t.uncached {
+                            crate::addr::Cached::No
+                        } else {
+                            crate::addr::Cached::Yes
+                        },
+                    ),
+                    // An instruction fetch is a load, so TLBL never TLBS.
+                    Err(f) => return Err(Self::tlb_exception(f, false, fetch_access.wide)),
+                }
+            }
+        };
+        // Instruction fetch is a 4-byte access, so `Status.RE` swaps it within
+        // its doubleword exactly as it swaps a `LW` -- which is why the test ROM
+        // has to emit its reverse-endian programs with each instruction PAIR
+        // exchanged for them to execute in order.
+        let phys = if self.reverse_endian() {
+            phys ^ Self::re_swap(4)
+        } else {
+            phys
+        };
+        // Fetch through the I-cache when the segment is cached. This is what
+        // makes an uncached patch to already-fetched code invisible until a
+        // CACHE invalidate -- the behavior n64-systemtest's ICACHE group
+        // asserts, and the reason the cache is modeled at all.
+        Ok(if cached == crate::addr::Cached::Yes {
+            if !self.icache.hits(phys) {
+                self.icache_fill(bus, phys);
+            }
+            self.icache.read_word(phys)
+        } else {
+            bus.read_u32(phys)
+        })
+    }
+
     fn ic_stage<B: Bus>(&mut self, bus: &mut B, next_pc: &mut u64) {
         // An abort raised earlier this cycle flushes younger instructions. The
         // fetch happening now is younger than all of them, so it must not become
@@ -2297,56 +2442,14 @@ impl Pipeline {
         // Reading `ic_rf` here makes the flag silently always false.
         let in_delay_slot = self.rf_ex.occupied && self.rf_ex.decoded.op.has_delay_slot();
 
-        // An instruction fetch must be word-aligned. An unaligned PC raises an
-        // address error (AdEL) rather than fetching -- so the bus is NOT touched,
-        // because the access itself is what is invalid.
-        //
-        // Not reachable from straight-line execution, which advances by 4 from an
-        // aligned reset vector. It becomes reachable with the jump and branch
-        // family (T-11-004), where a computed target can be unaligned, and it is
-        // already reachable through the public `Cpu::set_pc` the golden-log
-        // harness uses.
-        if !pc.is_multiple_of(4) {
-            // Populate the latch BEFORE raising. `abort_with` captures the
-            // faulting instruction's context out of the latch its stage reads,
-            // which for `Stage::Ic` is `ic_rf` -- so raising first would capture
-            // the PREVIOUS fetch's `pc` and delay-slot flag and write a wrong
-            // `EPC`. Stamp before you move, and populate before you stamp.
-            self.ic_rf = Latch {
-                cop0: None,
-                occupied: true,
-                pc,
-                in_delay_slot,
-                abort: Some(Exception::AddressError { store: false }),
-                ..Latch::default()
-            };
-            self.abort_with(Stage::Ic, Exception::AddressError { store: false }, pc);
-            // `next_pc` is deliberately NOT realigned. Rounding it down would
-            // silently "fix" the faulting address and let execution continue on a
-            // path hardware never takes -- turning a raised exception into a
-            // wrong answer. The redirect to the exception vector happens in
-            // `advance`, after the cascade (T-12-002).
-            return;
-        }
-
-        // The fetch itself now goes through the I-cache (see below); what is
-        // still outstanding is the COST.
-        // TODO(T-11-003): charge the I-cache miss cost (14..=15 + M PCycles, UM
-        // Table 11-2) once `M` is measured -- accuracy-ledger C-1.
-        // Every address handed to the Bus is PHYSICAL (`docs/cpu.md`); the
-        // segment map is applied here, in the CPU, not by the Bus.
-        // Instruction fetch goes through the micro-ITLB in front of the JTLB
-        // (UM §1.5.1). A micro-TLB miss is a STALL of 3 PCycles (UM §4.6.2); a
-        // JTLB miss is an exception. Only the mapped segments involve either --
-        // KSEG0/KSEG1 fetches, which is all of early boot, bypass both.
-        let asid = (self.cop0.read(crate::cop0::reg::ENTRY_HI) & 0xFF) as u8;
-        let fetch_access = self.access_mode();
-        let (phys, cached) = match crate::addr::segment(pc, fetch_access) {
-            crate::addr::Segment::Direct { addr, cached } => (addr, cached),
-            // Not a valid address in this mode: an address error, raised without
-            // consulting the TLB at all.
-            crate::addr::Segment::Invalid => {
-                let exc = Exception::AddressError { store: false };
+        let word = match self.fetch_word(bus, pc) {
+            Ok(word) => word,
+            Err(exc) => {
+                // Populate the latch BEFORE raising. `abort_with` captures the
+                // faulting instruction's context out of the latch its stage reads,
+                // which for `Stage::Ic` is `ic_rf` -- so raising first would capture
+                // the PREVIOUS fetch's `pc` and delay-slot flag and write a wrong
+                // `EPC`. Stamp before you move, and populate before you stamp.
                 self.ic_rf = Latch {
                     cop0: None,
                     occupied: true,
@@ -2356,64 +2459,14 @@ impl Pipeline {
                     ..Latch::default()
                 };
                 self.abort_with(Stage::Ic, exc, pc);
+                // `next_pc` is deliberately NOT realigned on an alignment fault.
+                // Rounding it down would silently "fix" the faulting address and
+                // let execution continue on a path hardware never takes -- turning
+                // a raised exception into a wrong answer. The redirect to the
+                // exception vector happens in `advance`, after the cascade
+                // (T-12-002).
                 return;
             }
-            crate::addr::Segment::Mapped => {
-                // The 3-PCycle penalty is "incurred when the micro-TLB is
-                // updated from the JTLB" (UM §4.6.2) -- so it is charged only
-                // when a reload can actually happen. A fetch that misses BOTH
-                // levels goes straight to its exception without paying for a
-                // reload that never occurred.
-                if !self.tlb.itlb_probe(pc, asid) && self.tlb.jtlb_has_match(pc, asid) {
-                    self.tlb.itlb_fill(pc, asid);
-                    self.stall_for(crate::tlb::ITLB_MISS_PCYCLES, Interlock::Itm);
-                }
-                match self.tlb.lookup(pc, asid, false) {
-                    Ok(t) => (
-                        t.addr,
-                        if t.uncached {
-                            crate::addr::Cached::No
-                        } else {
-                            crate::addr::Cached::Yes
-                        },
-                    ),
-                    Err(f) => {
-                        // An instruction fetch is a load, so TLBL never TLBS.
-                        let exc = Self::tlb_exception(f, false, fetch_access.wide);
-                        self.ic_rf = Latch {
-                            cop0: None,
-                            occupied: true,
-                            pc,
-                            in_delay_slot,
-                            abort: Some(exc),
-                            ..Latch::default()
-                        };
-                        self.abort_with(Stage::Ic, exc, pc);
-                        return;
-                    }
-                }
-            }
-        };
-        // Instruction fetch is a 4-byte access, so `Status.RE` swaps it within
-        // its doubleword exactly as it swaps a `LW` -- which is why the test ROM
-        // has to emit its reverse-endian programs with each instruction PAIR
-        // exchanged for them to execute in order.
-        let phys = if self.reverse_endian() {
-            phys ^ Self::re_swap(4)
-        } else {
-            phys
-        };
-        // Fetch through the I-cache when the segment is cached. This is what
-        // makes an uncached patch to already-fetched code invisible until a
-        // CACHE invalidate -- the behavior n64-systemtest's ICACHE group
-        // asserts, and the reason the cache is modeled at all.
-        let word = if cached == crate::addr::Cached::Yes {
-            if !self.icache.hits(phys) {
-                self.icache_fill(bus, phys);
-            }
-            self.icache.read_word(phys)
-        } else {
-            bus.read_u32(phys)
         };
         // Decode here rather than at RF: a branch must be decoded before the
         // NEXT fetch, so that fetch can be marked as its delay slot.

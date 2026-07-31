@@ -630,6 +630,48 @@ PCycle was a run cycle (UM §4.7.1) — exactly one recognition predicate exists
 the tree, since carrying two subtly different ones is a known source of
 one-cycle discrepancies in other emulators.
 
+### The latch-independent primitives (the ADR 0013 seam)
+
+Most of `pipeline.rs` reads and writes the four inter-stage latches, which is
+exactly right for the accurate path and useless to anything else. Three pieces
+are **not** latch-dependent, and are deliberately factored out so an alternate
+execution path can reuse the decisions instead of re-deriving them:
+
+| primitive | what it decides | what it deliberately does **not** do |
+| --- | --- | --- |
+| `Pipeline::fetch_word` | alignment, the segment map, micro-ITLB and JTLB, `Status.RE`, the I-cache | stamp a latch, raise an abort, or name a `Stage` |
+| `Pipeline::ex_gate` | the four pre-execution refusals — coprocessor usability, 64-bit-reserved, `Cop2ReservedControl`, `Cop1ReservedControl`, in that order | decide what a refusal means |
+| `Pipeline::sample_interrupt_lines` | asserts `Cause.IP2` from the MI and latches `IP7` on the timer edge | *recognize* an interrupt (`IE`/`EXL`/`ERL`/`IM` and the run-cycle gate stay in `dc_stage`) |
+
+They keep the side effects that belong to the operation rather than to the
+sequencing — an ITLB reload and its 3-`PCycle` stall, an I-cache fill, the `FCSR`
+write `Cop1ReservedControl` performs — because those happen on hardware whatever
+the caller does next.
+
+**Why factor rather than duplicate.** The instruction-granular path ADR 0013
+authorizes needs the same decisions with different consequences. A second copy of
+~100 lines of segment/TLB/cache logic would drift, and it would drift in the place
+hardest to read backwards: n64-systemtest would report a wrong *cause code* rather
+than a missing check. `exec::execute` was already pure, and `Pipeline::access`
+already takes a `MemOp` rather than a latch, so these three complete the set.
+
+**`ex_gate`'s check order is preserved but is not oracle-verified**, and the
+extraction is what established that. Swapping the first two checks — coprocessor
+usability and 64-bit-reserved — leaves n64-systemtest at exactly 0 failing in the
+Phase 1 categories and 90 suite-wide, so the suite evidently never reaches an
+encoding that is simultaneously 64-bit *and* on an unusable coprocessor in a mode
+where both would refuse. The order is kept because it is what the accurate path
+has always done and changing it on the strength of an *absent* test would be
+worse; what is missing is evidence, and saying so is the point. "The order
+matters" is the shape of claim this project keeps finding stale, because nothing
+fails when it is wrong.
+
+The **WB commit** is *not* in this list, and that is a decision rather than an
+oversight: it raises aborts through `abort_from(Stage::Wb, …)`, which selects the
+latch an exception's context is captured from. Extracting it means designing what
+an exception *means* without a pipeline — work that belongs with the path that
+needs it, where a real second caller can drive the shape.
+
 ### Exceptions
 
 Address-error (unaligned), TLB refill/invalid/modified, integer overflow
