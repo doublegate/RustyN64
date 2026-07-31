@@ -257,6 +257,96 @@ The gate runs in CI on the light leg (`cargo test -p rustyn64-core --features
 fast-scheduler`), because feature-gated code is invisible to every other job —
 CI runs clippy exactly once and not with this feature.
 
+### The hand-off enumeration and the completion witness (ADR 0012 §2)
+
+**A gate that hangs mid-suite is indistinguishable from one that passed**, because
+both produce no failure. ADR 0012 §2 closes that, and it makes one demand of the
+production code: *"bailing out must not be expressible any other way"*.
+
+`crates/rustyn64-core/src/fastpath.rs` is that enumeration.
+
+- **`BailOut` and `BailOut::ALL` are generated from one list** by a `bail_reasons!`
+  macro, so the number of reasons is not stateable independently of the enum. A
+  literal expected count would drift the moment the suite grew, which converts the
+  witness into decoration. ADR 0012 leaves the *technique* open and asks only for
+  that property.
+- **The enum is deliberately not `#[non_exhaustive]`.** The gate is an integration
+  test and therefore a downstream crate; `#[non_exhaustive]` would force it to carry
+  a wildcard arm, which is the exact coverage hole being closed. A new reason with no
+  fixture must be a **build failure**.
+- **`run_until_fast` returns `FastRunReport { blocks, bailed }`.** A bare `return;`
+  in a function with that return type does not compile, so a new exit has to say
+  which exit it is. It is a *return value*, not a field and not a hook: a field would
+  make ADR 0011 §4's save-state mode marker fall due, and a test-only branch compiled
+  into a release build is what ADR 0011 §6 forbids.
+- **Today there is exactly one reason**, `PartialPeriodTail`, and it is recorded on
+  the tail being non-empty rather than on `run_until` being called — that call
+  happens on every path, so reporting it unconditionally would make the witness true
+  of every call, which is the same as it being true of none. `fixture_whole_periods_only`
+  is the mutation guard for precisely that, and it fails on the unconditional version.
+
+`the_gate_witnesses_its_own_completion` drives crafted boundary fixtures under a
+per-fixture and a suite timeout, and asserts three suite-wide conditions that would
+otherwise each look like success: every reason in `BailOut::ALL` was reached, the
+fast path engaged at all, and some boundary was reached. An **abnormal termination
+is a gate failure, never an uncounted exit** — a panic in a fixture arrives as a
+disconnected channel and a hang as a timeout, and the two are reported differently
+because they need different investigations. Setting `RUSTYN64_GATE_FIXTURE` narrows
+the run and **prints that the suite-wide witness did not apply**; the unfiltered run
+in CI is what gates.
+
+The boundary fixtures are deliberately cheap and separate from the equivalence
+sweeps above: re-running 96 machine pairs to collect coverage would double the suite
+for information it already has but does not aggregate. Each fixture still asserts
+equivalence for its own crafted state, so coverage is never bought with a run that
+grades nothing.
+
+### `fast-exec` is a different feature, and a different predicate
+
+[ADR 0013](adr/0013-fast-execution-mode.md) authorizes a **second** default-off
+mode, `fast-exec`, in which the CPU charges documented instruction-granular issue
+costs instead of advancing the pipeline per cycle. It is **not** `fast-scheduler`
+with more in it, and the two features are independent:
+
+| | `fast-scheduler` | `fast-exec` |
+| --- | --- | --- |
+| relation to the accurate run | **tick-identical** — same edges, same order, same `master_ticks` | timing deliberately diverges |
+| gate predicate | whole serialized state, every tick | architectural state at retirement boundaries, **minus the timing-derived carve-out**; timing divergence measured and bounded |
+| `master_ticks` equality | asserted | **not** asserted — it is the quantity being relaxed |
+| ADR 0006 | unchanged | amended for that mode only (per-domain deficit counters) |
+
+Where both features are enabled, `fast-exec`'s scheduler is the one that runs
+(ADR 0013 §1). The whole-state tests above keep their stricter predicate: they grade
+a tick-identical path and would be weakened for nothing by relaxing them.
+
+**The carve-out is a rule, not a list, and that is the part that is easy to get
+wrong.** A retirement boundary is an *instruction index*, and the two modes reach
+instruction N at **different `master_ticks`** — so any state driven by the **clock**
+rather than by the **instruction stream** may differ there. `Count` is the visible
+instance; the `Count == Compare` timer interrupt and the `Cause.IP` state derived
+from it follow, and so does every interrupt whose delivery the scheduler times
+(PI, SI, AI, VI, DP, SP through MI). `Compare` is software-written and stays in the
+predicate; what leaves it is *when the comparison fires*.
+
+What that does **not** license: deadlines stay in `master_ticks` and devices still
+raise at the same tick, so once both modes have passed a deadline its *effects* —
+the DMA'd bytes, the register writes, the eventual interrupt — must agree. The
+predicate is therefore anchored in **time as well as instructions**. ADR 0013 §4
+is authoritative.
+
+This is **`fast-exec` policy, not a hardware claim.** The VR4300 has one timeline,
+so the hardware has no opinion about how two emulated modes should be compared;
+there is no manual section to cite, and citing one would make a policy read as a
+measurement. What *is* owed to `docs/accuracy-ledger.md` is the measured divergence
+bound, and it falls due when there is something to measure.
+
+Because the timer can interrupt at a different instruction, **the two modes'
+instruction streams may legitimately diverge**. The `fast-exec` gate therefore has
+three outcomes rather than two — agreement (pass), **stream divergence** (reported,
+comparison ends for that fixture, counts toward nothing), and disagreement
+(failure) — and it must never absorb the middle one, which would leave it comparing
+two unrelated runs while reporting agreement. ADR 0013 §4 is authoritative.
+
 ## Test plan
 
 - **The residue invariant (the important one):** sample the affine offsets

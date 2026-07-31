@@ -4,6 +4,12 @@
 
 Accepted (2026-07-20). **Supersedes [ADR 0001](0001-master-clock-lockstep-scheduler.md).**
 
+**Amended by [ADR 0013](0013-fast-execution-mode.md), for the optional `fast-exec` mode
+only.** The derive-don't-increment rule below stays in force unchanged in the default
+(accurate) mode, and the residue invariant test stays in the default `cargo test` path.
+0013 §*Relationship to 0006, 0007 and 0011* records where and why `fast-exec` departs
+from it.
+
 ADR 0001's goals are unchanged and still correct: one timeline, lockstep rather than
 catch-up, seeded power-on phase, no OS threads in the core. What changes is the *unit* the
 timeline is counted in and, more importantly, the rule about who is allowed to increment.
