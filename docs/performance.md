@@ -1415,6 +1415,82 @@ avoid a `core::mem::take` of a large struct; the RSP's wrapper has no such
 payload, so the pattern does not transfer. Matching the shape of a past win is not
 evidence.
 
+## The pre-decoded threaded interpreter, sized before building it
+
+The plan's RSP item is gopher64's shape: a pre-decoded table with one entry per
+IMEM word, a function pointer per entry, re-decoded on IMEM invalidation. It is
+~3,400 lines of work, so it was sized first. The two halves are **pre-decoding**
+(never decode the same word twice) and **threading** (a function-pointer table
+instead of an opcode `match`).
+
+### Pre-decoding is worth ~0.29% of a frame
+
+Sized by **making the cost bigger**, the test this document already prescribes for
+a hot line: three extra `decode` calls per RSP step, and see what the frame does.
+
+| | ms/frame |
+| --- | --- |
+| baseline | 64.231, 64.392, 64.262, 64.401 |
+| +3 decodes per step | 64.958, 65.404, 65.573 |
+
+Conservatively `64.401 -> 64.958 = +0.86%` for three, so **one decode is ~0.29% of a
+frame** and a perfect decode cache saves that much. `Rsp::decode` is eight
+bit-field extractions in a `const fn`; there was never much there.
+
+**The first version of this experiment understated it by roughly 4x** and would
+have been reported as ~0.2%. It consumed the extra decodes with `acc.op ^= e.op &
+0`, and `& 0` is a no-op the optimizer folds — taking the decodes with it. Only
+`black_box` on the **result** keeps them. A `black_box` on the input is not enough,
+because an unused result is still dead.
+
+### The threading half was NOT measured, and saying so is the point
+
+Two attempts to size the opcode dispatch the same way both failed: a duplicate
+`match d.op` with trivial arms (`n => n + 1`) is recognized by LLVM as arithmetic
+and never becomes a jump table, so it measured **at or below** baseline — a number
+that means "the experiment did not run", not "dispatch is free". It is recorded as
+**unmeasured**.
+
+What can be said without measuring is structural, and is reasoning rather than
+evidence: `match d.op` over a dense `0..63` lowers to a jump table, which is one
+indirect branch; a `[fn; 64]` table indexed by opcode is also one indirect branch,
+at the same site. The thing that makes a *true* threaded interpreter fast is a
+separate dispatch at the end of **each handler**, giving the predictor one site per
+opcode — and that needs guaranteed tail calls, which stable Rust does not have.
+gopher64 dispatches from a loop, so its win is the pre-decoding, which is the half
+measured above.
+
+### Recommendation: do not build it, and the RSP's target is the vector unit
+
+On the evidence: the measurable half is worth **0.29%**, and the other half has no
+mechanism in stable Rust to be better than what is already emitted. That does not
+justify ~3,400 lines and a second RSP execution surface.
+
+Where the RSP's 21.4% actually sits, by file:
+
+| file | % of frame | % of the RSP bucket |
+| --- | --- | --- |
+| `su.rs` (scalar unit) | 10.38% | 48.5% |
+| `vu.rs` (vector unit) | 8.54% | 39.9% |
+| `sp.rs` (DMA, status, halt) | 2.00% | 9.3% |
+| `lib.rs` | 0.50% | 2.3% |
+
+**`vu.rs` is 8.5% of the whole frame**, and it is the one part of the RSP whose work
+is inherently data-parallel — eight 16-bit lanes per operation, which is what SIMD
+is for. That is the plan's *other* RSP idea and it is the one this measurement
+supports. It carries its own question (`std::arch` needs `unsafe`, which
+`rustyn64-rsp` forbids; `core::simd` is unstable), which is a design decision
+rather than a measurement.
+
+### Ruled out
+
+**Do not build the pre-decoded threaded interpreter for the RSP** on the current
+evidence. Pre-decoding measured at 0.29%; threading unmeasured but structurally
+equivalent to the existing dispatch in stable Rust. Re-open it only if guaranteed
+tail calls stabilize, or if a decomposition of `su.rs`'s 10.38% finds the cost in
+dispatch after all — which the two failed experiments above did **not** establish
+either way.
+
 ## The AI recomputed its DAC period 1.04 M times a frame
 
 `Audio::tick` opened by computing `period_ticks()` — `MASTER_HZ / sample_rate`, a **64-bit
