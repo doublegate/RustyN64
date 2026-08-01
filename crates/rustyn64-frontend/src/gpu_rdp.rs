@@ -137,6 +137,32 @@ pub(crate) fn force_no_device_for_test() {
     PRESENTER.with(|p| *p.borrow_mut() = None);
 }
 
+/// Whether this thread currently holds a live backend, for tests.
+#[cfg(test)]
+pub(crate) fn has_device_for_test() -> bool {
+    PRESENTER.with(|p| p.borrow().is_some())
+}
+
+/// Run the device probe **without presenting**, and report whether one exists.
+///
+/// A test that skips on "no device" must establish that *before* calling
+/// `present`, or the skip-guard reads a device that `present` itself discarded
+/// as an absent one — and then the test passes on exactly the machines where the
+/// bug it guards is reachable. That is not hypothetical: the first version of
+/// `no_picture_does_not_discard_the_backend` did precisely this and survived its
+/// own mutation.
+#[cfg(test)]
+pub(crate) fn probe_for_test() -> bool {
+    PROBED.with(|p| *p.borrow_mut() = true);
+    PRESENTER.with(|p| {
+        let mut slot = p.borrow_mut();
+        if slot.is_none() {
+            *slot = GpuPresenter::new();
+        }
+        slot.is_some()
+    })
+}
+
 /// Whether the device probe ran on this thread and found nothing usable.
 ///
 /// Exists so a test can tell "the GPU path is silently not running" from "there
@@ -176,14 +202,39 @@ pub fn present(bus: &mut Bus, out: &mut [u8], max_w: u32, max_h: u32) -> Option<
     PRESENTER.with(|p| {
         let mut slot = p.borrow_mut();
         let presenter = slot.as_mut()?;
-        let (w, h) = presenter.present(&commands, bus, out)?;
-        if w > max_w || h > max_h {
-            return None;
+        match presenter.present(&commands, bus, out) {
+            Ok(Some((w, h))) if w <= max_w && h <= max_h => {
+                PRODUCED.fetch_add(1, Ordering::Relaxed);
+                Some((w, h))
+            }
+            // No picture, or one the caller cannot present. The backend is
+            // healthy — this is the ordinary state while the VI is off, which is
+            // every frame before a ROM programs it — so it is kept.
+            Ok(_) => None,
+            // A real failure leaves the backend in an unknown state: commands
+            // accepted before the failing one are still queued, the rest of the
+            // batch went with the drained tap, and there is no rollback. Reusing
+            // it would render a list the machine never issued. Discard it and
+            // clear the probe so the next frame reconstructs; if the device is
+            // genuinely gone, construction fails and the software scan-out takes
+            // over for good. One retry per failure, not a loop.
+            Err(Failed) => {
+                *slot = None;
+                PROBED.with(|probed| *probed.borrow_mut() = false);
+                None
+            }
         }
-        PRODUCED.fetch_add(1, Ordering::Relaxed);
-        Some((w, h))
     })
 }
+
+/// The backend failed and must not be reused.
+///
+/// Distinct from `Ok(None)` — "no picture this frame" — because conflating them
+/// would tear down and rebuild the Vulkan device on **every frame while the VI
+/// is off**, which is every frame before a ROM programs it. The first version of
+/// the recovery logic did exactly that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Failed;
 
 /// The GPU display backend, and the scratch it reuses across frames.
 struct GpuPresenter {
@@ -220,7 +271,12 @@ impl GpuPresenter {
     ///
     /// `commands` is this frame's tapped stream, drained by the caller so the
     /// drain happens even on the paths that return early here.
-    fn present(&mut self, commands: &[u32], bus: &Bus, out: &mut [u8]) -> Option<(u32, u32)> {
+    fn present(
+        &mut self,
+        commands: &[u32],
+        bus: &Bus,
+        out: &mut [u8],
+    ) -> Result<Option<(u32, u32)>, Failed> {
         // Seed RDRAM from the Bus. Whole-buffer and unconditional: the alternative
         // is knowing which bytes the CPU touched since the last frame, which is
         // the dirty-region tracker ADR 0014 §5 calls the dangerous part.
@@ -231,12 +287,13 @@ impl GpuPresenter {
         // GPU cost. Fusing them halves the traffic and removes an 8 MiB
         // allocation; `docs/performance.md` carries the before/after.
         self.gpu
-            .with_rdram_mut(|rdram| swap_words_into(rdram, &bus.rdram))?;
+            .with_rdram_mut(|rdram| swap_words_into(rdram, &bus.rdram))
+            .ok_or(Failed)?;
 
         let mut consumed = 0usize;
         for cmd in split_commands(commands) {
             if !self.gpu.enqueue_command(cmd) {
-                return None;
+                return Err(Failed);
             }
             consumed += cmd.len();
         }
@@ -254,7 +311,7 @@ impl GpuPresenter {
 
         for &(idx, reg) in VI_FORWARD {
             if !self.gpu.set_vi_register(reg, bus.vi.read(idx)) {
-                return None;
+                return Err(Failed);
             }
         }
 
@@ -266,18 +323,23 @@ impl GpuPresenter {
         if self.pixels.len() < capacity {
             self.pixels.resize(capacity, 0);
         }
-        let ScanoutFrame {
+        let Some(ScanoutFrame {
             width,
             height,
             pixels,
-        } = self.gpu.scanout_sync(&mut self.pixels[..capacity])?;
+        }) = self.gpu.scanout_sync(&mut self.pixels[..capacity])
+        else {
+            // The VI produced nothing — off, or unconfigured. Ordinary, and not
+            // a reason to distrust the backend.
+            return Ok(None);
+        };
         // The shim refuses a frame larger than the buffer it was given, so
         // `pixels <= capacity` — but that is a guarantee on the far side of an
         // FFI boundary, and `self.pixels[..pixels]` would panic if it stopped
         // holding. `get` turns it into the same `None` every other failure here
         // produces. Deliberately not a `min` clamp: a truncated frame is a
         // plausible-looking wrong picture.
-        let src = self.pixels.get(..pixels)?;
+        let src = self.pixels.get(..pixels).ok_or(Failed)?;
 
         // parallel-rdp hands back RGBA8 already in R,G,B,A byte order (verified
         // in `rustyn64-rdp-gpu`'s smoke test, where an opaque-red fill reads back
@@ -287,7 +349,7 @@ impl GpuPresenter {
             dst.copy_from_slice(&px.to_le_bytes());
         }
 
-        Some((width, height))
+        Ok(Some((width, height)))
     }
 }
 
@@ -424,6 +486,42 @@ mod tests {
              would grow without bound",
             bus.rdp_tap_len()
         );
+    }
+
+    /// A frame that produces no picture must NOT tear the backend down.
+    ///
+    /// The VI is off at power-on and stays off until a ROM programs it, so
+    /// `scanout_sync` legitimately produces nothing on every frame until then.
+    /// An earlier version of the failure-recovery path could not tell that from
+    /// a real backend failure and discarded the device on both — which would
+    /// have rebuilt a Vulkan device sixty times a second at boot, a far worse
+    /// bug than the one being fixed.
+    #[test]
+    fn no_picture_does_not_discard_the_backend() {
+        // Probe FIRST, without presenting. Doing it through `present` would let
+        // the very bug under test clear the device and make the skip-guard
+        // report "no GPU here" — which is how the first version of this test
+        // passed with the bug reintroduced.
+        if !super::probe_for_test() {
+            println!("SKIPPED: no usable Vulkan device — nothing was verified.");
+            return;
+        }
+
+        let mut bus = rustyn64_core::Bus::new();
+        let mut out = vec![0u8; 640 * 480 * 4];
+
+        // The VI is untouched, so every one of these produces no picture.
+        for _ in 0..4 {
+            assert!(
+                super::present(&mut bus, &mut out, 640, 480).is_none(),
+                "an unprogrammed VI produced a frame"
+            );
+            assert!(
+                super::has_device_for_test(),
+                "the backend was discarded after a frame that simply had no \
+                 picture; at boot this rebuilds the device every frame"
+            );
+        }
     }
 
     /// A trailing partial command is dropped, not decoded against words that

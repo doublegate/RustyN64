@@ -71,7 +71,10 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 - **The GPU RDP is wired into the machine, as a display backend.** The
   frontend's default-off `gpu-rdp` feature presents frames rendered by
-  parallel-rdp from the real Bus instead of by the software VI scan-out.
+  parallel-rdp from the real Bus **when one is available**; `Bus::scanout_scaled`
+  remains the fallback on every other path — no device, no picture (which is
+  every frame before a ROM programs the VI), geometry that will not fit, or a
+  backend failure.
 
   *Display backend*, not replacement rasterizer, and the distinction is
   load-bearing: `rustyn64-core` is `#![no_std]` and `#![forbid(unsafe_code)]`, so

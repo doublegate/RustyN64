@@ -956,7 +956,7 @@ a Vulkan dependency that cannot be made optional.
 
 ### What exists today
 
-The **binding**, and nothing downstream of it:
+The binding, a parity gate over it, and a frontend display path:
 
 | piece | state |
 | --- | --- |
@@ -967,6 +967,14 @@ The **binding**, and nothing downstream of it:
 | `tests/smoke.rs` | renders a Fill Rectangle and checks the picture |
 | `conformance_gpu` + `rdp_conformance_gpu.rs` | the parity gate — the whole `.rvec` corpus on both paths |
 | CI job `gpu-rdp` | builds and links, and asserts which branch each GPU test took |
+
+**The software scan-out remains the fallback, on every failure path.**
+`produce_frame` tries the GPU and drops through to `Bus::scanout_scaled` when
+there is no device, when the VI produces no picture (which is every frame before
+a ROM programs it), when the geometry will not fit, or when the backend fails.
+A failure additionally discards the backend so the next frame rebuilds it — but
+*only* a real failure: conflating that with "no picture this frame" would rebuild
+a Vulkan device sixty times a second at boot.
 
 **Verified locally on an RTX 3090:** the device initializes, parallel-rdp's
 compute shaders compile, a 64x32 Fill Rectangle rasterizes, and `scanout_sync`
@@ -1040,12 +1048,18 @@ from the other.
 **The command stream arrives by a tap, not a re-read.** `Bus::rdp_tap` (the
 `rdp-tap` feature on `rustyn64-core`) records every command word the Bus feeds
 the RDP, captured by **diffing the FIFO pointer** across `tick_with_bus` rather
-than decoding the command a second time. That is what makes the tap inherit the
-RDP's own refusal to consume a partly-written command instead of restating it —
-a tap that disagrees with the RDP about where a command ends is worse than no
-tap. Re-reading the list from RDRAM would not work at all: by the time the
-frontend looks, `DPC_CURRENT` has reached `DPC_END` and the game has usually
-overwritten the buffer.
+than decoding the command a second time. Re-reading the list from RDRAM would not
+work at all: by the time the frontend looks, `DPC_CURRENT` has reached `DPC_END`
+and the game has usually overwritten the buffer.
+
+That the tap therefore never captures a partly-written command is an
+**implementation fact of this emulator, not a hardware claim** — the provenance
+is `Rdp::tick_with_bus`, which refuses to consume a command until `DPC_END` has
+passed its full length, and whose stated reason is that libdragon's `rdpq`
+advances `DPC_END` incrementally as it fills the buffer. It is not measured
+against hardware and carries no ledger entry. What the tap gets from the diff is
+that it cannot *disagree* with that behavior, whatever it is — a tap that
+restated the rule would be free to drift from it.
 
 The field is `#[serde(skip)]`, so the save-state layout is **identical** with the
 feature on or off and this stays out of ADR 0005's announced-in-advance
