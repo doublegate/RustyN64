@@ -24,3 +24,7 @@ bitflags = { version = "2", features = ["serde"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Round-trips `Rsp` in the save-state reset test, matching rustyn64-core.
+bincode = "1"

@@ -444,8 +444,15 @@ pub struct Bus {
     /// Counted at the four leaves of the `CpuBus` surface — `read_u8`,
     /// `read_u32`, `write_u8`, `write_u32`. `write_sized` is deliberately NOT
     /// counted itself: it decomposes into those four, so counting it too would
-    /// double-count every store, and a `sd` genuinely IS two word accesses on
-    /// this bus rather than one.
+    /// double-count every store.
+    ///
+    /// **A `sd` costs two dispatches only OUTSIDE the RCP-internal range.**
+    /// `write_sized` splits a 64-bit store into two `write_u32` for RDRAM and
+    /// the external buses, but the RCP-internal path takes the high word and
+    /// **drops the second entirely** (see `write_sized`'s own comment there), so
+    /// a `sd` to an RCP register is one dispatch, not two. The pinned shape in
+    /// `the_cpu_bus_dispatch_shape_is_pinned` uses an RDRAM address and
+    /// therefore measures the two-dispatch case.
     ///
     /// Not a cycle counter and nothing schedules against it — the one exception
     /// the derive-don't-increment rule allows is a retired-work tally, which is

@@ -2395,6 +2395,7 @@ dependencies = [
 name = "rustyn64-rsp"
 version = "0.8.0"
 dependencies = [
+ "bincode",
  "bitflags 2.13.1",
  "rustyn64-snapshot",
  "serde",

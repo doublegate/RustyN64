@@ -360,6 +360,37 @@ mod tests {
         }
     }
 
+    /// `retired` is `#[serde(skip)]`, so a restored RSP starts at zero and keeps
+    /// counting — the mirror of `rustyn64-core`'s
+    /// `a_deserialized_bus_starts_at_zero_and_still_counts`.
+    ///
+    /// This PR added two counters and originally tested the save-state
+    /// semantics of only one. An asymmetry like that is how the untested half
+    /// later turns out to behave differently: #245 shipped a `#[serde(skip)]`
+    /// field that deserialized into something unusable and panicked on the next
+    /// write, and the test that should have caught it passed vacuously.
+    #[cfg(feature = "work-counters")]
+    #[test]
+    fn a_deserialized_rsp_starts_at_zero_and_still_counts() {
+        let mut rsp = Rsp::new();
+        rsp.imem[0..4].copy_from_slice(&0u32.to_be_bytes());
+        rsp.sp.set_halted(false);
+        rsp.tick();
+        assert!(rsp.retired() > 0, "the premise: it counted something");
+
+        let bytes = bincode::serialize(&rsp).expect("serialize");
+        let mut restored: Rsp = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(
+            restored.retired(),
+            0,
+            "the tally survived a save-state; it is a measurement, not machine state"
+        );
+        // And it is still live afterwards, which zero alone cannot show.
+        restored.sp.set_halted(false);
+        restored.tick();
+        assert_eq!(restored.retired(), 1, "a restored RSP stopped counting");
+    }
+
     #[test]
     fn constructs_halted() {
         let mut rsp = Rsp::new();
