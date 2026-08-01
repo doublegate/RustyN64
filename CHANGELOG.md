@@ -125,7 +125,7 @@ All notable changes to RustyN64 are documented here. The format is based on
   picture, so the software VI is already skipped under `gpu-rdp` and the 4.64%
   attributed to it belongs to a configuration without this backend.
 
-- **Retiring the software rasterizer is worth 1.2-3.2%, not the 6.36% planned**,
+- **Retiring the software rasterizer is worth 1.2–3.2%, not the 6.36% planned**,
   and is not being built for performance. Measured by stubbing the three
   rasterizing dispatch arms in a scratch tree: the sets do not overlap, but the
   conservative pairing is **1.23%** — and that is an upper bound A4 cannot reach,

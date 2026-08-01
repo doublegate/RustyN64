@@ -1871,8 +1871,13 @@ time — is on the order of **1% of a frame at the most generous reading, and
   The upload to wgpu happens on the winit thread, concurrently with emulation on
   the emu thread. Removing work that overlaps with the bottleneck does not make
   the bottleneck shorter.
-- One other GPU item is worth **6.36%** (retiring the software rasterizer) —
-  roughly **6x** the return, without needing a shared device at all.
+- One other GPU item *appeared* to be worth **6.36%** (retiring the software
+  rasterizer) — roughly **6x** the return, without needing a shared device at
+  all. **That figure did not survive being measured either**; see "Retiring the
+  software rasterizer is worth 1.2–3.2%" below, which sizes it at **1.23%**
+  conservatively. It is left here as written because it is what this comparison
+  rested on at the time, and correcting it silently would hide that the
+  conclusion above was reached against a number that later moved.
 
 **A correction to the first version of this section**, which claimed *two* items
 worth 11.0% by adding a GPU VI scan-out's 4.64% to that 6.36%. **The VI figure
@@ -1965,16 +1970,20 @@ bounds only the code it names* is why they were not expected to match exactly.
   a different implementation and the geometry already differs — but it is not a
   performance item, and the VI parity census should be built for that reason or
   not at all.
-- **Retiring the software rasterizer (6.36%) is the only large GPU-side
-  performance item left**, and unlike the VI it is genuinely unspent: the
-  software RDP still executes every command, because games read the framebuffer
-  back out of RDRAM and only the software path writes it there.
+- **Retiring the software rasterizer is the only remaining GPU-side
+  performance item**, and unlike the VI it is genuinely unspent: the software
+  RDP still executes every command, because games read the framebuffer back out
+  of RDRAM and only the software path writes it there. **Sized at 6.36% here and
+  since measured at 1.23%** — see the section below; that figure came from the
+  same profile-of-another-configuration mistake as the VI's.
 
-## Retiring the software rasterizer is worth 1.2-3.2%, not 6.36%
+## Retiring the software rasterizer is worth 1.2–3.2%, not 6.36%
 
 The GPU plan's last large performance item was **A4**: stop running the software
 rasterizer on the render path, and have the GPU write the framebuffer back into
-RDRAM instead (`CoherencyOperation` + `masked_memcpy`). It was sized at
+RDRAM instead — via parallel-rdp's own `CoherencyOperation` / `masked_memcpy`
+(upstream symbols in `vendor/parallel-rdp-standalone`, not RustyN64 APIs;
+nothing in this tree calls them today). It was sized at
 **6.36%** — the RDP bucket in the `fast-exec` profile.
 
 **That figure is from a configuration without this backend**, which is the same
@@ -1988,7 +1997,9 @@ The three rasterizing dispatch arms (`OP_FILL_RECTANGLE`,
 no-ops in a scratch tree, leaving every state-setting arm and the command
 consumption intact. Super Mario 64:
 
-| A — rasterizer present | B — rasterization skipped |
+Frame means, milliseconds:
+
+| A — rasterizer present (ms) | B — rasterization skipped (ms) |
 | --- | --- |
 | 61.716 | 60.635 |
 | 61.388 | 59.409 |
