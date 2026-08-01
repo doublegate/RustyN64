@@ -162,6 +162,18 @@ All notable changes to RustyN64 are documented here. The format is based on
   Recommendation: worth building, but last — and it costs more than the 1.7%
   suggests.
 
+- **GPU upscaling — 2x/4x/8x internal render, `GpuRdp::with_upscale`.**
+  Supersampling rather than a bigger picture: the scan-out is downscaled back to
+  1x, so geometry is **identical at every factor** and nothing downstream
+  resizes. `SUPER_SAMPLED_READ_BACK` is never set, so RDRAM keeps the 1x render
+  and ADR 0004 stays out of scope — the emulated machine's state does not vary
+  with a display setting. Default `Native`; VRAM scales with the square of the
+  factor. An unsupported factor is refused rather than rounded down.
+
+  Verified: geometry does not move and rendering does not break at 1x/2x/4x.
+  **Not verified**: that the flag takes effect — a flat fill has no edge for
+  supersampling to change, so `docs/rdp.md` records what test would witness it.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by
