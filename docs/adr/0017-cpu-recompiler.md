@@ -163,15 +163,22 @@ measurement on the RSP gave 0.29%, so the CPU's is ~28x more expensive.
 That changes the case here in two ways, and both are recorded rather than
 argued away:
 
-- **A decode cache captures that ~8% without any of this ADR's cost** — no code
-  generation, no architecture backends, no `unsafe` — and it needs the *same*
-  invalidation machinery on the same Bus page-dirty seam. **It should be built
-  first**, both because it is cheap and because it de-risks gate 4, which is the
-  gate most likely to sink a recompiler quietly.
-- **A recompiler's remaining margin is then ~23% of a frame, not 32.29%.** Still
-  the largest single item by a wide margin, and still the only thing that can
-  approach playable rates — but the spike in stage 2 must clear 1.5x against
-  *that* figure, not the headline one.
+**A decode cache was the obvious inference. It was built, and it is 1.0%
+SLOWER** — reverted under the standing rule (`docs/performance.md`). The 8.1-9.4%
+measured a decode forced through `black_box`; the real one is inlined and its
+fields feed straight into the dispatch `match`, so most of it costs nothing,
+while a cache hit is a real load that cannot be folded and defeats that inlining.
+
+So, corrected:
+
+- **A decode cache is refuted, not deferred.** Do not rebuild it.
+- **The recompiler's margin is the full 32.29%**, and its advantage is *not*
+  skipping decode — the interpreter barely pays for decode as emitted. It is
+  skipping the **dispatch**, the per-instruction bookkeeping and the interpreter
+  loop. Stage 2's 1.5x spike is measured against 32.29%.
+- **The general warning stands and is now demonstrated inside this ADR's own
+  amendment**: a sizing that has not survived being built is a hypothesis. This
+  one did not survive by a day.
 
 **Still owed by stage 2**: how much of the remaining ~23% is Bus work a
 recompiler keeps, versus register-file and ALU work it can fold.

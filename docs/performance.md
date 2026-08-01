@@ -2295,23 +2295,58 @@ rejected there and is worth taking seriously here. `Rsp::decode` is eight
 bit-field extractions; `decode(word)` for the VR4300 is a much larger opcode
 match.
 
-### And it names a cheaper option than the recompiler
+### It looked like it named a cheaper option. It did not — the cache was BUILT and is SLOWER
 
-A recompiler removes decode — it decodes once, at compile time. But **so does a
-decode cache**, at a small fraction of the cost: no code generation, no
-architecture backends, no `unsafe`, and invalidation on the same Bus page-dirty
-seam a recompiler would need anyway.
+The obvious inference from 8.1-9.4% was that a **decode cache** captures it for
+a fraction of a recompiler's cost. Better still, no invalidation is needed:
+`decode` is a pure `const fn` of the instruction word, so keying a cache on the
+word makes it self-validating — if the memory changes, the key misses.
 
-So the ordering ADR 0017 assumed is wrong in one respect, and it is worth
-stating before anyone starts stage 2:
+**It was built, and it is slower.** A 1024-entry direct-mapped cache keyed on
+the word, lazily allocated so `Pipeline::new` stays `const`:
 
-- **A CPU decode cache is worth ~8% for a fraction of a recompiler's cost**, and
-  it is the natural first slice regardless — a recompiler needs the same
-  invalidation machinery, so building it first de-risks the larger work.
-- **A recompiler's remaining margin is then ~23% of a frame**, not 32.29%. Still
-  by far the largest item, and still the only thing that can approach playable
-  rates — but the honest figure is what is left after the cheap part is taken.
+| A — no cache (ms) | B — decode cache (ms) |
+| --- | --- |
+| 63.744 | 63.965 |
+| 63.373 | 64.622 |
+| 63.754 | 64.130 |
+| — | 64.131 |
+| — | 63.811 |
 
-**What is still not decomposed**: how much of the remaining ~23% is the Bus
-(a separate 18.06% bucket the CPU drives) versus register-file and ALU work a
-recompiler keeps. ADR 0017's stage 2 still owes that before a crate exists.
+**B never beats A** — its best leg (63.811) is above A's worst (63.754). Mean
+**+1.0% slower**. Reverted under the standing rule, alongside the `next_edge`
+hoist, the VU family hoist, `target-cpu=native` and PGO.
+
+### Why the 8.1-9.4% did not survive contact
+
+**The probe measured a decode the compiler never emits.** It forced an extra
+`decode` through `black_box`, which is what stops the optimizer folding it away —
+and *that folding is exactly what the real one gets*. In place, `decode` is
+inlined and its fields feed straight into the dispatch `match`, so much of it
+costs nothing: the bit-field extractions become part of the branch that consumes
+them.
+
+A cache hit, by contrast, cannot be folded into anything. It is a real indexed
+load of a 24-byte entry, a compare, and an `Option` branch — and it defeats the
+inlining that made the original cheap.
+
+So **8.1-9.4% is an upper bound on an isolated decode, not on recoverable
+time**, and the previous version of this section should not have implied
+otherwise. It is the *"a hot line is not a hot operation"* lesson, walked into
+with the lesson already written down two sections away.
+
+The figure is left standing rather than deleted, because it is still the honest
+answer to *"what does one `decode` call cost?"* — the error was the inference
+drawn from it, and that is the part worth leaving visible.
+
+### What this leaves for ADR 0017
+
+- **A decode cache is refuted**, not deferred. Do not rebuild it.
+- **The recompiler's margin is the full 32.29%** — its advantage is not that it
+  skips decode, since the interpreter barely pays for decode as emitted. It is
+  that a compiled block skips the *dispatch*, the per-instruction bookkeeping,
+  and the interpreter loop.
+- **Still not decomposed**: how much of the 32.29% is Bus work (a separate
+  18.06% bucket the CPU drives) versus register-file and ALU work. Stage 2 owes
+  that — and this section is the reason to distrust any sizing that has not
+  survived being built.

@@ -119,11 +119,14 @@ All notable changes to RustyN64 are documented here. The format is based on
   For comparison the same measurement on the RSP gave **0.29%**, so the CPU's
   decode is ~**28x** more expensive, and a decode cache was rejected there.
 
-  It names a cheaper option than a recompiler: **a CPU decode cache captures
-  ~8% with no code generation, no architecture backends and no `unsafe`** — and
-  it needs the same invalidation machinery a recompiler would, so building it
-  first de-risks the larger work. A recompiler's remaining margin is then ~23%
-  of a frame rather than 32.29%.
+  **The obvious inference — that a decode cache captures it — was built and is
+  1.0% SLOWER.** Reverted. The probe forced a decode through `black_box`, which
+  is what stops the optimizer folding it away; the real one is inlined and its
+  fields feed straight into the dispatch, so most of it costs nothing, while a
+  cache hit is a real load that cannot be folded. So 8.1-9.4% bounds an
+  *isolated* decode, not recoverable time — *a hot line is not a hot operation*,
+  walked into with the lesson already written down. A decode cache is
+  **refuted, not deferred**.
 
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
