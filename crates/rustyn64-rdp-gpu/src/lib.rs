@@ -242,8 +242,11 @@ mod backend {
         /// is never set, so what lands back in RDRAM is the 1x render and the
         /// emulated machine's state does not vary with this setting.
         ///
-        /// Returns `None` when the device cannot provide the VRAM, which scales
-        /// with the **square** of the factor.
+        /// Returns `None` on **any** failure — no Vulkan, an unsupported device,
+        /// an unsupported factor, an allocation refusal. VRAM is the likeliest
+        /// cause specific to *this* constructor, because it scales with the
+        /// **square** of the factor, but it is not the only one and a caller
+        /// must not report it as such.
         #[must_use]
         pub fn with_upscale(
             rdram_size: usize,

@@ -1192,7 +1192,7 @@ only yields 1/2/4/8, so that path is unreachable from safe Rust — it guards th
 C surface, which is why it exists at all.
 
 **What is verified**: that geometry does not move and rendering does not break
-at 1x/2x/4x (`upscaling_changes_the_render_not_the_scanout_geometry`).
+at 1x/2x/4x (`every_upscale_factor_renders_with_identical_geometry`).
 
 **What is not**: that the flag takes effect. The test fills a flat rectangle,
 which has no edge for supersampling to change — every factor produces the same

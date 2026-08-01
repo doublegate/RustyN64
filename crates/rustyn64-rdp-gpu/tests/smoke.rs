@@ -217,7 +217,10 @@ fn render_at(upscale: Upscale) -> Option<(u32, u32, usize)> {
     submit(gpu.set_vi_register(ViRegister::HStart, (108 << 16) | (108 + FB_WIDTH)));
     submit(gpu.set_vi_register(ViRegister::VStart, (34 << 16) | (34 + FB_HEIGHT * 2)));
 
-    let mut out = vec![0u32; 4 * 1024 * 1024];
+    // Same 1,048,576 pixels the sibling test uses. The VI window here is
+    // 64x32 and the scan-out is downscaled back to 1x at every factor, so a
+    // larger buffer bought nothing and cost 16 MiB per call.
+    let mut out = vec![0u32; 1024 * 1024];
     let ScanoutFrame {
         width,
         height,
@@ -227,7 +230,7 @@ fn render_at(upscale: Upscale) -> Option<(u32, u32, usize)> {
     Some((width, height, fill))
 }
 
-/// **Upscaling changes the render, not the frame.**
+/// **Every factor renders, and none of them moves the geometry.**
 ///
 /// This is the property the whole feature rests on: `SUPER_SAMPLED_READ_BACK` is
 /// never set and the scan-out is downscaled back to 1x, so a caller sees the
@@ -251,7 +254,7 @@ fn render_at(upscale: Upscale) -> Option<(u32, u32, usize)> {
 /// count. That test is worth writing before anyone relies on this for image
 /// quality; it is deliberately not claimed here.
 #[test]
-fn upscaling_changes_the_render_not_the_scanout_geometry() {
+fn every_upscale_factor_renders_with_identical_geometry() {
     let Some(native) = render_at(Upscale::Native) else {
         println!("SKIPPED: no usable Vulkan device — upscaling was NOT verified.");
         return;
@@ -264,9 +267,17 @@ fn upscaling_changes_the_render_not_the_scanout_geometry() {
 
     for upscale in [Upscale::X2, Upscale::X4] {
         let Some(scaled) = render_at(upscale) else {
-            // Not a skip: 1x worked, so the device exists. A refusal here is
-            // the VRAM ceiling, which scales with the SQUARE of the factor.
-            println!("{upscale:?}: refused — VRAM. Higher factors not verified.");
+            // Not a skip — 1x worked, so a usable device exists. But `render_at`
+            // returns `None` for ANY failure (context creation, an unsupported
+            // device, a refused submission, a scan-out that produced nothing),
+            // and naming VRAM here would misdiagnose a real regression as an
+            // expected resource limit. VRAM is the LIKELIEST cause, because it
+            // scales with the square of the factor — it is not the only one.
+            println!(
+                "{upscale:?}: the backend produced no frame. Most likely the VRAM \
+                 ceiling, but `render_at` cannot distinguish that from a genuine \
+                 failure — this factor is NOT verified."
+            );
             continue;
         };
         assert_eq!(
