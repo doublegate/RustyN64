@@ -65,7 +65,11 @@ struct FrameAudio {
     underruns: u64,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The env var and the file read are HARNESS MISCONFIGURATION, not untrusted
+    // input: they say the operator did not set up the run. Those keep panicking,
+    // because a probe that cannot start must stop loudly. The ROM *contents* are
+    // parsed data and get a typed error, which is the distinction the rule draws.
     let path = std::env::var("RUSTYN64_PROBE_ROM").unwrap_or_else(|_| {
         panic!(
             "set RUSTYN64_PROBE_ROM: the committed homebrew ROMs do not run a \
@@ -77,7 +81,7 @@ fn main() {
     let mut core = EmuCore::new(0);
     core.set_output_rate(OUTPUT_RATE);
     core.load_rom(&raw)
-        .unwrap_or_else(|e| panic!("probe ROM did not boot: {path}: {e:?}"));
+        .map_err(|e| format!("probe ROM did not parse or boot: {path}: {e:?}"))?;
 
     // Warm to a live VI, matching every other harness here: boot is not steady
     // state, and audio during boot is not what was reported.
@@ -93,6 +97,10 @@ fn main() {
         }
     }
 
+    // Captured BEFORE the loop. Taking the baseline from the first timed frame
+    // instead would silently drop any underrun that frame recorded -- a reviewer
+    // caught the documented "3 underruns" being an off-by-one-frame figure.
+    let underruns_before = core.audio_underruns();
     let t0 = Instant::now();
     let mut log = Vec::with_capacity(FRAMES);
     for _ in 0..FRAMES {
@@ -107,7 +115,14 @@ fn main() {
     }
     let wall = t0.elapsed().as_secs_f64();
 
-    report(&path, &log, wall, core.system().bus.audio.sample_rate());
+    report(
+        &path,
+        &log,
+        wall,
+        core.system().bus.audio.sample_rate(),
+        underruns_before,
+    );
+    Ok(())
 }
 
 /// Print the evidence. Split from `main` so the measurement and its
@@ -116,10 +131,10 @@ fn main() {
     clippy::cast_precision_loss,
     reason = "sample counts over 120 frames are far below 2^53"
 )]
-fn report(path: &str, log: &[FrameAudio], wall: f64, in_rate: u32) {
+fn report(path: &str, log: &[FrameAudio], wall: f64, in_rate: u32, underruns_before: u64) {
     let total_samples: usize = log.iter().map(|f| f.samples).sum();
     let audible = log.iter().filter(|f| f.peak > SILENCE_FLOOR).count();
-    let underruns = log.last().map_or(0, |f| f.underruns) - log.first().map_or(0, |f| f.underruns);
+    let underruns = log.last().map_or(0, |f| f.underruns) - underruns_before;
 
     // Emulated audio produced, against wall-clock elapsed. THIS is the header's
     // claim, stated as a ratio it can be checked against.

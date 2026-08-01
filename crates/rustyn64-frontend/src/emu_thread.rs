@@ -717,14 +717,24 @@ mod tests {
     #[test]
     #[ignore = "a measurement, not a gate; ~10 s and needs a commercial ROM"]
     fn measure_audio_gaps_at_the_device_boundary() {
-        /// Stereo samples per simulated device callback (1024 frames — cpal's
-        /// usual default), so the callback cadence is ~21 ms like a real one.
+        /// Stereo samples per simulated device callback: 1024 frames, giving a
+        /// ~21 ms cadence.
+        ///
+        /// **A representative size, not a `cpal` default.**
+        /// `cpal::BufferSize::Default` defers to the host and device, so there is
+        /// no single figure to call the default — an earlier revision of this
+        /// comment claimed there was. What matters for this measurement is that
+        /// the cadence is in the right order of magnitude; the delivered-sample
+        /// percentage is a ratio and does not depend on it.
         const BUF: usize = 2048;
         /// Host rate the ring and consumer agree on.
         const RATE: u32 = 48_000;
         /// Wall-clock seconds to observe. Must span several of the reported
         /// ~1 s cycles, or a run could straddle one and show nothing.
         const OBSERVE: Duration = Duration::from_secs(10);
+        /// Below this a sample counts as silence. Matches `audio_probe.rs`'s
+        /// `SILENCE_FLOOR`, and exists because real audio contains exact zeros.
+        const FLOOR: f32 = 1.0e-4;
 
         let Ok(path) = std::env::var("RUSTYN64_PROBE_ROM") else {
             println!("SKIP: set RUSTYN64_PROBE_ROM to a ROM that runs an audio engine");
@@ -791,7 +801,16 @@ mod tests {
             // tail on underrun, so trailing silence IS the underrun — but a
             // genuinely quiet passage also reads as zero, which is why the core
             // probe establishes separately that the stream is not silent.
-            let real = buf.iter().rposition(|s| *s != 0.0).map_or(0, |i| i + 1);
+            //
+            // Thresholded rather than `!= 0.0`: real audio crosses zero, and an
+            // exact-zero test misreads a waveform crossing at the buffer tail as
+            // underrun. It biases DOWNWARD, so it understated both legs of the
+            // before/after equally and the comparison held — but the absolute
+            // percentages were pessimistic.
+            let real = buf
+                .iter()
+                .rposition(|s| s.abs() > FLOOR)
+                .map_or(0, |i| i + 1);
             fed.push(real);
         }
         let stats = thread.stats();

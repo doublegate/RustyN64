@@ -244,7 +244,25 @@ not reproduce. Recorded here because a symptom description that survives into
 three documents becomes the thing people design against.
 
 Two probes, both against Super Mario 64, both committed so the numbers are
-re-runnable rather than remembered:
+re-runnable rather than remembered.
+
+**Provenance for every figure in this section.** These are host-sensitive, and
+without this block they are anecdotes:
+
+| | |
+| --- | --- |
+| ROM | Super Mario 64 (USA), SHA-256 `17ce0773…bb21d91` (local corpus, gitignored) |
+| host | Intel i9-10850K (10C/20T, 3.6 GHz base / 5.2 GHz boost), Linux 7.1.5 |
+| toolchain | `rustc 1.96.0 (ac68faa20 2026-05-25)`, `--release` |
+| build | default features for the device-boundary test; `fast-exec,fast-scheduler` for `audio_probe` — **the two are not comparable to each other**, which is why each table names its build |
+| tree | `52600ea` |
+| kind | **differential** over the timed window in every case: counters are cumulative from power-on and both harnesses subtract a baseline captured after warm-up |
+| audio | 48 kHz host rate, fixed rather than device-negotiated, so no sound card is required |
+
+The two builds differ deliberately: `audio_probe` measures the *core* and wants
+the fast path's ~15.7 FPS, while the device-boundary test measures the *shipped
+default* at ~8.5 FPS. Reading a supply ratio from one against a frame rate from
+the other is the mistake this table exists to prevent.
 
 | probe | boundary | how to run |
 | --- | --- | --- |
