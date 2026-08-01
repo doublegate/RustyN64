@@ -2263,11 +2263,18 @@ in this document, turns up a constraint the plan does not account for.
 
 ### What it is worth
 
-From the phase split above, `scanout` is **3.10–3.44%** of a frame, and the
-`idle()` probe decomposed it: **~1.06 ms is waiting for RDP rasterization** —
-about **1.7% of a frame** — against ~1.39 ms of VI pass, read-back and host
-copies. So A3's ceiling is that 1.7%, and it sits inside the **1.044x** ceiling
-the whole present path carries.
+From the phase split above, `scanout` is **3.10–3.44%** of a frame. The `idle()`
+probe decomposed it, on `frame_bench --features gpu-rdp,fast-exec,fast-scheduler`,
+Super Mario 64, 120 frames after `warm=36`, against a 63.2 ms frame:
+
+| | ms/frame | status |
+| --- | --- | --- |
+| wait for RDP rasterization | ~1.06 | **measured** |
+| VI pass + read-back + host copies | ~1.39 | **measured**, same run |
+
+**The 1.7% is derived**, not measured: 1.06 ms over that 63.2 ms frame. So A3's
+ceiling is that share, and it sits inside the **1.044x** ceiling the whole
+present path carries.
 
 ### The constraint the plan misses
 
@@ -2297,14 +2304,41 @@ emulator and should be a user-visible option rather than a default. It needs
 `signal_timeline`/`wait_for_timeline` exposed through the shim, which is new C++
 surface.
 
-### What is *not* needed, contrary to ADR 0014 §6
+### No GPU-to-CPU tracker — extending ADR 0015, not contradicting ADR 0014
 
-**No GPU-to-CPU hazard tracker.** ADR 0014 §6 and the plan both call for one,
-modeled on gopher64's dirty-range bitmap. That applies to a backend whose GPU
-writes into memory the CPU reads. **This backend owns its RDRAM** — ADR 0015
-established that, and it is why the determinism claim did not need a tracker
-either. There is nothing for the CPU to race against, so (b) needs a timeline
-semaphore and no tracker at all.
+ADR 0014 §6 calls for a GPU-to-CPU hazard tracker modeled on gopher64's
+dirty-range bitmap. **ADR 0015 already amended that premise** for the
+architecture actually built; this carries the same reasoning one step further
+rather than contradicting the current ADR set.
+
+The tracker applies to a backend whose GPU writes into memory the CPU reads.
+**This backend owns its RDRAM** (ADR 0015), so there is nothing for the CPU to
+race against. The asynchronous shape needs **`signal_timeline` *and*
+`wait_for_timeline`** — both — through the shim, and no tracker.
+
+### But there IS a GPU-to-GPU ordering hazard, and it is new
+
+Removing the CPU-side race does **not** remove ordering *between GPU
+submissions*, and the first version of this section missed it.
+
+Under (b), frame N's commands are still executing when frame N+1's dirty-page
+stage begins writing the backend's RDRAM — **the same buffer the in-flight
+submission is reading**. The synchronous path cannot have this, because
+`scanout_sync` drains everything before the next `present` stages anything.
+
+So (b) is **not** simply "delete the wait". Any implementation owes:
+
+- **RDRAM lifetime per frame** — either double-buffer the backend's RDRAM
+  (8 MiB more, and the dirty-page map becomes per-buffer), or block the stage on
+  the previous frame's timeline value, which reintroduces a wait elsewhere and
+  must be measured rather than assumed cheaper;
+- **staging order** relative to `signal_timeline`;
+- **first-frame and overrun behavior** — what happens when frame N+1 is ready to
+  stage and frame N has not signalled.
+
+**This raises A3's cost above the recommendation below**, and it is exactly the
+kind of thing otherwise discovered halfway through an implementation. It needs
+its own ADR before anyone starts.
 
 ### Recommendation
 
