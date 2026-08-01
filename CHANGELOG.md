@@ -94,6 +94,37 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **Per-phase timing for the GPU present path**, and the benchmark that reads
+  it. `present` is split into `stage` / `submit` / `scanout` / `copy` — the four
+  phases that different planned GPU work would remove — each reported as a share
+  of a real frame, alongside the whole path and the residual the phases do not
+  name (0.001%, so the split accounts for essentially all of it).
+
+  ```bash
+  # RUSTYN64_PROBE_ROM must name a local ROM; the committed homebrew one never
+  # brings the VI up, so the GPU path would produce nothing to measure.
+  RUSTYN64_PROBE_ROM=/path/to/rom.z64 \
+    cargo run --release --example gpu_phase_bench --features gpu-rdp
+  ```
+
+  It was built to size the next step before building it, and the answer was
+  **no**: the *entire* present path is **4.0–4.4% of a frame** on Super Mario 64,
+  so every remaining GPU-side idea combined has a ceiling of **1.042–1.046x**.
+  The planned shared-Vulkan-device work targets only the read-back and the host
+  copies within that — `copy` alone is 0.15% — while being the highest-cost slice
+  available (cross-thread device sharing, raw `wgpu-hal` interop, device-limit
+  changes). It is not being built; `docs/performance.md` records the measurement
+  and the reasoning.
+
+  The same work measured, for the first time, that **the GPU backend is 2.1%
+  faster per frame than the software path** (A-B-A, one binary, one feature
+  changed; the two sets do not overlap). Previous figures compared the *present
+  call* rather than the frame, and came from a benchmark that never runs the
+  machine. It also established that **a GPU VI scan-out would recover nothing**:
+  `produce_frame` returns before `scanout_scaled` whenever the GPU produced a
+  picture, so the software VI is already skipped under `gpu-rdp` and the 4.64%
+  attributed to it belongs to a configuration without this backend.
+
 - **The GPU path is verified reproducible** — all 43 `.rvec` vectors identical
   across 3 × 43 independently created devices, and a 60-frame stateful sequence
   (36 distinct frames) reproduced exactly. Both mutation-checked, and gated in

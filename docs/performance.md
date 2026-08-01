@@ -1804,3 +1804,168 @@ parallel test harness creates several and their thread-local destructors race
 once in roughly five runs** — intermittent, so it would have arrived as CI flake
 rather than as a reproducible failure. CI now serializes them. Production is
 unaffected: exactly one thread ever calls `present`.
+
+## The whole GPU present path is 4.0–4.4% of a frame — which retires the shared-device plan
+
+The plan for the GPU backend led with **sharing one Vulkan device with wgpu**, on
+the grounds that the frame crosses PCIe twice in opposite directions: read back
+from parallel-rdp's device to the host, then uploaded to wgpu's unrelated one.
+That is a true description of the code. It was never sized.
+
+`crates/rustyn64-frontend/examples/gpu_phase_bench.rs` sizes it. It splits
+`gpu_rdp::present` into the four phases that different planned work would remove,
+and reports each as a share of a real frame:
+
+| phase | what it is | removed by |
+| --- | --- | --- |
+| `stage` | byte-swap the dirty RDRAM pages into the backend | already done (#245) |
+| `submit` | feed the command stream and VI registers | nothing planned |
+| `scanout` | wait on the GPU fence, then read the frame back | async RDP (the wait), shared device (the read-back) |
+| `copy` | copy the read-back pixels into the caller's buffer | shared device |
+
+### Super Mario 64, `--features gpu-rdp,fast-exec,fast-scheduler`
+
+| run | frame mean | stage | submit | scanout | copy | **total** |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 63.645 ms | 0.262% | 0.575% | 3.442% | 0.147% | **4.427%** |
+| 2 | 62.392 ms | 0.224% | 0.549% | 3.098% | 0.144% | **4.015%** |
+| 3 | *72.122 ms* | *0.356%* | *0.825%* | *4.211%* | *0.242%* | *5.634%* |
+
+**Run 3 is excluded and named rather than dropped silently.** Its frame mean is
+15% above runs 1 and 2, which agree within 2% — that is not this harness's ~1%
+drift, so something outside the measurement happened.
+
+**If the entire present path became free, the ceiling is 1.042–1.046x.** That is
+every remaining GPU-side idea combined — shared device, asynchronous RDP, the
+lot.
+
+### Splitting `scanout`, because two different plans target its two halves
+
+`scanout` bundles *waiting for the GPU to finish rasterizing* with *transferring
+the result back*. An asynchronous RDP removes the first; a shared device removes
+the second. A scratch probe calling `idle()` immediately before `scanout_sync`
+and charging that wait to `submit` split them:
+
+| | ms/frame |
+| --- | --- |
+| wait for RDP rasterization to complete | ~1.06 |
+| VI scan-out pass + read-back + the two host memcpys | ~1.39 |
+
+So **the read-back is at most the smaller half of the larger phase**, and the
+host copies are `copy`'s 0.15%.
+
+### The conclusion, and it inverts the plan's order
+
+**Sharing a Vulkan device with wgpu is not worth building.** Its unique
+contribution — the read-back and the host copies, *not* the GPU's rasterization
+time — is on the order of **1% of a frame at the most generous reading, and
+0.15% at the most defensible one**. Against that:
+
+- It is the **highest-cost slice in the GPU plan**: cross-thread Vulkan device
+  sharing, raw `wgpu-hal` interop under `unsafe`, raising the device limits
+  (`gfx.rs` currently requests `downlevel_webgl2_defaults` on a native Vulkan
+  device), and resolving device ownership between the emulation thread and the
+  winit thread — `GpuRdp` is `!Send` and lives in thread-local storage precisely
+  to avoid that question.
+- Half of the "double crossing" it targets was **never on the frame budget**.
+  The upload to wgpu happens on the winit thread, concurrently with emulation on
+  the emu thread. Removing work that overlaps with the bottleneck does not make
+  the bottleneck shorter.
+- One other GPU item is worth **6.36%** (retiring the software rasterizer) —
+  roughly **6x** the return, without needing a shared device at all.
+
+**A correction to the first version of this section**, which claimed *two* items
+worth 11.0% by adding a GPU VI scan-out's 4.64% to that 6.36%. **The VI figure
+was already spent.** `EmuCore::produce_frame` returns as soon as the GPU
+produces a picture, *before* `Bus::scanout_scaled` — so under `gpu-rdp` the
+software VI scan-out does not run at all, and moving the VI to the GPU cannot
+recover a cost that is not being paid. The 4.64% came from a profile of a
+configuration that does not have this backend, and quoting it here was reading a
+figure from one configuration into another. Measured below rather than argued.
+
+The general lesson is the one this file keeps re-learning: *a mechanism that is
+real is not thereby worth removing*. "The frame crosses PCIe twice" was an
+accurate description of the code and a poor guide to where the time was.
+
+### On the instrumentation itself
+
+The phase counters are eight `Instant::now()` calls per frame against a ~63 ms
+frame, and the frame means above sit within the documented baseline, so no
+regression is visible. They are kept rather than reverted because they are the
+gate for the remaining GPU work: an asynchronous RDP and a GPU VI scan-out both
+have to show up in `scanout`, and a change that does not move the phase it
+claims to move has not done what it says.
+
+## The GPU display backend is 2.1% faster than the software path
+
+Nobody had measured this. `docs/rdp.md` and the notes around #243 quoted
+*0.72–0.93 ms against software's 0.75 ms* — a near-tie — but those came from
+`tests/gpu_present_cost.rs`, which never runs the machine (see the correction
+above), and they compared the **present call** rather than the **frame**.
+
+The frame is what matters, because the two paths do not do the same work: the
+GPU path pays a present (4.0–4.4%) and in exchange **skips the software VI
+scan-out entirely** — `produce_frame` returns before `scanout_scaled` whenever
+the GPU produced a picture.
+
+### A-B-A, `examples/frame_bench.rs`, Super Mario 64, `fast-exec,fast-scheduler`
+
+The same example built both ways, so this is one binary shape with one feature
+changed, not two different harnesses.
+
+| A — software | B — `gpu-rdp` |
+| --- | --- |
+| 66.551 | 62.863 |
+| *82.971* | 62.533 |
+| 64.378 | 62.841 |
+| 64.735 | 62.970 |
+| 64.977 | *66.856* |
+| 64.507 | 62.452 |
+| 64.314 | — |
+| 64.694 | — |
+
+**Conservative pairing (worst clean B 62.970 against best A 64.314): 2.09%,
+1.021x.** The clean B legs span 0.8% and the clean A legs 3.5%, and the two sets
+**do not overlap** — every B leg is faster than every A leg.
+
+Two legs are excluded and named rather than dropped silently: A's 82.971 (25%
+off) and B's 66.856 (6% off). Both are far outside this harness's ~1% drift.
+
+**The mechanism accounts for the result**, and the arithmetic below names which
+statistic each number comes from — two different ones are defensible here and
+they do not agree, so quoting a figure without its basis would be picking the
+flattering one by accident.
+
+| basis | A | B | difference |
+| --- | --- | --- | --- |
+| mean of the clean legs | 64.879 | 62.732 | **2.15 ms** |
+| conservative pairing (best A, worst clean B) | 64.314 | 62.970 | **1.34 ms** |
+
+The present path itself measures **2.55 ms** on this configuration. Since the
+GPU path pays that and still finishes ahead, the software VI scan-out it skips
+is worth the sum:
+
+- **4.70 ms** on the mean basis (2.55 + 2.15), ~7.2% of a frame;
+- **3.89 ms** on the conservative basis (2.55 + 1.34), ~6.0% of a frame.
+
+Both are **inferred** from the difference, not measured directly — the direct
+measurement would be timing `scanout_scaled` itself, which nothing here does.
+They bracket the 4.64% the fast-exec profile attributes to the VI, which is the
+agreement worth having: the two are arrived at by unrelated methods (wall clock
+against sampled attribution), and the standing caution that *a profile share
+bounds only the code it names* is why they were not expected to match exactly.
+
+### What this settles
+
+- **The GPU backend is a speedup, not a wash.** It was adopted for accuracy and
+  for retiring the software rasterizer's remaining gaps; that it also wins on
+  frame time was assumed and is now measured.
+- **A GPU VI scan-out recovers nothing here**, because the software VI is
+  already skipped. It remains interesting for *accuracy* — parallel-rdp's VI is
+  a different implementation and the geometry already differs — but it is not a
+  performance item, and the VI parity census should be built for that reason or
+  not at all.
+- **Retiring the software rasterizer (6.36%) is the only large GPU-side
+  performance item left**, and unlike the VI it is genuinely unspent: the
+  software RDP still executes every command, because games read the framebuffer
+  back out of RDRAM and only the software path writes it there.

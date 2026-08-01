@@ -134,6 +134,194 @@ pub fn frames_produced() -> u64 {
     PRODUCED.load(Ordering::Relaxed)
 }
 
+/// Cumulative nanoseconds in each phase of [`present`], and the frames counted.
+///
+/// **This exists to size work before it is done, not to report it afterwards.**
+/// The whole of `present` is a small share of a frame, and the planned GPU work
+/// targets *different phases of it*: sharing one Vulkan device with wgpu removes
+/// the read-back and the pixel copy but not the stage or the submission; an
+/// asynchronous RDP removes the fence wait inside the read-back and nothing
+/// else. Without a split, both would be argued for against the same aggregate
+/// number and at most one of them could be right.
+///
+/// Ordering is `Relaxed` throughout: these are counters read for a ratio, and no
+/// other state is published through them. The read side may see a frame counted
+/// before its own nanoseconds land — at the sample counts this is used with,
+/// that is one frame of skew in a mean over hundreds.
+static PHASE_NS: [AtomicU64; Phase::COUNT] = [const { AtomicU64::new(0) }; Phase::COUNT];
+
+/// Frames that reached the end of `present` and so contributed to every phase.
+///
+/// Separate from [`PRODUCED`]: a frame the VI declined leaves partial phase
+/// timings, and dividing complete totals by a count that included it would
+/// understate every phase.
+static PHASE_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Wall time inside [`GpuPresenter::present`] for the frames [`PHASE_FRAMES`]
+/// counts, so a caller can report the **residual** — the part of the present
+/// path the four phases do not name.
+///
+/// The residual is the check on the split rather than a curiosity: the phases
+/// are hand-placed, and a large gap between their sum and the whole would mean
+/// they are measuring something other than what they are named after. Reporting
+/// only the sum would make that undetectable.
+static PRESENT_NS: AtomicU64 = AtomicU64::new(0);
+
+/// The phases of [`present`], in the order they run.
+///
+/// `#[repr(usize)]` with explicit discriminants because `add_phase` and
+/// [`phase_totals`] index [`PHASE_NS`] by `phase as usize`. Rust already
+/// guarantees that for a fieldless enum without explicit discriminants, so this
+/// changes nothing today — it pins the property that the indexing relies on, so
+/// that giving one variant an explicit value later cannot silently move another
+/// variant's bucket. `phase_indices_match_their_position` asserts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum Phase {
+    /// Byte-swap the dirty RDRAM pages into the backend's mapped buffer.
+    /// This is what the dirty-page map (#245) shrank.
+    Stage = 0,
+    /// Feed the tapped command stream and the VI registers to the backend.
+    Submit = 1,
+    /// `scanout_sync`: wait on the GPU fence, then read the frame back over
+    /// the bus into host memory. **Both halves are removable, by different work** —
+    /// the wait by an asynchronous RDP, the read-back by a shared device.
+    Scanout = 2,
+    /// Copy the read-back pixels into the caller's RGBA8 buffer. Pure host
+    /// memory traffic, and it exists only because the frame came back to the
+    /// host at all.
+    Copy = 3,
+}
+
+impl Phase {
+    /// How many phases there are. A `match` in [`Phase::name`] keeps this
+    /// honest: adding a variant without extending that match fails to compile.
+    pub const COUNT: usize = 4;
+
+    /// All phases, in execution order.
+    pub const ALL: [Self; Self::COUNT] = [Self::Stage, Self::Submit, Self::Scanout, Self::Copy];
+
+    /// Short label for a report.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Submit => "submit",
+            Self::Scanout => "scanout",
+            Self::Copy => "copy",
+        }
+    }
+}
+
+/// One frame's phase timings, accumulated **locally** and published only if the
+/// frame completes.
+///
+/// The first version of this published each phase to the global counters as it
+/// finished. That was wrong in a way the reported means could not show, and a
+/// reviewer caught it: a frame that produces no picture runs `stage` and
+/// `submit` and then returns, so those nanoseconds landed in the numerator while
+/// [`PHASE_FRAMES`] — the divisor — did not advance. Every `stage` and `submit`
+/// mean would be **overstated**, by an amount depending on how often the VI was
+/// off. The same holds for an `Err` return part-way through.
+///
+/// Worse, the comment defending the old behavior argued only the *other*
+/// direction: that counting such a frame would understate `scanout` and `copy`.
+/// Both are true, and the resolution is neither — a partial frame must
+/// contribute to **nothing**, so every mean is taken over exactly the frames
+/// that ran every phase.
+/// # On the `as u64` casts that fill this
+///
+/// `Duration::as_nanos` returns `u128` and every timing here narrows it. That is
+/// `clippy::cast_possible_truncation`, which this crate **allows crate-wide**
+/// (`lib.rs`) — an allow added for the VI scan-out and joybus packing, so it
+/// covers these by inheritance rather than by decision. Worth stating the bound
+/// explicitly, since nothing will lint it: `u64` nanoseconds overflow after ~584
+/// years, and this measures one `present` call. A truncation here is not a
+/// tolerated rounding error, it is impossible.
+#[derive(Default)]
+struct FrameTimings {
+    /// Indexed by `Phase as usize`, same as [`PHASE_NS`].
+    phase_ns: [u64; Phase::COUNT],
+    /// The whole of `present`, for the residual.
+    present_ns: u64,
+}
+
+impl FrameTimings {
+    /// Record `ns` against `phase` for this frame only.
+    const fn add(&mut self, phase: Phase, ns: u64) {
+        self.phase_ns[phase as usize] += ns;
+    }
+
+    /// Publish this frame to the global counters, divisor included.
+    ///
+    /// The frame count is incremented **here and only here**, so it is not
+    /// possible to publish timings without the frame they belong to.
+    fn commit(&self) {
+        for (slot, &ns) in PHASE_NS.iter().zip(&self.phase_ns) {
+            slot.fetch_add(ns, Ordering::Relaxed);
+        }
+        PRESENT_NS.fetch_add(self.present_ns, Ordering::Relaxed);
+        PHASE_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Cumulative nanoseconds in `phase`, and the number of complete frames.
+///
+/// **This is a convenience pairing, not an atomic snapshot.** The two values are
+/// separate `Relaxed` loads, so a `present` running concurrently can land
+/// between them and the pair can be one frame skewed. Returning them together
+/// narrows the window a caller would otherwise open by sampling twice; it does
+/// not close it, and saying otherwise would be asserting a guarantee the code
+/// does not provide. At the sample counts this is used with — hundreds of frames
+/// — one frame of skew is far below the measurement's own spread.
+#[must_use]
+pub fn phase_totals(phase: Phase) -> (u64, u64) {
+    (
+        PHASE_NS[phase as usize].load(Ordering::Relaxed),
+        PHASE_FRAMES.load(Ordering::Relaxed),
+    )
+}
+
+/// Cumulative nanoseconds in the whole of `present`, over the same frames
+/// [`phase_totals`] counts.
+///
+/// Subtract the four phases from this to get the **residual** — the part of the
+/// present path that no phase names (geometry checks, the command split, the
+/// dirty-map read). A residual that is not small means the phases are
+/// mismeasuring what they are named after, which is the one failure this split
+/// could not otherwise detect.
+///
+/// Same skew caveat as [`phase_totals`].
+#[must_use]
+pub fn present_total() -> (u64, u64) {
+    (
+        PRESENT_NS.load(Ordering::Relaxed),
+        PHASE_FRAMES.load(Ordering::Relaxed),
+    )
+}
+
+/// Zero every phase counter.
+///
+/// A benchmark must exclude its warm-up: the first frame stages the whole of
+/// RDRAM by construction (`needs_full_stage`) and builds the Vulkan device, so
+/// averaging it in overstates the stage phase by orders of magnitude.
+///
+/// **Call this while nothing is presenting.** The stores are individually
+/// `Relaxed` and not a transaction, so a `present` committing concurrently can
+/// land partly before and partly after the reset, leaving one phase's time
+/// without its frame. Every caller today is single-threaded with respect to the
+/// emulator — the benchmarks reset between their own `run_frame` calls — so this
+/// is a documented precondition rather than a lock, on the same reasoning as
+/// [`phase_totals`]: the alternative is real synchronization on the present path
+/// to protect a call that happens once per measurement.
+pub fn reset_phase_totals() {
+    for c in &PHASE_NS {
+        c.store(0, Ordering::Relaxed);
+    }
+    PRESENT_NS.store(0, Ordering::Relaxed);
+    PHASE_FRAMES.store(0, Ordering::Relaxed);
+}
+
 /// Pretend this thread has no usable device, for tests.
 ///
 /// The device-less path is the one that leaked, and on a developer machine with
@@ -314,6 +502,9 @@ impl GpuPresenter {
         // The swap writes STRAIGHT INTO the mapped buffer. Staging it first and
         // then copying cost a second full pass over 8 MiB — together ~90% of the
         // frame's GPU cost, and fusing them measured 3.3x (`docs/performance.md`).
+        let mut timings = FrameTimings::default();
+        let t_present = std::time::Instant::now();
+        let t_stage = t_present;
         let full = self.needs_full_stage;
         let dirty = bus.rdram_dirty_pages();
         // The map must cover the whole of the Bus's RDRAM. A map that is SHORTER
@@ -346,7 +537,9 @@ impl GpuPresenter {
             })
             .ok_or(Failed)?;
         self.needs_full_stage = false;
+        timings.add(Phase::Stage, t_stage.elapsed().as_nanos() as u64);
 
+        let t_submit = std::time::Instant::now();
         let mut consumed = 0usize;
         for cmd in split_commands(commands) {
             if !self.gpu.enqueue_command(cmd) {
@@ -372,6 +565,8 @@ impl GpuPresenter {
             }
         }
 
+        timings.add(Phase::Submit, t_submit.elapsed().as_nanos() as u64);
+
         // Size the read-back to what the caller can hold, in pixels. `scanout_sync`
         // refuses rather than truncates when a frame is larger, which is the
         // behavior wanted here: a truncated frame is a plausible-looking wrong
@@ -380,6 +575,10 @@ impl GpuPresenter {
         if self.pixels.len() < capacity {
             self.pixels.resize(capacity, 0);
         }
+        // The timer starts after the resize, which is a one-off allocation
+        // rather than per-frame work — and one a benchmark's warm-up has already
+        // paid before `reset_phase_totals`, so this changes no reported number.
+        let t_scanout = std::time::Instant::now();
         let Some(ScanoutFrame {
             width,
             height,
@@ -388,8 +587,12 @@ impl GpuPresenter {
         else {
             // The VI produced nothing — off, or unconfigured. Ordinary, and not
             // a reason to distrust the backend.
+            // `timings` is dropped unpublished. Counting this frame would
+            // understate `scanout` and `copy`; publishing `stage` and `submit`
+            // without counting it would overstate those two. Neither, then.
             return Ok(None);
         };
+        timings.add(Phase::Scanout, t_scanout.elapsed().as_nanos() as u64);
         // The shim refuses a frame larger than the buffer it was given, so
         // `pixels <= capacity` — but that is a guarantee on the far side of an
         // FFI boundary, and `self.pixels[..pixels]` would panic if it stopped
@@ -402,9 +605,16 @@ impl GpuPresenter {
         // in `rustyn64-rdp-gpu`'s smoke test, where an opaque-red fill reads back
         // as 0xFF0000FF little-endian). So this is a plain reinterpretation, not
         // a conversion.
+        let t_copy = std::time::Instant::now();
         for (dst, &px) in out.chunks_exact_mut(4).zip(src) {
             dst.copy_from_slice(&px.to_le_bytes());
         }
+        timings.add(Phase::Copy, t_copy.elapsed().as_nanos() as u64);
+        timings.present_ns = t_present.elapsed().as_nanos() as u64;
+        // The ONLY publication point. Every early return above — no picture, or a
+        // backend failure — drops `timings` unpublished, so a partial frame
+        // contributes to neither the numerator nor the divisor.
+        timings.commit();
 
         Ok(Some((width, height)))
     }
@@ -464,6 +674,40 @@ fn split_commands(words: &[u32]) -> impl Iterator<Item = &[u32]> {
 #[cfg(test)]
 mod tests {
     use super::{split_commands, swap_words_into};
+    use std::sync::Mutex;
+
+    /// Serializes the tests that reset and read the **global** phase counters.
+    ///
+    /// Those counters are process-wide, so two such tests running concurrently
+    /// interleave: one's `reset_phase_totals` lands between the other's `commit`
+    /// and its assertions, and the failure is a confusing zero rather than
+    /// anything pointing at the cause.
+    ///
+    /// CI passes `--test-threads=1`, but that flag is there for the Vulkan
+    /// device-destruction race and would mask this rather than fix it — a
+    /// developer running the suite without it would meet a flake. Serializing
+    /// here makes these tests correct under the default harness, on their own
+    /// terms.
+    ///
+    /// **Honest limit on this guard:** removing it and widening the window with
+    /// a 150 ms sleep between `commit` and its assertions did **not** produce a
+    /// failure over five parallel runs. The two tests are serialized by
+    /// accident — one of them builds a Vulkan device first, which takes far
+    /// longer than the other's whole critical section, so their windows do not
+    /// currently overlap. That incidental ordering is exactly the reason to hold
+    /// the lock explicitly: it depends on device-init timing, which is a
+    /// property of the host rather than of the tests.
+    static COUNTER_TESTS: Mutex<()> = Mutex::new(());
+
+    /// Take [`COUNTER_TESTS`], ignoring poisoning.
+    ///
+    /// A panic in one counter test must not turn every sibling into a second,
+    /// unrelated failure that hides which assertion actually broke.
+    fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
+        COUNTER_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     /// The swap is an involution, and it is the 4-byte one.
     ///
@@ -588,5 +832,111 @@ mod tests {
         // A Fill Triangle needs 8 u32 words; give it 3.
         let stream = vec![0x0800_0000, 0, 0];
         assert_eq!(split_commands(&stream).count(), 0);
+    }
+
+    /// Every `Phase`'s discriminant equals its position in [`Phase::ALL`].
+    ///
+    /// `add_phase` and `phase_totals` index `PHASE_NS` by `phase as usize`, so
+    /// a discriminant that stopped matching would silently write one phase's
+    /// time into another's bucket — a wrong table with nothing pointing at the
+    /// cause. Rust guarantees this for a fieldless enum, and the explicit
+    /// `= 0..3` pins it; this asserts it, because the guarantee is the thing
+    /// being relied on rather than the thing being tested.
+    #[test]
+    fn phase_indices_match_their_position() {
+        use super::Phase;
+        for (i, phase) in Phase::ALL.into_iter().enumerate() {
+            assert_eq!(
+                phase as usize,
+                i,
+                "{} indexes bucket {} but sits at position {i} in ALL",
+                phase.name(),
+                phase as usize
+            );
+        }
+        assert_eq!(
+            Phase::ALL.len(),
+            Phase::COUNT,
+            "ALL and COUNT disagree, so some phase has no bucket"
+        );
+    }
+
+    /// `commit` publishes every phase **and** the divisor, together.
+    ///
+    /// This is the positive half of the accounting contract, and it needs no GPU
+    /// — which matters, because the negative half below can only run where a
+    /// Vulkan device exists. Without this, a machine that skipped that test
+    /// would be verifying the counters with nothing at all.
+    #[test]
+    fn commit_publishes_every_phase_with_its_frame() {
+        use super::{FrameTimings, Phase, phase_totals, present_total, reset_phase_totals};
+        let _guard = counter_lock();
+        reset_phase_totals();
+
+        let mut t = FrameTimings::default();
+        for (i, phase) in Phase::ALL.into_iter().enumerate() {
+            // Distinct values, so a commit that wrote every phase into one
+            // bucket — or the same value into all of them — cannot pass.
+            t.add(phase, (i as u64 + 1) * 100);
+        }
+        t.present_ns = 9_999;
+        t.commit();
+
+        for (i, phase) in Phase::ALL.into_iter().enumerate() {
+            let (ns, frames) = phase_totals(phase);
+            assert_eq!(
+                ns,
+                (i as u64 + 1) * 100,
+                "{} received the wrong bucket's time",
+                phase.name()
+            );
+            assert_eq!(frames, 1, "one commit must count exactly one frame");
+        }
+        assert_eq!(present_total(), (9_999, 1));
+    }
+
+    /// A frame that produced **no picture** contributes to *nothing* — not a
+    /// phase, not the frame count.
+    ///
+    /// The first version of this asserted the opposite for `stage`: that a
+    /// picture-less frame records stage time while not being counted. A reviewer
+    /// pointed out that is a **bug**, not a contract — those nanoseconds land in
+    /// the numerator while the divisor does not move, so `stage` and `submit`
+    /// come out overstated by however often the VI is off. The old comment
+    /// defended the arrangement by arguing only the other direction (that
+    /// counting the frame would understate `scanout` and `copy`), which is also
+    /// true, and neither is the answer. `present` now accumulates locally and
+    /// publishes only on a complete frame.
+    ///
+    /// The VI is left unprogrammed, which is what makes the frames picture-less.
+    #[test]
+    fn a_frame_with_no_picture_contributes_nothing() {
+        let _guard = counter_lock();
+        if !super::probe_for_test() {
+            println!("SKIPPED: no usable Vulkan device — nothing was verified.");
+            return;
+        }
+        let mut bus = rustyn64_core::Bus::new();
+        let mut out = vec![0u8; 640 * 480 * 4];
+
+        super::reset_phase_totals();
+        for _ in 0..4 {
+            assert!(
+                super::present(&mut bus, &mut out, 640, 480).is_none(),
+                "an unprogrammed VI produced a frame"
+            );
+        }
+
+        for phase in super::Phase::ALL {
+            let (ns, frames) = super::phase_totals(phase);
+            assert_eq!(
+                (ns, frames),
+                (0, 0),
+                "a picture-less frame published {ns} ns to `{}` with {frames} frames counted; \
+                 unpaired time in the numerator overstates that phase's mean",
+                phase.name()
+            );
+        }
+        assert_eq!(super::present_total(), (0, 0));
     }
 }
