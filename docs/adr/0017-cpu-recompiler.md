@@ -180,5 +180,32 @@ So, corrected:
   amendment**: a sizing that has not survived being built is a hypothesis. This
   one did not survive by a day.
 
-**Still owed by stage 2**: how much of the remaining ~23% is Bus work a
-recompiler keeps, versus register-file and ALU work it can fold.
+### Stage 2's decomposition is done (`docs/performance.md`)
+
+Profiled rather than probed, deliberately — the probe technique had just failed
+on `decode` and reusing it here would have repeated the error. Source-line
+attribution, because **everything inlines into `run_until_exec`** (61% self
+time) and a symbol profile cannot see inside it.
+
+| share | subsystem |
+| --- | --- |
+| 42.88% | CPU |
+| 23.60% | Bus + scheduler |
+| 10.95% | RSP |
+
+and inside the CPU: `fastexec.rs` **16.10%**, `pipeline.rs` 8.24%, `decode.rs`
+**4.36%**, `addr.rs` 3.71%, then `cop0`/`cache`/`exec`/`cop1`/`regs` at 1.6-2.5%
+each.
+
+**What a recompiler removes** is the interpreter driver — roughly `fastexec.rs`
++ `decode.rs` + part of `pipeline.rs`, **20-25%**. What it does **not** remove is
+the Bus's 23.60% (memory the emulated program really performs), `addr.rs`
+(translation still happens per access), or `cop0`/`cop1`/`cache` (real emulated
+work).
+
+**So stage 2's 1.5x spike is measured against ~20-25%.** That is the honest
+target, and it is still the largest single item in the project.
+
+`decode.rs` measuring **4.36%** here, against the probe's 8.1-9.4%, is a second
+independent confirmation that the probe overstated it — the first being that the
+cache was built and came out slower.

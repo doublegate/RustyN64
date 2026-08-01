@@ -2350,3 +2350,81 @@ drawn from it, and that is the part worth leaving visible.
   18.06% bucket the CPU drives) versus register-file and ALU work. Stage 2 owes
   that — and this section is the reason to distrust any sizing that has not
   survived being built.
+
+## Stage 2's decomposition: what a recompiler would and would not remove
+
+ADR 0017 makes this a precondition on writing `rustyn64-jit`. It is done with a
+**profiler**, not the "make the cost bigger" probe — that technique had just
+produced 8.1–9.4% for `decode` and sent a decode cache to be built and reverted,
+so using it again on a bigger question would have repeated the error.
+
+`perf record -F 999 -e cycles:u -D 3000`, `fast-exec` + `fast-scheduler`, Super
+Mario 64, 6,140 samples. The run reported `mean=62.539ms`, inside the unprofiled
+spread, so the profile is of the real workload.
+
+### A symbol profile cannot answer this, and that is the first result
+
+| symbol | self |
+| --- | --- |
+| `System::run_until_exec` | **61.35%** |
+| `Bus::vi_read_cov` | 7.12% |
+| `Rsp::cop2` | 6.52% |
+
+**Everything inlines into `run_until_exec`.** This is the same shape the
+`step_due_here` note above records at 63.9%, and it means the decomposition has
+to come from **source-line** attribution, which crosses inlining.
+
+### By subsystem, attributed by source line
+
+| share | subsystem |
+| --- | --- |
+| **42.88%** | CPU (`rustyn64-cpu`) |
+| 23.60% | Bus + scheduler |
+| 13.35% | stdlib / generic / unattributed |
+| 10.95% | RSP |
+| 5.22% | other crate `lib.rs` |
+| 4.29% | VI |
+
+The CPU is higher here than the 32.29% in the symbol-based table above, because
+line attribution catches inlined CPU code that the symbol view charged to
+whichever function it landed in. **The two are measuring different things and
+neither is wrong**; this one is the right one for "what would a recompiler
+remove".
+
+### Inside `rustyn64-cpu`
+
+| share | file |
+| --- | --- |
+| **16.10%** | `fastexec.rs` — the interpreter driver |
+| 8.24% | `pipeline.rs` |
+| **4.36%** | `decode.rs` |
+| 3.71% | `addr.rs` — address translation |
+| 2.47% | `cop0.rs` |
+| 2.44% | `cache.rs` |
+| 1.94% | `exec.rs` |
+| 1.84% | `cop1.rs` |
+| 1.62% | `regs.rs` |
+
+### What this settles for ADR 0017
+
+**`decode.rs` is 4.36%, not the 8.1–9.4% the probe reported.** Two unrelated
+methods now agree the probe overstated it — the cache that was built and
+reverted, and this. That is the strongest available confirmation that a
+`black_box` sizing bounds an isolated call rather than recoverable time.
+
+**A recompiler removes the interpreter driver, not the machine.** Roughly
+`fastexec.rs` + `decode.rs` + part of `pipeline.rs` — call it **20–25%** — is
+dispatch, per-instruction bookkeeping and the loop. What it does **not** remove:
+
+- the **Bus's 23.60%**, which is memory the emulated program actually performs;
+- `addr.rs`'s 3.71%, since translation still happens per access;
+- `cache.rs`, `cop0.rs`, `cop1.rs` — real emulated work.
+
+So the spike's 1.5x target should be read against **~20–25%**, not 32.29% and not
+42.88%. Still the largest item in the project by a wide margin, and still the
+only one that can approach playable rates.
+
+**One caution carried forward.** The single hottest *line* in the whole profile
+is `fastexec.rs:334` at **10.87%** — the `Latch` copy this document already
+warns about, where retired work is charged to the final store. It is not 10.87%
+of removable time, and a recompiler's estimate must not be built on it.
