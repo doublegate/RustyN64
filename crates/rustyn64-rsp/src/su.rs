@@ -175,6 +175,7 @@ impl Rsp {
         if self.sp.halted() {
             return out;
         }
+        self.count_retired();
 
         let pc = self.sp.pc();
         let word = self.imem_word(pc);
