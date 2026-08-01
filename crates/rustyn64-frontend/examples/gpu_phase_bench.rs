@@ -67,6 +67,10 @@ mod imp {
     /// Timed frames, matching `frame_bench` so the two are directly comparable.
     const FRAMES: u32 = 120;
 
+    /// Nanoseconds in a millisecond. The counters are in nanoseconds; every
+    /// number reported here is in milliseconds.
+    const NANOS_PER_MS: f64 = 1.0e6;
+
     pub fn run() {
         let path = std::env::var("RUSTYN64_PROBE_ROM").unwrap_or_else(|_| {
             panic!(
@@ -127,6 +131,13 @@ mod imp {
         let (_, counted) = phase_totals(Phase::Stage);
         assert!(counted > 0, "no frames reached the end of present");
 
+        report(&path, warm, gpu_frames, counted, mean_ms);
+    }
+
+    /// Print the table. Split from `run` because the measurement and its
+    /// presentation are separate concerns, and together they exceed the line
+    /// limit the lint gate enforces.
+    fn report(path: &str, warm: usize, gpu_frames: u64, counted: u64, mean_ms: f64) {
         println!("rom={path}");
         println!("frames={FRAMES} warm={warm} gpu_frames={gpu_frames} counted={counted}");
         println!("frame mean = {mean_ms:.3} ms\n");
@@ -139,7 +150,7 @@ mod imp {
                 clippy::cast_precision_loss,
                 reason = "ns and frame counts are far below 2^53"
             )]
-            let ms = ns as f64 / 1.0e6 / frames as f64;
+            let ms = ns as f64 / NANOS_PER_MS / frames as f64;
             summed_ms += ms;
             println!(
                 "{:<10} {:>10.4} {:>9.3}%",
@@ -156,7 +167,7 @@ mod imp {
             clippy::cast_precision_loss,
             reason = "ns and frame counts are far below 2^53"
         )]
-        let present_ms = whole_ns as f64 / 1.0e6 / whole_frames as f64;
+        let present_ms = whole_ns as f64 / NANOS_PER_MS / whole_frames as f64;
 
         println!(
             "{:<10} {:>10.4} {:>9.3}%   <- the four phases",
@@ -177,9 +188,21 @@ mod imp {
             (present_ms - summed_ms) / mean_ms * 100.0
         );
 
-        println!(
-            "\nCeiling if the whole present path became free: {:.3}x",
-            mean_ms / (mean_ms - present_ms)
-        );
+        // Guarded rather than printed as `inf` or a negative: the present path is
+        // a few percent of a frame, so `mean_ms - present_ms` is comfortably
+        // positive on any real run — but if noise or a broken measurement ever
+        // made it not so, a nonsense ratio would be quoted as a result.
+        let headroom = mean_ms - present_ms;
+        if headroom > 0.0 {
+            println!(
+                "\nCeiling if the whole present path became free: {:.3}x",
+                mean_ms / headroom
+            );
+        } else {
+            println!(
+                "\nNo ceiling reported: present ({present_ms:.3} ms) is not less than the \
+                 frame mean ({mean_ms:.3} ms), so this run did not measure what it should have."
+            );
+        }
     }
 }

@@ -213,9 +213,47 @@ impl Phase {
     }
 }
 
-/// Add `ns` to `phase`'s running total.
-fn add_phase(phase: Phase, ns: u64) {
-    PHASE_NS[phase as usize].fetch_add(ns, Ordering::Relaxed);
+/// One frame's phase timings, accumulated **locally** and published only if the
+/// frame completes.
+///
+/// The first version of this published each phase to the global counters as it
+/// finished. That was wrong in a way the reported means could not show, and a
+/// reviewer caught it: a frame that produces no picture runs `stage` and
+/// `submit` and then returns, so those nanoseconds landed in the numerator while
+/// [`PHASE_FRAMES`] — the divisor — did not advance. Every `stage` and `submit`
+/// mean would be **overstated**, by an amount depending on how often the VI was
+/// off. The same holds for an `Err` return part-way through.
+///
+/// Worse, the comment defending the old behavior argued only the *other*
+/// direction: that counting such a frame would understate `scanout` and `copy`.
+/// Both are true, and the resolution is neither — a partial frame must
+/// contribute to **nothing**, so every mean is taken over exactly the frames
+/// that ran every phase.
+#[derive(Default)]
+struct FrameTimings {
+    /// Indexed by `Phase as usize`, same as [`PHASE_NS`].
+    phase_ns: [u64; Phase::COUNT],
+    /// The whole of `present`, for the residual.
+    present_ns: u64,
+}
+
+impl FrameTimings {
+    /// Record `ns` against `phase` for this frame only.
+    const fn add(&mut self, phase: Phase, ns: u64) {
+        self.phase_ns[phase as usize] += ns;
+    }
+
+    /// Publish this frame to the global counters, divisor included.
+    ///
+    /// The frame count is incremented **here and only here**, so it is not
+    /// possible to publish timings without the frame they belong to.
+    fn commit(&self) {
+        for (slot, &ns) in PHASE_NS.iter().zip(&self.phase_ns) {
+            slot.fetch_add(ns, Ordering::Relaxed);
+        }
+        PRESENT_NS.fetch_add(self.present_ns, Ordering::Relaxed);
+        PHASE_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Cumulative nanoseconds in `phase`, and the number of complete frames.
@@ -258,6 +296,15 @@ pub fn present_total() -> (u64, u64) {
 /// A benchmark must exclude its warm-up: the first frame stages the whole of
 /// RDRAM by construction (`needs_full_stage`) and builds the Vulkan device, so
 /// averaging it in overstates the stage phase by orders of magnitude.
+///
+/// **Call this while nothing is presenting.** The stores are individually
+/// `Relaxed` and not a transaction, so a `present` committing concurrently can
+/// land partly before and partly after the reset, leaving one phase's time
+/// without its frame. Every caller today is single-threaded with respect to the
+/// emulator — the benchmarks reset between their own `run_frame` calls — so this
+/// is a documented precondition rather than a lock, on the same reasoning as
+/// [`phase_totals`]: the alternative is real synchronization on the present path
+/// to protect a call that happens once per measurement.
 pub fn reset_phase_totals() {
     for c in &PHASE_NS {
         c.store(0, Ordering::Relaxed);
@@ -446,6 +493,7 @@ impl GpuPresenter {
         // The swap writes STRAIGHT INTO the mapped buffer. Staging it first and
         // then copying cost a second full pass over 8 MiB — together ~90% of the
         // frame's GPU cost, and fusing them measured 3.3x (`docs/performance.md`).
+        let mut timings = FrameTimings::default();
         let t_present = std::time::Instant::now();
         let t_stage = t_present;
         let full = self.needs_full_stage;
@@ -480,7 +528,7 @@ impl GpuPresenter {
             })
             .ok_or(Failed)?;
         self.needs_full_stage = false;
-        add_phase(Phase::Stage, t_stage.elapsed().as_nanos() as u64);
+        timings.add(Phase::Stage, t_stage.elapsed().as_nanos() as u64);
 
         let t_submit = std::time::Instant::now();
         let mut consumed = 0usize;
@@ -508,7 +556,7 @@ impl GpuPresenter {
             }
         }
 
-        add_phase(Phase::Submit, t_submit.elapsed().as_nanos() as u64);
+        timings.add(Phase::Submit, t_submit.elapsed().as_nanos() as u64);
 
         // Size the read-back to what the caller can hold, in pixels. `scanout_sync`
         // refuses rather than truncates when a frame is larger, which is the
@@ -530,11 +578,12 @@ impl GpuPresenter {
         else {
             // The VI produced nothing — off, or unconfigured. Ordinary, and not
             // a reason to distrust the backend.
-            // Not counted as a frame: the phases below never ran, so folding
-            // this into the divisor would understate every one of them.
+            // `timings` is dropped unpublished. Counting this frame would
+            // understate `scanout` and `copy`; publishing `stage` and `submit`
+            // without counting it would overstate those two. Neither, then.
             return Ok(None);
         };
-        add_phase(Phase::Scanout, t_scanout.elapsed().as_nanos() as u64);
+        timings.add(Phase::Scanout, t_scanout.elapsed().as_nanos() as u64);
         // The shim refuses a frame larger than the buffer it was given, so
         // `pixels <= capacity` — but that is a guarantee on the far side of an
         // FFI boundary, and `self.pixels[..pixels]` would panic if it stopped
@@ -551,11 +600,12 @@ impl GpuPresenter {
         for (dst, &px) in out.chunks_exact_mut(4).zip(src) {
             dst.copy_from_slice(&px.to_le_bytes());
         }
-        add_phase(Phase::Copy, t_copy.elapsed().as_nanos() as u64);
-        PRESENT_NS.fetch_add(t_present.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        // Counted last, so a frame is in the divisor only once every phase above
-        // has contributed to it.
-        PHASE_FRAMES.fetch_add(1, Ordering::Relaxed);
+        timings.add(Phase::Copy, t_copy.elapsed().as_nanos() as u64);
+        timings.present_ns = t_present.elapsed().as_nanos() as u64;
+        // The ONLY publication point. Every early return above — no picture, or a
+        // backend failure — drops `timings` unpublished, so a partial frame
+        // contributes to neither the numerator nor the divisor.
+        timings.commit();
 
         Ok(Some((width, height)))
     }
@@ -768,20 +818,55 @@ mod tests {
         );
     }
 
-    /// A frame that produced **no picture** is not counted, and does not reach
-    /// `scanout` or `copy`.
+    /// `commit` publishes every phase **and** the divisor, together.
     ///
-    /// It *does* run `stage` and `submit` — those happen before the VI is
-    /// consulted — so this is deliberately not the stronger claim that a
-    /// picture-less frame touches no phase at all. What must hold is that it is
-    /// not counted as a **frame**: counting it would divide two phases' real
-    /// totals by an inflated divisor and report every phase as cheaper than it
-    /// is. That is the direction that flatters a result, which is why it gets a
-    /// test rather than a comment.
+    /// This is the positive half of the accounting contract, and it needs no GPU
+    /// — which matters, because the negative half below can only run where a
+    /// Vulkan device exists. Without this, a machine that skipped that test
+    /// would be verifying the counters with nothing at all.
+    #[test]
+    fn commit_publishes_every_phase_with_its_frame() {
+        use super::{FrameTimings, Phase, phase_totals, present_total, reset_phase_totals};
+        reset_phase_totals();
+
+        let mut t = FrameTimings::default();
+        for (i, phase) in Phase::ALL.into_iter().enumerate() {
+            // Distinct values, so a commit that wrote every phase into one
+            // bucket — or the same value into all of them — cannot pass.
+            t.add(phase, (i as u64 + 1) * 100);
+        }
+        t.present_ns = 9_999;
+        t.commit();
+
+        for (i, phase) in Phase::ALL.into_iter().enumerate() {
+            let (ns, frames) = phase_totals(phase);
+            assert_eq!(
+                ns,
+                (i as u64 + 1) * 100,
+                "{} received the wrong bucket's time",
+                phase.name()
+            );
+            assert_eq!(frames, 1, "one commit must count exactly one frame");
+        }
+        assert_eq!(present_total(), (9_999, 1));
+    }
+
+    /// A frame that produced **no picture** contributes to *nothing* — not a
+    /// phase, not the frame count.
+    ///
+    /// The first version of this asserted the opposite for `stage`: that a
+    /// picture-less frame records stage time while not being counted. A reviewer
+    /// pointed out that is a **bug**, not a contract — those nanoseconds land in
+    /// the numerator while the divisor does not move, so `stage` and `submit`
+    /// come out overstated by however often the VI is off. The old comment
+    /// defended the arrangement by arguing only the other direction (that
+    /// counting the frame would understate `scanout` and `copy`), which is also
+    /// true, and neither is the answer. `present` now accumulates locally and
+    /// publishes only on a complete frame.
     ///
     /// The VI is left unprogrammed, which is what makes the frames picture-less.
     #[test]
-    fn a_frame_with_no_picture_is_not_counted() {
+    fn a_frame_with_no_picture_contributes_nothing() {
         if !super::probe_for_test() {
             println!("SKIPPED: no usable Vulkan device — nothing was verified.");
             return;
@@ -797,27 +882,16 @@ mod tests {
             );
         }
 
-        let (stage_ns, frames) = super::phase_totals(super::Phase::Stage);
-        assert_eq!(
-            frames, 0,
-            "{frames} picture-less frames were counted; every phase mean would be understated"
-        );
-        // And the run was not vacuous in the other direction: `stage` DID run on
-        // those frames, so a zero here would mean the timer never fired and the
-        // count assertion above passed for the wrong reason.
-        assert!(
-            stage_ns > 0,
-            "no time was recorded against `stage`, so the frame-count assertion \
-             above proves nothing about the counters"
-        );
-        // The phases that come after the VI check must be untouched, which is
-        // the half of the claim `stage_ns > 0` cannot make.
-        let (scanout_ns, _) = super::phase_totals(super::Phase::Scanout);
-        let (copy_ns, _) = super::phase_totals(super::Phase::Copy);
-        assert_eq!(
-            (scanout_ns, copy_ns),
-            (0, 0),
-            "a picture-less frame recorded time against a phase it never reached"
-        );
+        for phase in super::Phase::ALL {
+            let (ns, frames) = super::phase_totals(phase);
+            assert_eq!(
+                (ns, frames),
+                (0, 0),
+                "a picture-less frame published {ns} ns to `{}` with {frames} frames counted; \
+                 unpaired time in the numerator overstates that phase's mean",
+                phase.name()
+            );
+        }
+        assert_eq!(super::present_total(), (0, 0));
     }
 }
