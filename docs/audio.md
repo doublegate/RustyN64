@@ -335,3 +335,68 @@ thread never takes the emu mutex**", and `app.rs` takes it in six places
 `SaveStateControls`-style request queue and the yield stops being a UI window, at
 which point the 1.14x is available for free. That needs its own change and is not
 attempted here.
+
+## The fix that shipped: stretch, don't chop
+
+**Policy chosen:** continuous audio at the wrong pitch, over chopped audio at the
+right pitch. Of the three levers above, (1) is unavailable and (3) was what
+shipped; this is (2).
+
+`emu_thread::AudioServo` stretches each emulated frame's audio over the
+wall-clock time that frame actually took. The samples are the same samples — the
+servo cannot manufacture the missing 86%, and nothing can — they are simply spent
+over the whole frame instead of over `1/60 s` followed by silence. A core at 14%
+speed therefore sounds like a tape running at 14%: continuous, two and a half
+octaves down.
+
+### How it decides
+
+| term | source | why |
+| --- | --- | --- |
+| feed-forward | EMA of the measured wall-clock interval between produced frames | correct on the *first* frame; an occupancy integrator covering a 7x range would take seconds to converge |
+| trim | ring occupancy against half-full | removes residual drift, which the feed-forward term cannot see because it does not know what is already banked |
+
+Clamped to `[1.0, MAX_AUDIO_STRETCH]`. It **never compresses below real time**: a
+core running faster than 60 FPS is already oversupplying, and the ring's
+drop-oldest is the right answer there. `MAX_AUDIO_STRETCH = 12.0` bounds it at
+5 FPS — below that the audio chops again rather than becoming an unrecognizable
+drone that also pins the ring.
+
+### Measured, same harness as the defect
+
+| | before | after |
+| --- | --- | --- |
+| callbacks fully fed | **0 / 469** | **412 / 469** |
+| callbacks fully empty | 384 / 469 | **34 / 469** |
+| samples delivered | **14.2%** | **90.9%** |
+| ...second half only (steady state) | 14.2% | **100.0%** |
+| silent runs | 86, mean 95 ms | 14, mean 52 ms |
+| first fully-fed callback | never | **#15 (320 ms in)** |
+| UI emu-lock p50 | 664 ns | 590 ns (unchanged) |
+| pacer frames / 10 s | 85 | 85 (unchanged) |
+
+**Steady state is 100%.** The whole-window 90.9% is the ramp from an empty ring
+at startup, which is why the harness reports the second half separately — a
+single figure charges a one-off transient to continuous quality.
+
+### The trim gain is measured, not tuned
+
+0.2, 0.4 and 0.6 were each run. **All three reach 100.0% steady state and all
+three reach their first fully-fed callback at #15.** The only difference is the
+whole-window figure (90.6 / 91.3 / 91.9%), which is dominated by the ramp.
+Picking 0.6 for that 1.3-point edge would be tuning against a transient, so the
+**lowest** gain ships: a larger one makes the pitch hunt audibly and nothing was
+bought with it.
+
+### What it does not change
+
+- **Determinism.** The stretch is applied in the frontend resampler, which
+  ADR 0004 already designates as the non-deterministic host-timing stage. The
+  core's emitted stream (`Bus::drain_audio_samples`) is untouched, so
+  `audio_play_rom` and `mixer_microcode` — which pin the *core* PCM — are
+  unaffected, and the save-state trace compare does not read the resampled f32.
+- **Anything without a ring.** With `ring: None` the servo is never consulted and
+  the core keeps its default `1.0`, so headless builds and every test are
+  byte-identical to before.
+- **The pacer.** Frames produced per second is unchanged (85 both ways); this
+  trades no throughput.

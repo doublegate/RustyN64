@@ -43,11 +43,17 @@
 //! 0.25 s capacity, so "the ~1 s period is the ring's capacity" was wrong twice
 //! over.
 //!
-//! It closes when the core gets faster and not before — see `docs/performance.md`,
-//! which also records that 60 FPS is out of reach for this execution model, so
-//! some form of explicit slow-running audio policy will eventually be needed
-//! instead. **The rate-control servo described above does not exist**:
-//! [`AudioRing::occupancy`] has no callers outside this module.
+//! The underlying shortfall closes only when the core gets faster — see
+//! `docs/performance.md`, which records that 60 FPS is out of reach for this
+//! execution model. What the frontend can choose is *which* failure a listener
+//! hears, and it now chooses continuity over pitch.
+//!
+//! **The servo described above now exists** — `emu_thread::AudioServo`, which
+//! reads [`AudioRing::occupancy`] as its trim term. It does not create the
+//! missing samples (nothing can); it spends the ones there are over the whole
+//! wall-clock frame, trading pitch for continuity. Measured **14.2% -> 90.9%**
+//! delivered and **100% in steady state**, with the shortfall confined to the
+//! ~4 s ramp from an empty ring at startup.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
