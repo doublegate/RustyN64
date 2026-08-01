@@ -85,7 +85,7 @@ jobs:
               echo "::warning::could not list changed files; running gpu-rdp rather than skipping it"
               gpu=true
             elif printf '%s\n' "$files" \
-               | grep -qE '^(crates/rustyn64-rdp-gpu/|vendor/parallel-rdp-standalone|\.gitmodules$|\.github/workflows/ci\.yml$)'; then
+               | grep -qE '^(crates/rustyn64-rdp-gpu/|vendor/parallel-rdp-standalone|\.gitmodules$|\.github/workflows/ci\.yml$)|gpu_rdp|conformance_gpu'; then
               gpu=true
             fi
           fi
@@ -153,6 +153,19 @@ jobs:
       # settles the precedence), so it is built rather than left to chance.
       - run: cargo test -p rustyn64-frontend --features fast-exec
       - run: cargo check -p rustyn64-frontend --features fast-exec,fast-scheduler
+      # The wasm32 build. The target was already INSTALLED by the toolchain step
+      # above and nothing ever built for it -- a gate that never runs, which is
+      # how this PR shipped `pub mod app;` with its `#[cfg(not(wasm32))]`
+      # accidentally removed and every other check still green. rustfmt reorders
+      # `mod` declarations, so an item inserted near one can carry a neighbor's
+      # attribute away with it, and no native build notices.
+      - run: cargo check -p rustyn64-frontend --target wasm32-unknown-unknown
+      # ADR 0014's RDP command tap. Core-side, no C++ and no Vulkan, so it runs
+      # on every PR rather than in the heavy `gpu-rdp` job -- the tap's four
+      # tests are the only thing that grades it, and feature-gated code is
+      # invisible to a clippy run that does not enable the feature.
+      - run: cargo test -p rustyn64-core --features rdp-tap
+      - run: cargo clippy -p rustyn64-core --all-targets --features rdp-tap -- -D warnings
 
   rustdoc:
     name: rustdoc (-D warnings)
@@ -258,6 +271,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p rustyn64-rdp-gpu --all-targets --features gpu-rdp -- -D warnings
       - run: cargo clippy -p rustyn64-test-harness --all-targets --features gpu-rdp -- -D warnings
+      - uses: ./.github/actions/linux-build-deps
+      - run: cargo clippy -p rustyn64-frontend --all-targets --features gpu-rdp -- -D warnings
+      - run: cargo test -p rustyn64-frontend --features gpu-rdp
       - name: Run the smoke test and report which branch it took
         run: |
           set -euo pipefail
@@ -303,6 +319,10 @@ jobs:
       # nothing else builds this crate for a bare-metal target -- so the no_std
       # claim for `fast-scheduler` is only true if it is checked here.
       - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features --features fast-scheduler
+      # The RDP tap adds an `alloc::vec::Vec` field; `alloc` is already a
+      # dependency here, but "additive and still no_std" is a claim and this is
+      # the only job that checks it.
+      - run: cargo build -p rustyn64-core --target thumbv7em-none-eabihf --no-default-features --features rdp-tap
       # And the CPU crate with the instruction-granular path on. `fastexec` is a
       # child module of `pipeline` and uses nothing beyond what the accurate path
       # already does, but "uses nothing" is a claim, and this is what checks it.

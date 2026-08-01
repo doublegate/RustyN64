@@ -916,7 +916,7 @@ frame (T-31-005); the deferred paths track against the ParaLLEl-RDP fuzz suite.
 - **The DP command list can live in DMEM or RDRAM** — `DPC_STATUS` selects the
   source; honor both.
 
-## The GPU backend (`gpu-rdp`, default-off, bound but not wired)
+## The GPU backend (`gpu-rdp`, default-off, wired as a display path)
 
 [ADR 0014](adr/0014-gpu-backed-rdp.md) authorizes binding **parallel-rdp** (MIT)
 as an alternate rasterizer backend, behind a default-off `gpu-rdp` feature on the
@@ -956,7 +956,7 @@ a Vulkan dependency that cannot be made optional.
 
 ### What exists today
 
-The **binding**, and nothing downstream of it:
+The binding, a parity gate over it, and a frontend display path:
 
 | piece | state |
 | --- | --- |
@@ -967,6 +967,14 @@ The **binding**, and nothing downstream of it:
 | `tests/smoke.rs` | renders a Fill Rectangle and checks the picture |
 | `conformance_gpu` + `rdp_conformance_gpu.rs` | the parity gate — the whole `.rvec` corpus on both paths |
 | CI job `gpu-rdp` | builds and links, and asserts which branch each GPU test took |
+
+**The software scan-out remains the fallback, on every failure path.**
+`produce_frame` tries the GPU and drops through to `Bus::scanout_scaled` when
+there is no device, when the VI produces no picture (which is every frame before
+a ROM programs it), when the geometry will not fit, or when the backend fails.
+A failure additionally discards the backend so the next frame rebuilds it — but
+*only* a real failure: conflating that with "no picture this frame" would rebuild
+a Vulkan device sixty times a second at boot.
 
 **Verified locally on an RTX 3090:** the device initializes, parallel-rdp's
 compute shaders compile, a 64x32 Fill Rectangle rasterizes, and `scanout_sync`
@@ -1022,23 +1030,77 @@ index outside `VIRegister` rather than casting it, and the `ViRegister` enum
 cannot express an out-of-range value, so the check is reachable only from C. It
 is worth having and it is not evidence of anything.
 
+### Wired into the machine — as a display backend
+
+The frontend's `gpu-rdp` feature (default-off, native-only, deliberately **not**
+in `full`) presents frames rendered by parallel-rdp instead of by the software VI
+scan-out. What that means precisely:
+
+**It is a display backend, not a replacement rasterizer**, and the distinction is
+load-bearing. `rustyn64-core` is `#![no_std]` and `#![forbid(unsafe_code)]`, so
+the `Bus` cannot own a Vulkan device — that is the crate graph working, not an
+obstacle. The software rasterizer therefore still runs and still writes into the
+Bus's RDRAM, which is what keeps a game's framebuffer read-backs working. The GPU
+renders the *same* command stream a second time and that is what reaches the
+screen. Two rasterizers run; the machine's state comes from one and the picture
+from the other.
+
+**The command stream arrives by a tap, not a re-read.** `Bus::rdp_tap` (the
+`rdp-tap` feature on `rustyn64-core`) records every command word the Bus feeds
+the RDP, captured by **diffing the FIFO pointer** across `tick_with_bus` rather
+than decoding the command a second time. Re-reading the list from RDRAM would not
+work at all: by the time the frontend looks, `DPC_CURRENT` has reached `DPC_END`
+and the game has usually overwritten the buffer.
+
+That the tap therefore never captures a partly-written command is an
+**implementation fact of this emulator, not a hardware claim** — the provenance
+is `Rdp::tick_with_bus`, which refuses to consume a command until `DPC_END` has
+passed its full length, and whose stated reason is that libdragon's `rdpq`
+advances `DPC_END` incrementally as it fills the buffer. It is not measured
+against hardware and carries no ledger entry. What the tap gets from the diff is
+that it cannot *disagree* with that behavior, whatever it is — a tap that
+restated the rule would be free to drift from it.
+
+The field is `#[serde(skip)]`, so the save-state layout is **identical** with the
+feature on or off and this stays out of ADR 0005's announced-in-advance
+format-break territory.
+
+**Cost, measured rather than estimated** (`tests/gpu_present_cost.rs`, RTX 3090,
+release):
+
+| path | per frame |
+| --- | --- |
+| GPU present | **0.72–0.93 ms** (first frame in a fresh process ~1.37 ms) |
+| software `scanout_scaled` | 0.75 ms |
+
+Essentially at parity — which was not true of the first version. Seeding the
+GPU's RDRAM went through an 8 MiB staging buffer and then a second copy into the
+mapped buffer; fusing the byte-order swap directly into the mapped write is
+**3.3×** faster (A-B-A: 3.10/2.65 ms staged against 0.79/0.64 ms fused). The
+whole-RDRAM snapshot is kept deliberately: it is correct by construction, with no
+dirty-region tracker to get subtly wrong, which is the hazard §5 above names.
+
+**The presented geometry differs between backends.** parallel-rdp scans out the
+whole VI raster (640x240 for an NTSC field); `Bus::scanout_scaled` crops to the
+active span. Both are legitimate; they are not the same picture size, and the
+frontend's geometry test asserts per-backend rather than pretending otherwise.
+
 **Explicitly NOT done, and each is a separate piece of work:**
 
-- **No `Bus` integration.** Nothing routes DPC commands here; the software
-  rasterizer is still the only one the machine can use.
+- **The GPU does not replace the software rasterizer.** Both run. This costs
+  throughput rather than saving it, which ADR 0014 predicted and the numbers
+  above confirm.
 - **No shared RDRAM.** The binding allocates and owns its own RDRAM, reached
   only through `with_rdram` / `with_rdram_mut`, which is what makes the safety
   argument tractable — and is *not* how a running machine's RDRAM is owned. (It
   borrowed a buffer at first; owning it is what makes the page alignment a
-  property of construction rather than of the caller remembering.)
-- **No frontend feature.** `gpu-rdp` is a feature of `rustyn64-rdp-gpu` only.
-  The frontend does not depend on the crate at all yet, so nothing pulls C++
-  into a default build. When it does gain the feature it stays out of `full`,
-  on the same reasoning that keeps `fast-scheduler` out: promoting an alternate
-  backend into a shipped artifact is an ADR decision, not a build-configuration
-  one.
+  property of construction rather than of the caller remembering.) The Bus's
+  RDRAM is **snapshotted** into it each frame, not shared.
 - **No dirty-region synchronization**, and therefore **no determinism claim**.
-  ADR 0004 is not yet satisfied and this cannot ship until it is.
+  ADR 0004 binds the core, and the core is untouched — the software rasterizer's
+  output is still what lands in RDRAM and still what a save-state captures — so
+  nothing here breaks that contract. But the GPU backend makes no determinism
+  claim of its own and cannot until synchronization is real.
 
 One correction to the plan this came from: the plan proposed `bindgen`. It is
 not used and not needed — the shim is eight functions, so hand-written

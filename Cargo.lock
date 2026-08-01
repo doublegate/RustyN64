@@ -2358,6 +2358,8 @@ dependencies = [
  "pollster 1.0.1",
  "rfd",
  "rustyn64-core",
+ "rustyn64-rdp",
+ "rustyn64-rdp-gpu",
  "thiserror 2.0.19",
  "wasm-bindgen",
  "web-sys",

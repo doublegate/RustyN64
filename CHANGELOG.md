@@ -69,6 +69,45 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **The GPU RDP is wired into the machine, as a display backend.** The
+  frontend's default-off `gpu-rdp` feature presents frames rendered by
+  parallel-rdp from the real Bus **when one is available**; `Bus::scanout_scaled`
+  remains the fallback on every other path — no device, no picture (which is
+  every frame before a ROM programs the VI), geometry that will not fit, or a
+  backend failure.
+
+  *Display backend*, not replacement rasterizer, and the distinction is
+  load-bearing: `rustyn64-core` is `#![no_std]` and `#![forbid(unsafe_code)]`, so
+  the `Bus` cannot own a Vulkan device — that is the crate graph working, not an
+  obstacle to route around. The software rasterizer still runs and still writes
+  RDRAM, which is what keeps framebuffer read-backs working; the GPU renders the
+  same command stream again and that is what reaches the screen.
+
+  The stream arrives through a new `rdp-tap` feature on `rustyn64-core`, which
+  records the command words the Bus feeds the RDP by **diffing the FIFO pointer**
+  rather than decoding each command a second time — so the tap inherits the RDP's
+  own refusal to consume a partly-written command instead of restating a rule
+  that could drift. Re-reading the list from RDRAM is not an option: by the time
+  the frontend looks, `DPC_CURRENT` has reached `DPC_END` and the game has
+  usually overwritten the buffer. The field is `#[serde(skip)]`, so the
+  save-state layout is identical with the feature on or off.
+
+  **Measured, not estimated:** 0.72–0.93 ms per presented frame against the
+  software scan-out's 0.75 ms — essentially parity. That took a fix: seeding the
+  GPU's RDRAM originally staged an 8 MiB copy and then copied it again into the
+  mapped buffer, and fusing the byte-order swap directly into the mapped write is
+  **3.3×** faster by A-B-A (3.10/2.65 ms staged against 0.79/0.64 ms fused).
+
+  The whole-RDRAM snapshot is kept deliberately: correct by construction, with no
+  dirty-region tracker to get subtly wrong. ADR 0004 binds the core and the core
+  is untouched, so no determinism guarantee is broken — but the GPU path makes no
+  determinism claim of its own, and `docs/rdp.md` says which.
+
+  Also documented there: the two backends present **different geometry**.
+  parallel-rdp scans out the whole VI raster; `scanout_scaled` crops to the
+  active span. The frontend's geometry test now asserts per-backend rather than
+  pretending they agree.
+
 - **The GPU-RDP parity gate — 42 of 43 `.rvec` vectors match on both paths.**
   `conformance_gpu::census` replays the whole registered conformance corpus
   through parallel-rdp and grades it against **Angrylion's** goldens, the same
