@@ -316,6 +316,17 @@ impl GpuPresenter {
         // frame's GPU cost, and fusing them measured 3.3x (`docs/performance.md`).
         let full = self.needs_full_stage;
         let dirty = bus.rdram_dirty_pages();
+        // The map must cover the whole of the Bus's RDRAM. A map that is SHORTER
+        // is the dangerous direction and the loop below cannot detect it: the
+        // uncovered pages would simply never stage, and the GPU would render a
+        // stale frame with every test still green. Both lengths derive from
+        // `RDRAM_SIZE`, so this holds structurally — which is exactly why it is
+        // worth pinning before someone makes one of them configurable.
+        debug_assert_eq!(
+            dirty.len(),
+            bus.rdram.len().div_ceil(RDRAM_PAGE),
+            "the dirty map does not cover the Bus's RDRAM"
+        );
         self.gpu
             .with_rdram_mut(|rdram| {
                 let len = rdram.len().min(bus.rdram.len());

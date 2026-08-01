@@ -673,6 +673,13 @@ impl Bus {
     /// Compiles to nothing without `rdp-tap`, so a default build pays no hot-path
     /// cost at all — which is the only reason it is acceptable to call this from
     /// every RDRAM store.
+    ///
+    /// `off` is an **RDRAM byte offset**, not an address: every caller obtains it
+    /// from [`Bus::rdram_offset`], which returns `Option<usize>` and yields
+    /// `Some` only below [`RDRAM_SIZE`]. So the index below cannot go out of
+    /// bounds, and the `debug_assert` says which fact that rests on rather than
+    /// leaving a reader to rediscover it. A clamp here would be worse than the
+    /// panic: it would silently mark the wrong page and stage the wrong bytes.
     #[allow(
         clippy::inline_always,
         reason = "called from every RDRAM store; a call here would cost more than the mark"
@@ -691,6 +698,10 @@ impl Bus {
     fn mark_rdram_dirty(&mut self, off: usize) {
         #[cfg(feature = "rdp-tap")]
         {
+            debug_assert!(
+                off < RDRAM_SIZE,
+                "mark_rdram_dirty takes an RDRAM offset from rdram_offset, not an address"
+            );
             self.rdram_dirty[off >> RDRAM_PAGE_SHIFT] = true;
         }
         #[cfg(not(feature = "rdp-tap"))]
@@ -722,8 +733,14 @@ impl Bus {
             if len == 0 {
                 return;
             }
+            // Saturating: `off + len` would wrap for an absurd `len`, and a
+            // debug-only panic in a marking helper is the worst of both worlds —
+            // it fires in tests and silently marks page 0 in release. Saturation
+            // clamps to the last page instead, which over-marks (costing one
+            // extra page of staging) rather than under-marking (costing a stale
+            // frame). Every real caller passes 1 or 4.
             let first = off >> RDRAM_PAGE_SHIFT;
-            let last = (off + len - 1) >> RDRAM_PAGE_SHIFT;
+            let last = off.saturating_add(len - 1) >> RDRAM_PAGE_SHIFT;
             for p in first..=last.min(self.rdram_dirty.len() - 1) {
                 self.rdram_dirty[p] = true;
             }
@@ -3913,6 +3930,45 @@ mod rdram_dirty_tests {
         // And a later write still marks — clearing must not disable tracking.
         CpuBus::write_u8(&mut bus, page_addr(9), 1);
         assert_eq!(dirty(&bus), alloc::vec![9]);
+    }
+
+    /// **Every** CPU store width marks, including the ones with no dedicated
+    /// `Bus` method.
+    ///
+    /// A reviewer asked whether `SH`/`SD`/`SWL`/`SDR` bypass the map, since only
+    /// `write_u8` and `write_u32` carry marks. They do not: `write_sized`
+    /// decomposes every non-RCP-internal width into those two, and the unaligned
+    /// family reaches the bus through `Pipeline::write_width` at width 4 or 8, so
+    /// it decomposes the same way. Nothing *enforces* that delegation, though —
+    /// a future width-specific override would silently bypass the marks and
+    /// produce a stale frame with every test still green. Hence this test rather
+    /// than a reply saying the code is fine today.
+    #[test]
+    fn every_store_width_marks() {
+        // Width, page, and the byte the store must leave at the page's base so
+        // the marking assertion cannot pass on a store that did nothing.
+        // Big-endian: the byte at the base is the register's *most* significant
+        // byte of that width.
+        for (width, page, value, expect) in [
+            (1u64, 10usize, 0x00_00_00_00_00_00_00_A1u64, 0xA1u8),
+            (2, 11, 0x0000_0000_0000_A2B2, 0xA2),
+            (4, 12, 0x0000_0000_A3B3_C3D3, 0xA3),
+            (8, 13, 0xA4B4_C4D4_E4F4_0414, 0xA4),
+        ] {
+            let mut bus = Bus::new();
+            bus.clear_rdram_dirty();
+            CpuBus::write_sized(&mut bus, page_addr(page), width, value);
+            assert_eq!(
+                bus.rdram[page * RDRAM_PAGE],
+                expect,
+                "a width-{width} store did not land, so its marking assertion is vacuous"
+            );
+            assert_eq!(
+                dirty(&bus),
+                alloc::vec![page],
+                "a width-{width} store left its page clean"
+            );
+        }
     }
 
     /// `RdramBus::rdram_write` marks — the RDP/RSP/AI DMA paths use it.
