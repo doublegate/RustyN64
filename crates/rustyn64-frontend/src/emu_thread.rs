@@ -404,6 +404,208 @@ mod tests {
         );
     }
 
+    /// **What the audio device actually experiences** — the host half of the
+    /// ~1 s on / ~1 s off report, measured rather than reasoned about.
+    ///
+    /// `examples/audio_probe.rs` measures the *core* half and settles it: the
+    /// emulated AI produces a continuous stream, and supply is exactly
+    /// `fps / 60`. Neither of those is what a listener hears. This spawns the
+    /// real [`EmuThread`] against a real [`AudioRing`] and drains it from a
+    /// wall-clock-paced consumer standing in for the `cpal` callback, so the
+    /// **period** of the gaps is observed at the point the symptom is reported.
+    ///
+    /// No audio device is opened. That is deliberate: a real device would add
+    /// its own scheduling to the thing being measured, and the quantity of
+    /// interest — how much of each buffer is real samples — is entirely
+    /// determined by [`AudioRing::pull`].
+    ///
+    /// Needs a ROM with a running audio engine; skips loudly without one.
+    ///
+    /// ```text
+    /// RUSTYN64_PROBE_ROM=/path/rom.z64 cargo test -p rustyn64-frontend --release \
+    ///     --lib measure_audio_gaps -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate; ~10 s and needs a commercial ROM"]
+    fn measure_audio_gaps_at_the_device_boundary() {
+        /// Stereo samples per simulated device callback (1024 frames — cpal's
+        /// usual default), so the callback cadence is ~21 ms like a real one.
+        const BUF: usize = 2048;
+        /// Host rate the ring and consumer agree on.
+        const RATE: u32 = 48_000;
+        /// Wall-clock seconds to observe. Must span several of the reported
+        /// ~1 s cycles, or a run could straddle one and show nothing.
+        const OBSERVE: Duration = Duration::from_secs(10);
+
+        let Ok(path) = std::env::var("RUSTYN64_PROBE_ROM") else {
+            println!("SKIP: set RUSTYN64_PROBE_ROM to a ROM that runs an audio engine");
+            return;
+        };
+        let raw = std::fs::read(&path).expect("probe ROM readable");
+        let mut core = EmuCore::new(0);
+        core.set_output_rate(RATE);
+        core.load_rom(&raw).expect("probe ROM boots");
+        // Warm past boot: the first frames are silent while the game starts its
+        // audio engine, and counting those would report a gap that is not the
+        // reported one.
+        for _ in 0..48 {
+            core.run_frame();
+            drop(core.drain_audio());
+        }
+
+        // Same capacity the shipped `AudioOutput::open` uses: 0.25 s of stereo.
+        let ring = Arc::new(AudioRing::new(RATE as usize * 2 / 4));
+        let emu = Arc::new(Mutex::new(core));
+
+        // A stand-in for the UI thread's OCCASIONAL emu-mutex takers (load ROM,
+        // save state, pause — `app.rs`; the per-frame present path uses the
+        // handoff and never takes this lock). The pacer's post-snap yield exists
+        // to keep these from starving, so any change to it has to be judged
+        // against this latency and not against throughput alone.
+        let ui_emu = Arc::clone(&emu);
+        let ui_stop = Arc::new(AtomicBool::new(false));
+        let ui_flag = Arc::clone(&ui_stop);
+        let ui = std::thread::spawn(move || {
+            let mut waits = Vec::new();
+            while !ui_flag.load(Ordering::Relaxed) {
+                let t = Instant::now();
+                drop(ui_emu.lock().map(|c| c.frame_count()));
+                waits.push(t.elapsed());
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            waits
+        });
+
+        let thread = EmuThread::spawn(EmuThreadParams {
+            emu: Arc::clone(&emu),
+            input: Arc::new(SharedInput::new()),
+            present: PresentBuffer::new(),
+            ring: Some(Arc::clone(&ring)),
+            region: Region::default(),
+            rewind: RewindConfig::default(),
+            run_ahead: RunAhead::default(),
+            controls: Arc::new(SaveStateControls::default()),
+        });
+
+        let period = Duration::from_secs_f64(BUF as f64 / 2.0 / f64::from(RATE));
+        let mut buf = vec![0.0f32; BUF];
+        let mut fed = Vec::new();
+        let start = Instant::now();
+        let mut next = start;
+        while start.elapsed() < OBSERVE {
+            next += period;
+            while Instant::now() < next {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            ring.pull(&mut buf);
+            // How much of this buffer was real audio. `pull` zero-fills the
+            // tail on underrun, so trailing silence IS the underrun — but a
+            // genuinely quiet passage also reads as zero, which is why the core
+            // probe establishes separately that the stream is not silent.
+            let real = buf.iter().rposition(|s| *s != 0.0).map_or(0, |i| i + 1);
+            fed.push(real);
+        }
+        let stats = thread.stats();
+        let (produced, bursts, snaps) = (
+            stats.produced.load(Ordering::Relaxed),
+            stats.catchup_bursts.load(Ordering::Relaxed),
+            stats.snap_forwards.load(Ordering::Relaxed),
+        );
+        drop(thread);
+        ui_stop.store(true, Ordering::Relaxed);
+        let mut waits = ui.join().expect("UI stand-in thread finishes");
+        waits.sort_unstable();
+
+        let callbacks = fed.len();
+        report_audio_gaps(
+            &fed,
+            BUF,
+            period,
+            &waits,
+            (produced, bursts, snaps),
+            OBSERVE,
+        );
+
+        assert!(
+            callbacks > 100,
+            "the consumer must actually have run; got {callbacks} callbacks"
+        );
+    }
+
+    /// Print what the device saw. Split from the measurement so the two are
+    /// separable — and because together they exceed the line gate.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "callback counts over a 10 s window are far below 2^53"
+    )]
+    fn report_audio_gaps(
+        fed: &[usize],
+        buf: usize,
+        period: Duration,
+        waits: &[Duration],
+        pacer: (u64, u64, u64),
+        observe: Duration,
+    ) {
+        let callbacks = fed.len();
+        let starved = fed.iter().filter(|n| **n < buf).count();
+        let empty = fed.iter().filter(|n| **n == 0).count();
+        let delivered: usize = fed.iter().sum();
+        let wanted = callbacks * buf;
+        // Run lengths of fully-empty callbacks: the "off" half of the report.
+        let mut gaps = Vec::new();
+        let mut run = 0usize;
+        for n in fed {
+            if *n == 0 {
+                run += 1;
+            } else if run > 0 {
+                gaps.push(run);
+                run = 0;
+            }
+        }
+        if run > 0 {
+            gaps.push(run);
+        }
+        let ms = |n: usize| n as f64 * period.as_secs_f64() * 1000.0;
+        let (produced, bursts, snaps) = pacer;
+
+        println!("--- {callbacks} device callbacks of {buf} samples over {observe:?} ---");
+        println!(
+            "  callbacks fully fed   : {}/{callbacks}",
+            callbacks - starved
+        );
+        println!("  callbacks fully empty : {empty}/{callbacks}");
+        println!(
+            "  samples delivered     : {delivered}/{wanted} ({:.1}%)",
+            delivered as f64 / wanted as f64 * 100.0
+        );
+        println!(
+            "  silent runs           : {}, mean {:.1} ms, max {:.1} ms",
+            gaps.len(),
+            ms(gaps.iter().sum::<usize>()) / gaps.len().max(1) as f64,
+            ms(gaps.iter().copied().max().unwrap_or(0)),
+        );
+        println!("  pacer: {produced} frames, {bursts} bursts, {snaps} snap-forwards");
+        println!(
+            "  UI emu-lock wait      : p50 {:.3?}  p99 {:.3?}  max {:.3?}  (n={})",
+            waits[waits.len() / 2],
+            waits[waits.len() * 99 / 100],
+            waits[waits.len() - 1],
+            waits.len()
+        );
+        print!("  timeline: ");
+        for n in fed {
+            print!(
+                "{}",
+                match *n {
+                    0 => '.',
+                    x if x == buf => '#',
+                    _ => '+',
+                }
+            );
+        }
+        println!();
+    }
+
     /// **End-to-end: the producer actually publishes into the handoff.** The
     /// `emu-thread` feature shipped without this wiring, so the UI had nothing to
     /// read and took the emu mutex instead — the defect this whole change fixes.
