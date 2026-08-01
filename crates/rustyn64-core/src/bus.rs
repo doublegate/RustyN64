@@ -280,6 +280,31 @@ const GAMMA_TABLE: [u8; 256] = {
 /// Base RDRAM size: 4 MiB (8 MiB with the Expansion Pak installed).
 pub const RDRAM_SIZE: usize = 8 * 1024 * 1024;
 
+/// Granularity of the RDRAM dirty-page map, in bytes.
+///
+/// 4 KiB gives 2,048 pages for 8 MiB of RDRAM — a 2 KiB flag array, L1-resident,
+/// so the once-a-frame scan is free. Finer pages would send less redundant data
+/// but grow the scan; coarser would send more. Not tuned: 4 KiB is also the
+/// alignment `VK_EXT_external_memory_host` wants, so the two agree by
+/// construction rather than by coincidence.
+pub const RDRAM_PAGE: usize = 4096;
+
+/// `log2(RDRAM_PAGE)`, so the hot-path mark is a shift rather than a divide.
+const RDRAM_PAGE_SHIFT: usize = 12;
+
+const _: () = assert!(1 << RDRAM_PAGE_SHIFT == RDRAM_PAGE);
+
+/// A dirty map with every page set, for construction **and for `serde`**.
+///
+/// All-dirty is the only correct starting state in both cases: at power-on the
+/// consumer has never seen this RDRAM, and loading a save-state replaces all of
+/// it at once. Coming back clean would present the previous state's framebuffer
+/// until something happened to overwrite it.
+#[cfg(feature = "rdp-tap")]
+fn all_pages_dirty() -> alloc::boxed::Box<[bool]> {
+    alloc::vec![true; RDRAM_SIZE.div_ceil(RDRAM_PAGE)].into_boxed_slice()
+}
+
 /// The RCP MIPS-interface (MI) interrupt lines.
 ///
 /// Each bit, when set and unmasked (via [`RcpRegs::mi_mask`]), drives the VR4300
@@ -392,6 +417,28 @@ pub struct Bus {
     #[cfg(feature = "rdp-tap")]
     #[serde(skip)]
     rdp_tap: alloc::vec::Vec<u32>,
+    /// One flag per [`RDRAM_PAGE`]-sized page, set when anything writes RDRAM.
+    ///
+    /// Lets an out-of-core rasterizer upload only what changed instead of all
+    /// 8 MiB every frame — measured at ~2.1 ms of the ~2.4 ms a GPU frame costs.
+    ///
+    /// **`bool`, not a bitset, and that is the hot-path decision.** Marking is on
+    /// every RDRAM store, so it must be a single store; a bitset would make it a
+    /// read-modify-write. The whole array is 2 KiB for 8 MiB of RDRAM, so it sits
+    /// in L1 either way, and the once-a-frame scan is nothing against the copy it
+    /// replaces.
+    ///
+    /// `#[serde(skip)]` like the tap: it is per-frame scratch, and skipping keeps
+    /// the save-state layout identical with the feature on or off.
+    ///
+    /// **`default` is not optional here.** `#[serde(skip)]` alone fills the field
+    /// from `Default`, and `Box<[bool]>::default()` is **empty** — so the first
+    /// RDRAM store after loading a save-state would index page `off >> 12` into a
+    /// zero-length slice and panic. `rdp_tap` survives the same attribute only
+    /// because `Vec::default()` is empty *and pushable*; an indexed map is not.
+    #[cfg(feature = "rdp-tap")]
+    #[serde(skip, default = "all_pages_dirty")]
+    rdram_dirty: alloc::boxed::Box<[bool]>,
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
@@ -478,6 +525,11 @@ impl Default for Bus {
             rdram_hidden: None,
             #[cfg(feature = "rdp-tap")]
             rdp_tap: alloc::vec::Vec::new(),
+            // Every page starts dirty: the consumer has never seen this RDRAM, so
+            // the first upload must be complete. Starting clean would hand the GPU
+            // an empty framebuffer and whatever the allocator left behind.
+            #[cfg(feature = "rdp-tap")]
+            rdram_dirty: all_pages_dirty(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
             vi: Vi::new(),
@@ -614,6 +666,107 @@ impl Bus {
     #[cfg(feature = "rdp-tap")]
     pub fn take_rdp_commands(&mut self) -> alloc::vec::Vec<u32> {
         core::mem::take(&mut self.rdp_tap)
+    }
+
+    /// Mark the page containing byte offset `off` as written.
+    ///
+    /// Compiles to nothing without `rdp-tap`, so a default build pays no hot-path
+    /// cost at all — which is the only reason it is acceptable to call this from
+    /// every RDRAM store.
+    ///
+    /// `off` is an **RDRAM byte offset**, not an address: every caller obtains it
+    /// from [`Bus::rdram_offset`], which returns `Option<usize>` and yields
+    /// `Some` only below [`RDRAM_SIZE`]. So the index below cannot go out of
+    /// bounds, and the `debug_assert` says which fact that rests on rather than
+    /// leaving a reader to rediscover it. A clamp here would be worse than the
+    /// panic: it would silently mark the wrong page and stage the wrong bytes.
+    #[allow(
+        clippy::inline_always,
+        reason = "called from every RDRAM store; a call here would cost more than the mark"
+    )]
+    #[cfg_attr(
+        not(feature = "rdp-tap"),
+        allow(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            clippy::needless_pass_by_ref_mut,
+            reason = "the body is empty without the feature; the signature stays uniform so the six \
+                      call sites need no cfg of their own"
+        )
+    )]
+    #[inline(always)]
+    fn mark_rdram_dirty(&mut self, off: usize) {
+        #[cfg(feature = "rdp-tap")]
+        {
+            debug_assert!(
+                off < RDRAM_SIZE,
+                "mark_rdram_dirty takes an RDRAM offset from rdram_offset, not an address"
+            );
+            self.rdram_dirty[off >> RDRAM_PAGE_SHIFT] = true;
+        }
+        #[cfg(not(feature = "rdp-tap"))]
+        {
+            let _ = off;
+        }
+    }
+
+    /// As [`Bus::mark_rdram_dirty`], for a write of `len` bytes that may straddle
+    /// a page boundary. The `u32` store does; the byte stores cannot.
+    #[allow(
+        clippy::inline_always,
+        reason = "called from the u32 store fast path; see mark_rdram_dirty"
+    )]
+    #[cfg_attr(
+        not(feature = "rdp-tap"),
+        allow(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            clippy::needless_pass_by_ref_mut,
+            reason = "the body is empty without the feature; the signature stays uniform so the six \
+                      call sites need no cfg of their own"
+        )
+    )]
+    #[inline(always)]
+    fn mark_rdram_dirty_range(&mut self, off: usize, len: usize) {
+        #[cfg(feature = "rdp-tap")]
+        {
+            if len == 0 {
+                return;
+            }
+            // Saturating: `off + len` would wrap for an absurd `len`, and a
+            // debug-only panic in a marking helper is the worst of both worlds —
+            // it fires in tests and silently marks page 0 in release. Saturation
+            // clamps to the last page instead, which over-marks (costing one
+            // extra page of staging) rather than under-marking (costing a stale
+            // frame). Every real caller passes 1 or 4.
+            let first = off >> RDRAM_PAGE_SHIFT;
+            let last = off.saturating_add(len - 1) >> RDRAM_PAGE_SHIFT;
+            for p in first..=last.min(self.rdram_dirty.len() - 1) {
+                self.rdram_dirty[p] = true;
+            }
+        }
+        #[cfg(not(feature = "rdp-tap"))]
+        {
+            let _ = (off, len);
+        }
+    }
+
+    /// The per-page dirty flags, for a consumer staging RDRAM elsewhere.
+    #[cfg(feature = "rdp-tap")]
+    #[must_use]
+    pub fn rdram_dirty_pages(&self) -> &[bool] {
+        &self.rdram_dirty
+    }
+
+    /// Clear every dirty flag. The consumer calls this once it has staged them.
+    ///
+    /// Separate from [`Bus::rdram_dirty_pages`] on purpose: a consumer that
+    /// failed part-way through must be able to leave the flags set so the next
+    /// attempt re-sends what it missed, rather than losing the pages to a
+    /// read-and-clear it could not complete.
+    #[cfg(feature = "rdp-tap")]
+    pub fn clear_rdram_dirty(&mut self) {
+        self.rdram_dirty.fill(false);
     }
 
     /// How many command words are waiting in the tap.
@@ -904,6 +1057,7 @@ impl Bus {
                     if let Some(off) = Self::rdram_offset(self.si_dram_addr.wrapping_add(i as u32))
                     {
                         self.rdram[off] = b;
+                        self.mark_rdram_dirty(off);
                     }
                 }
                 self.rcp.mi_intr.si = true;
@@ -1689,6 +1843,7 @@ impl Bus {
                 if let Some(off) = Self::rdram_offset(dram) {
                     if dma.to_dram {
                         self.rdram[off] = self.rsp.mem_read(m);
+                        self.mark_rdram_dirty(off);
                     } else {
                         self.rsp.mem_write(m, self.rdram[off]);
                     }
@@ -1733,6 +1888,7 @@ impl Bus {
                 let b = self.cart.pi_read(t.cart.wrapping_add(i));
                 if let Some(off) = Self::rdram_offset(t.dram.wrapping_add(i)) {
                     self.rdram[off] = b;
+                    self.mark_rdram_dirty(off);
                 }
             } else {
                 let b = Self::rdram_offset(t.dram.wrapping_add(i)).map_or(0, |off| self.rdram[off]);
@@ -1923,6 +2079,7 @@ impl CpuBus for Bus {
     fn write_u8(&mut self, addr: u32, val: u8) {
         if let Some(off) = Self::rdram_offset(addr) {
             self.rdram[off] = val;
+            self.mark_rdram_dirty(off);
             return;
         }
         if Self::is_pi_register(addr) {
@@ -2149,6 +2306,7 @@ impl CpuBus for Bus {
             let b = val.to_be_bytes();
             if off + 3 < self.rdram.len() {
                 self.rdram[off..=off + 3].copy_from_slice(&b);
+                self.mark_rdram_dirty_range(off, 4);
                 return;
             }
         }
@@ -2194,6 +2352,7 @@ impl RdramBus for Bus {
     fn rdram_write(&mut self, addr: u32, val: u8) {
         if let Some(off) = Self::rdram_offset(addr) {
             self.rdram[off] = val;
+            self.mark_rdram_dirty(off);
         }
     }
 
@@ -3697,6 +3856,282 @@ mod rdp_tap_tests {
         assert_eq!(
             bus.rdp.commands_processed, 2,
             "the RDP consumed a different number of commands with the tap compiled in"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "rdp-tap"))]
+mod rdram_dirty_tests {
+    use super::{Bus, RDRAM_PAGE, RdramBus};
+    use crate::cpu::Bus as CpuBus;
+
+    /// KSEG0 address of the first byte of RDRAM page `p`.
+    const fn page_addr(p: usize) -> u32 {
+        0x8000_0000 + (p * RDRAM_PAGE) as u32
+    }
+
+    fn dirty(bus: &Bus) -> alloc::vec::Vec<usize> {
+        bus.rdram_dirty_pages()
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| **d)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// A fresh Bus starts **all** dirty.
+    ///
+    /// The consumer has never seen this RDRAM, so the first upload must be
+    /// complete. Starting clean would hand the GPU an empty framebuffer and
+    /// whatever the allocator left behind — and it would look right, because the
+    /// second frame would repair it.
+    #[test]
+    fn a_fresh_bus_starts_entirely_dirty() {
+        let bus = Bus::new();
+        assert_eq!(
+            dirty(&bus).len(),
+            bus.rdram_dirty_pages().len(),
+            "a page started clean, so the first upload would be incomplete"
+        );
+    }
+
+    /// A byte write marks its page and **only** its page.
+    #[test]
+    fn a_write_marks_exactly_one_page() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        CpuBus::write_u8(&mut bus, page_addr(3) + 17, 0xAB);
+        assert_eq!(dirty(&bus), alloc::vec![3]);
+    }
+
+    /// The `u32` fast path writes four bytes and can straddle a page boundary.
+    ///
+    /// This is the case a point-mark would get wrong, and it is not hypothetical:
+    /// the assertion that was supposed to guard the write sites caught it,
+    /// because `write_u32` is `self.rdram[off..=off + 3]` rather than a single
+    /// indexed store.
+    #[test]
+    fn a_straddling_word_write_marks_both_pages() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        // Two bytes in page 5, two in page 6.
+        CpuBus::write_u32(&mut bus, page_addr(6) - 2, 0xDEAD_BEEF);
+        assert_eq!(dirty(&bus), alloc::vec![5, 6]);
+    }
+
+    /// Clearing actually clears, or the consumer re-sends everything forever and
+    /// the whole feature is a no-op with extra steps.
+    #[test]
+    fn clearing_empties_the_map() {
+        let mut bus = Bus::new();
+        CpuBus::write_u8(&mut bus, page_addr(1), 1);
+        bus.clear_rdram_dirty();
+        assert!(dirty(&bus).is_empty());
+        // And a later write still marks — clearing must not disable tracking.
+        CpuBus::write_u8(&mut bus, page_addr(9), 1);
+        assert_eq!(dirty(&bus), alloc::vec![9]);
+    }
+
+    /// **Every** CPU store width marks, including the ones with no dedicated
+    /// `Bus` method.
+    ///
+    /// A reviewer asked whether `SH`/`SD`/`SWL`/`SDR` bypass the map, since only
+    /// `write_u8` and `write_u32` carry marks. They do not: `write_sized`
+    /// decomposes every non-RCP-internal width into those two, and the unaligned
+    /// family reaches the bus through `Pipeline::write_width` at width 4 or 8, so
+    /// it decomposes the same way. Nothing *enforces* that delegation, though —
+    /// a future width-specific override would silently bypass the marks and
+    /// produce a stale frame with every test still green. Hence this test rather
+    /// than a reply saying the code is fine today.
+    #[test]
+    fn every_store_width_marks() {
+        // Width, page, and the byte the store must leave at the page's base so
+        // the marking assertion cannot pass on a store that did nothing.
+        // Big-endian: the byte at the base is the register's *most* significant
+        // byte of that width.
+        for (width, page, value, expect) in [
+            (1u64, 10usize, 0x00_00_00_00_00_00_00_A1u64, 0xA1u8),
+            (2, 11, 0x0000_0000_0000_A2B2, 0xA2),
+            (4, 12, 0x0000_0000_A3B3_C3D3, 0xA3),
+            (8, 13, 0xA4B4_C4D4_E4F4_0414, 0xA4),
+        ] {
+            let mut bus = Bus::new();
+            bus.clear_rdram_dirty();
+            CpuBus::write_sized(&mut bus, page_addr(page), width, value);
+            assert_eq!(
+                bus.rdram[page * RDRAM_PAGE],
+                expect,
+                "a width-{width} store did not land, so its marking assertion is vacuous"
+            );
+            assert_eq!(
+                dirty(&bus),
+                alloc::vec![page],
+                "a width-{width} store left its page clean"
+            );
+        }
+    }
+
+    /// `RdramBus::rdram_write` marks — the RDP/RSP/AI DMA paths use it.
+    ///
+    /// One of three routes the first version of this module left unguarded: the
+    /// mutation check only removed the SP DMA mark, so deleting this one, SI's or
+    /// PI's would have gone unnoticed. Caught in review of #245.
+    #[test]
+    fn the_shared_rdram_bus_write_marks() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        RdramBus::rdram_write(&mut bus, page_addr(7) & 0x00FF_FFFF, 0x5A);
+        assert_eq!(dirty(&bus), alloc::vec![7]);
+        assert_eq!(
+            bus.rdram[7 * RDRAM_PAGE],
+            0x5A,
+            "the write did not land, so the marking assertion is vacuous"
+        );
+    }
+
+    /// PI DMA (cart to RDRAM) marks.
+    #[test]
+    fn pi_dma_marks_the_pages_it_writes() {
+        use rustyn64_cart::pi::{PI_CART_ADDR, PI_DRAM_ADDR, PI_WR_LEN};
+        let mut bus = Bus::new();
+        // A cart whose first bytes are recognizable. `reattach_rom` is the
+        // supported way to give a `Cart` an image without parsing a header.
+        let mut rom = alloc::vec![0u8; 0x1000];
+        rom[0] = 0xC5;
+        bus.cart.reattach_rom(rom);
+        bus.clear_rdram_dirty();
+
+        bus.pi_write_word(PI_DRAM_ADDR, page_addr(8) & 0x00FF_FFFF);
+        bus.pi_write_word(PI_CART_ADDR, 0x1000_0000);
+        // WR_LEN loads INTO RDRAM; the value is length-1.
+        bus.pi_write_word(PI_WR_LEN, 7);
+
+        assert_eq!(
+            bus.rdram[8 * RDRAM_PAGE],
+            0xC5,
+            "the PI transfer did not land, so the marking assertion is vacuous"
+        );
+        assert!(
+            dirty(&bus).contains(&8),
+            "a PI DMA to page 8 left it clean; dirty = {:?}",
+            dirty(&bus)
+        );
+    }
+
+    /// SI DMA (PIF RAM to RDRAM) marks.
+    #[test]
+    fn si_dma_marks_the_pages_it_writes() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        // SI_DRAM_ADDR, then the RD64B write that runs the joybus frame and DMAs
+        // PIF RAM into RDRAM.
+        //
+        // PHYSICAL addresses: the Bus matches MMIO on raw physical ranges
+        // (`is_si_register` is `addr >= 0x0480_0000`), so a KSEG1 address never
+        // matches and the write silently lands nowhere. That is what the first
+        // version of this test did, and it read as "the mark is missing".
+        CpuBus::write_u32(&mut bus, Bus::SI_BASE, page_addr(9) & 0x00FF_FFFF);
+        CpuBus::write_u32(&mut bus, Bus::SI_BASE + 0x04, 0);
+        assert!(
+            dirty(&bus).contains(&9),
+            "an SI DMA to page 9 left it clean; dirty = {:?}",
+            dirty(&bus)
+        );
+    }
+
+    /// DMA writes mark too.
+    ///
+    /// The CPU store path is the obvious one; a DMA that did not mark would
+    /// leave the consumer with stale textures, which is the failure that
+    /// presents as a rendering bug rather than as an error. Driven through
+    /// `Bus::sp_dma` directly rather than through the SP registers, because what
+    /// is under test is the marking in the transfer loop, not the register
+    /// plumbing that reaches it.
+    #[test]
+    fn sp_dma_marks_the_pages_it_writes() {
+        let mut bus = Bus::new();
+        bus.rsp.mem_write(0, 0x5A);
+        bus.clear_rdram_dirty();
+        bus.sp_dma(rustyn64_rsp::sp::Dma {
+            sp_addr: 0,
+            ram_addr: page_addr(4) & 0x00FF_FFFF,
+            row_len: 8,
+            rows: 1,
+            skip: 0,
+            to_dram: true,
+        });
+        assert_eq!(
+            dirty(&bus),
+            alloc::vec![4],
+            "an SP DMA to page 4 did not mark it"
+        );
+        assert_eq!(
+            bus.rdram[4 * RDRAM_PAGE],
+            0x5A,
+            "the DMA did not actually transfer, so the marking assertion is vacuous"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "rdp-tap"))]
+mod rdram_dirty_savestate_tests {
+    use super::{Bus, RDRAM_PAGE, RDRAM_SIZE};
+    use crate::cpu::Bus as CpuBus;
+
+    /// A Bus restored from a save-state must still be able to take a store.
+    ///
+    /// **This is a crash, not a cosmetic gap.** `#[serde(skip)]` fills the field
+    /// from `Default`, and `Box<[bool]>::default()` is **empty** — so the first
+    /// RDRAM store after a load indexes page `off >> 12` into a zero-length slice
+    /// and panics. `rdp_tap` gets away with the same attribute only because
+    /// `Vec::default()` is empty *and pushable*; an indexed map is not.
+    ///
+    /// Caught in review of #245, not by any gate here, because nothing had
+    /// round-tripped a Bus with the feature on.
+    #[test]
+    fn a_deserialized_bus_can_still_take_a_store() {
+        let mut bus = Bus::new();
+        CpuBus::write_u8(&mut bus, 0x8000_1000, 0x11);
+        let bytes = bincode::serialize(&bus).expect("serialize");
+        let mut restored: Bus = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(
+            restored.rdram_dirty_pages().len(),
+            bus.rdram_dirty_pages().len(),
+            "the dirty map came back a different size, so the next store is a panic"
+        );
+        // The store itself is the assertion: without a `serde(default)` this
+        // panics with an out-of-bounds index.
+        CpuBus::write_u8(&mut restored, 0x8000_2000, 0x22);
+        assert!(
+            restored.rdram_dirty_pages()[2],
+            "the restored Bus did not track the store"
+        );
+    }
+
+    /// A restored Bus starts **entirely** dirty.
+    ///
+    /// Its consumer is a GPU backend that has never seen this machine's RDRAM —
+    /// loading a save-state is exactly the moment every page is new. Coming back
+    /// clean would present the previous state's framebuffer until something
+    /// happened to overwrite it.
+    #[test]
+    fn a_deserialized_bus_starts_entirely_dirty() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        let bytes = bincode::serialize(&bus).expect("serialize");
+        let restored: Bus = bincode::deserialize(&bytes).expect("deserialize");
+        // Length FIRST: `.all()` on an empty iterator is vacuously true, and the
+        // first version of this test passed that way against the very bug it was
+        // written for.
+        assert_eq!(
+            restored.rdram_dirty_pages().len(),
+            RDRAM_SIZE.div_ceil(RDRAM_PAGE),
+            "the dirty map came back the wrong size"
+        );
+        assert!(
+            restored.rdram_dirty_pages().iter().all(|d| *d),
+            "a restored Bus came back with clean pages the GPU has never seen"
         );
     }
 }

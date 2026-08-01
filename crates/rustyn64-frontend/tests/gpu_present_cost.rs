@@ -11,6 +11,19 @@
 //!
 //! **Release, always.** A debug build measures a different program.
 //!
+//! # This measures the FLOOR, not a frame
+//!
+//! It never runs the machine, so after the first stage **nothing is dirty** and
+//! the RDRAM upload is skipped entirely. Since the dirty-page staging landed,
+//! that makes the number here a best case — the cost of a present with no RDRAM
+//! to send — and it dropped from ~0.78 ms to ~0.45 ms for that reason alone.
+//!
+//! **The real per-frame cost is `examples/frame_bench.rs` with `--features
+//! gpu-rdp` and a commercial ROM.** Super Mario 64 dirties 27-139 of 2048 pages
+//! per frame (1.3-6.8% of RDRAM), and the staging change measured **2.54%**
+//! faster on the whole frame there. Do not quote this file's number as the cost
+//! of a frame.
+//!
 //! # A measurement mistake worth not repeating
 //!
 //! An earlier version of this file also timed the RDRAM word swap *standalone*,
