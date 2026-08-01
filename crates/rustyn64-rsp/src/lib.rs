@@ -157,11 +157,12 @@ pub struct Rsp {
     /// counting is 143 hand-optimized functions to recover the cost of the five
     /// that matter.
     ///
-    /// **This crate is `#![forbid(unsafe_code)]`**, so explicit SIMD intrinsics
-    /// are not an available implementation path today. The maintainer has agreed
-    /// in principle to a scoped exception by ADR, but **that ADR does not
-    /// exist**, and until it does this census identifies a hotspot rather than
-    /// authorizing a technique for it.
+    /// **This crate is `#![forbid(unsafe_code)]`.** ADR 0016 authorizes a narrow
+    /// exception — `core::arch` intrinsics, in `vu.rs` only — behind four gates,
+    /// the first of which is a scalar/vector **equivalence** test over the
+    /// operand space, because conformance to the ROM suite is explicitly not
+    /// sufficient. Read it before reaching for an intrinsic; it records the
+    /// trade as marginal rather than recommended.
     ///
     /// 64 slots because `funct` is six bits. `#[serde(skip)]`, and a
     /// retired-work tally like [`Self::retired`].

@@ -174,12 +174,40 @@ All notable changes to RustyN64 are documented here. The format is based on
   **Not verified**: that the flag takes effect — a flat fill has no edge for
   supersampling to change, so `docs/rdp.md` records what test would witness it.
 
+- **ADR 0016 — a scoped `unsafe` exception for the RSP vector unit, and a
+  recommendation against using it.** *Policy governance; no SIMD code ships with
+  this and no crate behavior changes.*
+
+  **The verdict, on the same bar that declined the CPU recompiler:** vectorizing
+  `multiply_lane` has a ceiling of 5.3% of a frame, which is **1.056x**. ADR
+  0017 set the bar at 1.5x and declined a recompiler at 1.26–1.40x — so this is
+  comfortably below a figure already judged insufficient, and it costs an
+  `unsafe` exception in a chip crate. **Do not use it.** Not "not yet"; the
+  numbers do not improve with time.
+
+  The file is kept and merged because the `AGENTS.md` correction rides with it
+  (that file claimed "zero `unsafe` in the tree", false since #241's FFI shim),
+  because the gates are reusable by any future alternate VU implementation, and
+  because a recorded decision beats an absent one.
+
+  It permits
+  `core::arch` intrinsics in `vu.rs` only (not raw pointers, not `transmute`,
+  not FFI; every other chip crate keeps `forbid(unsafe_code)`), behind four
+  gates: a scalar/vector **equivalence** test over the operand space —
+  conformance to the ROM suite is explicitly *not* sufficient —
+  `rsp_categories_report_no_failures` at `0 failing`, an A-B-A measurement
+  against the **5.3%** ceiling with neutral-or-worse reverted, and a tested
+  fallback for targets without the feature.
+
+  It authorizes a technique; it does not schedule the work. The ADR records the
+  trade as marginal and names the honest comparison: the CPU is 32.29% of a
+  frame, roughly six times this ceiling.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by
-  `examples/work_bench.rs`. Note this identifies a hotspot rather than
-  authorizing a technique: `rustyn64-rsp` is `#![forbid(unsafe_code)]`, and the
-  scoped-exception ADR agreed in principle does not exist yet.
+  `examples/work_bench.rs`. This identifies a hotspot; ADR 0016 above is what
+  authorizes a technique for it, and only behind four gates.
 
   On Super Mario 64: **41% of everything the RSP executes is a VU computation**,
   only 32 of 64 `funct` values ever appear, four operations are half the work,

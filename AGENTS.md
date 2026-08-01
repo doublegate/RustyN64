@@ -370,8 +370,16 @@ in this repo, which is worth fixing even when the suggested wording is not.
   rule there regresses all sixteen compare tests.
 - Say "master clock" only with its rate. The sources use **MasterClock = 62.5 MHz**; this
   project's master tick is **187.5 MHz**; ADR 0001 used it for 93.75 MHz. See `docs/glossary.md`.
-- `unsafe` is allowed only in the frontend and FFI. Enforced: every chip crate and `-core` carry
-  `#![forbid(unsafe_code)]`. There is zero `unsafe` in the tree today — keep it that way.
+- `unsafe` is allowed in the frontend and FFI, and **nowhere else without an ADR**. Every chip
+  crate and `-core` carry `#![forbid(unsafe_code)]`. Two qualifications, both of which the old
+  wording ("there is zero `unsafe` in the tree today") had outrun:
+  - **`rustyn64-rdp-gpu` already contains `unsafe`** — 12 blocks, the parallel-rdp FFI shim,
+    quarantined there on purpose (ADR 0014). The tree has not had zero `unsafe` since #241.
+  - **`rustyn64-rsp` has a conditional exception** (ADR 0016): `core::arch` intrinsics in
+    `vu.rs` only, behind four gates including a scalar/vector equivalence test. **Unused today**
+    — the crate is still `forbid` — and using it drops the crate to `deny`, which is a real
+    weakening the ADR spells out. Read it before reaching for an intrinsic; it records the trade
+    as authorized, not recommended.
 - Stubs are `TODO(T-XXX-NN)` comments in no-op bodies that still compile, NOT `todo!()`. So a
   green `cargo test` does not mean a subsystem works — check `docs/STATUS.md`.
 - Ticket IDs are `T-PS-NNN`, where **P is the phase digit and S the sprint digit** — so
