@@ -94,6 +94,57 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **The CPU recompiler is measured out before being built.** Stage 2's
+  decomposition (profiler, source-line attribution, because everything inlines
+  into `run_until_exec` at 61% self time) puts the CPU at **42.88%** of a frame
+  and the Bus at 23.60% — but only **~20-25%** is the interpreter *driver* a
+  recompiler removes. The Bus's memory traffic, address translation and
+  `cop0`/`cop1`/`cache` are real emulated work it keeps.
+
+  Since speedup is bounded by `1 / (1 - share removed)`, the ceiling is
+  **1.26-1.40x**, and 1.5x would need 33.3% of the frame removed — past "delete
+  the whole interpreter" and into perfect register allocation with zero codegen
+  cost. **ADR 0017 therefore fails its own stage-2 gate** and recommends against
+  writing the crate. That gate was set at 1.5x because `fast-exec` already
+  delivered 1.53x.
+
+  It also independently re-refutes the decode probe: `decode.rs` is **4.36%**
+  in the profile, not the 8.1-9.4% the `black_box` sizing reported.
+
+- **ADR 0017 — a CPU recompiler design, put up for review.** *Design only; no
+  crate, no code.* The CPU is **32.29%** of a frame and everything else in the
+  plan, added together and assumed perfect, is about 15% — so a recompiler is
+  the only remaining change that can move the frame rate materially.
+
+  Deliberately **not accepted by merging the file**: it is accepted in three
+  stages, and stage 2 is a **spike that is measured and thrown away**. If it
+  does not clear **1.5x on top of `fast-exec`**, the ADR is superseded and the
+  crate is never written — a recompiler that wins less than the interpreter
+  tweak already shipped is not worth its maintenance surface.
+
+  Stage 2 must also **decompose the 32.29% first**, because the Bus is a
+  separate 18.06% bucket the CPU drives, and a recompiler does not remove it.
+  That is the same mistake as the VI's 4.64% and the RDP's 6.36%, both of which
+  evaporated when measured in the configuration that would actually run.
+
+- **The CPU's decode measured at 8.1-9.4% of a frame — a quarter of its
+  bucket.** ADR 0017 makes decomposing the CPU's 32.29% a precondition on
+  writing a recompiler; this is that decomposition for the largest piece.
+  Sized by making the cost bigger, with `black_box` on the *result* — the trap
+  the RSP's decode sizing already paid for.
+
+  For comparison the same measurement on the RSP gave **0.29%**, so the CPU's
+  decode is ~**28x** more expensive, and a decode cache was rejected there.
+
+  **The obvious inference — that a decode cache captures it — was built and is
+  1.0% SLOWER.** Reverted. The probe forced a decode through `black_box`, which
+  is what stops the optimizer folding it away; the real one is inlined and its
+  fields feed straight into the dispatch, so most of it costs nothing, while a
+  cache hit is a real load that cannot be folded. So 8.1-9.4% bounds an
+  *isolated* decode, not recoverable time — *a hot line is not a hot operation*,
+  walked into with the lesson already written down. A decode cache is
+  **refuted, not deferred**.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by
