@@ -383,9 +383,15 @@ pub struct Bus {
     /// save-state needs; skipping it also keeps the snapshot layout **identical**
     /// with the feature on or off, which is what keeps this out of ADR 0005's
     /// announced-in-advance format-break territory.
+    ///
+    /// **Private.** The only supported access is [`Bus::take_rdp_commands`],
+    /// because the invariant worth protecting is that a consumer takes the whole
+    /// stream: a partial drain would replay this frame's tail on top of the next
+    /// frame's commands, and reordering would submit a command list the machine
+    /// never issued.
     #[cfg(feature = "rdp-tap")]
     #[serde(skip)]
-    pub rdp_tap: alloc::vec::Vec<u32>,
+    rdp_tap: alloc::vec::Vec<u32>,
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
@@ -608,6 +614,17 @@ impl Bus {
     #[cfg(feature = "rdp-tap")]
     pub fn take_rdp_commands(&mut self) -> alloc::vec::Vec<u32> {
         core::mem::take(&mut self.rdp_tap)
+    }
+
+    /// How many command words are waiting in the tap.
+    ///
+    /// For observation only — a test proving the tap filled before checking that
+    /// something drained it needs to look without consuming, and
+    /// [`Bus::take_rdp_commands`] would make that check its own answer.
+    #[cfg(feature = "rdp-tap")]
+    #[must_use]
+    pub const fn rdp_tap_len(&self) -> usize {
+        self.rdp_tap.len()
     }
 
     /// Step the AI against this bus's narrow [`AudioBus`] view (split-borrow),

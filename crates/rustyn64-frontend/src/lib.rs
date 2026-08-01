@@ -54,6 +54,7 @@
     clippy::cast_sign_loss
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio;
@@ -63,7 +64,6 @@ pub mod emu;
 pub mod emu_thread;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gfx;
-#[cfg(not(target_arch = "wasm32"))]
 // ADR 0014's GPU display backend. Native-only and default-off; see the module.
 #[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
 pub mod gpu_rdp;

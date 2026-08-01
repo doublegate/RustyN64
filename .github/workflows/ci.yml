@@ -153,6 +153,13 @@ jobs:
       # settles the precedence), so it is built rather than left to chance.
       - run: cargo test -p rustyn64-frontend --features fast-exec
       - run: cargo check -p rustyn64-frontend --features fast-exec,fast-scheduler
+      # The wasm32 build. The target was already INSTALLED by the toolchain step
+      # above and nothing ever built for it -- a gate that never runs, which is
+      # how this PR shipped `pub mod app;` with its `#[cfg(not(wasm32))]`
+      # accidentally removed and every other check still green. rustfmt reorders
+      # `mod` declarations, so an item inserted near one can carry a neighbor's
+      # attribute away with it, and no native build notices.
+      - run: cargo check -p rustyn64-frontend --target wasm32-unknown-unknown
       # ADR 0014's RDP command tap. Core-side, no C++ and no Vulkan, so it runs
       # on every PR rather than in the heavy `gpu-rdp` job -- the tap's four
       # tests are the only thing that grades it, and feature-gated code is

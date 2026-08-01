@@ -407,7 +407,7 @@ mod tests {
             bus.rdp_tick();
         }
         assert!(
-            !bus.rdp_tap.is_empty(),
+            bus.rdp_tap_len() > 0,
             "the tap captured nothing, so this test would pass vacuously"
         );
 
@@ -419,10 +419,10 @@ mod tests {
         );
 
         assert!(
-            bus.rdp_tap.is_empty(),
+            bus.rdp_tap_len() == 0,
             "present left {} words in the tap on a device-less host, where it \
              would grow without bound",
-            bus.rdp_tap.len()
+            bus.rdp_tap_len()
         );
     }
 
