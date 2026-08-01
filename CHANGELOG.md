@@ -95,10 +95,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 ### Added
 
 - **Per-phase timing for the GPU present path**, and the benchmark that reads
-  it (`cargo run --release --example gpu_phase_bench --features gpu-rdp`).
-  `present` is split into `stage` / `submit` / `scanout` / `copy` — the four
+  it. `present` is split into `stage` / `submit` / `scanout` / `copy` — the four
   phases that different planned GPU work would remove — each reported as a share
-  of a real frame.
+  of a real frame, alongside the whole path and the residual the phases do not
+  name (0.001%, so the split accounts for essentially all of it).
+
+  ```bash
+  # RUSTYN64_PROBE_ROM must name a local ROM; the committed homebrew one never
+  # brings the VI up, so the GPU path would produce nothing to measure.
+  RUSTYN64_PROBE_ROM=/path/to/rom.z64 \
+    cargo run --release --example gpu_phase_bench --features gpu-rdp
+  ```
 
   It was built to size the next step before building it, and the answer was
   **no**: the *entire* present path is **4.0–4.4% of a frame** on Super Mario 64,

@@ -1931,12 +1931,29 @@ changed, not two different harnesses.
 Two legs are excluded and named rather than dropped silently: A's 82.971 (25%
 off) and B's 66.856 (6% off). Both are far outside this harness's ~1% drift.
 
-**The mechanism accounts for the result.** If the GPU path costs a 2.7 ms
-present and comes out 1.9 ms ahead, the software VI scan-out it skips is worth
-about 4.6 ms — roughly 7% of a frame. That is the same quantity the fast-exec
-profile attributes 4.64% to; the two are measured differently (wall clock against
-sampled attribution) and the standing caution that *a profile share bounds only
-the code it names* covers the gap.
+**The mechanism accounts for the result**, and the arithmetic below names which
+statistic each number comes from — two different ones are defensible here and
+they do not agree, so quoting a figure without its basis would be picking the
+flattering one by accident.
+
+| basis | A | B | difference |
+| --- | --- | --- | --- |
+| mean of the clean legs | 64.879 | 62.732 | **2.15 ms** |
+| conservative pairing (best A, worst clean B) | 64.314 | 62.970 | **1.34 ms** |
+
+The present path itself measures **2.55 ms** on this configuration. Since the
+GPU path pays that and still finishes ahead, the software VI scan-out it skips
+is worth the sum:
+
+- **4.70 ms** on the mean basis (2.55 + 2.15), ~7.2% of a frame;
+- **3.89 ms** on the conservative basis (2.55 + 1.34), ~6.0% of a frame.
+
+Both are **inferred** from the difference, not measured directly — the direct
+measurement would be timing `scanout_scaled` itself, which nothing here does.
+They bracket the 4.64% the fast-exec profile attributes to the VI, which is the
+agreement worth having: the two are arrived at by unrelated methods (wall clock
+against sampled attribution), and the standing caution that *a profile share
+bounds only the code it names* is why they were not expected to match exactly.
 
 ### What this settles
 

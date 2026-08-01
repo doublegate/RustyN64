@@ -157,22 +157,40 @@ static PHASE_NS: [AtomicU64; Phase::COUNT] = [const { AtomicU64::new(0) }; Phase
 /// understate every phase.
 static PHASE_FRAMES: AtomicU64 = AtomicU64::new(0);
 
+/// Wall time inside [`GpuPresenter::present`] for the frames [`PHASE_FRAMES`]
+/// counts, so a caller can report the **residual** — the part of the present
+/// path the four phases do not name.
+///
+/// The residual is the check on the split rather than a curiosity: the phases
+/// are hand-placed, and a large gap between their sum and the whole would mean
+/// they are measuring something other than what they are named after. Reporting
+/// only the sum would make that undetectable.
+static PRESENT_NS: AtomicU64 = AtomicU64::new(0);
+
 /// The phases of [`present`], in the order they run.
+///
+/// `#[repr(usize)]` with explicit discriminants because `add_phase` and
+/// [`phase_totals`] index [`PHASE_NS`] by `phase as usize`. Rust already
+/// guarantees that for a fieldless enum without explicit discriminants, so this
+/// changes nothing today — it pins the property that the indexing relies on, so
+/// that giving one variant an explicit value later cannot silently move another
+/// variant's bucket. `phase_indices_match_their_position` asserts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
 pub enum Phase {
     /// Byte-swap the dirty RDRAM pages into the backend's mapped buffer.
     /// This is what the dirty-page map (#245) shrank.
-    Stage,
+    Stage = 0,
     /// Feed the tapped command stream and the VI registers to the backend.
-    Submit,
+    Submit = 1,
     /// `scanout_sync`: wait on the GPU fence, then read the frame back over
     /// the bus into host memory. **Both halves are removable, by different work** —
     /// the wait by an asynchronous RDP, the read-back by a shared device.
-    Scanout,
+    Scanout = 2,
     /// Copy the read-back pixels into the caller's RGBA8 buffer. Pure host
     /// memory traffic, and it exists only because the frame came back to the
     /// host at all.
-    Copy,
+    Copy = 3,
 }
 
 impl Phase {
@@ -202,13 +220,35 @@ fn add_phase(phase: Phase, ns: u64) {
 
 /// Cumulative nanoseconds in `phase`, and the number of complete frames.
 ///
-/// Returns `(nanoseconds, frames)` together rather than as two calls, because a
-/// caller that sampled them separately could divide one frame's totals by
-/// another frame's count.
+/// **This is a convenience pairing, not an atomic snapshot.** The two values are
+/// separate `Relaxed` loads, so a `present` running concurrently can land
+/// between them and the pair can be one frame skewed. Returning them together
+/// narrows the window a caller would otherwise open by sampling twice; it does
+/// not close it, and saying otherwise would be asserting a guarantee the code
+/// does not provide. At the sample counts this is used with — hundreds of frames
+/// — one frame of skew is far below the measurement's own spread.
 #[must_use]
 pub fn phase_totals(phase: Phase) -> (u64, u64) {
     (
         PHASE_NS[phase as usize].load(Ordering::Relaxed),
+        PHASE_FRAMES.load(Ordering::Relaxed),
+    )
+}
+
+/// Cumulative nanoseconds in the whole of `present`, over the same frames
+/// [`phase_totals`] counts.
+///
+/// Subtract the four phases from this to get the **residual** — the part of the
+/// present path that no phase names (geometry checks, the command split, the
+/// dirty-map read). A residual that is not small means the phases are
+/// mismeasuring what they are named after, which is the one failure this split
+/// could not otherwise detect.
+///
+/// Same skew caveat as [`phase_totals`].
+#[must_use]
+pub fn present_total() -> (u64, u64) {
+    (
+        PRESENT_NS.load(Ordering::Relaxed),
         PHASE_FRAMES.load(Ordering::Relaxed),
     )
 }
@@ -222,6 +262,7 @@ pub fn reset_phase_totals() {
     for c in &PHASE_NS {
         c.store(0, Ordering::Relaxed);
     }
+    PRESENT_NS.store(0, Ordering::Relaxed);
     PHASE_FRAMES.store(0, Ordering::Relaxed);
 }
 
@@ -405,7 +446,8 @@ impl GpuPresenter {
         // The swap writes STRAIGHT INTO the mapped buffer. Staging it first and
         // then copying cost a second full pass over 8 MiB — together ~90% of the
         // frame's GPU cost, and fusing them measured 3.3x (`docs/performance.md`).
-        let t_stage = std::time::Instant::now();
+        let t_present = std::time::Instant::now();
+        let t_stage = t_present;
         let full = self.needs_full_stage;
         let dirty = bus.rdram_dirty_pages();
         // The map must cover the whole of the Bus's RDRAM. A map that is SHORTER
@@ -510,6 +552,7 @@ impl GpuPresenter {
             dst.copy_from_slice(&px.to_le_bytes());
         }
         add_phase(Phase::Copy, t_copy.elapsed().as_nanos() as u64);
+        PRESENT_NS.fetch_add(t_present.elapsed().as_nanos() as u64, Ordering::Relaxed);
         // Counted last, so a frame is in the divisor only once every phase above
         // has contributed to it.
         PHASE_FRAMES.fetch_add(1, Ordering::Relaxed);
@@ -698,15 +741,43 @@ mod tests {
         assert_eq!(split_commands(&stream).count(), 0);
     }
 
-    /// A frame that produced **no picture** contributes to no phase and to no
-    /// frame count.
+    /// Every `Phase`'s discriminant equals its position in [`Phase::ALL`].
     ///
-    /// This is the vacuity guard for the phase counters, and it guards the
-    /// direction that would flatter a result: a `None` frame runs `stage` and
-    /// `submit` and then returns, so counting it as a frame would divide two
-    /// phases' real totals by an inflated divisor and report every phase as
-    /// cheaper than it is. That is precisely the shape of error the phase split
-    /// exists to prevent, so it gets a test rather than a comment.
+    /// `add_phase` and `phase_totals` index `PHASE_NS` by `phase as usize`, so
+    /// a discriminant that stopped matching would silently write one phase's
+    /// time into another's bucket — a wrong table with nothing pointing at the
+    /// cause. Rust guarantees this for a fieldless enum, and the explicit
+    /// `= 0..3` pins it; this asserts it, because the guarantee is the thing
+    /// being relied on rather than the thing being tested.
+    #[test]
+    fn phase_indices_match_their_position() {
+        use super::Phase;
+        for (i, phase) in Phase::ALL.into_iter().enumerate() {
+            assert_eq!(
+                phase as usize,
+                i,
+                "{} indexes bucket {} but sits at position {i} in ALL",
+                phase.name(),
+                phase as usize
+            );
+        }
+        assert_eq!(
+            Phase::ALL.len(),
+            Phase::COUNT,
+            "ALL and COUNT disagree, so some phase has no bucket"
+        );
+    }
+
+    /// A frame that produced **no picture** is not counted, and does not reach
+    /// `scanout` or `copy`.
+    ///
+    /// It *does* run `stage` and `submit` — those happen before the VI is
+    /// consulted — so this is deliberately not the stronger claim that a
+    /// picture-less frame touches no phase at all. What must hold is that it is
+    /// not counted as a **frame**: counting it would divide two phases' real
+    /// totals by an inflated divisor and report every phase as cheaper than it
+    /// is. That is the direction that flatters a result, which is why it gets a
+    /// test rather than a comment.
     ///
     /// The VI is left unprogrammed, which is what makes the frames picture-less.
     #[test]
@@ -738,6 +809,15 @@ mod tests {
             stage_ns > 0,
             "no time was recorded against `stage`, so the frame-count assertion \
              above proves nothing about the counters"
+        );
+        // The phases that come after the VI check must be untouched, which is
+        // the half of the claim `stage_ns > 0` cannot make.
+        let (scanout_ns, _) = super::phase_totals(super::Phase::Scanout);
+        let (copy_ns, _) = super::phase_totals(super::Phase::Copy);
+        assert_eq!(
+            (scanout_ns, copy_ns),
+            (0, 0),
+            "a picture-less frame recorded time against a phase it never reached"
         );
     }
 }

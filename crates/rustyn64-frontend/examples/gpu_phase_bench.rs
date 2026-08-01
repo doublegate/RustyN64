@@ -16,9 +16,10 @@
 //! units as the decision: *is this worth building at all?*
 //!
 //! The phases do **not** sum to the whole of `present` — the geometry checks,
-//! the tap drain and the dirty-map read sit between them. The residual is
-//! reported rather than hidden, because a large one would mean the phases are
-//! mismeasuring what they name.
+//! the command split and the dirty-map read sit between them. `present` is
+//! timed as a whole as well, and the **residual** is printed, because a residual
+//! that is not small would mean the phases are mismeasuring what they name —
+//! the one failure the split could not otherwise detect.
 //!
 //! ```text
 //! RUSTYN64_PROBE_ROM=/path/rom.z64 \
@@ -29,108 +30,156 @@
 //! never brings the VI up (see `docs/performance.md`), and without a picture the
 //! GPU path produces nothing to measure. The harness says so rather than
 //! printing zeros.
+//!
+//! # Why the body is behind a `cfg`
+//!
+//! `required-features` gates on the feature but **not on the target**, so an
+//! all-targets build for `wasm32` with `gpu-rdp` selects this file, where
+//! `rustyn64_frontend::gpu_rdp` does not exist (ADR 0014: native-only). That
+//! configuration cannot be built today for an earlier reason — `gpu-rdp` pulls
+//! in `rustyn64-rdp-gpu`, whose C++ build fails for `wasm32` long before any
+//! Rust here is compiled — so this guard closes a latent trap rather than a live
+//! break. It is cheap, and #243 is the precedent for taking that kind of trap
+//! seriously.
 
-use std::time::Instant;
-
-use rustyn64_frontend::emu::EmuCore;
-use rustyn64_frontend::gpu_rdp::{Phase, phase_totals, reset_phase_totals};
-use rustyn64_frontend::{FB_MAX_H, FB_MAX_W};
-
-/// Frames to search for the VI coming up. Super Mario 64 takes 36.
-const MAX_WARM: usize = 300;
-
-/// Timed frames, matching `frame_bench` so the two are directly comparable.
-const FRAMES: u32 = 120;
-
+#[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
 fn main() {
-    let path = std::env::var("RUSTYN64_PROBE_ROM").unwrap_or_else(|_| {
-        panic!(
-            "set RUSTYN64_PROBE_ROM: the committed homebrew ROM never brings the \
+    imp::run();
+}
+
+/// Nothing to measure without the backend.
+#[cfg(not(all(feature = "gpu-rdp", not(target_arch = "wasm32"))))]
+fn main() {
+    println!("gpu_phase_bench needs the native `gpu-rdp` backend; nothing was measured.");
+}
+
+#[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
+mod imp {
+    use std::time::Instant;
+
+    use rustyn64_frontend::emu::EmuCore;
+    use rustyn64_frontend::gpu_rdp::{Phase, phase_totals, present_total, reset_phase_totals};
+    use rustyn64_frontend::{FB_MAX_H, FB_MAX_W};
+
+    /// Frames to search for the VI coming up. Super Mario 64 takes 36.
+    const MAX_WARM: usize = 300;
+
+    /// Timed frames, matching `frame_bench` so the two are directly comparable.
+    const FRAMES: u32 = 120;
+
+    pub fn run() {
+        let path = std::env::var("RUSTYN64_PROBE_ROM").unwrap_or_else(|_| {
+            panic!(
+                "set RUSTYN64_PROBE_ROM: the committed homebrew ROM never brings the \
              VI up, so the GPU path would produce no frames and every phase would \
              read zero — which looks like a result"
-        )
-    });
-    let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("bench ROM unreadable: {path}: {e}"));
-    let mut core = EmuCore::new(0);
-    core.load_rom(&raw)
-        .unwrap_or_else(|e| panic!("bench ROM did not boot: {path}: {e:?}"));
+            )
+        });
+        let raw =
+            std::fs::read(&path).unwrap_or_else(|e| panic!("bench ROM unreadable: {path}: {e}"));
+        let mut core = EmuCore::new(0);
+        core.load_rom(&raw)
+            .unwrap_or_else(|e| panic!("bench ROM did not boot: {path}: {e:?}"));
 
-    let mut buf = vec![0u8; (FB_MAX_W * FB_MAX_H * 4) as usize];
-    let mut warm = 0usize;
-    let live = loop {
-        core.run_frame();
-        warm += 1;
-        let (w, h) = core.system().bus.scanout_scaled(&mut buf);
-        if w > 0 && h > 0 {
-            break true;
+        let mut buf = vec![0u8; (FB_MAX_W * FB_MAX_H * 4) as usize];
+        let mut warm = 0usize;
+        let live = loop {
+            core.run_frame();
+            warm += 1;
+            let (w, h) = core.system().bus.scanout_scaled(&mut buf);
+            if w > 0 && h > 0 {
+                break true;
+            }
+            if warm >= MAX_WARM {
+                break false;
+            }
+        };
+        assert!(
+            live,
+            "the VI never came up in {warm} frames — this would time the boot path, not a frame"
+        );
+
+        // After warm-up, so the first frame's whole-of-RDRAM stage and the Vulkan
+        // device build are excluded. Including them overstates `stage` by orders of
+        // magnitude, and a benchmark that flatters the phase a previous change
+        // already optimized is worse than no benchmark.
+        reset_phase_totals();
+        let gpu_before = core.gpu_frames();
+        let t0 = Instant::now();
+        for _ in 0..FRAMES {
+            core.run_frame();
         }
-        if warm >= MAX_WARM {
-            break false;
-        }
-    };
-    assert!(
-        live,
-        "the VI never came up in {warm} frames — this would time the boot path, not a frame"
-    );
+        let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let mean_ms = total_ms / f64::from(FRAMES);
 
-    // After warm-up, so the first frame's whole-of-RDRAM stage and the Vulkan
-    // device build are excluded. Including them overstates `stage` by orders of
-    // magnitude, and a benchmark that flatters the phase a previous change
-    // already optimized is worse than no benchmark.
-    reset_phase_totals();
-    let gpu_before = core.gpu_frames();
-    let t0 = Instant::now();
-    for _ in 0..FRAMES {
-        core.run_frame();
-    }
-    let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let mean_ms = total_ms / f64::from(FRAMES);
-
-    // Witness that the GPU actually produced the frames. Without this the phases
-    // would all read zero on a machine with no Vulkan device and the run would
-    // print a tidy table of nothing — the vacuous-pass shape this repo has
-    // shipped before.
-    let gpu_frames = core.gpu_frames() - gpu_before;
-    assert!(
-        gpu_frames > 0,
-        "the GPU backend produced no frames in the timed window, so every phase \
+        // Witness that the GPU actually produced the frames. Without this the phases
+        // would all read zero on a machine with no Vulkan device and the run would
+        // print a tidy table of nothing — the vacuous-pass shape this repo has
+        // shipped before.
+        let gpu_frames = core.gpu_frames() - gpu_before;
+        assert!(
+            gpu_frames > 0,
+            "the GPU backend produced no frames in the timed window, so every phase \
          below would be zero. Either there is no usable Vulkan device or the \
          backend fell back to software; this is not a measurement"
-    );
+        );
 
-    let (_, counted) = phase_totals(Phase::Stage);
-    assert!(counted > 0, "no frames reached the end of present");
+        let (_, counted) = phase_totals(Phase::Stage);
+        assert!(counted > 0, "no frames reached the end of present");
 
-    println!("rom={path}");
-    println!("frames={FRAMES} warm={warm} gpu_frames={gpu_frames} counted={counted}");
-    println!("frame mean = {mean_ms:.3} ms\n");
-    println!("{:<10} {:>10} {:>10}", "phase", "ms/frame", "% of frame");
+        println!("rom={path}");
+        println!("frames={FRAMES} warm={warm} gpu_frames={gpu_frames} counted={counted}");
+        println!("frame mean = {mean_ms:.3} ms\n");
+        println!("{:<10} {:>10} {:>10}", "phase", "ms/frame", "% of frame");
 
-    let mut summed_ms = 0.0;
-    for phase in Phase::ALL {
-        let (ns, frames) = phase_totals(phase);
+        let mut summed_ms = 0.0;
+        for phase in Phase::ALL {
+            let (ns, frames) = phase_totals(phase);
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "ns and frame counts are far below 2^53"
+            )]
+            let ms = ns as f64 / 1.0e6 / frames as f64;
+            summed_ms += ms;
+            println!(
+                "{:<10} {:>10.4} {:>9.3}%",
+                phase.name(),
+                ms,
+                ms / mean_ms * 100.0
+            );
+        }
+        // The whole of `present`, measured independently of the four phases — so
+        // the residual below is a real check on the split rather than an assertion
+        // that it is complete.
+        let (whole_ns, whole_frames) = present_total();
         #[allow(
             clippy::cast_precision_loss,
             reason = "ns and frame counts are far below 2^53"
         )]
-        let ms = ns as f64 / 1.0e6 / frames as f64;
-        summed_ms += ms;
+        let present_ms = whole_ns as f64 / 1.0e6 / whole_frames as f64;
+
         println!(
-            "{:<10} {:>10.4} {:>9.3}%",
-            phase.name(),
-            ms,
-            ms / mean_ms * 100.0
+            "{:<10} {:>10.4} {:>9.3}%   <- the four phases",
+            "SUM",
+            summed_ms,
+            summed_ms / mean_ms * 100.0
+        );
+        println!(
+            "{:<10} {:>10.4} {:>9.3}%   <- all of present, timed as a whole",
+            "PRESENT",
+            present_ms,
+            present_ms / mean_ms * 100.0
+        );
+        println!(
+            "{:<10} {:>10.4} {:>9.3}%   <- unnamed by any phase",
+            "residual",
+            present_ms - summed_ms,
+            (present_ms - summed_ms) / mean_ms * 100.0
+        );
+
+        println!(
+            "\nCeiling if the whole present path became free: {:.3}x",
+            mean_ms / (mean_ms - present_ms)
         );
     }
-    println!(
-        "{:<10} {:>10.4} {:>9.3}%   <- all of present that is measured",
-        "TOTAL",
-        summed_ms,
-        summed_ms / mean_ms * 100.0
-    );
-
-    println!(
-        "\nCeiling if the whole present path became free: {:.3}x",
-        mean_ms / (mean_ms - summed_ms)
-    );
 }
