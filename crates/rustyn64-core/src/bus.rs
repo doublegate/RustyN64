@@ -3845,7 +3845,7 @@ mod rdp_tap_tests {
 
 #[cfg(all(test, feature = "rdp-tap"))]
 mod rdram_dirty_tests {
-    use super::{Bus, RDRAM_PAGE};
+    use super::{Bus, RDRAM_PAGE, RdramBus};
     use crate::cpu::Bus as CpuBus;
 
     /// KSEG0 address of the first byte of RDRAM page `p`.
@@ -3913,6 +3913,74 @@ mod rdram_dirty_tests {
         // And a later write still marks — clearing must not disable tracking.
         CpuBus::write_u8(&mut bus, page_addr(9), 1);
         assert_eq!(dirty(&bus), alloc::vec![9]);
+    }
+
+    /// `RdramBus::rdram_write` marks — the RDP/RSP/AI DMA paths use it.
+    ///
+    /// One of three routes the first version of this module left unguarded: the
+    /// mutation check only removed the SP DMA mark, so deleting this one, SI's or
+    /// PI's would have gone unnoticed. Caught in review of #245.
+    #[test]
+    fn the_shared_rdram_bus_write_marks() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        RdramBus::rdram_write(&mut bus, page_addr(7) & 0x00FF_FFFF, 0x5A);
+        assert_eq!(dirty(&bus), alloc::vec![7]);
+        assert_eq!(
+            bus.rdram[7 * RDRAM_PAGE],
+            0x5A,
+            "the write did not land, so the marking assertion is vacuous"
+        );
+    }
+
+    /// PI DMA (cart to RDRAM) marks.
+    #[test]
+    fn pi_dma_marks_the_pages_it_writes() {
+        use rustyn64_cart::pi::{PI_CART_ADDR, PI_DRAM_ADDR, PI_WR_LEN};
+        let mut bus = Bus::new();
+        // A cart whose first bytes are recognizable. `reattach_rom` is the
+        // supported way to give a `Cart` an image without parsing a header.
+        let mut rom = alloc::vec![0u8; 0x1000];
+        rom[0] = 0xC5;
+        bus.cart.reattach_rom(rom);
+        bus.clear_rdram_dirty();
+
+        bus.pi_write_word(PI_DRAM_ADDR, page_addr(8) & 0x00FF_FFFF);
+        bus.pi_write_word(PI_CART_ADDR, 0x1000_0000);
+        // WR_LEN loads INTO RDRAM; the value is length-1.
+        bus.pi_write_word(PI_WR_LEN, 7);
+
+        assert_eq!(
+            bus.rdram[8 * RDRAM_PAGE],
+            0xC5,
+            "the PI transfer did not land, so the marking assertion is vacuous"
+        );
+        assert!(
+            dirty(&bus).contains(&8),
+            "a PI DMA to page 8 left it clean; dirty = {:?}",
+            dirty(&bus)
+        );
+    }
+
+    /// SI DMA (PIF RAM to RDRAM) marks.
+    #[test]
+    fn si_dma_marks_the_pages_it_writes() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        // SI_DRAM_ADDR, then the RD64B write that runs the joybus frame and DMAs
+        // PIF RAM into RDRAM.
+        //
+        // PHYSICAL addresses: the Bus matches MMIO on raw physical ranges
+        // (`is_si_register` is `addr >= 0x0480_0000`), so a KSEG1 address never
+        // matches and the write silently lands nowhere. That is what the first
+        // version of this test did, and it read as "the mark is missing".
+        CpuBus::write_u32(&mut bus, Bus::SI_BASE, page_addr(9) & 0x00FF_FFFF);
+        CpuBus::write_u32(&mut bus, Bus::SI_BASE + 0x04, 0);
+        assert!(
+            dirty(&bus).contains(&9),
+            "an SI DMA to page 9 left it clean; dirty = {:?}",
+            dirty(&bus)
+        );
     }
 
     /// DMA writes mark too.
