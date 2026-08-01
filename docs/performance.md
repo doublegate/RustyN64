@@ -2254,3 +2254,61 @@ The alternative was to read `vu.rs` and vectorize what looked hot. Three
 separate figures in this document turned out to belong to configurations that
 were not being run — the VI's 4.64%, the RDP's 6.36%, and the shared-device
 plan's "double PCIe crossing". Reading is how those happened.
+
+## The async RDP (A3) is worth ~1.7%, and only one of its two shapes is viable
+
+The GPU plan describes A3 as a pure synchronization change — *"stop stalling the
+emu thread on `scanout_sync`'s fence"*. Sizing it first, as with everything else
+in this document, turns up a constraint the plan does not account for.
+
+### What it is worth
+
+From the phase split above, `scanout` is **3.10–3.44%** of a frame, and the
+`idle()` probe decomposed it: **~1.06 ms is waiting for RDP rasterization** —
+about **1.7% of a frame** — against ~1.39 ms of VI pass, read-back and host
+copies. So A3's ceiling is that 1.7%, and it sits inside the **1.044x** ceiling
+the whole present path carries.
+
+### The constraint the plan misses
+
+`present` **stages RDRAM before it enqueues any command**
+(`crates/rustyn64-frontend/src/gpu_rdp.rs`: the dirty-page swap, then the
+`enqueue_command` loop). So every command in a frame is executed by the GPU
+against **end-of-frame RDRAM**.
+
+That is what makes the obvious implementation unavailable:
+
+**(a) Submit commands as the frame runs.** The GPU would then be busy during
+emulation and the fence already signaled at present time — the full 1.7%, with
+no shim work. **But it requires staging RDRAM mid-frame too**, which changes
+*which* memory contents each command reads. That is a change to the presented
+picture, not a scheduling change, and it interacts directly with the dirty-page
+map (#245): a mid-frame stage would have to clear and re-accumulate dirty pages
+per sub-frame. Not free, and not merely a synchronization question.
+
+**(b) Do not block; present one frame late.** Submit at present time as now,
+signal the timeline, and read back the *previous* frame's result. Semantics are
+unchanged — every command still sees end-of-frame RDRAM — and the 1.7% is
+recovered because the wait moves off the critical path.
+
+**(b) is the viable shape.** Its cost is **one frame of presentation latency**
+(~16.7 ms at 60 Hz, more at the current frame rate), which is a real cost for an
+emulator and should be a user-visible option rather than a default. It needs
+`signal_timeline`/`wait_for_timeline` exposed through the shim, which is new C++
+surface.
+
+### What is *not* needed, contrary to ADR 0014 §6
+
+**No GPU-to-CPU hazard tracker.** ADR 0014 §6 and the plan both call for one,
+modeled on gopher64's dirty-range bitmap. That applies to a backend whose GPU
+writes into memory the CPU reads. **This backend owns its RDRAM** — ADR 0015
+established that, and it is why the determinism claim did not need a tracker
+either. There is nothing for the CPU to race against, so (b) needs a timeline
+semaphore and no tracker at all.
+
+### Recommendation
+
+**Worth building, but last.** 1.7% for new FFI surface plus a latency trade is a
+worse ratio than anything else outstanding, and the CPU's 32.29% dwarfs it. Do
+not implement shape (a) without an ADR: it changes what the presented frame is
+computed from.
