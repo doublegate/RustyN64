@@ -2415,6 +2415,8 @@ dependencies = [
  "bincode",
  "insta",
  "rustyn64-core",
+ "rustyn64-rdp",
+ "rustyn64-rdp-gpu",
 ]
 
 [[package]]

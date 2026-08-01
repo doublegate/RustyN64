@@ -69,13 +69,50 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **The GPU-RDP parity gate — 42 of 43 `.rvec` vectors match on both paths.**
+  `conformance_gpu::census` replays the whole registered conformance corpus
+  through parallel-rdp and grades it against **Angrylion's** goldens, the same
+  independent oracle the software rasterizer is graded by. Not against the
+  software rasterizer's own output: two implementations agreeing proves nothing
+  about either, while two independently matching a third does.
+
+  Triangles (flat, shaded, textured, Z-buffered, fractional, negative-slope,
+  right-major), texture loads (Load Tile, Load Block, TLUT, CI4/CI8, 4-bit), the
+  combiner, the blender, dither, tile clamp/mask/mirror/shift and the 3-point
+  filter all reproduce byte-for-byte through the GPU.
+
+  **The one divergence runs the other way: parallel-rdp does not implement the
+  `key_en` chroma-key alpha compare.** Verified in its source rather than
+  inferred from pixels — `op_set_other_modes` never decodes bit 8 of `words[0]`
+  (no `1 << 8` anywhere in the function), `Renderer::set_color_key` routes
+  `key_center`/`key_scale` only to the combiner's mux inputs, `key_width` is
+  written and never read, and no shader mentions a key. RustyN64's software
+  rasterizer implements it and matches Angrylion. The gate asserts the **exact**
+  census, so a vector leaving the known-gap set fails as loudly as one joining
+  it.
+
+  Byte order is the hazard this had to get right: parallel-rdp stores RDRAM in
+  native little-endian word order (`vram8.data[index ^ 3]`) while RustyN64 stores
+  big-endian bytes, so every crossing reverses each aligned 4-byte group.
+
+- **`GpuRdp` now owns its RDRAM** rather than borrowing it. The buffer has to be
+  page-aligned or the direct host-import path is silently replaced by a staging
+  copy, and a contract a caller can satisfy by accident is worse than no
+  contract — so the caller no longer gets the chance to get it wrong. RDRAM is
+  reached through `with_rdram`/`with_rdram_mut`, which use upstream's
+  `begin_read_rdram`/`end_write_rdram`: when host import is unavailable the
+  device renders into its own buffer and the shim's allocation is stale, so
+  reading it directly would work on one machine and silently return pre-render
+  bytes on another.
+
 - **`rustyn64-rdp-gpu` — the parallel-rdp binding** (ADR 0014), behind a
   default-off `gpu-rdp` feature. `vendor/parallel-rdp-standalone` enters as a git
   submodule (upstream MIT, attributed in `NOTICE` as an obligation in its own
   right); an eight-function flat `extern "C"` shim compiles alongside it via
-  `cc`; and a safe Rust wrapper ties the command processor's lifetime to a
-  borrowed RDRAM slice, so "the memory outlives the device and nobody else
-  touches it" is a compile-time fact rather than a comment. Every `unsafe` block
+  `cc`; and a safe Rust wrapper owns its RDRAM and hands it out only
+  through `with_rdram` / `with_rdram_mut`, so the page alignment the direct
+  host-import path needs is a property of construction rather than of the caller
+  remembering. Every `unsafe` block
   carries a `// SAFETY:` naming its invariant, and this is the only crate outside
   the frontend where `unsafe` is permitted — with the feature off it is
   `forbid`den rather than merely absent.

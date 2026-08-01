@@ -965,13 +965,49 @@ The **binding**, and nothing downstream of it:
 | the shim's failure contract | every fallible entry point returns a status; nothing returns `void` |
 | `crates/rustyn64-rdp-gpu/src/lib.rs` | `GpuRdp` — every `unsafe` block carries its `// SAFETY:` |
 | `tests/smoke.rs` | renders a Fill Rectangle and checks the picture |
-| CI job `gpu-rdp` | full-run only; builds and links, and asserts which branch the smoke test took |
+| `conformance_gpu` + `rdp_conformance_gpu.rs` | the parity gate — the whole `.rvec` corpus on both paths |
+| CI job `gpu-rdp` | builds and links, and asserts which branch each GPU test took |
 
 **Verified locally on an RTX 3090:** the device initializes, parallel-rdp's
 compute shaders compile, a 64x32 Fill Rectangle rasterizes, and `scanout_sync`
 returns a 640x240 RGBA8 frame in which 1,568 pixels carry exactly the fill color
 and no pixel carries any other. That is the whole of the evidence — it is a
 command list submitted by hand, not by the emulator.
+
+### Parity against Angrylion — the census
+
+The GPU backend is graded by the **same independent oracle as the software
+rasterizer**: the 43 registered `.rvec` vectors, whose goldens are Angrylion's.
+Not against the software rasterizer's own output — two implementations agreeing
+proves nothing about either, while two independently matching a third does.
+
+**42 of 43 vectors match on both paths.** Triangles (flat, shaded, textured,
+Z-buffered, fractional, negative-slope, right-major), texture loads (Load Tile,
+Load Block, TLUT, CI4/CI8, 4-bit), the combiner, the blender, dither, tile
+clamp/mask/mirror/shift, and the 3-point filter all reproduce Angrylion
+byte-for-byte through parallel-rdp.
+
+**One vector diverges, and it is the reverse of the expected direction.**
+`tex_tri_chromakey_alpha_16` exercises the `key_en` chroma-key alpha compare.
+**parallel-rdp does not implement it** — this is checkable in its source, not
+inferred from pixels:
+
+- `op_set_other_modes` decodes bits 9–19 of `words[0]` and never bit 8, which is
+  `key_en`. There is no `1 << 8` anywhere in that function.
+- `op_set_key_r` / `op_set_key_gb` do store the key, but `Renderer::set_color_key`
+  routes `key_center` / `key_scale` to the combiner's **mux inputs** (the
+  KEY_CENTER / KEY_SCALE *sources*, a different feature). `key_width` — the
+  comparison width the alpha compare needs — is written and **never read**.
+- No shader under `parallel-rdp/shaders/` mentions a key at all.
+
+RustyN64's software rasterizer implements it (PR #160) and matches Angrylion;
+parallel-rdp renders the shade color as black. So the premise that a GPU backend
+must be *caught up* to the software one is not quite right in either direction:
+parallel-rdp is more complete almost everywhere and less complete here.
+
+The gate asserts the **exact census**, not a threshold. A vector leaving the
+known-gap set fails just as a vector joining it does — an unexplained improvement
+is as much a signal as a regression.
 
 **No entry point returns `void`.** Submission, VI programming, flush and idle all
 return a status, and the Rust wrapper surfaces each as a `#[must_use] bool`. This
@@ -990,9 +1026,11 @@ is worth having and it is not evidence of anything.
 
 - **No `Bus` integration.** Nothing routes DPC commands here; the software
   rasterizer is still the only one the machine can use.
-- **No shared RDRAM.** The binding borrows a buffer for its own lifetime, which
-  is what makes the safety argument tractable, and is *not* how a running
-  machine's RDRAM is owned.
+- **No shared RDRAM.** The binding allocates and owns its own RDRAM, reached
+  only through `with_rdram` / `with_rdram_mut`, which is what makes the safety
+  argument tractable — and is *not* how a running machine's RDRAM is owned. (It
+  borrowed a buffer at first; owning it is what makes the page alignment a
+  property of construction rather than of the caller remembering.)
 - **No frontend feature.** `gpu-rdp` is a feature of `rustyn64-rdp-gpu` only.
   The frontend does not depend on the crate at all yet, so nothing pulls C++
   into a default build. When it does gain the feature it stays out of `full`,

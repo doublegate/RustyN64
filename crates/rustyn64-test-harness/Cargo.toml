@@ -10,9 +10,14 @@ authors.workspace = true
 default = []
 test-roms = []          # compiles the committed CC0/public-domain suites + integration tests
 commercial-roms = []    # the local-dump oracle (ROMs gitignored; commit only screenshots/.snap)
+# Replay the .rvec conformance corpus through the GPU backend as well (ADR 0014).
+# Default-off and the only thing that pulls in the vendored C++ / Vulkan.
+gpu-rdp = ["dep:rustyn64-rdp-gpu", "rustyn64-rdp-gpu/gpu-rdp"]
 
 [dependencies]
 rustyn64-core = { path = "../rustyn64-core", version = "0.8.0" }
+rustyn64-rdp = { path = "../rustyn64-rdp", version = "0.8.0" }
+rustyn64-rdp-gpu = { path = "../rustyn64-rdp-gpu", version = "0.8.0", optional = true }
 
 [dev-dependencies]
 insta = "1"

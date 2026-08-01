@@ -16,6 +16,18 @@
 #include <memory>
 #include <vector>
 #include <cstring>
+#include <cstdlib>
+
+// The floor for the RDRAM allocation's alignment. The ACTUAL requirement is
+// queried from the device (`query_import_alignment`); this is only the minimum
+// and the fallback for a driver that reports nothing.
+//
+// It used to be the whole story, hardcoded, and that was a real defect a review
+// caught: `VK_EXT_external_memory_host` needs the pointer to meet the device's
+// `minImportedHostPointerAlignment`, and a device asking for more than 4096
+// would have fallen back to staging every access through a copy -- silently,
+// rendering a byte-identical frame, with nothing in any return value to say so.
+#define PRDP_RDRAM_ALIGN_MIN 4096u
 
 namespace {
 
@@ -27,20 +39,70 @@ static_assert(sizeof(RDP::RGBA) == sizeof(uint32_t),
 static_assert(alignof(RDP::RGBA) <= alignof(uint32_t),
               "RDP::RGBA over-aligns for a uint32_t copy");
 
+// Aligned allocate/free. MSVC does NOT provide `std::aligned_alloc` at any
+// language level -- its `free` cannot handle an over-aligned block, so the CRT
+// offers `_aligned_malloc`/`_aligned_free` as a separate pair and mixing them
+// with `free` is undefined. Untested here (the `gpu-rdp` CI job is Linux-only),
+// but a build that cannot compile is a worse first experience than one that can.
+#ifdef _MSC_VER
+#include <malloc.h>
+#define PRDP_ALIGNED_ALLOC(align, size) _aligned_malloc((size), (align))
+#define PRDP_ALIGNED_FREE(p) _aligned_free(p)
+#else
+#define PRDP_ALIGNED_ALLOC(align, size) std::aligned_alloc((align), (size))
+#define PRDP_ALIGNED_FREE(p) std::free(p)
+#endif
+
+// Free-on-destruction wrapper for the aligned RDRAM allocation, so an early
+// return anywhere in `prdp_create` cannot leak it.
+struct AlignedBuffer {
+    void *ptr = nullptr;
+    size_t size = 0;
+
+    ~AlignedBuffer() { PRDP_ALIGNED_FREE(ptr); }
+    AlignedBuffer() = default;
+    AlignedBuffer(const AlignedBuffer &) = delete;
+    AlignedBuffer &operator=(const AlignedBuffer &) = delete;
+};
+
 struct Ctx {
     Vulkan::Context context;
     Vulkan::Device device;
+    // Declared BEFORE `processor` so it is destroyed AFTER it: the
+    // CommandProcessor holds this pointer for its whole life, and members are
+    // destroyed in reverse declaration order.
+    AlignedBuffer rdram;
     std::unique_ptr<RDP::CommandProcessor> processor;
     // Reused across frames so a per-frame scanout does not reallocate. The
     // buffer belongs to the shim; the Rust side only ever sees a copy.
     std::vector<RDP::RGBA> scratch;
 };
 
+// What `VK_EXT_external_memory_host` requires of an imported host pointer on
+// THIS device, floored at `PRDP_RDRAM_ALIGN_MIN`.
+//
+// Granite does not surface this, so it is queried from Vulkan directly. A device
+// that does not support the extension reports 0, in which case the floor stands
+// and the import will fail for a different reason -- also a fallback, but not one
+// caused by an alignment this code could have got right.
+size_t query_import_alignment(Vulkan::Context &context)
+{
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props = {};
+    host_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 props = {};
+    props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props.pNext = &host_props;
+    vkGetPhysicalDeviceProperties2(context.get_gpu(), &props);
+
+    size_t align = static_cast<size_t>(host_props.minImportedHostPointerAlignment);
+    return align > PRDP_RDRAM_ALIGN_MIN ? align : PRDP_RDRAM_ALIGN_MIN;
+}
+
 } // namespace
 
 struct prdp_ctx : Ctx {};
 
-prdp_ctx *prdp_create(void *rdram, size_t rdram_size, size_t hidden_rdram_size)
+prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size)
 {
     try {
         // volk resolves the loader lazily, and *nothing else calls this*.
@@ -52,8 +114,14 @@ prdp_ctx *prdp_create(void *rdram, size_t rdram_size, size_t hidden_rdram_size)
         if (!Vulkan::Context::init_loader(nullptr))
             return nullptr;
 
+        if (rdram_size == 0 || rdram_size % PRDP_RDRAM_ALIGN_MIN != 0)
+            return nullptr;
+
         auto ctx = std::make_unique<prdp_ctx>();
 
+        // The device comes up BEFORE the allocation, because the allocation's
+        // alignment is a property of the device.
+        //
         // Headless: no instance or device extensions, because the first cut
         // reads pixels back on the CPU (ADR 0014 §5) and therefore needs no
         // surface, swapchain or windowing integration at all.
@@ -62,9 +130,24 @@ prdp_ctx *prdp_create(void *rdram, size_t rdram_size, size_t hidden_rdram_size)
 
         ctx->device.set_context(ctx->context);
 
+        const size_t align = query_import_alignment(ctx->context);
+        // `aligned_alloc` requires the size to be a multiple of the alignment.
+        // Refuse rather than round up: a rounded size would leave the caller and
+        // the device disagreeing about how much RDRAM exists, which is a wrong
+        // picture at the top of the address space rather than an error.
+        if (align == 0 || rdram_size % align != 0)
+            return nullptr;
+        ctx->rdram.ptr = PRDP_ALIGNED_ALLOC(align, rdram_size);
+        if (!ctx->rdram.ptr)
+            return nullptr;
+        ctx->rdram.size = rdram_size;
+        // Power-on RDRAM is zero, and an uninitialized read here would make a
+        // frame depend on whatever the allocator handed back.
+        std::memset(ctx->rdram.ptr, 0, rdram_size);
+
         RDP::CommandProcessorFlags flags = 0;
         ctx->processor = std::make_unique<RDP::CommandProcessor>(
-            ctx->device, rdram, 0, rdram_size, hidden_rdram_size, flags);
+            ctx->device, ctx->rdram.ptr, 0, rdram_size, hidden_rdram_size, flags);
 
         if (!ctx->processor->device_is_supported())
             return nullptr;
@@ -189,4 +272,32 @@ int prdp_idle(prdp_ctx *ctx)
     } catch (...) {
         return 0;
     }
+}
+
+void *prdp_rdram_ptr(prdp_ctx *ctx)
+{
+    if (!ctx || !ctx->processor)
+        return nullptr;
+    try {
+        return ctx->processor->begin_read_rdram();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+int prdp_end_write_rdram(prdp_ctx *ctx)
+{
+    if (!ctx || !ctx->processor)
+        return 0;
+    try {
+        ctx->processor->end_write_rdram();
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+size_t prdp_rdram_size(const prdp_ctx *ctx)
+{
+    return ctx ? ctx->rdram.size : 0;
 }
