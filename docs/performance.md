@@ -2428,3 +2428,57 @@ only one that can approach playable rates.
 is `fastexec.rs:334` at **10.87%** — the `Latch` copy this document already
 warns about, where retired work is charged to the final store. It is not 10.87%
 of removable time, and a recompiler's estimate must not be built on it.
+
+## A recompiler's ceiling is 1.26–1.40x, and ADR 0017's own gate is 1.5x
+
+Stage 2's decomposition answers stage 3 arithmetically, without writing a code
+generator. A recompiler's speedup is bounded by what it removes:
+
+> speedup ≤ 1 / (1 − share removed)
+
+| share removed | ceiling | what that assumes |
+| --- | --- | --- |
+| 20.46% | **1.257x** | `fastexec.rs` + `decode.rs` — the driver, removed entirely |
+| 24.58% | 1.326x | + half of `pipeline.rs` |
+| 28.70% | **1.403x** | + **all** of `pipeline.rs` |
+| 34.03% | 1.516x | + `addr.rs` and `regs.rs` — perfect register allocation *and* no per-access translation |
+| 36.13% | 1.566x | everything in `rustyn64-cpu` except `cop0`/`cop1`/`cache` |
+
+**1.5x requires removing 33.3% of the frame.** That is past "remove the whole
+interpreter" and into "also eliminate address translation and the register file",
+with **zero** cost for block lookup, code generation, or invalidation — none of
+which a real recompiler has.
+
+So the realistic band is **1.26–1.40x**, and 1.5x sits at the edge of a
+*perfect* one.
+
+### What that means for ADR 0017
+
+ADR 0017 sets its own stage-2 gate at **1.5x on top of `fast-exec`**, with the
+stated reason that *a recompiler winning less than the interpreter tweak already
+shipped is not worth its maintenance surface* — `fast-exec` measured **1.53x**.
+
+**By that gate, computed from this decomposition, a recompiler does not
+qualify.** It would buy 1.26–1.40x for: a new crate, a third `unsafe` surface,
+two CPU implementations that must agree forever, an invalidation protocol, two
+architecture backends, and nothing at all for `thumbv7em-none-eabihf`.
+
+This is stage 2 doing its job. The ADR was written so this answer could arrive
+before the crate existed, and it did.
+
+### The gate is a judgment, and it is the maintainer's to move
+
+1.5x was chosen to mean "beat what `fast-exec` already delivered". That is
+defensible and it is not the only defensible bar:
+
+- **If the goal is the largest single available win**, 1.26–1.40x is still it —
+  nothing else on the table is close, and the CPU stays the largest bucket.
+- **If the goal is 60 FPS**, this settles it in the other direction. The frame
+  needs **6.19x**; a perfect recompiler contributes at most ~1.4x of that, so
+  even stacking it on everything else measured this session leaves the target
+  far out of reach. `docs/performance.md`'s standing position that *60 FPS is
+  unreachable* is reinforced rather than challenged.
+
+**Recommendation: do not write the crate on the current evidence.** Reopen it if
+the interpreter's shape changes enough to move the decomposition, or if the bar
+is deliberately lowered with the trade understood.

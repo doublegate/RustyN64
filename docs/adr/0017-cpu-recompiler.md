@@ -1,8 +1,10 @@
 # 0017 — A CPU recompiler in `rustyn64-jit`, and what it must prove before it counts
 
-Status: **Proposed** — a design put up for review. **Not accepted by merging this
-file alone**; see *How this ADR is accepted* below, which is deliberately
-different from every other ADR here.
+Status: **Proposed, and FAILING ITS OWN STAGE-2 GATE.** A design put up for
+review whose stage-2 evidence — gathered while this file was open — says **do
+not build it**. Kept and merged as the record of that, not as an approval. See
+*Stage 2's verdict* below.
+Recommendation: **do not write `rustyn64-jit` on the current evidence.**
 Date: 2026-08-01
 Deciders: repo owner
 Supersedes: none · Superseded by: none
@@ -210,3 +212,33 @@ target, and it is still the largest single item in the project.
 `decode.rs` measuring **4.36%** here, against the probe's 8.1-9.4%, is a second
 independent confirmation that the probe overstated it — the first being that the
 cache was built and came out slower.
+
+### Stage 2's verdict: the gate is not reachable
+
+The decomposition answers stage 3 arithmetically, so the spike need not be
+built. A recompiler's speedup is bounded by `1 / (1 - share removed)`:
+
+| share removed | ceiling | assumes |
+| --- | --- | --- |
+| 20.46% | **1.257x** | the driver (`fastexec` + `decode`) removed entirely |
+| 28.70% | **1.403x** | + all of `pipeline.rs` |
+| 34.03% | 1.516x | + `addr.rs` and `regs.rs` — perfect register allocation *and* no per-access translation, at zero codegen/lookup/invalidation cost |
+
+**1.5x requires removing 33.3% of a frame.** The realistic band is
+**1.26-1.40x**, and this ADR's gate sits at the edge of a *perfect* recompiler.
+
+So: **it does not qualify**, by the bar this ADR set for itself and for the
+reason it set it — `fast-exec` already measured 1.53x, and a recompiler buying
+less than that is not worth a new crate, a third `unsafe` surface, two CPU
+implementations that must agree forever, an invalidation protocol, two
+architecture backends, and nothing for `thumbv7em-none-eabihf`.
+
+**This is stage 2 working.** The ADR was written so this answer could arrive
+before the crate existed, and it did — for the cost of a profile.
+
+**The gate is a judgment and it is the maintainer's to move.** 1.5x meant "beat
+what `fast-exec` delivered". If the bar is instead "the largest single available
+win", 1.26-1.40x is still it and nothing else is close. If the bar is 60 FPS,
+this settles it the other way: the frame needs 6.19x and a perfect recompiler
+contributes at most ~1.4x, which reinforces this project's standing position
+that 60 FPS is unreachable.

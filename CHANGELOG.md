@@ -94,6 +94,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **The CPU recompiler is measured out before being built.** Stage 2's
+  decomposition (profiler, source-line attribution, because everything inlines
+  into `run_until_exec` at 61% self time) puts the CPU at **42.88%** of a frame
+  and the Bus at 23.60% — but only **~20-25%** is the interpreter *driver* a
+  recompiler removes. The Bus's memory traffic, address translation and
+  `cop0`/`cop1`/`cache` are real emulated work it keeps.
+
+  Since speedup is bounded by `1 / (1 - share removed)`, the ceiling is
+  **1.26-1.40x**, and 1.5x would need 33.3% of the frame removed — past "delete
+  the whole interpreter" and into perfect register allocation with zero codegen
+  cost. **ADR 0017 therefore fails its own stage-2 gate** and recommends against
+  writing the crate. That gate was set at 1.5x because `fast-exec` already
+  delivered 1.53x.
+
+  It also independently re-refutes the decode probe: `decode.rs` is **4.36%**
+  in the profile, not the 8.1-9.4% the `black_box` sizing reported.
+
 - **ADR 0017 — a CPU recompiler design, put up for review.** *Design only; no
   crate, no code.* The CPU is **32.29%** of a frame and everything else in the
   plan, added together and assumed perfect, is under 15% — so a recompiler is
