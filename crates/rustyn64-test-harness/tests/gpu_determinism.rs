@@ -7,19 +7,20 @@
 //! reproducible at all.
 //!
 //! That is an empirical question, so it is measured rather than reasoned about.
-//! Three properties, and they fail for different reasons:
+//! **Two** tests, covering properties that fail for different reasons:
 //!
-//! 1. **Fresh contexts agree.** Two independently created devices, given the
-//!    same command lists, produce identical pixels. A failure means device
-//!    creation carries something into the output.
+//! 1. **Fresh contexts agree, repeatedly.** The corpus is replayed `RUNS` times,
+//!    and `conformance_gpu::replay` builds a **new device per vector** — so a
+//!    run is 43 independently created contexts and the test compares 3 × 43 =
+//!    129 of them. A failure means device creation carries something into the
+//!    output. Repeating the whole corpus rather than one vector also spreads the
+//!    comparison over time, where a wall-clock or entropy dependency is likelier
+//!    to show than inside one tight loop.
 //! 2. **A frame sequence agrees.** One backend rendering N successive frames,
 //!    run twice, produces the same sequence. RDP state (TMEM, tiles, combiner)
 //!    legitimately persists between frames, so this is where order-dependent or
 //!    host-timing-dependent state would show — and a per-frame-fresh context
 //!    would test a machine that does not exist.
-//! 3. **Repetition agrees.** The whole corpus run several times over, because a
-//!    wall-clock or entropy dependency is more likely to show across a spread of
-//!    time than within one tight loop.
 //!
 //! # What this cannot establish
 //!
@@ -44,6 +45,14 @@ const RUNS: usize = 3;
 /// Frames in the sequence test. Longer than the corpus so it wraps and revisits
 /// vectors with different state behind them.
 const SEQUENCE_FRAMES: usize = 60;
+
+/// Distinct frame digests the sequence must produce.
+///
+/// **Asserted, not merely printed.** Three documents quote this number, and a
+/// number quoted in prose while only being observed in a `println!` is the
+/// gap this project keeps writing lessons about. It moves by hand, with those
+/// documents, when the corpus changes.
+const EXPECTED_DISTINCT: usize = 36;
 
 /// Report a skip in the one form CI greps for, and say what went unverified.
 fn skipped(what: &str) {
@@ -101,9 +110,11 @@ fn a_frame_sequence_on_one_device_is_reproducible() {
         .iter()
         .collect::<std::collections::BTreeSet<_>>()
         .len();
-    assert!(
-        distinct > 1,
-        "every frame in the sequence hashed the same; this is not a sequence"
+    assert_eq!(
+        distinct, EXPECTED_DISTINCT,
+        "the sequence produced {distinct} distinct frames, not {EXPECTED_DISTINCT}. \
+         Update EXPECTED_DISTINCT together with the figure quoted in ADR 0015, \
+         docs/rdp.md and the CHANGELOG"
     );
 
     let again = repeated_frame_digest(SEQUENCE_FRAMES).expect("the device worked a moment ago");

@@ -52,13 +52,16 @@ State the claim at the scope that is verified, and no wider.
 `crates/rustyn64-test-harness/tests/gpu_determinism.rs` asserts two properties
 that fail for different reasons:
 
-1. **Independent devices agree.** All 43 `.rvec` vectors, replayed through three
-   independently created contexts, hash identically. A failure would mean device
+1. **Independent devices agree.** All 43 `.rvec` vectors, replayed three times over, hash
+   identically — and `replay` builds a **new device per vector**, so that is
+   3 x 43 = 129 independently created contexts, not three. A failure would mean device
    creation leaks into the output.
 2. **A stateful frame sequence agrees.** One backend rendering 60 successive
    frames — reusing the device, because TMEM, tile descriptors and combiner state
    legitimately persist between frames on hardware — reproduces exactly, across
-   two runs, with 36 distinct frames in the sequence. This is where
+   two runs, with 36 distinct frames in the sequence — a count that is
+   **asserted**, not merely printed, so the figure quoted here cannot drift from
+   what runs. This is where
    order-dependent or host-timing-dependent state would show; a per-frame-fresh
    context would test a machine that does not exist.
 

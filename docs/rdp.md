@@ -1110,10 +1110,10 @@ Settled by measurement, and scoped to what was measured
 ([ADR 0015](adr/0015-amend-0014-gpu-determinism-scope.md)).
 
 **Verified — the GPU path is bit-reproducible on one device and driver.**
-`tests/gpu_determinism.rs` asserts two properties that fail for different
-reasons: all 43 `.rvec` vectors hash identically across **three independently
-created devices**, and a **60-frame stateful sequence** (36 distinct frames,
-reusing one device so TMEM and tile state carry between frames as they do on
+`crates/rustyn64-test-harness/tests/gpu_determinism.rs` asserts two properties that fail for different
+reasons: all 43 `.rvec` vectors hash identically across **3 x 43 = 129 independently
+created devices** (`replay` builds one per vector), and a **60-frame stateful sequence** (36 distinct frames — asserted, not
+merely printed — reusing one device so TMEM and tile state carry between frames as they do on
 hardware) reproduces exactly across two runs. Both are mutation-checked.
 
 Corroborating rather than coincidental: parallel-rdp's noise is seeded from
