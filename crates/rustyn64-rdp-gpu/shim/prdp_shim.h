@@ -43,7 +43,20 @@ typedef struct prdp_ctx prdp_ctx;
  * requires, the allocation fails, or the CommandProcessor declines to
  * initialize. A NULL
  * return is the ONLY failure signal: nothing here throws across the boundary. */
-prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size);
+/*
+ * `upscale` is the internal render factor: 1, 2, 4 or 8. Anything else returns
+ * NULL rather than rounding down, so a caller cannot believe it got upscaling
+ * it did not.
+ *
+ * This is SUPERSAMPLING, not a bigger picture. The scan-out is downscaled back
+ * to 1x, so `prdp_scanout_sync` returns identical geometry at every factor, and
+ * `SUPER_SAMPLED_READ_BACK` is never set — what lands back in RDRAM is the 1x
+ * render, so the emulated machine's state does not change with this setting.
+ *
+ * VRAM cost scales with the square of the factor (the color and depth buffers
+ * plus hidden RDRAM), so 8x is ~64x the buffers.
+ */
+prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size, unsigned upscale);
 
 void prdp_destroy(prdp_ctx *ctx);
 

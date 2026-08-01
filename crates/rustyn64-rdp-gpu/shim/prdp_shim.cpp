@@ -73,6 +73,10 @@ struct Ctx {
     // destroyed in reverse declaration order.
     AlignedBuffer rdram;
     std::unique_ptr<RDP::CommandProcessor> processor;
+    // log2 of the upscale factor. Fed to `ScanoutOptions::downscale_steps` so
+    // the scan-out comes back at 1x however far the RDP rendered above it —
+    // supersampling, not a bigger picture. See `prdp_create`.
+    unsigned downscale_steps = 0;
     // Reused across frames so a per-frame scanout does not reallocate. The
     // buffer belongs to the shim; the Rust side only ever sees a copy.
     std::vector<RDP::RGBA> scratch;
@@ -102,7 +106,7 @@ size_t query_import_alignment(Vulkan::Context &context)
 
 struct prdp_ctx : Ctx {};
 
-prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size)
+prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size, unsigned upscale)
 {
     try {
         // volk resolves the loader lazily, and *nothing else calls this*.
@@ -145,7 +149,35 @@ prdp_ctx *prdp_create(size_t rdram_size, size_t hidden_rdram_size)
         // frame depend on whatever the allocator handed back.
         std::memset(ctx->rdram.ptr, 0, rdram_size);
 
+        // Upscaling: render internally at 2x/4x/8x. `SUPER_SAMPLED_READ_BACK` is
+        // deliberately NOT set, so what lands back in RDRAM is still the 1x
+        // render — the machine's state is untouched and ADR 0004 stays out of
+        // scope. ares comments that flag out over artifacts and simple64
+        // disables it because it can desync; this shim does not offer it at all.
         RDP::CommandProcessorFlags flags = 0;
+        unsigned steps = 0;
+        switch (upscale) {
+        case 1:
+            break;
+        case 2:
+            flags |= RDP::COMMAND_PROCESSOR_FLAG_UPSCALING_2X_BIT;
+            steps = 1;
+            break;
+        case 4:
+            flags |= RDP::COMMAND_PROCESSOR_FLAG_UPSCALING_4X_BIT;
+            steps = 2;
+            break;
+        case 8:
+            flags |= RDP::COMMAND_PROCESSOR_FLAG_UPSCALING_8X_BIT;
+            steps = 3;
+            break;
+        default:
+            // An unsupported factor is refused rather than rounded down: a
+            // caller that asked for 3x and silently got 1x would report an
+            // upscaled build that is not one.
+            return nullptr;
+        }
+        ctx->downscale_steps = steps;
         ctx->processor = std::make_unique<RDP::CommandProcessor>(
             ctx->device, ctx->rdram.ptr, 0, rdram_size, hidden_rdram_size, flags);
 
@@ -231,7 +263,13 @@ size_t prdp_scanout_sync(prdp_ctx *ctx, uint32_t *out, size_t out_capacity_pixel
         // silently is exactly the assumption the header stopped making.
         unsigned w = 0, h = 0;
         ctx->scratch.clear();
-        ctx->processor->scanout_sync(ctx->scratch, w, h);
+        // `downscale_steps` brings an upscaled render back to 1x at scan-out,
+        // which is what makes this supersampling rather than a larger frame:
+        // the geometry the caller receives is identical at every factor, so no
+        // buffer downstream has to resize.
+        RDP::ScanoutOptions opts = {};
+        opts.downscale_steps = ctx->downscale_steps;
+        ctx->processor->scanout_sync(ctx->scratch, w, h, opts);
 
         const size_t pixels = static_cast<size_t>(w) * static_cast<size_t>(h);
         if (pixels == 0 || pixels > ctx->scratch.size())

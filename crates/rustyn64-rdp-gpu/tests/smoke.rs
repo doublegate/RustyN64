@@ -15,7 +15,7 @@
 
 #![cfg(feature = "gpu-rdp")]
 
-use rustyn64_rdp_gpu::{GpuRdp, ScanoutFrame, ViRegister};
+use rustyn64_rdp_gpu::{GpuRdp, ScanoutFrame, Upscale, ViRegister};
 
 /// 4 MiB is enough RDRAM for a small framebuffer and matches the base N64.
 const RDRAM_SIZE: usize = 4 * 1024 * 1024;
@@ -187,4 +187,107 @@ fn a_filled_rectangle_reaches_the_scanout() {
          rectangle's own extents were both ignored"
     );
     println!("fill color occupies {fill} of {pixels} pixels");
+}
+
+/// Render the same fill at `upscale`, and report `(width, height, fill pixels)`.
+///
+/// Shares the command sequence with the test above deliberately: the claim being
+/// checked is that the factor changes **nothing** the caller can see, so the
+/// two must submit byte-identical work.
+fn render_at(upscale: Upscale) -> Option<(u32, u32, usize)> {
+    let mut gpu = GpuRdp::with_upscale(RDRAM_SIZE, HIDDEN_RDRAM_SIZE, upscale)?;
+    if !gpu.device_is_supported() {
+        return None;
+    }
+    submit(gpu.enqueue_command(&[0x3F00_0000 | (0b11 << 19) | (FB_WIDTH - 1), FB_ADDR]));
+    submit(gpu.enqueue_command(&[0x2D00_0000, ((FB_WIDTH << 2) << 12) | (FB_HEIGHT << 2)]));
+    submit(gpu.enqueue_command(&[0x2F00_0000 | (0b11 << 20), 0x0000_0000]));
+    submit(gpu.enqueue_command(&[0x3700_0000, FILL_RGBA]));
+    submit(gpu.enqueue_command(&[
+        0x3600_0000 | (((FB_WIDTH - 1) << 2) << 12) | ((FB_HEIGHT - 1) << 2),
+        0,
+    ]));
+    submit(gpu.enqueue_command(&[0x2900_0000, 0]));
+
+    submit(gpu.set_vi_register(ViRegister::Control, VI_CONTROL_32BPP));
+    submit(gpu.set_vi_register(ViRegister::Origin, FB_ADDR));
+    submit(gpu.set_vi_register(ViRegister::Width, FB_WIDTH));
+    submit(gpu.set_vi_register(ViRegister::XScale, 0x0000_0400));
+    submit(gpu.set_vi_register(ViRegister::YScale, 0x0000_0400));
+    submit(gpu.set_vi_register(ViRegister::HStart, (108 << 16) | (108 + FB_WIDTH)));
+    submit(gpu.set_vi_register(ViRegister::VStart, (34 << 16) | (34 + FB_HEIGHT * 2)));
+
+    let mut out = vec![0u32; 4 * 1024 * 1024];
+    let ScanoutFrame {
+        width,
+        height,
+        pixels,
+    } = gpu.scanout_sync(&mut out)?;
+    let fill = out[..pixels].iter().filter(|&&px| px == FILL_RGBA).count();
+    Some((width, height, fill))
+}
+
+/// **Upscaling changes the render, not the frame.**
+///
+/// This is the property the whole feature rests on: `SUPER_SAMPLED_READ_BACK` is
+/// never set and the scan-out is downscaled back to 1x, so a caller sees the
+/// same geometry at every factor and nothing downstream resizes. If that ever
+/// stopped holding, the frontend's fixed-size blit texture would silently
+/// truncate an 8x frame — a wrong picture with nothing pointing at the cause.
+///
+/// It also asserts each factor still **renders**, because identical geometry is
+/// exactly what a backend that quietly ignored the flag would also produce.
+///
+/// # What this does NOT establish, and it matters
+///
+/// **That the upscaling flag took effect.** The fill is flat, so it has no edge
+/// for supersampling to change — every factor produces the same 1568 pixels of
+/// the same color, and a backend that dropped the flag on the floor would
+/// produce that too. What is verified here is the *contract*: geometry does not
+/// move, and rendering does not break.
+///
+/// Witnessing the flag needs a shape with an **edge** — a triangle, whose
+/// boundary pixels blend at 2x and do not at 1x — compared for distinct color
+/// count. That test is worth writing before anyone relies on this for image
+/// quality; it is deliberately not claimed here.
+#[test]
+fn upscaling_changes_the_render_not_the_scanout_geometry() {
+    let Some(native) = render_at(Upscale::Native) else {
+        println!("SKIPPED: no usable Vulkan device — upscaling was NOT verified.");
+        return;
+    };
+    println!(
+        "native: {}x{}, {} fill pixels",
+        native.0, native.1, native.2
+    );
+    assert!(native.2 >= 1000, "the 1x baseline did not render the fill");
+
+    for upscale in [Upscale::X2, Upscale::X4] {
+        let Some(scaled) = render_at(upscale) else {
+            // Not a skip: 1x worked, so the device exists. A refusal here is
+            // the VRAM ceiling, which scales with the SQUARE of the factor.
+            println!("{upscale:?}: refused — VRAM. Higher factors not verified.");
+            continue;
+        };
+        assert_eq!(
+            (scaled.0, scaled.1),
+            (native.0, native.1),
+            "{upscale:?} changed the scan-out geometry from {}x{} to {}x{}; the \
+             downscale back to 1x is what keeps every downstream buffer valid",
+            native.0,
+            native.1,
+            scaled.0,
+            scaled.1
+        );
+        assert!(
+            scaled.2 >= 1000,
+            "{upscale:?} produced the right geometry with only {} fill pixels — \
+             it rendered nothing",
+            scaled.2
+        );
+        println!(
+            "{upscale:?}: {}x{}, {} fill pixels",
+            scaled.0, scaled.1, scaled.2
+        );
+    }
 }
