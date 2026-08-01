@@ -3944,7 +3944,7 @@ mod work_counter_tests {
     fn the_cpu_bus_dispatch_shape_is_pinned() {
         // (label, operation, expected accesses)
         //
-        // `write_sized` at width 8 is TWO accesses on purpose: it decomposes
+        // `write_sized` at an 8-BYTE width is TWO accesses on purpose: it decomposes
         // into two `write_u32`, and a `sd` genuinely is two word accesses on
         // this bus. If that ever became 1, the leaf counting has been replaced
         // by counting the entry point, which double-counts everything else.

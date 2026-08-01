@@ -119,6 +119,13 @@ fn main() {
     );
     assert!(bus > 0, "no bus accesses serviced in the timed window");
 
+    // A zero window would make every `per ms` column `inf`, which prints as a
+    // result. 120 frames of a real ROM cannot take zero time, so this is a
+    // broken-measurement guard rather than a plausible case — and it says which.
+    assert!(
+        total_ms > 0.0,
+        "the timed window measured {total_ms} ms; the clock is not usable here"
+    );
     let frames = f64::from(FRAMES);
     #[allow(
         clippy::cast_precision_loss,

@@ -266,7 +266,7 @@ impl Rsp {
         clippy::inline_always,
         reason = "called once per executed RSP instruction; a call would cost more than the count"
     )]
-    pub(crate) fn count_retired(&mut self) {
+    pub(crate) const fn count_retired(&mut self) {
         #[cfg(feature = "work-counters")]
         {
             self.retired = self.retired.wrapping_add(1);
