@@ -94,6 +94,25 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **Work-unit counters** (`work-counters`): RSP instructions executed and Bus
+  accesses serviced, plus `examples/work_bench.rs` to report them per frame and
+  per mode. Default-OFF — the Bus increment sits in the emulator's hottest path —
+  and both fields are `#[serde(skip)]`, so the save-state layout is unchanged.
+
+  They settle a question `docs/performance.md` had held open: the RSP and Bus
+  buckets grow +12.1% and +13.5% under `fast-exec`, and that document said
+  outright those rows must not be used to argue anything got slower until a work
+  count existed. **The work is identical** — the RSP executes 294,983
+  instructions per frame in *both* modes to the instruction, and the Bus differs
+  by 8 accesses in 78,000 (0.01%). So the shares moved by attribution, not
+  workload, confirming the inlining hypothesis. The CPU's +1.04% independently
+  reproduces ledger C-16, which is the check that the counters measure what they
+  claim.
+
+  Also pinned: a "bus access" is a **dispatch**, and the shape is asymmetric —
+  `read_u32` costs 5 (itself plus four byte reads) where `write_u32` costs 1,
+  because the write path has an RDRAM fast path and the read path does not.
+
 - **Per-phase timing for the GPU present path**, and the benchmark that reads
   it. `present` is split into `stage` / `submit` / `scanout` / `copy` — the four
   phases that different planned GPU work would remove — each reported as a share

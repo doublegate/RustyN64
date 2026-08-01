@@ -110,6 +110,24 @@ pub struct Rsp {
     /// A branch target latched by the previous instruction, taken after the
     /// delay slot retires. `None` means the next PC is sequential.
     branch: Option<u32>,
+    /// Instructions this RSP has **executed** (`work-counters`).
+    ///
+    /// Not a cycle counter and nothing schedules against it — the project rule
+    /// is that `master_ticks` is the only counter that is ever incremented, and
+    /// its stated exception is exactly this: a retired-work tally. Reading it
+    /// cannot affect timing, and nothing in the emulator does read it.
+    ///
+    /// It counts **executed**, not stepped, and the increment sits *after*
+    /// `su_step`'s halt check for that reason. A halted RSP is stepped every RCP
+    /// cycle and does nothing; counting those would make the tally track the
+    /// scheduler instead of the microcode — which is the opposite of what it is
+    /// for, and would look perfectly plausible. `a_halted_rsp_retires_nothing`
+    /// pins it.
+    ///
+    /// `#[serde(skip)]`, so ADR 0005's save-state layout is untouched.
+    #[cfg(feature = "work-counters")]
+    #[serde(skip)]
+    retired: u64,
     // TODO(T-RSP-01): VCO/VCC/VCE flag registers, the divide-in/out latches for
     // VRCP/VRSQ, the DMA length/skip latches — see `docs/rsp.md`.
 }
@@ -150,6 +168,8 @@ impl Rsp {
             },
             pending_vd_lane: None,
             branch: None,
+            #[cfg(feature = "work-counters")]
+            retired: 0,
         }
     }
 
@@ -217,6 +237,42 @@ impl Rsp {
         bank[off & 0xFFF] = val;
     }
 
+    /// Instructions this RSP has executed since power-on (`work-counters`).
+    ///
+    /// See the field for why this is a legitimate counter under the
+    /// derive-don't-increment rule.
+    #[cfg(feature = "work-counters")]
+    #[must_use]
+    pub const fn retired(&self) -> u64 {
+        self.retired
+    }
+
+    /// Count one **executed** instruction.
+    ///
+    /// A method rather than a `cfg` block at the call site so that site stays
+    /// one line: `su_step` was already within two lines of the `too_many_lines`
+    /// gate, and an inline block tripped it. Compiles to nothing without the
+    /// feature.
+    #[cfg_attr(
+        not(feature = "work-counters"),
+        allow(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "the body is empty without the feature; the call site stays uniform"
+        )
+    )]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "called once per executed RSP instruction; a call would cost more than the count"
+    )]
+    pub(crate) const fn count_retired(&mut self) {
+        #[cfg(feature = "work-counters")]
+        {
+            self.retired = self.retired.wrapping_add(1);
+        }
+    }
+
     /// Advance the RSP by one instruction when running.
     ///
     /// Returns what the step asked of the rest of the machine — see
@@ -255,6 +311,86 @@ mod tests {
     /// is therefore unconditionally `true`. The test passed for a reason that had
     /// nothing to do with the RSP's actual state, and would have kept passing if
     /// `SP_STATUS` powered up running.
+    /// A halted RSP is stepped every RCP cycle and must retire nothing.
+    ///
+    /// This is the whole reason the increment sits *after* the halt check.
+    /// Counting ticks instead of executed instructions would make the tally
+    /// track the scheduler rather than the microcode — and it would look
+    /// perfectly plausible, because a halted RSP is stepped constantly.
+    #[cfg(feature = "work-counters")]
+    #[test]
+    fn a_halted_rsp_retires_nothing() {
+        let mut rsp = Rsp::new();
+        assert!(rsp.halted(), "the premise: it powers up halted");
+        for _ in 0..64 {
+            rsp.tick();
+        }
+        assert_eq!(
+            rsp.retired(),
+            0,
+            "a halted RSP retired instructions; the counter is counting ticks"
+        );
+    }
+
+    /// A running RSP retires exactly one instruction per tick.
+    ///
+    /// The non-vacuous half of the pair above: without it, a counter that never
+    /// incremented at all would satisfy `a_halted_rsp_retires_nothing`
+    /// perfectly.
+    #[cfg(feature = "work-counters")]
+    #[test]
+    fn a_running_rsp_retires_one_per_tick() {
+        let mut rsp = Rsp::new();
+        // NOPs, so nothing branches, halts or faults — the count is then
+        // unambiguously one per tick rather than one per something else.
+        for i in 0..16u32 {
+            let a = (i * 4) as usize;
+            rsp.imem[a..a + 4].copy_from_slice(&0u32.to_be_bytes());
+        }
+        rsp.sp.set_halted(false);
+        assert!(!rsp.halted(), "the premise: it is running");
+
+        for n in 1..=8u64 {
+            rsp.tick();
+            assert_eq!(
+                rsp.retired(),
+                n,
+                "after {n} ticks of a running RSP the tally should be {n}"
+            );
+        }
+    }
+
+    /// `retired` is `#[serde(skip)]`, so a restored RSP starts at zero and keeps
+    /// counting — the mirror of `rustyn64-core`'s
+    /// `a_deserialized_bus_starts_at_zero_and_still_counts`.
+    ///
+    /// This PR added two counters and originally tested the save-state
+    /// semantics of only one. An asymmetry like that is how the untested half
+    /// later turns out to behave differently: #245 shipped a `#[serde(skip)]`
+    /// field that deserialized into something unusable and panicked on the next
+    /// write, and the test that should have caught it passed vacuously.
+    #[cfg(feature = "work-counters")]
+    #[test]
+    fn a_deserialized_rsp_starts_at_zero_and_still_counts() {
+        let mut rsp = Rsp::new();
+        rsp.imem[0..4].copy_from_slice(&0u32.to_be_bytes());
+        rsp.sp.set_halted(false);
+        rsp.tick();
+        assert!(rsp.retired() > 0, "the premise: it counted something");
+
+        let bytes = bincode::serialize(&rsp).expect("serialize");
+        let mut restored: Rsp = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(
+            restored.retired(),
+            0,
+            "the tally survived a save-state; it is a measurement, not machine state"
+        );
+        // And it is still live afterwards, which zero alone cannot show.
+        restored.sp.set_halted(false);
+        restored.tick();
+        assert_eq!(restored.retired(), 1, "a restored RSP stopped counting");
+    }
+
     #[test]
     fn constructs_halted() {
         let mut rsp = Rsp::new();

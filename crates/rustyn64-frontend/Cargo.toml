@@ -40,6 +40,10 @@ fast-scheduler = ["rustyn64-core/fast-scheduler"]
 # because promoting an alternate execution mode into a shipped artifact is an
 # ADR 0013 decision rather than a build-configuration one.
 fast-exec = ["rustyn64-core/fast-exec"]
+# Work-unit counters (RSP instructions executed, Bus accesses serviced). Forwarded
+# so `examples/work_bench.rs` can report them per frame and per mode. Default-OFF;
+# see rustyn64-core's entry for why.
+work-counters = ["rustyn64-core/work-counters"]
 
 # ADR 0014: present frames through the GPU RDP instead of the software VI
 # scan-out. Default-OFF, native-only, and the only thing that pulls in the
@@ -148,3 +152,11 @@ web-sys = { version = "0.3", features = [
 [[example]]
 name = "gpu_phase_bench"
 required-features = ["gpu-rdp"]
+
+# Reads `Rsp::retired()` and `Bus::accesses()`, both of which exist only under
+# `work-counters`. Same reasoning as above: without this, any `--all-targets`
+# build compiles a file whose API is absent and the gate reports red on a tree
+# that is fine.
+[[example]]
+name = "work_bench"
+required-features = ["work-counters"]

@@ -27,6 +27,14 @@ fast-exec = ["rustyn64-cpu/fast-exec"]
 # additive: it adds one `#[serde(skip)]` field, so the save-state layout is
 # identical either way, and it changes no emulated behavior.
 rdp-tap = []
+# Work-unit counters: RSP instructions executed and Bus accesses serviced, per
+# frame. They exist to settle a question a sampled profile cannot answer —
+# whether a bucket that grew is doing MORE WORK or merely being CHARGED
+# differently by the inliner (`docs/performance.md`). Default-OFF, because the
+# Bus increment sits in the hottest path in the emulator and a shipped build must
+# not pay for a measurement. Both fields are `#[serde(skip)]`, so the save-state
+# layout is identical either way (ADR 0005).
+work-counters = ["rustyn64-rsp/work-counters"]
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

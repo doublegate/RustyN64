@@ -439,6 +439,27 @@ pub struct Bus {
     #[cfg(feature = "rdp-tap")]
     #[serde(skip, default = "all_pages_dirty")]
     rdram_dirty: alloc::boxed::Box<[bool]>,
+    /// CPU-facing bus accesses this Bus has serviced (`work-counters`).
+    ///
+    /// Counted at the four leaves of the `CpuBus` surface — `read_u8`,
+    /// `read_u32`, `write_u8`, `write_u32`. `write_sized` is deliberately NOT
+    /// counted itself: it decomposes into those four, so counting it too would
+    /// double-count every store.
+    ///
+    /// **A `sd` costs two dispatches only OUTSIDE the RCP-internal range.**
+    /// `write_sized` splits a 64-bit store into two `write_u32` for RDRAM and
+    /// the external buses, but the RCP-internal path takes the high word and
+    /// **drops the second entirely** (see `write_sized`'s own comment there), so
+    /// a `sd` to an RCP register is one dispatch, not two. The pinned shape in
+    /// `the_cpu_bus_dispatch_shape_is_pinned` uses an RDRAM address and
+    /// therefore measures the two-dispatch case.
+    ///
+    /// Not a cycle counter and nothing schedules against it — the one exception
+    /// the derive-don't-increment rule allows is a retired-work tally, which is
+    /// what this is. `#[serde(skip)]`, so ADR 0005 is untouched.
+    #[cfg(feature = "work-counters")]
+    #[serde(skip)]
+    accesses: u64,
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
@@ -530,6 +551,8 @@ impl Default for Bus {
             // an empty framebuffer and whatever the allocator left behind.
             #[cfg(feature = "rdp-tap")]
             rdram_dirty: all_pages_dirty(),
+            #[cfg(feature = "work-counters")]
+            accesses: 0,
             rsp: Rsp::new(),
             rdp: Rdp::new(),
             vi: Vi::new(),
@@ -748,6 +771,43 @@ impl Bus {
         #[cfg(not(feature = "rdp-tap"))]
         {
             let _ = (off, len);
+        }
+    }
+
+    /// CPU-facing bus accesses serviced since power-on (`work-counters`).
+    ///
+    /// The unit that answers *did the Bus get slower, or does it run more?* — a
+    /// question a sampled profile share cannot answer, because it cannot
+    /// separate "this code got slower" from "this code ran more often" from
+    /// "the compiler charged it differently".
+    #[cfg(feature = "work-counters")]
+    #[must_use]
+    pub const fn accesses(&self) -> u64 {
+        self.accesses
+    }
+
+    /// Count one CPU-facing bus access.
+    ///
+    /// Compiles to nothing without the feature, which is why it is acceptable at
+    /// the four hottest entry points in the emulator.
+    #[cfg_attr(
+        not(feature = "work-counters"),
+        allow(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "the body is empty without the feature; the signature stays uniform so the \
+                      call sites need no cfg of their own"
+        )
+    )]
+    #[allow(
+        clippy::inline_always,
+        reason = "called from every CPU bus access; a call here would cost more than the count"
+    )]
+    #[inline(always)]
+    const fn count_access(&mut self) {
+        #[cfg(feature = "work-counters")]
+        {
+            self.accesses = self.accesses.wrapping_add(1);
         }
     }
 
@@ -1913,6 +1973,7 @@ use rustyn64_cart::pi;
 
 impl CpuBus for Bus {
     fn read_u8(&mut self, addr: u32) -> u8 {
+        self.count_access();
         if let Some(off) = Self::rdram_offset(addr) {
             return self.rdram[off];
         }
@@ -2004,6 +2065,7 @@ impl CpuBus for Bus {
     /// access puts its own address on the bus, so `addr & !1 == addr` and the
     /// word is simply the four bytes there.
     fn read_u32(&mut self, addr: u32) -> u32 {
+        self.count_access();
         // ISViewer lives INSIDE the PI bus range and is claimed first, exactly
         // as it is on the byte path. Letting the cart branch win here routes the
         // debug channel's read-back to ROM and breaks the detection handshake
@@ -2077,6 +2139,7 @@ impl CpuBus for Bus {
     }
 
     fn write_u8(&mut self, addr: u32, val: u8) {
+        self.count_access();
         if let Some(off) = Self::rdram_offset(addr) {
             self.rdram[off] = val;
             self.mark_rdram_dirty(off);
@@ -2205,6 +2268,7 @@ impl CpuBus for Bus {
     }
 
     fn write_u32(&mut self, addr: u32, val: u32) {
+        self.count_access();
         // SP DMA registers. Handled here, at word granularity, for the same
         // reason as the PI: the default byte-wise path would fire four DMAs for
         // one `sw` to a length register.
@@ -3857,6 +3921,106 @@ mod rdp_tap_tests {
             bus.rdp.commands_processed, 2,
             "the RDP consumed a different number of commands with the tap compiled in"
         );
+    }
+}
+
+#[cfg(all(test, feature = "work-counters"))]
+mod work_counter_tests {
+    use super::Bus;
+    use crate::cpu::Bus as CpuBus;
+
+    /// What each CPU-facing operation actually costs in bus dispatches.
+    ///
+    /// Distinct expected counts rather than "greater than zero": a counter wired
+    /// to only one of the four leaves, or one that also counted `write_sized`
+    /// itself and so double-counted every store, would pass a non-zero check
+    /// comfortably.
+    ///
+    /// The counts are **asserted, not described**, because `docs/performance.md`
+    /// quotes them to explain what a "bus access" is — and a figure quoted in
+    /// prose while only being true in code is how this project's numbers go
+    /// stale.
+    #[test]
+    fn the_cpu_bus_dispatch_shape_is_pinned() {
+        // EVERY case below uses an RDRAM address (0x8000_1000), and the
+        // expectations are only claimed for that route.
+        //
+        // `write_sized` at an 8-BYTE width is TWO dispatches here because it
+        // decomposes into two `write_u32` for RDRAM. That is NOT universal: on
+        // the RCP-internal route `write_sized` takes the high word and drops the
+        // second entirely (its own comment, ~line 2247), so a `sd` to an RCP
+        // register is ONE dispatch. Pinning the RDRAM number as if it were the
+        // rule is how a scoped measurement becomes a false general claim.
+        //
+        // If the 2 ever became 1 *for RDRAM*, the leaf counting has been
+        // replaced by counting the entry point, which double-counts everything
+        // else.
+        /// One operation to time, so the array type stays legible.
+        type Op = fn(&mut Bus);
+        let cases: [Op; 6] = [
+            |b| {
+                CpuBus::read_u8(b, 0x8000_1000);
+            },
+            |b| {
+                CpuBus::read_u32(b, 0x8000_1000);
+            },
+            |b| CpuBus::write_u8(b, 0x8000_1000, 1),
+            |b| CpuBus::write_u32(b, 0x8000_1000, 1),
+            |b| CpuBus::write_sized(b, 0x8000_1000, 4, 1),
+            |b| CpuBus::write_sized(b, 0x8000_1000, 8, 1),
+        ];
+        let mut got = [0u64; 6];
+        for (i, op) in cases.into_iter().enumerate() {
+            let mut bus = Bus::new();
+            let before = bus.accesses();
+            op(&mut bus);
+            got[i] = bus.accesses() - before;
+        }
+        // The measured truth, pinned rather than described — and the shape is
+        // ASYMMETRIC in a way worth knowing:
+        //
+        //   read_u8         1
+        //   read_u32        5   <- itself, plus FOUR byte reads
+        //   write_u8        1
+        //   write_u32       1   <- an RDRAM fast path; no decomposition
+        //   write_sized w4  1   <- delegates to write_u32
+        //   write_sized w8  2   <- two write_u32, which is what a `sd` costs
+        //
+        // `read_u32` composes an RDRAM word out of four `read_u8` while
+        // `write_u32` writes one directly. So the unit this counter reports is
+        // **bus dispatch entries**, not CPU requests, and a word read weighs
+        // five times a word write. That is not a flaw in the counter: dispatches
+        // are what the `bus.rs` profile bucket spends its time in, which is the
+        // quantity the count exists to explain.
+        assert_eq!(
+            got,
+            [1, 5, 1, 1, 1, 2],
+            "the CpuBus dispatch shape changed; docs/performance.md quotes these"
+        );
+    }
+
+    /// The counter is `#[serde(skip)]`, so a restored save-state starts at zero
+    /// and keeps counting.
+    ///
+    /// Zero rather than preserved is the correct behavior — it is a measurement
+    /// tally, not machine state, and ADR 0005's layout must not carry it. The
+    /// second half matters as much: a `skip`ped field that deserialized into
+    /// something unusable is exactly the bug #245 shipped and had to fix.
+    #[test]
+    fn a_deserialized_bus_starts_at_zero_and_still_counts() {
+        let mut bus = Bus::new();
+        CpuBus::write_u8(&mut bus, 0x8000_1000, 1);
+        assert!(bus.accesses() > 0, "the premise: it counted something");
+
+        let bytes = bincode::serialize(&bus).expect("serialize");
+        let mut restored: Bus = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(
+            restored.accesses(),
+            0,
+            "the tally survived a save-state; it is not machine state"
+        );
+        CpuBus::write_u8(&mut restored, 0x8000_1000, 2);
+        assert_eq!(restored.accesses(), 1, "a restored Bus stopped counting");
     }
 }
 

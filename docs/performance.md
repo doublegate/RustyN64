@@ -1224,11 +1224,51 @@ it is the leading candidate — but it is untested, and *"a hot line is not a ho
 operation"* applies to buckets too.
 
 **What would settle it** is a work-unit count rather than a sampled share: RSP
-instructions executed and bus accesses serviced, per frame, in both modes. Those
-are counters the machine can keep and nothing currently reports. Until they exist,
-**these two rows must not be used to argue that anything got slower** — they are
-recorded because an unexplained 12% is worth knowing about, not because they
-support a conclusion.
+instructions executed and bus accesses serviced, per frame, in both modes.
+
+### Settled: the work is identical, so the shares moved for another reason
+
+Those counters now exist (`work-counters`, `examples/work_bench.rs`). Super
+Mario 64, 120 frames after the VI comes up:
+
+| work unit, per frame | accurate | `fast-exec` + `fast-scheduler` | change |
+| --- | --- | --- | --- |
+| CPU instructions | 1,428,933 | 1,443,787 | **+1.04%** |
+| RSP instructions | 294,983 | 294,983 | **0.00%** |
+| Bus accesses | 78,103 | 78,111 | **+0.01%** |
+| frame mean | 101.048 ms | 63.218 ms | -37.4% |
+
+**The RSP executes the same instruction count to the instruction, and the Bus
+services 8 more accesses in 78,000.** Neither subsystem does measurably more
+work, so the +12.1% and +13.5% shares are **attribution, not workload** — which
+confirms the inlining hypothesis above and retires it as a hypothesis.
+
+**The CPU's +1.04% is the independent check that these counters measure what
+they claim.** It reproduces ledger C-16's separately-derived `fast-exec`
+divergence exactly, from an unrelated mechanism, and it is also the obvious
+explanation for the Bus's 8 extra accesses.
+
+So the two rows may now be read — as *the same work, charged differently*. What
+they must still not be read as is "the RSP and Bus got slower". Nothing here
+says a subsystem regressed, and the throughput figures say the opposite: RSP
+work per millisecond went 2,919 → 4,666 and Bus 773 → 1,236, both ~1.60x, which
+is the whole-frame ratio. Every subsystem got uniformly faster.
+
+**A "bus access" is a dispatch, not a CPU request**, and the shape is asymmetric
+(pinned in `the_cpu_bus_dispatch_shape_is_pinned`):
+
+| operation | dispatches |
+| --- | --- |
+| `read_u8` | 1 |
+| `read_u32` | **5** — itself, plus four byte reads |
+| `write_u8` | 1 |
+| `write_u32` | 1 — an RDRAM fast path, no decomposition |
+| `write_sized` w4 / w8 | 1 / 2 |
+
+`read_u32` composes an RDRAM word out of four `read_u8` while `write_u32` writes
+one directly. **That asymmetry is a lead, not just a caveat**: the Bus is ~18% of
+a frame, reads dominate bus traffic, and the read path is paying five dispatches
+where the write path pays one.
 
 ### The single hottest line is one this change introduced
 

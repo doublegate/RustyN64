@@ -9,6 +9,12 @@ authors.workspace = true
 [features]
 default = ["std"]
 std = []
+# Count instructions the RSP actually executes, so a profile share can be told
+# apart from a work increase. Default-OFF: it adds an increment to the hottest
+# loop in the crate, and a shipped build must not pay for a measurement. The
+# field is `#[serde(skip)]`, so the save-state layout is identical either way
+# (ADR 0005).
+work-counters = []
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
@@ -18,3 +24,7 @@ bitflags = { version = "2", features = ["serde"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Round-trips `Rsp` in the save-state reset test, matching rustyn64-core.
+bincode = "1"
