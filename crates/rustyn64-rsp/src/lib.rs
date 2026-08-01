@@ -498,15 +498,36 @@ mod tests {
         // And it is a measurement, not machine state.
         let bytes = bincode::serialize(&rsp).expect("serialize");
         let restored: Rsp = bincode::deserialize(&bytes).expect("deserialize");
+        let mut restored = restored;
         assert_eq!(
             restored.vu_funct_histogram().iter().sum::<u64>(),
             0,
             "the histogram survived a save-state"
         );
+        // And it is still LIVE, shown by executing another instruction rather
+        // than by inspecting the container.
+        //
+        // The first version asserted `restored.vu_funct_histogram().len() == 64`
+        // and claimed that distinguished "reset" from "destroyed". It does not:
+        // the field is `Box<[u64; 64]>`, a FIXED-size array, so `.len()` is a
+        // compile-time constant and the assertion could not fail. The
+        // empty-container failure mode it was reaching for belongs to
+        // `Box<[T]>` — which is what #245's `rdram_dirty` was, and why that one
+        // needed the check. Caught in review of #250.
+        // Filled across several words, not just word 0: the restored PC carries
+        // over from the tick above and is 4, so writing only word 0 fetches a
+        // zero and counts nothing. The first version of this did exactly that
+        // and the test caught it.
+        for w in 0..8 {
+            let a = w * 4;
+            restored.imem[a..a + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        restored.sp.set_halted(false);
+        restored.tick();
         assert_eq!(
-            restored.vu_funct_histogram().len(),
-            64,
-            "a restored histogram must still be 64 usable slots, not an empty box"
+            restored.vu_funct_histogram()[0x06],
+            1,
+            "a restored RSP stopped counting COP2 ops"
         );
     }
 
