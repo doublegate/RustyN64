@@ -787,7 +787,6 @@ impl Bus {
         not(feature = "work-counters"),
         allow(
             clippy::unused_self,
-            clippy::missing_const_for_fn,
             clippy::needless_pass_by_ref_mut,
             reason = "the body is empty without the feature; the signature stays uniform so the \
                       call sites need no cfg of their own"

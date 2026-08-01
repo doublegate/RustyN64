@@ -153,7 +153,7 @@ web-sys = { version = "0.3", features = [
 name = "gpu_phase_bench"
 required-features = ["gpu-rdp"]
 
-# Reads `Rsp::retired` and `Bus::bus_accesses`, both of which exist only under
+# Reads `Rsp::retired()` and `Bus::accesses()`, both of which exist only under
 # `work-counters`. Same reasoning as above: without this, any `--all-targets`
 # build compiles a file whose API is absent and the gate reports red on a tree
 # that is fine.

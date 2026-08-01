@@ -269,7 +269,7 @@ impl Rsp {
     pub(crate) fn count_retired(&mut self) {
         #[cfg(feature = "work-counters")]
         {
-            self.retired += 1;
+            self.retired = self.retired.wrapping_add(1);
         }
     }
 
