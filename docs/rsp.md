@@ -550,11 +550,16 @@ to nothing and the crate is byte-identical.
 
 ### This does not authorize a technique
 
-`crates/rustyn64-rsp` is `#![forbid(unsafe_code)]`, so explicit SIMD intrinsics
-are **not** an available implementation path here. The maintainer has agreed in
-principle to a scoped exception by ADR; **that ADR does not exist yet**, and
-until it does the census in `docs/performance.md` identifies a hotspot rather
-than sanctioning a way to attack it.
+`crates/rustyn64-rsp` is `#![forbid(unsafe_code)]`. **[ADR 0016](adr/0016-scoped-simd-exception-for-the-rsp.md)
+authorizes a narrow exception** — `core::arch` intrinsics, in `vu.rs` only —
+behind four gates: a scalar/vector **equivalence** test over the operand space
+(conformance to the ROM suite is explicitly *not* sufficient),
+`rsp_categories_report_no_failures` at `0 failing`, an A-B-A measurement against
+the **5.3%** ceiling with neutral-or-worse reverted, and a tested fallback for
+targets without the feature.
+
+It authorizes a technique; it does not schedule the work, and it records the
+trade as marginal rather than recommended. The CPU is ~6x this ceiling.
 
 What the census established, on Super Mario 64: **41% of everything the RSP
 executes is a VU computation**, only 32 of 64 `funct` values ever appear, four

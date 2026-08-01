@@ -94,6 +94,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **ADR 0016 — a scoped `unsafe` exception for the RSP vector unit.** Permits
+  `core::arch` intrinsics in `vu.rs` only (not raw pointers, not `transmute`,
+  not FFI; every other chip crate keeps `forbid(unsafe_code)`), behind four
+  gates: a scalar/vector **equivalence** test over the operand space —
+  conformance to the ROM suite is explicitly *not* sufficient —
+  `rsp_categories_report_no_failures` at `0 failing`, an A-B-A measurement
+  against the **5.3%** ceiling with neutral-or-worse reverted, and a tested
+  fallback for targets without the feature.
+
+  It authorizes a technique; it does not schedule the work. The ADR records the
+  trade as marginal and names the honest comparison: the CPU is 32.29% of a
+  frame, roughly six times this ceiling.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by

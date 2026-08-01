@@ -2190,11 +2190,13 @@ not fire proves nothing until you have checked it could have.
 to recover the cost of the few that matter would be the expensive way round, so
 the same method that worked for the Bus applies here: **count first**.
 
-**A note on what this does not authorize.** `crates/rustyn64-rsp` is
-`#![forbid(unsafe_code)]`, so explicit SIMD intrinsics are not an available
-implementation path today. The maintainer has agreed in principle to a scoped
-exception by ADR; **that ADR does not exist**, and until it does this census
-identifies a hotspot rather than sanctioning a technique for it.
+**A note on what this authorizes.** `crates/rustyn64-rsp` is
+`#![forbid(unsafe_code)]`. **ADR 0016** now permits a narrow exception —
+`core::arch` intrinsics in `vu.rs` only — behind four gates, the first being a
+scalar/vector **equivalence** test over the operand space rather than mere
+conformance to the ROM suite. It authorizes a technique; it does not schedule
+the work, and it states the trade is marginal against a CPU bucket six times
+larger.
 
 `work-counters` now keeps a 64-slot histogram of COP2 computational `funct`
 values, reported by `examples/work_bench.rs`.
