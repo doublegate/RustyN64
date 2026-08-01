@@ -57,7 +57,7 @@ that fail for different reasons:
    3 x 43 = 129 independently created contexts, not three. A failure would mean device
    creation leaks into the output.
 2. **A stateful frame sequence agrees.** One backend rendering 60 successive
-   frames — reusing the device, because TMEM, tile descriptors and combiner state
+   frames — reusing the device because TMEM, tile descriptors and combiner state
    legitimately persist between frames on hardware — reproduces exactly, across
    two runs, with 36 distinct frames in the sequence — a count that is
    **asserted**, not merely printed, so the figure quoted here cannot drift from

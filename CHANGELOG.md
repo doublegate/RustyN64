@@ -113,8 +113,8 @@ All notable changes to RustyN64 are documented here. The format is based on
 
   The whole-RDRAM snapshot is kept deliberately: correct by construction, with no
   dirty-region tracker to get subtly wrong. ADR 0004 binds the core and the core
-  is untouched, so no determinism guarantee is broken — but the GPU path makes no
-  determinism claim of its own, and `docs/rdp.md` says which.
+  is untouched, so no determinism guarantee is broken; what the GPU path itself
+  claims is set out in ADR 0015 (see the entry above).
 
   Also documented there: the two backends present **different geometry**.
   parallel-rdp scans out the whole VI raster; `scanout_scaled` crops to the

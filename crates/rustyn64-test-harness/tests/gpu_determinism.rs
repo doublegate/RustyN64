@@ -36,6 +36,7 @@
     reason = "narrative test docs name RustyN64/RDRAM/Angrylion in prose"
 )]
 
+use rustyn64_test_harness::RDP_VECTORS;
 use rustyn64_test_harness::conformance_gpu::{Unavailable, corpus_digest, repeated_frame_digest};
 
 /// Runs of the whole corpus. Three is enough to catch a per-run seed while
@@ -66,10 +67,16 @@ fn independent_devices_render_identically() {
         Err(Unavailable::NoDevice) => return skipped("GPU reproducibility"),
         Err(e) => panic!("the GPU backend is unusable: {e:?}"),
     };
-    assert!(
-        first.len() >= 35,
-        "only {} vectors were digested; the comparison would be near-empty",
-        first.len()
+    // EVERY registered vector, not "enough of them". Compared against
+    // `RDP_VECTORS.len()` rather than a literal so the two cannot drift: a
+    // threshold would let a run that digested half the corpus pass while the
+    // docs still claimed 43.
+    assert_eq!(
+        first.len(),
+        RDP_VECTORS.len(),
+        "the corpus digest covered {} of {} registered vectors",
+        first.len(),
+        RDP_VECTORS.len()
     );
 
     for run in 1..RUNS {
@@ -118,6 +125,15 @@ fn a_frame_sequence_on_one_device_is_reproducible() {
     );
 
     let again = repeated_frame_digest(SEQUENCE_FRAMES).expect("the device worked a moment ago");
+    // Before the `zip`: it stops at the shorter side, so a second run that
+    // produced fewer frames would compare only the prefix and pass.
+    assert_eq!(
+        again.len(),
+        first.len(),
+        "the second run produced {} frames against the first run's {}",
+        again.len(),
+        first.len()
+    );
     for (i, (a, b)) in first.iter().zip(&again).enumerate() {
         assert_eq!(
             a, b,
