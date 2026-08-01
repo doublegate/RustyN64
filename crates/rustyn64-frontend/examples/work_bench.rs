@@ -185,7 +185,8 @@ fn report_vu_histogram(core: &EmuCore, before: &[u64; 64]) {
     let total: u64 = hist.iter().sum();
     assert!(
         total > 0,
-        "no COP2 computational instructions executed; the histogram would be a          table of zeros, which reads as a result"
+        "no COP2 computational instructions executed in the timed window; the \
+histogram would be a table of zeros, which reads as a result"
     );
     #[allow(
         clippy::cast_precision_loss,
@@ -195,8 +196,7 @@ fn report_vu_histogram(core: &EmuCore, before: &[u64; 64]) {
     let mut ranked: Vec<(usize, u64)> = hist
         .iter()
         .enumerate()
-        .filter(|&(_, &n)| n > 0)
-        .map(|(i, &n)| (i, n))
+        .filter_map(|(i, &n)| (n > 0).then_some((i, n)))
         .collect();
     ranked.sort_unstable_by_key(|&(_, n)| core::cmp::Reverse(n));
 

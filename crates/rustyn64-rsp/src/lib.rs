@@ -312,8 +312,8 @@ impl Rsp {
     pub(crate) fn count_vu_funct(&mut self, funct: u32) {
         #[cfg(feature = "work-counters")]
         {
-            self.vu_funct[(funct & 0x3F) as usize] =
-                self.vu_funct[(funct & 0x3F) as usize].wrapping_add(1);
+            let slot = (funct & 0x3F) as usize;
+            self.vu_funct[slot] = self.vu_funct[slot].wrapping_add(1);
         }
         #[cfg(not(feature = "work-counters"))]
         {
