@@ -697,14 +697,16 @@ can.
    and FAILING ITS OWN STAGE-2 GATE"*. The gate is a judgment and the maintainer's to
    move; the arithmetic under it is not.
 10. **A shared Vulkan device between parallel-rdp and wgpu (A1)** — the whole GPU present
-    path, both PCIe crossings included, is **4.0% of a frame**. Perfect elimination is
-    **1.044x**, and that bounds *all* remaining GPU work, not just A1.
+    path, both PCIe crossings included, is **4.0–4.4% of a frame** across two agreeing
+    runs. Perfect elimination is **1.042–1.046x**, and that bounds *all* remaining GPU
+    work, not just A1. Quote the range: `1/(1−0.040)` is 1.042 and `1/(1−0.044)` is 1.046,
+    so a single "1.044x" is the midpoint and does not reproduce from either endpoint.
 11. **Promoting the GPU to the machine's rasterizer (A4)** — **1.23%**, not the 6.36% the
     profile bucket suggested, because deleting rasterization is strictly cheaper than
     replacing it. It also changes what lands in RDRAM, so it would cost an ADR and the
     determinism argument in ADR 0015.
-12. **GPU VI scan-out (A5)** — recovers nothing once the present path is known to be 4.0%
-    in total. The VI's apparent 4.64% was already retired by the scan-out memoization.
+12. **GPU VI scan-out (A5)** — recovers nothing once the present path is known to be
+    4.0–4.4% in total. The VI's apparent 4.64% was already retired by the scan-out memoization.
 
 ## The AI's split-borrow move, and a ceiling that was wrong for the second time
 
@@ -2617,7 +2619,7 @@ numbers.
 
 | item | outcome | evidence |
 | --- | --- | --- |
-| **A1** — one Vulkan device shared with wgpu | **retired** — the entire present path is 4.0% | §*The GPU present path is 4% of a frame* |
+| **A1** — one Vulkan device shared with wgpu | **retired** — the entire present path is 4.0–4.4% | §*The whole GPU present path* |
 | **A2** — dirty-region RDRAM upload | **SHIPPED, 2.54%** | §*The GPU backend staged all 8 MiB* |
 | **A3** — async RDP | **sized at 1.7%, not built**; one of its two shapes is unavailable and the other needs its own ADR | §*The async RDP (A3)* |
 | **A4** — GPU as the machine's rasterizer | **retired for performance — 1.23%**, not 6.36% | §*Why this is an upper bound A4 cannot reach* |
@@ -2641,16 +2643,21 @@ Quote them separately, or re-measure the combination.
 ### What the program actually produced
 
 Two shipped optimizations worth a few percent, and **nine priority-setting
-figures that did not survive measurement**:
+claims that did not survive measurement** — six numeric shares and three
+premises. The count is the table's row count; an earlier revision said "nine"
+above a six-row table, which review caught:
 
-| figure | believed | measured |
-| --- | --- | --- |
-| the VI bucket | 4.64% | retired by memoization |
-| the RDP bucket | 6.36% | 1.23% recoverable |
-| the VU bucket | 8.5% | 5.3% ceiling, 1.056x |
-| CPU `decode` | 8.1–9.4% | ~0, and a cache is slower |
-| the present path | "double PCIe crossing" | 4.0% total |
-| the CPU bucket | 32.29% | 20.46% removable |
+| claim | believed | measured | where |
+| --- | --- | --- | --- |
+| the VI bucket | 4.64% | retired by scan-out memoization | §*The VI divided for a half-line period* |
+| the RDP bucket | 6.36% | 1.23% recoverable | §*Why this is an upper bound A4 cannot reach* |
+| the VU bucket | 8.5% | 5.3% ceiling, 1.056x | §*Which VU operations actually run* |
+| CPU `decode` | 8.1–9.4% | ~0 as emitted; a cache is 1.0% **slower** | ruled-out #7 |
+| the CPU bucket | 32.29% | 20.46% removable | §*A recompiler's ceiling* |
+| `Latch` inter-stage copies | 16.1% | retired work charged to a store; **+60% traffic measured faster** | ruled-out #6 |
+| the GPU present path | "it crosses PCIe twice" | 4.0–4.4% in total | §*The whole GPU present path* |
+| the fast-scheduler | "the only path to 60 FPS" | caps at 2.15x even if the CPU were free | §*The 60 FPS target is out of reach* |
+| ADR 0014 §6's hazard tracker | the gate on GPU determinism | not what gated it | §*The async RDP (A3)* |
 
 Every one came from **reading** — a profile bucket, a code path, an
 architecture note — rather than **counting**. The counting was cheap in each
@@ -2664,29 +2671,31 @@ first.
 ### "What if we took all the small wins anyway?"
 
 A fair question, and the answer is arithmetic rather than opinion. **The trap is
-that three of them are the same 4.0%.**
+that three of them are the same 4.0–4.4%.**
 
 A1, A3 and A5 all live inside the GPU present path, which the phase timers put
-at **4.0% of a frame in total** — A3's 1.7% is explicitly a slice of it
+at **4.0–4.4% of a frame in total** — A3's 1.7% is explicitly a slice of it
 (§*What it is worth*). Summing them as 4.0 + 1.7 + 0 double-counts. What is
 genuinely disjoint:
 
 | bucket | share | contains |
 | --- | --- | --- |
-| GPU present path | **4.00%** | A1, A3, A5 — perfect elimination of all three |
+| GPU present path | **4.0–4.4%** | A1, A3, A5 — perfect elimination of all three |
 | software rasterizer | **1.23%** | A4, and this is an upper bound it cannot reach |
 | RSP vector unit | **5.30%** | B2, perfect vectorization of `multiply_lane` |
-| **total** | **10.53%** | |
+| **total** | **10.53–10.93%** | |
 
 > speedup ≤ 1 / (1 − 0.1053) = **1.118x**
+> speedup ≤ 1 / (1 − 0.1093) = **1.123x**
 
-Against the `fast-exec` frame of 65.3 ms / 15.31 FPS:
+The present path is a measured range across two agreeing runs, so the answer is
+a range too. Against the `fast-exec` frame of 65.3 ms / 15.31 FPS:
 
 | | frame | FPS |
 | --- | --- | --- |
 | today | 65.3 ms | 15.31 |
-| all small wins, taken perfectly | 58.4 ms | **17.1** |
-| gain | −6.9 ms | **+1.8 FPS** |
+| all small wins, taken perfectly | 58.4–58.2 ms | **17.1–17.2** |
+| gain | −6.9 to −7.1 ms | **+1.8 to +1.9 FPS** |
 
 **+1.8 FPS, and 60 FPS is still 3.5x away.** Every figure above is a ceiling
 assuming the work is removed *for free*; real implementations pay dispatch,
