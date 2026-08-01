@@ -287,6 +287,19 @@ jobs:
             echo "::error::the smoke test neither rendered nor reported a skip; it is no longer witnessing either outcome"
             exit 1
           fi
+      - name: Run the GPU determinism gate and report which branch it took
+        run: |
+          set -euo pipefail
+          cargo test -p rustyn64-test-harness --release --features gpu-rdp \
+            --test gpu_determinism -- --nocapture 2>&1 | tee /tmp/gpu-det.log
+          if grep -q "^SKIPPED" /tmp/gpu-det.log; then
+            echo "::notice::no Vulkan device on this runner -- GPU reproducibility was NOT verified here"
+          elif grep -q "identical across" /tmp/gpu-det.log; then
+            echo "the GPU path reproduced across independent devices"
+          else
+            echo "::error::the determinism gate neither compared nor reported a skip"
+            exit 1
+          fi
       - name: Run the .rvec parity census and report which branch it took
         run: |
           set -euo pipefail

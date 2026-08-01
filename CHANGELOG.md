@@ -69,6 +69,30 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **The GPU path is verified reproducible, and ADR 0015 states the claim at the
+  scope actually measured.** ADR 0014 had made a determinism claim conditional on
+  dirty-region synchronization, and three PRs repeated that unexamined. It is the
+  wrong condition for the architecture that got built: the backend **owns** its
+  RDRAM (the Bus's is snapshotted in, never shared), `scanout_sync` waits on a
+  fence before read-back, and the software rasterizer still produces the
+  machine's framebuffer — so there are no asynchronous GPU writes for a tracker
+  to synchronize. Dirty-region tracking remains a valid *upload* optimization,
+  but that is throughput, and the throughput is already at parity.
+
+  What had never been measured was simpler: is parallel-rdp's output reproducible
+  at all? `tests/gpu_determinism.rs` says yes, on one device and driver — all 43
+  `.rvec` vectors hash identically across **three independently created
+  devices**, and a **60-frame stateful sequence** (36 distinct frames, reusing
+  one device so TMEM and tile state carry between frames as on hardware)
+  reproduces exactly. Both mutation-checked. Corroborating: parallel-rdp's noise
+  is seeded from `(x, y, primitive_offset)`, with no clock or entropy.
+
+  **Not claimed**, and the ADR says so: cross-vendor bit-exactness (one GPU
+  here — reason to expect it, no evidence); that the GPU and software paths
+  present the same picture (they do not, so the backend is part of the output's
+  identity, as the mode is for `fast-exec`); and reproducibility across a runtime
+  fallback. ADR 0004 is untouched — it binds the core, and the core is unchanged.
+
 - **The GPU RDP is wired into the machine, as a display backend.** The
   frontend's default-off `gpu-rdp` feature presents frames rendered by
   parallel-rdp from the real Bus **when one is available**; `Bus::scanout_scaled`

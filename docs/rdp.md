@@ -1096,11 +1096,41 @@ frontend's geometry test asserts per-backend rather than pretending otherwise.
   borrowed a buffer at first; owning it is what makes the page alignment a
   property of construction rather than of the caller remembering.) The Bus's
   RDRAM is **snapshotted** into it each frame, not shared.
-- **No dirty-region synchronization**, and therefore **no determinism claim**.
-  ADR 0004 binds the core, and the core is untouched — the software rasterizer's
-  output is still what lands in RDRAM and still what a save-state captures — so
-  nothing here breaks that contract. But the GPU backend makes no determinism
-  claim of its own and cannot until synchronization is real.
+- **Dirty-region synchronization — which turns out not to be needed here.** See
+  [ADR 0015](adr/0015-amend-0014-gpu-determinism-scope.md). The backend owns its
+  RDRAM, the Bus's is snapshotted in rather than shared, and `scanout_sync` waits
+  on a fence before read-back, so there are no asynchronous GPU writes for a
+  tracker to synchronize. It remains a valid *upload* optimization — send only
+  the changed pages instead of all 8 MiB — but that is throughput, and the
+  throughput is already at parity.
+
+### Determinism
+
+Settled by measurement, and scoped to what was measured
+([ADR 0015](adr/0015-amend-0014-gpu-determinism-scope.md)).
+
+**Verified — the GPU path is bit-reproducible on one device and driver.**
+`tests/gpu_determinism.rs` asserts two properties that fail for different
+reasons: all 43 `.rvec` vectors hash identically across **three independently
+created devices**, and a **60-frame stateful sequence** (36 distinct frames,
+reusing one device so TMEM and tile state carry between frames as they do on
+hardware) reproduces exactly across two runs. Both are mutation-checked.
+
+Corroborating rather than coincidental: parallel-rdp's noise is seeded from
+`(x, y, primitive_offset)` — no clock, no frame counter, no entropy.
+
+**Not claimed:** bit-exactness across *other* vendors or drivers (one GPU here,
+so there is reason to expect it and no evidence for it); that the GPU and
+software paths present the same picture (they do not — see the geometry note
+above — so the backend is part of the output's identity, as the mode is for
+`fast-exec`); and reproducibility across a runtime fallback, since a host without
+a device presents the software picture. That last is observable rather than
+silent: `EmuCore::gpu_frames()` does not advance on a frame the GPU did not
+produce.
+
+**ADR 0004 is untouched.** Its contract binds the core, the core is unchanged,
+and the software rasterizer still writes the machine's framebuffer. This is a
+claim about what is *presented*, which 0004 never covered.
 
 One correction to the plan this came from: the plan proposed `bindgen`. It is
 not used and not needed — the shim is eight functions, so hand-written
