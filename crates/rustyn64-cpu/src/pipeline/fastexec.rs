@@ -275,8 +275,85 @@ impl Pipeline {
         #[cfg(feature = "work-counters")]
         self.count_commit(e.cop0, e.mem, e.write_back);
 
-        // Stage the instruction into the latch the commit path reads. This is
-        // reuse, not a shortcut: `wb_stage` and `apply_cop0_read` are the accurate
+        // COP2 is one 64-bit latch rather than a register file; the index is
+        // ignored (ledger C-15's shape, twice over). Handled here for the same
+        // reason `ex_stage` handles it: it needs the `rt` value, which `execute`
+        // cannot reach.
+        let mut write_back = e.write_back;
+        match decoded.op {
+            crate::decode::Op::Mtc2 => self.cop2_latch = target,
+            crate::decode::Op::Mfc2 => {
+                write_back = WriteBack::Gpr {
+                    dest: decoded.dest,
+                    value: crate::alu::sext32(self.cop2_latch as u32),
+                };
+            }
+            crate::decode::Op::Dmfc2 => {
+                write_back = WriteBack::Gpr {
+                    dest: decoded.dest,
+                    value: self.cop2_latch,
+                };
+            }
+            _ => {}
+        }
+
+        // ---- The commit fast path ----
+        //
+        // **96.81% of retired instructions commit a GPR or nothing** and touch no
+        // COP0/COP1 access and no memory operation (`work_bench`'s commit census
+        // on Super Mario 64, 221 M instructions). For those, everything the slow
+        // path below does reduces to one register write plus the retirement tail,
+        // and the 120-byte `Latch` exists only to carry it there.
+        //
+        // **What this deliberately does NOT duplicate.** Every subtle case —
+        // COP0 writes, the TLB instructions, COP1 control and arithmetic with
+        // their traps, `HI`/`LO`, and anything with a `DC` access — falls through
+        // to `wb_stage` exactly as before. The logic reproduced here is
+        // `regs.write(dest, value)` and the two retirement counters, which is
+        // small enough that it cannot silently disagree with `wb_stage` about
+        // semantics it never implements.
+        //
+        // The retirement tail is the load-bearing part and is easy to miss:
+        // `retired` feeds the golden-log comparison, and `tick_random` advances
+        // COP0 `Random` — which "decrements as each instruction executes"
+        // (UM §5.4.2). A fast path that skipped it would leave `Random` stuck,
+        // and a stuck `Random` makes every `TLBWR` overwrite the same entry. That
+        // exact bug has already been shipped once here, from the other direction:
+        // `tick_random` was implemented and never called.
+        //
+        // `self.dc_wb` is left alone. `wb_stage` clears `occupied` on every exit,
+        // so it is already `false` on entry here, and the remaining fields are
+        // inert while it is — nothing reads them, and a save-state restores the
+        // same inert values.
+        if e.cop0.is_none() && e.mem.is_none() {
+            // The link value is the EX-time `next_pc` (ledger C-19), applied in
+            // the same position as the slow path applies it.
+            let wb = e
+                .link
+                .map_or(write_back, |dest| WriteBack::Gpr { dest, value: link });
+            if let WriteBack::None | WriteBack::Gpr { .. } = wb {
+                if let WriteBack::Gpr { dest, value } = wb {
+                    // `Regs::write` discards `$zero`, so no guard here — and one
+                    // must not be added, or that rule lives in two places.
+                    regs.write(dest, value);
+                }
+                self.retired = self.retired.wrapping_add(1);
+                self.cop0.tick_random();
+                // No `pending` check and no FP stall cost: both are raised by
+                // `wb_stage`, which cannot run for an instruction with no COP0
+                // access. `ERET` is a `Cop0Access`, so it cannot arrive here
+                // either.
+                let flow = e.redirect.map_or(Flow::Next, |r| Flow::Branch {
+                    target: r.target,
+                    annul: r.nullify_delay_slot,
+                });
+                return (cost, flow);
+            }
+        }
+
+        // ---- The slow path: the accurate path's own commit ----
+        //
+        // Reuse, not a shortcut: `wb_stage` and `apply_cop0_read` are the accurate
         // path's own code, and giving them the same input is what makes the two
         // paths agree on COP0 writes, the TLB instructions, FP arithmetic, and
         // retirement without a second implementation to keep in step.
@@ -289,31 +366,10 @@ impl Pipeline {
             decoded,
             rs_val: source,
             rt_val: target,
-            write_back: e.write_back,
+            write_back,
             mem: e.mem,
             cop0: e.cop0,
         };
-
-        // COP2 is one 64-bit latch rather than a register file; the index is
-        // ignored (ledger C-15's shape, twice over). Handled here for the same
-        // reason `ex_stage` handles it: it needs the `rt` value and the latch, neither of
-        // which `execute` can reach.
-        match decoded.op {
-            crate::decode::Op::Mtc2 => self.cop2_latch = target,
-            crate::decode::Op::Mfc2 => {
-                latch.write_back = WriteBack::Gpr {
-                    dest: decoded.dest,
-                    value: crate::alu::sext32(self.cop2_latch as u32),
-                };
-            }
-            crate::decode::Op::Dmfc2 => {
-                latch.write_back = WriteBack::Gpr {
-                    dest: decoded.dest,
-                    value: self.cop2_latch,
-                };
-            }
-            _ => {}
-        }
 
         if let Some(op) = latch.mem {
             match self.access(bus, op) {
