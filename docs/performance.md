@@ -2186,15 +2186,20 @@ not fire proves nothing until you have checked it could have.
 
 ## Which VU operations actually run — 62% of the work is one dispatch function
 
-`vu.rs` is **143 functions and ~8.5% of a frame**, and vectorizing it means
-writing `unsafe` intrinsics. Hand-vectorizing 143 functions to recover the cost
-of the few that matter would be the expensive way round, so the same method that
-worked for the Bus applies here: **count first**.
+`vu.rs` is **143 functions and ~8.5% of a frame**. Hand-optimizing 143 functions
+to recover the cost of the few that matter would be the expensive way round, so
+the same method that worked for the Bus applies here: **count first**.
+
+**A note on what this does not authorize.** `crates/rustyn64-rsp` is
+`#![forbid(unsafe_code)]`, so explicit SIMD intrinsics are not an available
+implementation path today. The maintainer has agreed in principle to a scoped
+exception by ADR; **that ADR does not exist**, and until it does this census
+identifies a hotspot rather than sanctioning a technique for it.
 
 `work-counters` now keeps a 64-slot histogram of COP2 computational `funct`
 values, reported by `examples/work_bench.rs`.
 
-### Super Mario 64, 120 frames, 14,577,323 COP2 computational ops
+### Super Mario 64, 120 frames, 14,569,003 COP2 computational ops
 
 That is ~121,478 per frame against 294,983 RSP instructions per frame — so
 **41% of everything the RSP executes is a VU computation**. Only **32 of the 64
@@ -2220,17 +2225,28 @@ possible `funct` values ever appear**.
 ### The result that decides the shape of the work
 
 **`funct 0x00..=0x0F` — the whole multiply / multiply-accumulate family — is
-61.64%, and it is dispatched by a single function, `multiply_lane`.**
+61.62%, and it is dispatched by a single function, `multiply_lane`.**
 
-So vectorizing *one* function covers **62% of the VU's computational work**, and
-that function is the natural SIMD target anyway: eight independent 16x16 lane
-products into a 48-bit accumulator is exactly what a vector unit does.
+So optimizing *one* function covers **62% of the VU's computational work**. It
+is also the shape a vector unit suits — eight independent 16x16 lane products
+into a 48-bit accumulator — which is why it is the obvious candidate should the
+`unsafe` exception ever be written.
+
+**Corroboration worth noting:** the family hoist recorded above independently
+described this same family as "61% of the work", derived from a different
+method. The two agree to within 0.1 point.
 
 This also bounds the ambition honestly. The VU is ~8.5% of a frame; 62% of it is
 ~5.3%. Even a perfect vectorization of `multiply_lane` cannot exceed that, and
 the real figure will be lower because the dispatch, the register reads and the
 accumulator writeback do not vanish. **Any SIMD work here must be measured
 against that ceiling, not against the 8.5%.**
+
+**The figures above are a delta over the timed window.** The first version
+reported the raw cumulative counters, folding ~36 warm-up frames into a table
+captioned "120 frames" — caught in review. The effect turned out to be 0.06%
+(14,577,323 against 14,569,003), because boot barely exercises the VU, but a
+number that is right by accident is still not measured.
 
 ### Why this is measured rather than assumed
 

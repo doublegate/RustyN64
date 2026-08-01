@@ -48,8 +48,17 @@ pub const SP_MEM_SIZE: usize = 4 * 1024;
 
 /// A zeroed COP2 `funct` histogram, for `#[serde(skip)]`.
 ///
-/// **`default` is not optional here.** `[u64; 64]` does not implement `Default`
-/// — the standard impls stop at 32 — so `#[serde(skip)]` alone does not compile.
+/// **`default` is not optional here.** On this toolchain `[u64; 64]` does not
+/// implement `Default`, so `#[serde(skip)]` alone does not compile:
+///
+/// ```text
+/// error[E0277]: the trait bound `[u64; 64]: Default` is not satisfied
+/// ```
+///
+/// Stated as the observed compiler behavior rather than as a rule about where
+/// the array impls stop, because a reviewer read it as the latter and disputed
+/// it. The reproduction is one line: `let _: [u64; 64] = Default::default();`.
+///
 /// That is the compiler catching, at the type level, the same class of mistake
 /// #245 shipped at runtime: a skipped field that deserializes into something
 /// unusable.
@@ -143,10 +152,16 @@ pub struct Rsp {
     /// How many times each COP2 computational `funct` has executed
     /// (`work-counters`).
     ///
-    /// `vu.rs` is 143 functions and ~8.5% of a frame. Vectorizing it means
-    /// writing `unsafe` intrinsics, so it matters enormously WHICH operations a
-    /// real workload actually runs — the alternative is 143 hand-vectorized
-    /// functions to recover the cost of the five that matter.
+    /// `vu.rs` is 143 functions and ~8.5% of a frame, so it matters enormously
+    /// WHICH operations a real workload actually runs — the alternative to
+    /// counting is 143 hand-optimized functions to recover the cost of the five
+    /// that matter.
+    ///
+    /// **This crate is `#![forbid(unsafe_code)]`**, so explicit SIMD intrinsics
+    /// are not an available implementation path today. The maintainer has agreed
+    /// in principle to a scoped exception by ADR, but **that ADR does not
+    /// exist**, and until it does this census identifies a hotspot rather than
+    /// authorizing a technique for it.
     ///
     /// 64 slots because `funct` is six bits. `#[serde(skip)]`, and a
     /// retired-work tally like [`Self::retired`].
@@ -297,7 +312,8 @@ impl Rsp {
     pub(crate) fn count_vu_funct(&mut self, funct: u32) {
         #[cfg(feature = "work-counters")]
         {
-            self.vu_funct[(funct & 0x3F) as usize] += 1;
+            self.vu_funct[(funct & 0x3F) as usize] =
+                self.vu_funct[(funct & 0x3F) as usize].wrapping_add(1);
         }
         #[cfg(not(feature = "work-counters"))]
         {
@@ -447,6 +463,51 @@ mod tests {
         restored.sp.set_halted(false);
         restored.tick();
         assert_eq!(restored.retired(), 1, "a restored RSP stopped counting");
+    }
+
+    /// A COP2 computational instruction increments its own bucket, and the
+    /// histogram survives no save-state.
+    ///
+    /// Two properties in one test because each alone is satisfiable by a broken
+    /// counter: an all-zero histogram passes a reset check, and a counter that
+    /// increments the wrong bucket passes a total-count check.
+    ///
+    /// `VMUDN` (`funct 0x06`) chosen because it is the sixth-hottest op in the
+    /// census and unambiguously computational.
+    #[cfg(feature = "work-counters")]
+    #[test]
+    fn a_cop2_instruction_increments_its_own_bucket() {
+        let mut rsp = Rsp::new();
+        // COP2 computational: opcode 0x12, `rs` bit 4 set (0x10), funct 0x06.
+        let word = (0x12u32 << 26) | (0x10u32 << 21) | 0x06;
+        rsp.imem[0..4].copy_from_slice(&word.to_be_bytes());
+        rsp.sp.set_halted(false);
+        rsp.tick();
+
+        assert_eq!(
+            rsp.vu_funct_histogram()[0x06],
+            1,
+            "the executed funct's own bucket did not increment"
+        );
+        assert_eq!(
+            rsp.vu_funct_histogram().iter().sum::<u64>(),
+            1,
+            "exactly one bucket should have moved"
+        );
+
+        // And it is a measurement, not machine state.
+        let bytes = bincode::serialize(&rsp).expect("serialize");
+        let restored: Rsp = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(
+            restored.vu_funct_histogram().iter().sum::<u64>(),
+            0,
+            "the histogram survived a save-state"
+        );
+        assert_eq!(
+            restored.vu_funct_histogram().len(),
+            64,
+            "a restored histogram must still be 64 usable slots, not an empty box"
+        );
     }
 
     #[test]

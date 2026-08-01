@@ -95,14 +95,16 @@ All notable changes to RustyN64 are documented here. The format is based on
 ### Added
 
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
-  143 functions and ~8.5% of a frame, and vectorizing it means `unsafe`
-  intrinsics — so `work-counters` now keeps a 64-slot histogram of COP2
-  computational `funct` values, reported by `examples/work_bench.rs`.
+  143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
+  histogram of COP2 computational `funct` values, reported by
+  `examples/work_bench.rs`. Note this identifies a hotspot rather than
+  authorizing a technique: `rustyn64-rsp` is `#![forbid(unsafe_code)]`, and the
+  scoped-exception ADR agreed in principle does not exist yet.
 
   On Super Mario 64: **41% of everything the RSP executes is a VU computation**,
   only 32 of 64 `funct` values ever appear, four operations are half the work,
   and twelve are 81%. Decisively: **`funct 0x00..=0x0F` — the whole
-  multiply/accumulate family — is 61.64%, dispatched by a single function**
+  multiply/accumulate family — is 61.62%, dispatched by a single function**
   (`multiply_lane`). One vectorized function would cover 62% of the VU's
   computational work.
 

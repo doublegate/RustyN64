@@ -520,3 +520,43 @@ partial); diagonal `LTV`/`STV` transposing across an 8-register group; packed
   (`docs/performance.md`), keeping the interpreter as the fallback.
 - **Microcode coverage breadth** — which custom (Factor 5 / Rare / Boss) microcode
   variants need explicit regression ROMs.
+
+## Work counters (`work-counters`, default-OFF)
+
+Two measurement tallies, neither of which is machine state and neither of which
+anything schedules against. They exist because a sampled profile share cannot
+separate *this code got slower* from *this code ran more often* from *the
+compiler charged it differently* — only a work count can.
+
+| accessor | counts |
+| --- | --- |
+| `Rsp::retired()` | instructions the RSP **executed** |
+| `Rsp::vu_funct_histogram()` | executions per COP2 computational `funct`, 64 slots |
+
+**`retired` counts executed, not stepped.** The increment sits *after*
+`su_step`'s halt check, because a halted RSP is stepped every RCP cycle and does
+nothing; counting those would make the tally track the scheduler rather than the
+microcode. `a_halted_rsp_retires_nothing` pins it.
+
+**Both are `#[serde(skip)]`**, so a restored save-state starts at zero and keeps
+counting — they are measurements, not state, and ADR 0005's layout is unchanged
+either way. The histogram additionally needs an explicit
+`default = "zeroed_funct_histogram"`, because `[u64; 64]` does not implement
+`Default` on this toolchain and `skip` alone does not compile.
+
+**Default-OFF**, because the increments sit in the RSP's hottest loop and a
+shipped build must not pay for a measurement. With the feature off both compile
+to nothing and the crate is byte-identical.
+
+### This does not authorize a technique
+
+`crates/rustyn64-rsp` is `#![forbid(unsafe_code)]`, so explicit SIMD intrinsics
+are **not** an available implementation path here. The maintainer has agreed in
+principle to a scoped exception by ADR; **that ADR does not exist yet**, and
+until it does the census in `docs/performance.md` identifies a hotspot rather
+than sanctioning a way to attack it.
+
+What the census established, on Super Mario 64: **41% of everything the RSP
+executes is a VU computation**, only 32 of 64 `funct` values ever appear, four
+operations are half the work, and `funct 0x00..=0x0F` — the multiply/accumulate
+family, dispatched by the single function `multiply_lane` — is **61.6%**.

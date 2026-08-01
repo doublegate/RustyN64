@@ -98,6 +98,10 @@ fn main() {
     let cpu_before = core.system().cpu.retired;
     let rsp_before = core.system().bus.rsp.retired();
     let bus_before = core.system().bus.accesses();
+    // The histogram is cumulative from power-on like the counters above, so it
+    // needs the same treatment: a reviewer caught it being reported RAW, which
+    // folded ~36 warm-up frames into a table captioned "120 frames".
+    let vu_before: [u64; 64] = *core.system().bus.rsp.vu_funct_histogram();
 
     let t0 = Instant::now();
     for _ in 0..FRAMES {
@@ -161,7 +165,7 @@ fn main() {
          cannot answer that alone."
     );
 
-    report_vu_histogram(&core);
+    report_vu_histogram(&core, &vu_before);
 }
 
 /// Print which COP2 computational ops a real workload actually runs.
@@ -169,11 +173,15 @@ fn main() {
 /// Split from `main` because the two are separate questions — how much
 /// work each subsystem does, and which VU operations that work consists of
 /// — and together they exceed the line-count gate.
-fn report_vu_histogram(core: &EmuCore) {
+fn report_vu_histogram(core: &EmuCore, before: &[u64; 64]) {
     // WHICH VU operations a real workload runs. `vu.rs` is 143 functions;
     // vectorizing it means `unsafe` intrinsics, so hand-writing all of them to
     // recover the cost of the few that matter would be the expensive way round.
-    let hist = core.system().bus.rsp.vu_funct_histogram();
+    // The DELTA over the timed window, matching every other figure this
+    // harness prints. Reporting the raw cumulative counters would describe boot
+    // plus the window, under a caption naming only the window.
+    let hist: [u64; 64] =
+        core::array::from_fn(|i| core.system().bus.rsp.vu_funct_histogram()[i] - before[i]);
     let total: u64 = hist.iter().sum();
     assert!(
         total > 0,
