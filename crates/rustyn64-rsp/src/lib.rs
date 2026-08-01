@@ -477,15 +477,19 @@ mod tests {
     #[cfg(feature = "work-counters")]
     #[test]
     fn a_cop2_instruction_increments_its_own_bucket() {
+        /// `VMUDN`'s `funct`, and its own bucket in the histogram.
+        const VMUDN_FUNCT: usize = 0x06;
+
         let mut rsp = Rsp::new();
-        // COP2 computational: opcode 0x12, `rs` bit 4 set (0x10), funct 0x06.
-        let word = (0x12u32 << 26) | (0x10u32 << 21) | 0x06;
+        // COP2 computational: opcode 0x12, with `rs` bit 4 set to select the
+        // computational group rather than the moves.
+        let word = (0x12u32 << 26) | (0x10u32 << 21) | VMUDN_FUNCT as u32;
         rsp.imem[0..4].copy_from_slice(&word.to_be_bytes());
         rsp.sp.set_halted(false);
         rsp.tick();
 
         assert_eq!(
-            rsp.vu_funct_histogram()[0x06],
+            rsp.vu_funct_histogram()[VMUDN_FUNCT],
             1,
             "the executed funct's own bucket did not increment"
         );
@@ -497,16 +501,31 @@ mod tests {
 
         // And it is a measurement, not machine state.
         let bytes = bincode::serialize(&rsp).expect("serialize");
-        let restored: Rsp = bincode::deserialize(&bytes).expect("deserialize");
+        let mut restored: Rsp = bincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(
             restored.vu_funct_histogram().iter().sum::<u64>(),
             0,
             "the histogram survived a save-state"
         );
+        // Still LIVE, shown by EXECUTING rather than by inspecting the
+        // container. Asserting the histogram's `.len()` would prove nothing:
+        // the field is `Box<[u64; 64]>`, a fixed-size array, so its length is a
+        // compile-time constant. The empty-container failure mode that check
+        // would be reaching for belongs to `Box<[T]>`, an unsized slice.
+        //
+        // Filled across several words rather than just word 0: the restored PC
+        // carries over from the tick above and is 4, so word 0 alone would
+        // fetch a zero and count nothing.
+        for w in 0..8 {
+            let a = w * 4;
+            restored.imem[a..a + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        restored.sp.set_halted(false);
+        restored.tick();
         assert_eq!(
-            restored.vu_funct_histogram().len(),
-            64,
-            "a restored histogram must still be 64 usable slots, not an empty box"
+            restored.vu_funct_histogram()[VMUDN_FUNCT],
+            1,
+            "a restored RSP stopped counting COP2 ops"
         );
     }
 
