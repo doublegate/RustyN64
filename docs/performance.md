@@ -2255,6 +2255,234 @@ separate figures in this document turned out to belong to configurations that
 were not being run — the VI's 4.64%, the RDP's 6.36%, and the shared-device
 plan's "double PCIe crossing". Reading is how those happened.
 
+## The CPU's decode is 8.1–9.4% of a frame — a quarter of its bucket
+
+ADR 0017 makes decomposing the CPU's **32.29%** a precondition on writing a
+recompiler, because a recompiler removes *interpretive overhead* and not the
+work underneath it. This is that decomposition, for the largest piece.
+
+Sized the way this document prescribes for a hot line — **make the cost bigger**
+— with the trap the RSP's decode sizing already paid for: `black_box` on the
+**result**, because an unused result is dead and the optimizer folds the extra
+work away.
+
+### One extra `decode` of the same word, per CPU instruction
+
+| A — 1 decode (ms) | B — 2 decodes (ms) |
+| --- | --- |
+| 63.471 | 68.793 |
+| 62.301 | 68.549 |
+| 62.810 | 68.928 |
+
+The sets do not overlap. **Conservative (best B against worst A): 8.08% of a
+frame. On the means: 9.38%.**
+
+The same word is decoded both times, deliberately, so the extra decode takes the
+same branches as the real one and the extrapolation is 1→2 rather than 1→4.
+
+**A cruder first probe added three decodes of `word ^ d` and extrapolated
+~13.3%.** It is reported and not used: different inputs take different branches,
+so it measures a decode the interpreter never performs, and a 1→4 extrapolation
+is more fragile than 1→2. The shorter measurement is also the *lower* one, which
+is the direction that makes it safe to quote.
+
+### What this settles
+
+**Decode is ~25–29% of the CPU bucket**, and the CPU bucket is 32.29% of a
+frame. For comparison, the same measurement on the **RSP** gave **0.29%** — the
+CPU's decode is roughly **28x** more expensive, which is why a decode cache was
+rejected there and is worth taking seriously here. `Rsp::decode` is eight
+bit-field extractions; `decode(word)` for the VR4300 is a much larger opcode
+match.
+
+### It looked like it named a cheaper option. It did not — the cache was BUILT and is SLOWER
+
+The obvious inference from 8.1-9.4% was that a **decode cache** captures it for
+a fraction of a recompiler's cost. Better still, no invalidation is needed:
+`decode` is a pure `const fn` of the instruction word, so keying a cache on the
+word makes it self-validating — if the memory changes, the key misses.
+
+**It was built, and it is slower.** A 1024-entry direct-mapped cache keyed on
+the word, lazily allocated so `Pipeline::new` stays `const`:
+
+| A — no cache (ms) | B — decode cache (ms) |
+| --- | --- |
+| 63.744 | 63.965 |
+| 63.373 | 64.622 |
+| 63.754 | 64.130 |
+| — | 64.131 |
+| — | 63.811 |
+
+**B never beats A** — its best leg (63.811) is above A's worst (63.754). Mean
+**+1.0% slower**. Reverted under the standing rule, alongside the `next_edge`
+hoist, the VU family hoist, `target-cpu=native` and PGO.
+
+### Why the 8.1-9.4% did not survive contact
+
+**The probe measured a decode the compiler never emits.** It forced an extra
+`decode` through `black_box`, which is what stops the optimizer folding it away —
+and *that folding is exactly what the real one gets*. In place, `decode` is
+inlined and its fields feed straight into the dispatch `match`, so much of it
+costs nothing: the bit-field extractions become part of the branch that consumes
+them.
+
+A cache hit, by contrast, cannot be folded into anything. It is a real indexed
+load of a 24-byte entry, a compare, and an `Option` branch — and it defeats the
+inlining that made the original cheap.
+
+So **8.1-9.4% is an upper bound on an isolated decode, not on recoverable
+time**, and the previous version of this section should not have implied
+otherwise. It is the *"a hot line is not a hot operation"* lesson, walked into
+with the lesson already written down two sections away.
+
+The figure is left standing rather than deleted, because it is still the honest
+answer to *"what does one `decode` call cost?"* — the error was the inference
+drawn from it, and that is the part worth leaving visible.
+
+### What this leaves for ADR 0017
+
+- **A decode cache is refuted**, not deferred. Do not rebuild it.
+- **The recompiler's margin is the full 32.29%** — its advantage is not that it
+  skips decode, since the interpreter barely pays for decode as emitted. It is
+  that a compiled block skips the *dispatch*, the per-instruction bookkeeping,
+  and the interpreter loop.
+- **Still not decomposed**: how much of the 32.29% is Bus work (a separate
+  18.06% bucket the CPU drives) versus register-file and ALU work. Stage 2 owes
+  that — and this section is the reason to distrust any sizing that has not
+  survived being built.
+
+## Stage 2's decomposition: what a recompiler would and would not remove
+
+ADR 0017 makes this a precondition on writing `rustyn64-jit`. It is done with a
+**profiler**, not the "make the cost bigger" probe — that technique had just
+produced 8.1–9.4% for `decode` and sent a decode cache to be built and reverted,
+so using it again on a bigger question would have repeated the error.
+
+`perf record -F 999 -e cycles:u -D 3000`, `fast-exec` + `fast-scheduler`, Super
+Mario 64, 6,140 samples. The run reported `mean=62.539ms`, inside the unprofiled
+spread, so the profile is of the real workload.
+
+### A symbol profile cannot answer this, and that is the first result
+
+| symbol | self |
+| --- | --- |
+| `System::run_until_exec` | **61.35%** |
+| `Bus::vi_read_cov` | 7.12% |
+| `Rsp::cop2` | 6.52% |
+
+**Everything inlines into `run_until_exec`.** This is the same shape the
+`step_due_here` note above records at 63.9%, and it means the decomposition has
+to come from **source-line** attribution, which crosses inlining.
+
+### By subsystem, attributed by source line
+
+| share | subsystem |
+| --- | --- |
+| **42.88%** | CPU (`rustyn64-cpu`) |
+| 23.60% | Bus + scheduler |
+| 13.35% | stdlib / generic / unattributed |
+| 10.95% | RSP |
+| 5.22% | other crate `lib.rs` |
+| 4.29% | VI |
+
+The CPU is higher here than the 32.29% in the symbol-based table above, because
+line attribution catches inlined CPU code that the symbol view charged to
+whichever function it landed in. **The two are measuring different things and
+neither is wrong**; this one is the right one for "what would a recompiler
+remove".
+
+### Inside `rustyn64-cpu`
+
+| share | file |
+| --- | --- |
+| **16.10%** | `fastexec.rs` — the interpreter driver |
+| 8.24% | `pipeline.rs` |
+| **4.36%** | `decode.rs` |
+| 3.71% | `addr.rs` — address translation |
+| 2.47% | `cop0.rs` |
+| 2.44% | `cache.rs` |
+| 1.94% | `exec.rs` |
+| 1.84% | `cop1.rs` |
+| 1.62% | `regs.rs` |
+
+### What this settles for ADR 0017
+
+**`decode.rs` is 4.36%, not the 8.1–9.4% the probe reported.** Two unrelated
+methods now agree the probe overstated it — the cache that was built and
+reverted, and this. That is the strongest available confirmation that a
+`black_box` sizing bounds an isolated call rather than recoverable time.
+
+**A recompiler removes the interpreter driver, not the machine.** Roughly
+`fastexec.rs` + `decode.rs` + part of `pipeline.rs` — call it **20–25%** — is
+dispatch, per-instruction bookkeeping and the loop. What it does **not** remove:
+
+- the **Bus's 23.60%**, which is memory the emulated program actually performs;
+- `addr.rs`'s 3.71%, since translation still happens per access;
+- `cache.rs`, `cop0.rs`, `cop1.rs` — real emulated work.
+
+So the spike's 1.5x target should be read against **~20–25%**, not 32.29% and not
+42.88%. Still the largest item in the project by a wide margin, and still the
+only one that can approach playable rates.
+
+**One caution carried forward.** The single hottest *line* in the whole profile
+is `fastexec.rs:334` at **10.87%** — the `Latch` copy this document already
+warns about, where retired work is charged to the final store. It is not 10.87%
+of removable time, and a recompiler's estimate must not be built on it.
+
+## A recompiler's ceiling is 1.26–1.40x, and ADR 0017's own gate is 1.5x
+
+Stage 2's decomposition answers stage 3 arithmetically, without writing a code
+generator. A recompiler's speedup is bounded by what it removes:
+
+> speedup ≤ 1 / (1 − share removed)
+
+| share removed | ceiling | what that assumes |
+| --- | --- | --- |
+| 20.46% | **1.257x** | `fastexec.rs` + `decode.rs` — the driver, removed entirely |
+| 24.58% | 1.326x | + half of `pipeline.rs` |
+| 28.70% | **1.403x** | + **all** of `pipeline.rs` |
+| 34.03% | 1.516x | + `addr.rs` and `regs.rs` — perfect register allocation *and* no per-access translation |
+| 36.13% | 1.566x | everything in `rustyn64-cpu` except `cop0`/`cop1`/`cache` |
+
+**1.5x requires removing 33.3% of the frame.** That is past "remove the whole
+interpreter" and into "also eliminate address translation and the register file",
+with **zero** cost for block lookup, code generation, or invalidation — none of
+which a real recompiler has.
+
+So the realistic band is **1.26–1.40x**, and 1.5x sits at the edge of a
+*perfect* one.
+
+### What that means for ADR 0017
+
+ADR 0017 sets its own stage-2 gate at **1.5x on top of `fast-exec`**, with the
+stated reason that *a recompiler winning less than the interpreter tweak already
+shipped is not worth its maintenance surface* — `fast-exec` measured **1.53x**.
+
+**By that gate, computed from this decomposition, a recompiler does not
+qualify.** It would buy 1.26–1.40x for: a new crate, a third `unsafe` surface,
+two CPU implementations that must agree forever, an invalidation protocol, two
+architecture backends, and nothing at all for `thumbv7em-none-eabihf`.
+
+This is stage 2 doing its job. The ADR was written so this answer could arrive
+before the crate existed, and it did.
+
+### The gate is a judgment, and it is the maintainer's to move
+
+1.5x was chosen to mean "beat what `fast-exec` already delivered". That is
+defensible and it is not the only defensible bar:
+
+- **If the goal is the largest single available win**, 1.26–1.40x is still it —
+  nothing else on the table is close, and the CPU stays the largest bucket.
+- **If the goal is 60 FPS**, this settles it in the other direction. The frame
+  needs **6.19x**; a perfect recompiler contributes at most ~1.4x of that, so
+  even stacking it on everything else measured this session leaves the target
+  far out of reach. `docs/performance.md`'s standing position that *60 FPS is
+  unreachable* is reinforced rather than challenged.
+
+**Recommendation: do not write the crate on the current evidence.** Reopen it if
+the interpreter's shape changes enough to move the decomposition, or if the bar
+is deliberately lowered with the trade understood.
+
 ## The async RDP (A3) is worth ~1.7%, and only one of its two shapes is viable
 
 The GPU plan describes A3 as a pure synchronization change — *"stop stalling the
