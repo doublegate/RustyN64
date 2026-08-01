@@ -1871,8 +1871,13 @@ time — is on the order of **1% of a frame at the most generous reading, and
   The upload to wgpu happens on the winit thread, concurrently with emulation on
   the emu thread. Removing work that overlaps with the bottleneck does not make
   the bottleneck shorter.
-- One other GPU item is worth **6.36%** (retiring the software rasterizer) —
-  roughly **6x** the return, without needing a shared device at all.
+- One other GPU item *appeared* to be worth **6.36%** (retiring the software
+  rasterizer) — roughly **6x** the return, without needing a shared device at
+  all. **That figure did not survive being measured either**; see "Retiring the
+  software rasterizer is worth 1.2–3.2%" below, which sizes it at **1.23%**
+  conservatively. It is left here as written because it is what this comparison
+  rested on at the time, and correcting it silently would hide that the
+  conclusion above was reached against a number that later moved.
 
 **A correction to the first version of this section**, which claimed *two* items
 worth 11.0% by adding a GPU VI scan-out's 4.64% to that 6.36%. **The VI figure
@@ -1965,7 +1970,96 @@ bounds only the code it names* is why they were not expected to match exactly.
   a different implementation and the geometry already differs — but it is not a
   performance item, and the VI parity census should be built for that reason or
   not at all.
-- **Retiring the software rasterizer (6.36%) is the only large GPU-side
-  performance item left**, and unlike the VI it is genuinely unspent: the
-  software RDP still executes every command, because games read the framebuffer
-  back out of RDRAM and only the software path writes it there.
+- **Retiring the software rasterizer is the only remaining GPU-side
+  performance item**, and unlike the VI it is genuinely unspent: the software
+  RDP still executes every command, because games read the framebuffer back out
+  of RDRAM and only the software path writes it there. **Sized at 6.36% here and
+  since measured at 1.23%** — see the section below; that figure came from the
+  same profile-of-another-configuration mistake as the VI's.
+
+## Retiring the software rasterizer is worth 1.2–3.2%, not 6.36%
+
+The GPU plan's last large performance item was **A4**: stop running the software
+rasterizer on the render path, and have the GPU write the framebuffer back into
+RDRAM instead — via parallel-rdp's own `CoherencyOperation` / `masked_memcpy`
+(upstream symbols in `vendor/parallel-rdp-standalone`, not RustyN64 APIs;
+nothing in this tree calls them today). It was sized at
+**6.36%** — the RDP bucket in the `fast-exec` profile.
+
+**That figure is from a configuration without this backend**, which is the same
+mistake the VI figure above turned out to be. Measured in the configuration A4
+would actually change:
+
+### Upper bound, `frame_bench --features fast-exec,fast-scheduler,gpu-rdp`
+
+The three rasterizing dispatch arms (`OP_FILL_RECTANGLE`,
+`OP_TEXTURE_RECTANGLE{,_FLIP}`, the `0x08..=0x0F` triangles) were stubbed to
+no-ops in a scratch tree, leaving every state-setting arm and the command
+consumption intact. Super Mario 64:
+
+Frame means, milliseconds:
+
+| A — rasterizer present (ms) | B — rasterization skipped (ms) |
+| --- | --- |
+| 61.716 | 60.635 |
+| 61.388 | 59.409 |
+| 61.623 | 59.439 |
+| 61.506 | 58.968 |
+
+**The sets do not overlap** — every B leg beats every A leg — so the effect is
+real. But it is small:
+
+| basis | difference |
+| --- | --- |
+| conservative (worst B 60.635 vs best A 61.388) | **1.23%**, 0.753 ms |
+| clean-leg means (61.558 vs 59.613) | **3.16%**, 1.946 ms |
+
+The B legs span 2.83% against A's 0.53%, which is why the conservative pairing
+is the number to quote.
+
+### Why this is an upper bound A4 cannot reach
+
+Deleting the rasterization is **strictly cheaper than replacing it**. A4 does
+not remove that work, it moves it: the GPU must write its result back into the
+Bus's RDRAM every frame, and that write-back costs something this measurement
+gives away for free. The real figure is below 1.23%.
+
+### And the cost side is the highest in the plan
+
+Unlike everything else in Part A, A4 **changes what lands in RDRAM** — the
+machine's own state, not just what is presented:
+
+- **ADR 0004 comes into scope**, exactly as ADR 0015 predicted it would. The
+  determinism contract binds the core, and the core's framebuffer would start
+  coming from a GPU.
+- **The two rasterizers are not byte-identical.** The 42/43 census grades
+  parallel-rdp against *Angrylion*, not against RustyN64's software path, and
+  the one known gap — `key_en` chroma-key alpha compare (#160) — is a case where
+  the GPU is **less** complete than the software rasterizer it would replace.
+- **Timing changes.** The software RDP executes commands as the machine runs;
+  the GPU renders at frame end. A game that reads its framebuffer mid-frame sees
+  a different picture.
+- It needs `rustyn64-core` to accept GPU-written RDRAM, against a crate graph
+  that is `#![no_std]` and `#![forbid(unsafe_code)]` by design.
+
+**A4 is not worth building for performance.** Paying an ADR, a determinism
+re-derivation, and a known accuracy regression for under 1.23% is the trade this
+document exists to refuse. It may still be worth building for **accuracy** one
+day — the software rasterizer is incomplete — but that is a different
+justification and it should be argued on its own terms, with the census as the
+gate rather than the frame time.
+
+### Where that leaves Part A
+
+| item | outcome |
+| --- | --- |
+| dirty-region RDRAM upload | **shipped**, 2.54% |
+| share one Vulkan device | retired — ~0.15% at the highest cost |
+| async RDP | open, bounded by the ~1.06 ms rasterization wait (~1.7%) |
+| retire the software rasterizer | retired for performance — under 1.23% |
+| GPU VI scan-out | retired — recovers nothing; accuracy question only |
+| upscaling | quality-only by design; consumes idle GPU time, no FPS effect |
+
+**Everything the GPU can still offer totals under about 2%.** The remaining
+89% — CPU, RSP, Bus — is where the frame actually is, and none of it is work a
+GPU can do.

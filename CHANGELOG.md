@@ -125,6 +125,18 @@ All notable changes to RustyN64 are documented here. The format is based on
   picture, so the software VI is already skipped under `gpu-rdp` and the 4.64%
   attributed to it belongs to a configuration without this backend.
 
+- **Retiring the software rasterizer is worth 1.2–3.2%, not the 6.36% planned**,
+  and is not being built for performance. Measured by stubbing the three
+  rasterizing dispatch arms in a scratch tree: the sets do not overlap, but the
+  conservative pairing is **1.23%** — and that is an upper bound A4 cannot reach,
+  since it *moves* the work to a GPU write-back rather than deleting it. Against
+  that: ADR 0004 comes into scope, the two rasterizers are not byte-identical
+  (the GPU lacks `key_en`, which the software path has), and mid-frame
+  framebuffer reads would change. It may still be worth building for accuracy;
+  that is a separate argument. `docs/performance.md` has the legs.
+
+  With this, **everything the GPU can still offer totals under about 2%**.
+
 - **The GPU path is verified reproducible** — all 43 `.rvec` vectors identical
   across 3 × 43 independently created devices, and a 60-frame stateful sequence
   (36 distinct frames) reproduced exactly. Both mutation-checked, and gated in
