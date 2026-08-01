@@ -94,6 +94,22 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **ADR 0017 — a CPU recompiler design, put up for review.** *Design only; no
+  crate, no code.* The CPU is **32.29%** of a frame and everything else in the
+  plan, added together and assumed perfect, is under 15% — so a recompiler is
+  the only remaining change that can move the frame rate materially.
+
+  Deliberately **not accepted by merging the file**: it is accepted in three
+  stages, and stage 2 is a **spike that is measured and thrown away**. If it
+  does not clear **1.5x on top of `fast-exec`**, the ADR is superseded and the
+  crate is never written — a recompiler that wins less than the interpreter
+  tweak already shipped is not worth its maintenance surface.
+
+  Stage 2 must also **decompose the 32.29% first**, because the Bus is a
+  separate 18.06% bucket the CPU drives, and a recompiler does not remove it.
+  That is the same mistake as the VI's 4.64% and the RDP's 6.36%, both of which
+  evaporated when measured in the configuration that would actually run.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by
