@@ -94,6 +94,21 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **Per-phase timing for the GPU present path**, and the benchmark that reads
+  it (`cargo run --release --example gpu_phase_bench --features gpu-rdp`).
+  `present` is split into `stage` / `submit` / `scanout` / `copy` — the four
+  phases that different planned GPU work would remove — each reported as a share
+  of a real frame.
+
+  It was built to size the next step before building it, and the answer was
+  **no**: the *entire* present path is **4.0–4.4% of a frame** on Super Mario 64,
+  so every remaining GPU-side idea combined has a ceiling of **1.042–1.046x**.
+  The planned shared-Vulkan-device work targets only the read-back and the host
+  copies within that — `copy` alone is 0.15% — while being the highest-cost slice
+  available (cross-thread device sharing, raw `wgpu-hal` interop, device-limit
+  changes). It is not being built; `docs/performance.md` records the measurement
+  and the reasoning.
+
 - **The GPU path is verified reproducible** — all 43 `.rvec` vectors identical
   across 3 × 43 independently created devices, and a 60-frame stateful sequence
   (36 distinct frames) reproduced exactly. Both mutation-checked, and gated in

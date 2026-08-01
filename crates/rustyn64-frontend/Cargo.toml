@@ -139,3 +139,12 @@ web-sys = { version = "0.3", features = [
     "ImageData",
     "console",
 ] }
+
+# The phase benchmark reads `gpu_rdp`, which is gated on `gpu-rdp` and on not
+# being wasm32. Without `required-features` it is built by any `--all-targets`
+# lint or test run and fails to resolve the module — which is how the gate
+# reports red on a tree that is fine. `frame_bench` needs no entry: it uses only
+# the unconditional API.
+[[example]]
+name = "gpu_phase_bench"
+required-features = ["gpu-rdp"]

@@ -1804,3 +1804,86 @@ parallel test harness creates several and their thread-local destructors race
 once in roughly five runs** — intermittent, so it would have arrived as CI flake
 rather than as a reproducible failure. CI now serializes them. Production is
 unaffected: exactly one thread ever calls `present`.
+
+## The whole GPU present path is 4.0–4.4% of a frame — which retires the shared-device plan
+
+The plan for the GPU backend led with **sharing one Vulkan device with wgpu**, on
+the grounds that the frame crosses PCIe twice in opposite directions: read back
+from parallel-rdp's device to the host, then uploaded to wgpu's unrelated one.
+That is a true description of the code. It was never sized.
+
+`crates/rustyn64-frontend/examples/gpu_phase_bench.rs` sizes it. It splits
+`gpu_rdp::present` into the four phases that different planned work would remove,
+and reports each as a share of a real frame:
+
+| phase | what it is | removed by |
+| --- | --- | --- |
+| `stage` | byte-swap the dirty RDRAM pages into the backend | already done (#245) |
+| `submit` | feed the command stream and VI registers | nothing planned |
+| `scanout` | wait on the GPU fence, then read the frame back | async RDP (the wait), shared device (the read-back) |
+| `copy` | copy the read-back pixels into the caller's buffer | shared device |
+
+### Super Mario 64, `--features gpu-rdp,fast-exec,fast-scheduler`
+
+| run | frame mean | stage | submit | scanout | copy | **total** |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 63.645 ms | 0.262% | 0.575% | 3.442% | 0.147% | **4.427%** |
+| 2 | 62.392 ms | 0.224% | 0.549% | 3.098% | 0.144% | **4.015%** |
+| 3 | *72.122 ms* | *0.356%* | *0.825%* | *4.211%* | *0.242%* | *5.634%* |
+
+**Run 3 is excluded and named rather than dropped silently.** Its frame mean is
+15% above runs 1 and 2, which agree within 2% — that is not this harness's ~1%
+drift, so something outside the measurement happened.
+
+**If the entire present path became free, the ceiling is 1.042–1.046x.** That is
+every remaining GPU-side idea combined — shared device, asynchronous RDP, the
+lot.
+
+### Splitting `scanout`, because two different plans target its two halves
+
+`scanout` bundles *waiting for the GPU to finish rasterizing* with *transferring
+the result back*. An asynchronous RDP removes the first; a shared device removes
+the second. A scratch probe calling `idle()` immediately before `scanout_sync`
+and charging that wait to `submit` split them:
+
+| | ms/frame |
+| --- | --- |
+| wait for RDP rasterization to complete | ~1.06 |
+| VI scan-out pass + read-back + the two host memcpys | ~1.39 |
+
+So **the read-back is at most the smaller half of the larger phase**, and the
+host copies are `copy`'s 0.15%.
+
+### The conclusion, and it inverts the plan's order
+
+**Sharing a Vulkan device with wgpu is not worth building.** Its unique
+contribution — the read-back and the host copies, *not* the GPU's rasterization
+time — is on the order of **1% of a frame at the most generous reading, and
+0.15% at the most defensible one**. Against that:
+
+- It is the **highest-cost slice in the GPU plan**: cross-thread Vulkan device
+  sharing, raw `wgpu-hal` interop under `unsafe`, raising the device limits
+  (`gfx.rs` currently requests `downlevel_webgl2_defaults` on a native Vulkan
+  device), and resolving device ownership between the emulation thread and the
+  winit thread — `GpuRdp` is `!Send` and lives in thread-local storage precisely
+  to avoid that question.
+- Half of the "double crossing" it targets was **never on the frame budget**.
+  The upload to wgpu happens on the winit thread, concurrently with emulation on
+  the emu thread. Removing work that overlaps with the bottleneck does not make
+  the bottleneck shorter.
+- Two other GPU items are worth **11.0% between them** (retiring the software
+  rasterizer 6.36%, GPU VI scan-out 4.64%) — roughly **7x** the return, without
+  needing a shared device at all.
+
+The general lesson is the one this file keeps re-learning: *a mechanism that is
+real is not thereby worth removing*. "The frame crosses PCIe twice" was an
+accurate description of the code and a poor guide to where the time was.
+
+### On the instrumentation itself
+
+The phase counters are eight `Instant::now()` calls per frame against a ~63 ms
+frame, and the frame means above sit within the documented baseline, so no
+regression is visible. They are kept rather than reverted because they are the
+gate for the remaining GPU work: an asynchronous RDP and a GPU VI scan-out both
+have to show up in `scanout`, and a change that does not move the phase it
+claims to move has not done what it says.

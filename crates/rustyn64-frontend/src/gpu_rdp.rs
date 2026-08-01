@@ -134,6 +134,97 @@ pub fn frames_produced() -> u64 {
     PRODUCED.load(Ordering::Relaxed)
 }
 
+/// Cumulative nanoseconds in each phase of [`present`], and the frames counted.
+///
+/// **This exists to size work before it is done, not to report it afterwards.**
+/// The whole of `present` is a small share of a frame, and the planned GPU work
+/// targets *different phases of it*: sharing one Vulkan device with wgpu removes
+/// the read-back and the pixel copy but not the stage or the submission; an
+/// asynchronous RDP removes the fence wait inside the read-back and nothing
+/// else. Without a split, both would be argued for against the same aggregate
+/// number and at most one of them could be right.
+///
+/// Ordering is `Relaxed` throughout: these are counters read for a ratio, and no
+/// other state is published through them. The read side may see a frame counted
+/// before its own nanoseconds land — at the sample counts this is used with,
+/// that is one frame of skew in a mean over hundreds.
+static PHASE_NS: [AtomicU64; Phase::COUNT] = [const { AtomicU64::new(0) }; Phase::COUNT];
+
+/// Frames that reached the end of `present` and so contributed to every phase.
+///
+/// Separate from [`PRODUCED`]: a frame the VI declined leaves partial phase
+/// timings, and dividing complete totals by a count that included it would
+/// understate every phase.
+static PHASE_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// The phases of [`present`], in the order they run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Byte-swap the dirty RDRAM pages into the backend's mapped buffer.
+    /// This is what the dirty-page map (#245) shrank.
+    Stage,
+    /// Feed the tapped command stream and the VI registers to the backend.
+    Submit,
+    /// `scanout_sync`: wait on the GPU fence, then read the frame back over
+    /// the bus into host memory. **Both halves are removable, by different work** —
+    /// the wait by an asynchronous RDP, the read-back by a shared device.
+    Scanout,
+    /// Copy the read-back pixels into the caller's RGBA8 buffer. Pure host
+    /// memory traffic, and it exists only because the frame came back to the
+    /// host at all.
+    Copy,
+}
+
+impl Phase {
+    /// How many phases there are. A `match` in [`Phase::name`] keeps this
+    /// honest: adding a variant without extending that match fails to compile.
+    pub const COUNT: usize = 4;
+
+    /// All phases, in execution order.
+    pub const ALL: [Self; Self::COUNT] = [Self::Stage, Self::Submit, Self::Scanout, Self::Copy];
+
+    /// Short label for a report.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Submit => "submit",
+            Self::Scanout => "scanout",
+            Self::Copy => "copy",
+        }
+    }
+}
+
+/// Add `ns` to `phase`'s running total.
+fn add_phase(phase: Phase, ns: u64) {
+    PHASE_NS[phase as usize].fetch_add(ns, Ordering::Relaxed);
+}
+
+/// Cumulative nanoseconds in `phase`, and the number of complete frames.
+///
+/// Returns `(nanoseconds, frames)` together rather than as two calls, because a
+/// caller that sampled them separately could divide one frame's totals by
+/// another frame's count.
+#[must_use]
+pub fn phase_totals(phase: Phase) -> (u64, u64) {
+    (
+        PHASE_NS[phase as usize].load(Ordering::Relaxed),
+        PHASE_FRAMES.load(Ordering::Relaxed),
+    )
+}
+
+/// Zero every phase counter.
+///
+/// A benchmark must exclude its warm-up: the first frame stages the whole of
+/// RDRAM by construction (`needs_full_stage`) and builds the Vulkan device, so
+/// averaging it in overstates the stage phase by orders of magnitude.
+pub fn reset_phase_totals() {
+    for c in &PHASE_NS {
+        c.store(0, Ordering::Relaxed);
+    }
+    PHASE_FRAMES.store(0, Ordering::Relaxed);
+}
+
 /// Pretend this thread has no usable device, for tests.
 ///
 /// The device-less path is the one that leaked, and on a developer machine with
@@ -314,6 +405,7 @@ impl GpuPresenter {
         // The swap writes STRAIGHT INTO the mapped buffer. Staging it first and
         // then copying cost a second full pass over 8 MiB — together ~90% of the
         // frame's GPU cost, and fusing them measured 3.3x (`docs/performance.md`).
+        let t_stage = std::time::Instant::now();
         let full = self.needs_full_stage;
         let dirty = bus.rdram_dirty_pages();
         // The map must cover the whole of the Bus's RDRAM. A map that is SHORTER
@@ -346,7 +438,9 @@ impl GpuPresenter {
             })
             .ok_or(Failed)?;
         self.needs_full_stage = false;
+        add_phase(Phase::Stage, t_stage.elapsed().as_nanos() as u64);
 
+        let t_submit = std::time::Instant::now();
         let mut consumed = 0usize;
         for cmd in split_commands(commands) {
             if !self.gpu.enqueue_command(cmd) {
@@ -372,6 +466,8 @@ impl GpuPresenter {
             }
         }
 
+        add_phase(Phase::Submit, t_submit.elapsed().as_nanos() as u64);
+
         // Size the read-back to what the caller can hold, in pixels. `scanout_sync`
         // refuses rather than truncates when a frame is larger, which is the
         // behavior wanted here: a truncated frame is a plausible-looking wrong
@@ -380,6 +476,10 @@ impl GpuPresenter {
         if self.pixels.len() < capacity {
             self.pixels.resize(capacity, 0);
         }
+        // The timer starts after the resize, which is a one-off allocation
+        // rather than per-frame work — and one a benchmark's warm-up has already
+        // paid before `reset_phase_totals`, so this changes no reported number.
+        let t_scanout = std::time::Instant::now();
         let Some(ScanoutFrame {
             width,
             height,
@@ -388,8 +488,11 @@ impl GpuPresenter {
         else {
             // The VI produced nothing — off, or unconfigured. Ordinary, and not
             // a reason to distrust the backend.
+            // Not counted as a frame: the phases below never ran, so folding
+            // this into the divisor would understate every one of them.
             return Ok(None);
         };
+        add_phase(Phase::Scanout, t_scanout.elapsed().as_nanos() as u64);
         // The shim refuses a frame larger than the buffer it was given, so
         // `pixels <= capacity` — but that is a guarantee on the far side of an
         // FFI boundary, and `self.pixels[..pixels]` would panic if it stopped
@@ -402,9 +505,14 @@ impl GpuPresenter {
         // in `rustyn64-rdp-gpu`'s smoke test, where an opaque-red fill reads back
         // as 0xFF0000FF little-endian). So this is a plain reinterpretation, not
         // a conversion.
+        let t_copy = std::time::Instant::now();
         for (dst, &px) in out.chunks_exact_mut(4).zip(src) {
             dst.copy_from_slice(&px.to_le_bytes());
         }
+        add_phase(Phase::Copy, t_copy.elapsed().as_nanos() as u64);
+        // Counted last, so a frame is in the divisor only once every phase above
+        // has contributed to it.
+        PHASE_FRAMES.fetch_add(1, Ordering::Relaxed);
 
         Ok(Some((width, height)))
     }
@@ -588,5 +696,48 @@ mod tests {
         // A Fill Triangle needs 8 u32 words; give it 3.
         let stream = vec![0x0800_0000, 0, 0];
         assert_eq!(split_commands(&stream).count(), 0);
+    }
+
+    /// A frame that produced **no picture** contributes to no phase and to no
+    /// frame count.
+    ///
+    /// This is the vacuity guard for the phase counters, and it guards the
+    /// direction that would flatter a result: a `None` frame runs `stage` and
+    /// `submit` and then returns, so counting it as a frame would divide two
+    /// phases' real totals by an inflated divisor and report every phase as
+    /// cheaper than it is. That is precisely the shape of error the phase split
+    /// exists to prevent, so it gets a test rather than a comment.
+    ///
+    /// The VI is left unprogrammed, which is what makes the frames picture-less.
+    #[test]
+    fn a_frame_with_no_picture_is_not_counted() {
+        if !super::probe_for_test() {
+            println!("SKIPPED: no usable Vulkan device — nothing was verified.");
+            return;
+        }
+        let mut bus = rustyn64_core::Bus::new();
+        let mut out = vec![0u8; 640 * 480 * 4];
+
+        super::reset_phase_totals();
+        for _ in 0..4 {
+            assert!(
+                super::present(&mut bus, &mut out, 640, 480).is_none(),
+                "an unprogrammed VI produced a frame"
+            );
+        }
+
+        let (stage_ns, frames) = super::phase_totals(super::Phase::Stage);
+        assert_eq!(
+            frames, 0,
+            "{frames} picture-less frames were counted; every phase mean would be understated"
+        );
+        // And the run was not vacuous in the other direction: `stage` DID run on
+        // those frames, so a zero here would mean the timer never fired and the
+        // count assertion above passed for the wrong reason.
+        assert!(
+            stage_ns > 0,
+            "no time was recorded against `stage`, so the frame-count assertion \
+             above proves nothing about the counters"
+        );
     }
 }
