@@ -2622,7 +2622,7 @@ numbers.
 | **A3** — async RDP | **sized at 1.7%, not built**; one of its two shapes is unavailable and the other needs its own ADR | §*The async RDP (A3)* |
 | **A4** — GPU as the machine's rasterizer | **retired for performance — 1.23%**, not 6.36% | §*Why this is an upper bound A4 cannot reach* |
 | **A5** — GPU VI scan-out | **retired** — recovers nothing | ruled-out #12 |
-| **A6** — 2x/4x/8x internal render | **SHIPPED** — quality only, no FPS effect by design | #254 |
+| **A6** — 2x/4x/8x internal render | **SHIPPED** — quality only, no FPS effect by design | [PR #254](https://github.com/doublegate/RustyN64/pull/254) |
 | **B1** — work counters | **SHIPPED**, and it is what sized B2 | §*Which VU operations actually run* |
 | decode cache | **refuted** — probe 8.1%, implementation 1.0% slower | ruled-out #7 |
 | **B2** — RSP VU SIMD | **declined — 1.056x** | ADR 0016, ruled-out #8 |
@@ -2705,8 +2705,8 @@ than its parts — that is what the disjointness table is for.
 
 ### The honest position on 60 FPS
 
-**It is not reachable from here.** 60 FPS needs 16.67 ms against ~63 ms — a
-**3.92x** gap — and the two largest levers are now both declined on their own
+**It is not reachable from here.** 60 FPS needs 16.67 ms against the 65.3 ms
+`fast-exec` frame — a **3.92x** gap — and the two largest levers are now both declined on their own
 arithmetic:
 
 - no single bucket is 84% of a frame, so no single subsystem's elimination gets
