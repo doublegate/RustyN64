@@ -136,8 +136,16 @@ four is incomplete.**
    it: runtime dispatch means `#[target_feature]` functions, which are
    themselves `unsafe` to call, do not inline across the boundary, and force the
    dispatch decision out of the hot loop and up to a level where it is amortized.
-   A design that checks a feature flag per instruction has spent the win before
-   it starts.
+
+   **A per-instruction feature check is therefore a risk to the win, and this is
+   reasoning rather than a measurement** — no dispatch shape has been built or
+   timed here, and this ADR does not get to assert a cost it has not paid.
+   What makes it a risk worth naming: the ceiling is 5.3% of a frame spread over
+   ~121,478 VU operations per frame ([#250](https://github.com/doublegate/RustyN64/pull/250)),
+   so the budget *per operation* is small enough that a branch plus a
+   non-inlinable call could plausibly consume it. Gate 3's A-B-A is what would
+   settle it, and a design that hoists the check costs nothing to prefer up
+   front — which is the only reason to state this before measuring.
 
 ### What this does not do
 
