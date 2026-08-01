@@ -22,6 +22,11 @@ fast-scheduler = []
 # one deliberately is not, so they are graded by different predicates (ADR 0013
 # §1). Where both are enabled, `fast-exec`'s scheduler is the one that runs.
 fast-exec = ["rustyn64-cpu/fast-exec"]
+# ADR 0014: capture the RDP command stream as the Bus feeds it to the RDP, so an
+# out-of-core rasterizer can be given the same stream. Default-OFF and purely
+# additive: it adds one `#[serde(skip)]` field, so the save-state layout is
+# identical either way, and it changes no emulated behavior.
+rdp-tap = []
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

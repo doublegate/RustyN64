@@ -105,6 +105,33 @@ impl EmuCore {
         }
     }
 
+    /// Frames the GPU backend has actually produced.
+    ///
+    /// `0` when the feature is off, when there is no usable device, or when it
+    /// is enabled and has produced nothing — and the caller can tell the last
+    /// case from the others only by watching this, which is the point. A backend
+    /// that is enabled and silently never runs looks exactly like one that is
+    /// disabled.
+    // Not `const`: under `gpu-rdp` the body loads an atomic. Clippy sees only the
+    // feature-off arm (CI lints once, without the feature) and suggests `const`,
+    // which then fails to compile with the feature ON — so the suggestion is
+    // suppressed here rather than followed.
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "the gpu-rdp body loads an atomic and cannot be const"
+    )]
+    #[must_use]
+    pub fn gpu_frames(&self) -> u64 {
+        #[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
+        {
+            crate::gpu_rdp::frames_produced()
+        }
+        #[cfg(not(all(feature = "gpu-rdp", not(target_arch = "wasm32"))))]
+        {
+            0
+        }
+    }
+
     /// Set the host device output sample rate (Hz) — the target the emitted N64
     /// stream is resampled to. Called when the `cpal` device opens; a zero or
     /// unchanged rate is ignored.
@@ -367,6 +394,18 @@ impl EmuCore {
     /// default resolution, and the whole buffer is cleared so no stale pixels from a
     /// previous, larger frame survive.
     fn produce_frame(&mut self) {
+        // The GPU backend first when it exists, the software scan-out otherwise
+        // AND whenever the GPU declined to produce a picture. `present` leaves
+        // the buffer untouched on every failure path, so falling through here
+        // cannot present a half-written frame.
+        #[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
+        if let Some((w, h)) = crate::gpu_rdp::present(&mut self.system.bus, &mut self.frame.rgba)
+            && let Some((w, h)) = presentable_geometry(w, h)
+        {
+            self.frame.w = w;
+            self.frame.h = h;
+            return;
+        }
         let (w, h) = self.system.bus.scanout_scaled(&mut self.frame.rgba);
         if let Some((w, h)) = presentable_geometry(w, h) {
             self.frame.w = w;
@@ -667,11 +706,38 @@ mod tests {
         );
 
         emu.produce_frame();
+        // Only the SOFTWARE path presents `scanout_scaled`'s geometry. Under
+        // `gpu-rdp` the picture comes from parallel-rdp, which scans out the
+        // whole VI raster rather than cropping to the active span — a real and
+        // documented difference between the backends (`docs/rdp.md`), not a
+        // regression, so asserting the software geometry there would be
+        // asserting the wrong thing rather than catching something.
+        #[cfg(not(all(feature = "gpu-rdp", not(target_arch = "wasm32"))))]
         assert_eq!(
             (emu.frame().w, emu.frame().h),
             scaled_dims,
             "produce_frame presents the scanout_scaled geometry"
         );
+        #[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
+        {
+            // The claim worth making under `gpu-rdp` is that the GPU actually
+            // produced this frame — otherwise the feature could be silently
+            // falling back to the software path and everything would still look
+            // right, which is the failure mode this whole backend is easiest to
+            // get wrong in.
+            println!(
+                "gpu_frames={} probe_failed={} presented={}x{}",
+                emu.gpu_frames(),
+                crate::gpu_rdp::probe_failed(),
+                emu.frame().w,
+                emu.frame().h
+            );
+            assert!(
+                emu.gpu_frames() > 0 || crate::gpu_rdp::probe_failed(),
+                "the gpu-rdp feature is on, a device was found, and yet no frame \
+                 came from it — the frontend is silently on the software path"
+            );
+        }
     }
 
     /// **The frontend boots a real game** through `EmuCore::load_rom` → the core's

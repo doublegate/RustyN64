@@ -41,6 +41,20 @@ fast-scheduler = ["rustyn64-core/fast-scheduler"]
 # ADR 0013 decision rather than a build-configuration one.
 fast-exec = ["rustyn64-core/fast-exec"]
 
+# ADR 0014: present frames through the GPU RDP instead of the software VI
+# scan-out. Default-OFF, native-only, and the only thing that pulls in the
+# vendored parallel-rdp C++ and a Vulkan toolchain.
+#
+# Deliberately NOT in `full`, on the same reasoning that keeps `fast-scheduler`
+# out of it: promoting an alternate backend into a shipped artifact is an ADR
+# decision rather than a build-configuration one.
+gpu-rdp = [
+    "dep:rustyn64-rdp-gpu",
+    "dep:rustyn64-rdp",
+    "rustyn64-rdp-gpu/gpu-rdp",
+    "rustyn64-core/rdp-tap",
+]
+
 # Roadmap placeholders (no code yet) — kept so downstream `--features` resolve.
 debug-hooks = []
 hd-pack = []
@@ -68,6 +82,10 @@ workspace = true
 
 [dependencies]
 rustyn64-core = { path = "../rustyn64-core", version = "0.8.0" }
+# Both optional and both `gpu-rdp`-only: the RDP crate is needed solely for its
+# command-length table, so a default build does not gain a dependency edge.
+rustyn64-rdp = { path = "../rustyn64-rdp", version = "0.8.0", optional = true }
+rustyn64-rdp-gpu = { path = "../rustyn64-rdp-gpu", version = "0.8.0", optional = true }
 # Save-state (de)serialization: the whole `System` is serde-serializable, and the
 # frontend picks the wire format (compact, deterministic) — ADR 0004 puts
 # save-states, rewind, and run-ahead here, never in the core.

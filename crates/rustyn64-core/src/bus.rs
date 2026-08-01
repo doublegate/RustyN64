@@ -370,6 +370,22 @@ pub struct Bus {
     /// since only Z-buffered rendering touches it (reads return 0, matching the
     /// power-on state).
     pub rdram_hidden: Option<alloc::boxed::Box<[u8]>>,
+    /// Every RDP command word this Bus has fed to the RDP since the last drain
+    /// (ADR 0014's tap), appended whole-command in FIFO order.
+    ///
+    /// Exists so an out-of-core rasterizer can be handed the *same* stream the
+    /// software RDP consumed. It has to be a tap rather than a re-read of
+    /// RDRAM: by the time anything outside the core could look, `DPC_CURRENT`
+    /// has reached `DPC_END` and the game has usually overwritten the buffer.
+    ///
+    /// `#[serde(skip)]` on purpose, and that is not a shortcut. This is
+    /// per-frame scratch that the consumer drains, so it carries no state a
+    /// save-state needs; skipping it also keeps the snapshot layout **identical**
+    /// with the feature on or off, which is what keeps this out of ADR 0005's
+    /// announced-in-advance format-break territory.
+    #[cfg(feature = "rdp-tap")]
+    #[serde(skip)]
+    pub rdp_tap: alloc::vec::Vec<u32>,
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
     pub pi: rustyn64_cart::pi::Pi,
@@ -454,6 +470,8 @@ impl Default for Bus {
             boot_nmi_halt: false,
             rdram: alloc::vec![0u8; RDRAM_SIZE].into_boxed_slice(),
             rdram_hidden: None,
+            #[cfg(feature = "rdp-tap")]
+            rdp_tap: alloc::vec::Vec::new(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
             vi: Vi::new(),
@@ -554,8 +572,37 @@ impl Bus {
             return;
         };
         let mut rdp = core::mem::take(&mut self.rdp);
+        #[cfg(feature = "rdp-tap")]
+        let before = rdp.cmd_current;
         rdp.tick_with_bus(proof, self);
+        // Capture what was actually consumed, by DIFFING the FIFO pointer rather
+        // than decoding the command again here. `tick_with_bus` already knows the
+        // opcode's length and already refuses a command that is only partly
+        // written; re-deriving either would be the same rule written twice, free
+        // to drift, and a tap that disagrees with the RDP about where one command
+        // ends is worse than no tap. An unconsumed step leaves the pointer put and
+        // captures nothing.
+        #[cfg(feature = "rdp-tap")]
+        {
+            let after = rdp.cmd_current;
+            let mut addr = before;
+            while addr < after {
+                self.rdp_tap.push(self.rdram_read_u32(addr));
+                addr = addr.wrapping_add(4);
+            }
+        }
         self.rdp = rdp;
+    }
+
+    /// Drain the RDP command tap, leaving it empty.
+    ///
+    /// The consumer is expected to call this once per frame. Nothing bounds the
+    /// buffer otherwise, and a consumer that stops draining would grow it without
+    /// limit — which is the caller's problem to have loudly rather than this
+    /// Bus's to hide by silently dropping the oldest commands.
+    #[cfg(feature = "rdp-tap")]
+    pub fn take_rdp_commands(&mut self) -> alloc::vec::Vec<u32> {
+        core::mem::take(&mut self.rdp_tap)
     }
 
     /// Step the AI against this bus's narrow [`AudioBus`] view (split-borrow),
@@ -3525,6 +3572,109 @@ mod pi_tests {
             bus.read_u32(0x1000_0000),
             0xAAAA_AAAA,
             "the FIRST write still owns the bus"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "rdp-tap"))]
+mod rdp_tap_tests {
+    use super::Bus;
+
+    /// Load a command list at `addr` and drain the DP FIFO over it.
+    fn run(words: &[u32]) -> Bus {
+        let mut bus = Bus::new();
+        let addr = 0x0010_0000u32;
+        for (i, w) in words.iter().enumerate() {
+            let a = addr as usize + i * 4;
+            bus.rdram[a..a + 4].copy_from_slice(&w.to_be_bytes());
+        }
+        let end = addr + (words.len() * 4) as u32;
+        bus.rdp.dpc_write(0, addr);
+        bus.rdp.dpc_write(1, end);
+        for _ in 0..(words.len() * 8 + 64) {
+            bus.rdp_tick();
+        }
+        bus
+    }
+
+    /// A `Sync Full` (2 words) and a `Set Fill Color` (2 words).
+    const TWO_COMMANDS: [u32; 4] = [0x2900_0000, 0, 0x3700_0000, 0xFF00_00FF];
+
+    /// The tap must reproduce the consumed stream **exactly**, in order.
+    ///
+    /// Mutation-checked: dropping the `while addr < after` capture entirely
+    /// leaves this empty, and advancing `addr` by 8 instead of 4 drops every
+    /// second word.
+    #[test]
+    fn the_tap_reproduces_the_consumed_stream() {
+        let mut bus = run(&TWO_COMMANDS);
+        assert_eq!(bus.take_rdp_commands(), TWO_COMMANDS.to_vec());
+    }
+
+    /// Draining must actually empty it, or a per-frame consumer replays every
+    /// earlier frame's commands on top of its own.
+    #[test]
+    fn draining_empties_the_tap() {
+        let mut bus = run(&TWO_COMMANDS);
+        assert!(!bus.take_rdp_commands().is_empty(), "nothing was captured");
+        assert!(
+            bus.take_rdp_commands().is_empty(),
+            "a second drain returned commands, so the first did not consume them"
+        );
+    }
+
+    /// A command the FIFO never consumed must not be captured.
+    ///
+    /// The tap diffs the FIFO pointer, so it inherits `tick_with_bus`'s refusal
+    /// to consume a partly-written command rather than restating it. This is the
+    /// test that the inheritance is real and not merely intended.
+    ///
+    /// **A Fill Triangle, not a 2-word command, and that is the whole point.**
+    /// The first version of this test used a 2-word command with `DPC_END` set
+    /// one word in — but `DPC_ADDR_MASK` is `0x00FF_FFF8`, so `addr + 4` masks
+    /// back down to `addr`, leaving `cmd_end == cmd_current`. The FIFO was
+    /// *empty*, `tick_without_bus` early-returned, and the test passed without
+    /// the partial-command path ever running. It survived a mutation that
+    /// captured unconditionally. A triangle is 4 u64 words (32 bytes), so
+    /// `addr + 8` is both 8-byte aligned and genuinely short.
+    #[test]
+    fn a_partial_command_is_not_captured() {
+        let mut bus = Bus::new();
+        let addr = 0x0010_0000u32;
+        // Fill Triangle (0x08): 32 bytes.
+        bus.rdram[addr as usize..addr as usize + 4].copy_from_slice(&0x0800_0000u32.to_be_bytes());
+        bus.rdp.dpc_write(0, addr);
+        bus.rdp.dpc_write(1, addr + 8);
+        assert_eq!(
+            bus.rdp.dpc_read(1),
+            addr + 8,
+            "DPC_END was masked away; the FIFO would be empty rather than partial"
+        );
+        for _ in 0..64 {
+            bus.rdp_tick();
+        }
+        assert_eq!(
+            bus.rdp.commands_processed, 0,
+            "the RDP consumed the partial command, so this tests nothing about the tap"
+        );
+        assert!(
+            bus.take_rdp_commands().is_empty(),
+            "the tap captured a command the RDP never consumed"
+        );
+    }
+
+    /// The tap must not perturb what the RDP does.
+    ///
+    /// The whole feature is supposed to be observation only, and "it does not
+    /// change behavior" is a claim like any other. `commands_processed` is
+    /// retained state the RDP increments itself, so it witnesses the work rather
+    /// than being derived from the clock.
+    #[test]
+    fn the_tap_does_not_change_what_the_rdp_consumes() {
+        let bus = run(&TWO_COMMANDS);
+        assert_eq!(
+            bus.rdp.commands_processed, 2,
+            "the RDP consumed a different number of commands with the tap compiled in"
         );
     }
 }
