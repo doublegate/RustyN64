@@ -94,6 +94,23 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
+  143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
+  histogram of COP2 computational `funct` values, reported by
+  `examples/work_bench.rs`. Note this identifies a hotspot rather than
+  authorizing a technique: `rustyn64-rsp` is `#![forbid(unsafe_code)]`, and the
+  scoped-exception ADR agreed in principle does not exist yet.
+
+  On Super Mario 64: **41% of everything the RSP executes is a VU computation**,
+  only 32 of 64 `funct` values ever appear, four operations are half the work,
+  and twelve are 81%. Decisively: **`funct 0x00..=0x0F` — the whole
+  multiply/accumulate family — is 61.62%, dispatched by a single function**
+  (`multiply_lane`). One vectorized function would cover 62% of the VU's
+  computational work.
+
+  It also bounds the ambition: 62% of ~8.5% is **~5.3%**, and any SIMD work must
+  be measured against that ceiling rather than the 8.5%.
+
 - **`read_u32` gains an RDRAM fast path — 1.12% of a frame.** A word read cost
   **five** bus dispatches (itself plus four `read_u8`) where a word write cost
   one, because `write_u32` had this fast path and `read_u32` did not. Found by
