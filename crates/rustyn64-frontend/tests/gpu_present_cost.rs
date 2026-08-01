@@ -56,7 +56,7 @@ fn gpu_present_versus_software_scanout() {
     // Warm both paths before timing either: the first GPU frame pays for shader
     // compilation, which is not a per-frame cost and would swamp the number.
     for _ in 0..5 {
-        rustyn64_frontend::gpu_rdp::present(&mut bus, &mut out);
+        rustyn64_frontend::gpu_rdp::present(&mut bus, &mut out, 640, 480);
     }
     if rustyn64_frontend::gpu_rdp::frames_produced() == 0 {
         println!("SKIPPED: no usable Vulkan device — nothing was measured.");
@@ -68,7 +68,7 @@ fn gpu_present_versus_software_scanout() {
 
     let t = Instant::now();
     for _ in 0..FRAMES {
-        rustyn64_frontend::gpu_rdp::present(&mut bus, &mut out);
+        rustyn64_frontend::gpu_rdp::present(&mut bus, &mut out, 640, 480);
     }
     let gpu = t.elapsed().as_secs_f64() / f64::from(FRAMES);
 

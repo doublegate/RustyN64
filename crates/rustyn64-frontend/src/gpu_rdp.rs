@@ -124,6 +124,19 @@ pub fn frames_produced() -> u64 {
     PRODUCED.load(Ordering::Relaxed)
 }
 
+/// Pretend this thread has no usable device, for tests.
+///
+/// The device-less path is the one that leaked, and on a developer machine with
+/// a working GPU it is otherwise unreachable — a regression test that only fails
+/// on hardware nobody develops on is not a regression test. Marking the thread
+/// probed-and-empty makes that path deterministic everywhere. Thread-local, so
+/// it cannot affect a concurrently running test.
+#[cfg(test)]
+pub(crate) fn force_no_device_for_test() {
+    PROBED.with(|p| *p.borrow_mut() = true);
+    PRESENTER.with(|p| *p.borrow_mut() = None);
+}
+
 /// Whether the device probe ran on this thread and found nothing usable.
 ///
 /// Exists so a test can tell "the GPU path is silently not running" from "there
@@ -136,12 +149,26 @@ pub fn probe_failed() -> bool {
 
 /// Render one frame through the GPU backend, creating it on first use.
 ///
+/// `max_w`/`max_h` bound the geometry the caller can present; a larger frame is
+/// refused rather than returned, so the caller never gets a `Some` it has to
+/// reject *after* `out` has been written.
+///
 /// Returns `None` — leaving `out` untouched — when there is no usable device or
 /// the GPU path declined to produce a picture, so the caller falls back to the
 /// software scan-out.
 ///
+/// **Always drains `bus`'s command tap**, including when there is no device.
+/// Nothing else drains it and `Bus::rdp_tick` appends on every consumed command,
+/// so an early return that skipped the drain would grow it without bound on
+/// exactly the machines that cannot use it: a Vulkan-less host would accumulate
+/// every RDP command the game ever issued until the process died. The hazard is
+/// written into `take_rdp_commands`'s own doc comment, which was not much of a
+/// defense — this consumer was built with the bug in it and a reviewer caught it.
+///
 /// The device is created on the **calling** thread and never leaves it.
-pub fn present(bus: &mut Bus, out: &mut [u8]) -> Option<(u32, u32)> {
+pub fn present(bus: &mut Bus, out: &mut [u8], max_w: u32, max_h: u32) -> Option<(u32, u32)> {
+    let commands = bus.take_rdp_commands();
+
     let already_probed = PROBED.with(|p| core::mem::replace(&mut *p.borrow_mut(), true));
     if !already_probed {
         PRESENTER.with(|p| *p.borrow_mut() = GpuPresenter::new());
@@ -149,9 +176,12 @@ pub fn present(bus: &mut Bus, out: &mut [u8]) -> Option<(u32, u32)> {
     PRESENTER.with(|p| {
         let mut slot = p.borrow_mut();
         let presenter = slot.as_mut()?;
-        let geometry = presenter.present(bus, out)?;
+        let (w, h) = presenter.present(&commands, bus, out)?;
+        if w > max_w || h > max_h {
+            return None;
+        }
         PRODUCED.fetch_add(1, Ordering::Relaxed);
-        Some(geometry)
+        Some((w, h))
     })
 }
 
@@ -188,11 +218,9 @@ impl GpuPresenter {
     /// a caller that falls back to the software scan-out cannot present a
     /// half-written buffer.
     ///
-    /// Drains `bus`'s command tap whether or not a picture results — leaving it
-    /// undrained would replay this frame's commands on top of the next one's.
-    fn present(&mut self, bus: &mut Bus, out: &mut [u8]) -> Option<(u32, u32)> {
-        let commands = bus.take_rdp_commands();
-
+    /// `commands` is this frame's tapped stream, drained by the caller so the
+    /// drain happens even on the paths that return early here.
+    fn present(&mut self, commands: &[u32], bus: &Bus, out: &mut [u8]) -> Option<(u32, u32)> {
         // Seed RDRAM from the Bus. Whole-buffer and unconditional: the alternative
         // is knowing which bytes the CPU touched since the last frame, which is
         // the dirty-region tracker ADR 0014 §5 calls the dangerous part.
@@ -205,11 +233,24 @@ impl GpuPresenter {
         self.gpu
             .with_rdram_mut(|rdram| swap_words_into(rdram, &bus.rdram))?;
 
-        for cmd in split_commands(&commands) {
+        let mut consumed = 0usize;
+        for cmd in split_commands(commands) {
             if !self.gpu.enqueue_command(cmd) {
                 return None;
             }
+            consumed += cmd.len();
         }
+        // The tap captures whole commands by construction, so every word must be
+        // accounted for. A shortfall means the tap and `rustyn64_rdp::command`
+        // have come to disagree about command lengths, and the visible symptom
+        // would be the rest of the frame's commands silently vanishing — a wrong
+        // picture with nothing pointing at the cause.
+        debug_assert_eq!(
+            consumed,
+            commands.len(),
+            "the tapped stream ended mid-command: the tap and \
+             rustyn64_rdp::command disagree about command lengths"
+        );
 
         for &(idx, reg) in VI_FORWARD {
             if !self.gpu.set_vi_register(reg, bus.vi.read(idx)) {
@@ -230,12 +271,19 @@ impl GpuPresenter {
             height,
             pixels,
         } = self.gpu.scanout_sync(&mut self.pixels[..capacity])?;
+        // The shim refuses a frame larger than the buffer it was given, so
+        // `pixels <= capacity` — but that is a guarantee on the far side of an
+        // FFI boundary, and `self.pixels[..pixels]` would panic if it stopped
+        // holding. `get` turns it into the same `None` every other failure here
+        // produces. Deliberately not a `min` clamp: a truncated frame is a
+        // plausible-looking wrong picture.
+        let src = self.pixels.get(..pixels)?;
 
         // parallel-rdp hands back RGBA8 already in R,G,B,A byte order (verified
         // in `rustyn64-rdp-gpu`'s smoke test, where an opaque-red fill reads back
         // as 0xFF0000FF little-endian). So this is a plain reinterpretation, not
         // a conversion.
-        for (dst, &px) in out.chunks_exact_mut(4).zip(&self.pixels[..pixels]) {
+        for (dst, &px) in out.chunks_exact_mut(4).zip(src) {
             dst.copy_from_slice(&px.to_le_bytes());
         }
 
@@ -280,6 +328,11 @@ fn split_commands(words: &[u32]) -> impl Iterator<Item = &[u32]> {
         let len = rustyn64_rdp::command::command_len_words(opcode) as usize * 2;
         // A zero length would not advance the cursor and a short tail cannot be
         // decoded; both end the stream rather than looping or reading past it.
+        //
+        // No assertion here on purpose. This is a total parser and a caller may
+        // legitimately hand it a partial stream — the unit tests do. The claim
+        // that a TAPPED stream is never partial belongs where that claim is made,
+        // which is `present` below.
         if len == 0 || i + len > words.len() {
             return None;
         }
@@ -318,6 +371,59 @@ mod tests {
         stream.extend(core::iter::repeat_n(0, 7));
         let lens: Vec<usize> = split_commands(&stream).map(<[u32]>::len).collect();
         assert_eq!(lens, vec![2, 2, 8]);
+    }
+
+    /// The tap is drained even when there is no device.
+    ///
+    /// This is a **regression test for a real leak**: `present` used to drain
+    /// inside the `PRESENTER` closure, after `slot.as_mut()?`, so on a machine
+    /// with no usable Vulkan the tap was never emptied and grew by every command
+    /// the game issued, forever, until the process died. A reviewer found it.
+    ///
+    /// It forces the **device-less** path with
+    /// [`force_no_device_for_test`](super::force_no_device_for_test), and that is
+    /// the whole point. The first version of this test did not, and on a machine
+    /// with a working GPU it **passed with the leak restored** — the two paths
+    /// converged, so it proved nothing about the one that was broken. Its doc
+    /// comment claimed it held on both kinds of machine; it did, and that was
+    /// exactly the problem.
+    #[test]
+    fn the_tap_is_drained_when_there_is_no_device() {
+        super::force_no_device_for_test();
+        let mut bus = rustyn64_core::Bus::new();
+        // A Sync Full and a Set Fill Color, placed and drained through the FIFO
+        // so the tap fills the way it does in a running machine.
+        let addr = 0x0010_0000u32;
+        for (i, w) in [0x2900_0000u32, 0, 0x3700_0000, 0xFF00_00FF]
+            .into_iter()
+            .enumerate()
+        {
+            let a = addr as usize + i * 4;
+            bus.rdram[a..a + 4].copy_from_slice(&w.to_be_bytes());
+        }
+        bus.rdp.dpc_write(0, addr);
+        bus.rdp.dpc_write(1, addr + 16);
+        for _ in 0..64 {
+            bus.rdp_tick();
+        }
+        assert!(
+            !bus.rdp_tap.is_empty(),
+            "the tap captured nothing, so this test would pass vacuously"
+        );
+
+        let mut out = vec![0u8; 640 * 480 * 4];
+        assert!(
+            super::present(&mut bus, &mut out, 640, 480).is_none(),
+            "a device was found despite force_no_device_for_test, so this test \
+             is not exercising the path it exists for"
+        );
+
+        assert!(
+            bus.rdp_tap.is_empty(),
+            "present left {} words in the tap on a device-less host, where it \
+             would grow without bound",
+            bus.rdp_tap.len()
+        );
     }
 
     /// A trailing partial command is dropped, not decoded against words that

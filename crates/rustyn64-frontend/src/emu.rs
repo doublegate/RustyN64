@@ -399,8 +399,12 @@ impl EmuCore {
         // the buffer untouched on every failure path, so falling through here
         // cannot present a half-written frame.
         #[cfg(all(feature = "gpu-rdp", not(target_arch = "wasm32")))]
-        if let Some((w, h)) = crate::gpu_rdp::present(&mut self.system.bus, &mut self.frame.rgba)
-            && let Some((w, h)) = presentable_geometry(w, h)
+        if let Some((w, h)) = crate::gpu_rdp::present(
+            &mut self.system.bus,
+            &mut self.frame.rgba,
+            FB_MAX_W,
+            FB_MAX_H,
+        ) && let Some((w, h)) = presentable_geometry(w, h)
         {
             self.frame.w = w;
             self.frame.h = h;

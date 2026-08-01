@@ -584,11 +584,16 @@ impl Bus {
         // captures nothing.
         #[cfg(feature = "rdp-tap")]
         {
-            let after = rdp.cmd_current;
-            let mut addr = before;
-            while addr < after {
-                self.rdp_tap.push(self.rdram_read_u32(addr));
-                addr = addr.wrapping_add(4);
+            // Iterate a COUNT, not `while addr < after`. `cmd_current` is masked
+            // to `DPC_ADDR_MASK` (0x00FF_FFF8) so it cannot reach the top of the
+            // address space today, and the comparison form would therefore never
+            // wrap — but "cannot happen because of a mask three files away" is a
+            // reason to write the loop that does not need the argument. A count
+            // terminates whatever the addresses are.
+            let words = rdp.cmd_current.wrapping_sub(before) / 4;
+            for i in 0..words {
+                self.rdp_tap
+                    .push(self.rdram_read_u32(before.wrapping_add(i * 4)));
             }
         }
         self.rdp = rdp;
