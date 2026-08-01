@@ -2159,14 +2159,27 @@ the two is not distinguishable from this harness's drift, and is not claimed.
 
 `the_fast_path_agrees_with_byte_composition` compares the two implementations
 directly over misaligned addresses, a 4 KiB page straddle, and the last words of
-RDRAM. Mutation-checked: flipping the byte order fails it, and removing the
-`off + 3 < len` bound panics on the end-of-RDRAM cases.
+RDRAM. Mutation-checked: flipping the byte order fails it, and replacing
+`.get(off..off + 4)` with an unchecked index panics on the end-of-RDRAM cases —
+the partial-word rejection is the whole reason for the range form.
 
-**One mutation did not fire, and that is recorded rather than quietly dropped.**
-Hoisting the fast path above every MMIO branch **passes every test** — because
-`rdram_offset` returns `None` outside the 8 MiB window and registers live at
-`$0400_0000` and above. So the placement is *defensive, not load-bearing*, and
-the first version of both the code comment and the test doc claimed otherwise.
-Both now say what is true: the fast path sits low so the change cannot depend on
-`rdram_offset`'s range staying disjoint from every future register block, which
-is a cheap invariant to not depend on.
+**MMIO is protected twice over, and no SINGLE mutation reveals it.** That took
+three attempts to establish and is worth recording in full:
+
+| mutation | result |
+| --- | --- |
+| hoist the fast path above every register branch | passes |
+| widen `rdram_offset` to accept every address | passes |
+| **both together** | **fails** |
+
+The register branches run first **and** `rdram_offset` returns `None` outside
+the 8 MiB window. Either alone is sufficient, so breaking one leaves the other
+holding.
+
+Two corrections came out of that. The first version of the code comment and the
+test doc claimed the *placement* is what keeps MMIO safe — it is one of two
+protections, not the one under test. And an intermediate mutation that "passed"
+turned out to be **too narrow to reach any register block** (`RDRAM_SIZE * 8` is
+64 MiB; the blocks start at `$0400_0000`), which would have been recorded as
+evidence of a property that had simply not been exercised. A mutation that does
+not fire proves nothing until you have checked it could have.

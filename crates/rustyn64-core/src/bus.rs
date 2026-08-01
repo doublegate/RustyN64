@@ -2146,7 +2146,7 @@ impl CpuBus for Bus {
         // Provenance and the measurement: `docs/performance.md`.
         if let Some(word) = Self::rdram_offset(addr)
             .and_then(|off| self.rdram.get(off..off + 4))
-            .and_then(|s| <[u8; 4]>::try_from(s).ok())
+            .and_then(|s| s.try_into().ok())
         {
             return u32::from_be_bytes(word);
         }
@@ -3992,17 +3992,26 @@ mod read_u32_fast_path_tests {
 
     /// A word read still reaches the SP register file rather than RDRAM.
     ///
-    /// **What this does NOT test**, stated because the first version of this doc
-    /// claimed it did: it does not pin the fast path's *placement*. Hoisting the
-    /// fast path above every register branch was mutation-checked and **passed**
-    /// — because `rdram_offset` returns `None` outside the 8 MiB window and
-    /// registers live at `$0400_0000` and above, so the placement is defensive
-    /// rather than load-bearing.
+    /// **MMIO is protected twice over, and either protection alone suffices** —
+    /// established by mutation rather than assumed:
     ///
-    /// What it does test is the property that actually matters and that a wrong
-    /// `rdram_offset` range would break: a word read of a register must return
-    /// the register, not memory. That failure would be silent and word-width
-    /// only.
+    /// | mutation | result |
+    /// | --- | --- |
+    /// | hoist the fast path above every register branch | passes |
+    /// | widen `rdram_offset` to accept every address | passes |
+    /// | **both together** | **fails** |
+    ///
+    /// So neither single mutation reveals this test, and that is a property of
+    /// the code rather than a gap in the test: the register branches run first
+    /// *and* `rdram_offset` returns `None` outside the 8 MiB window. A reader
+    /// who mutates only one and sees green should not conclude the test is
+    /// vacuous.
+    ///
+    /// The first version of this doc claimed the test pinned the fast path's
+    /// *placement*. It does not — placement is one of the two protections, not
+    /// the tested one. What is tested is the conjunction: a word read of a
+    /// register must return the register, not memory. That failure would be
+    /// silent and word-width only.
     #[test]
     fn mmio_word_reads_are_not_captured_by_the_fast_path() {
         let mut bus = Bus::new();
@@ -4037,6 +4046,27 @@ mod read_u32_fast_path_tests {
                 via_bus, 0x5A5A_5A5A,
                 "SP register {idx} returned the RDRAM fill pattern; the fast path \
                  captured an MMIO address"
+            );
+        }
+
+        // One representative from each of the other register blocks `read_u32`
+        // routes before reaching the fast path. The SP loop above is the
+        // thorough case; these are breadth, so a future change to the branch
+        // ORDER cannot quietly divert a whole block into RDRAM. Asserted
+        // negatively — against the fill pattern — because each block's read
+        // semantics differ and this test is about routing, not values.
+        for (label, addr) in [
+            ("MI", Bus::MI_BASE),
+            ("VI", Bus::VI_REGS_BASE),
+            ("AI", Bus::AI_REGS_BASE),
+            ("DP", Bus::DP_REGS_BASE),
+            ("RI", Bus::RI_BASE),
+            ("SI", Bus::SI_BASE),
+        ] {
+            assert_ne!(
+                CpuBus::read_u32(&mut bus, addr),
+                0x5A5A_5A5A,
+                "a word read of the {label} block returned the RDRAM fill pattern"
             );
         }
     }
