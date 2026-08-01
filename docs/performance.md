@@ -1738,3 +1738,69 @@ and never land on the boundary. That is audio which is correct but late, the sam
 correct-but-late class ADR 0011 names for the fast-path bailout, and it now has a test
 (`a_sample_due_exactly_now_is_emitted_on_this_call`) that goes red under the mutation and
 green without it.
+
+## The GPU backend staged all 8 MiB of RDRAM every frame — 2.54% of a frame
+
+The `gpu-rdp` path copied and byte-swapped **the whole of RDRAM into the GPU's
+own RDRAM every frame**, unconditionally, because it had no way to know what had
+changed. Measured earlier at ~2.1 ms of the ~2.4 ms a GPU frame cost.
+
+`Bus` now carries a per-page dirty map (`rdp-tap`, 4 KiB pages, 2,048 flags for
+8 MiB) marked at all six RDRAM write sites, and the frontend stages only the
+pages something wrote.
+
+**How much of RDRAM a real frame actually touches**, which is what makes the
+result interpretable rather than just favorable — Super Mario 64, measured:
+
+| | pages of 2,048 | % of RDRAM |
+| --- | --- | --- |
+| busiest frames | 138–139 | 6.8% |
+| alternating frames | 27–28 | 1.3% |
+
+So the stage sends ~0.1–0.5 MB instead of 8 MB.
+
+### A-B-A, `frame_bench --features gpu-rdp`, Super Mario 64
+
+| leg | full stage | dirty pages |
+| --- | --- | --- |
+| 1 | 96.725 | 93.828 |
+| 2 | 97.003 | 94.098 |
+| 3 | *109.564* | 94.229 |
+| 4 | 97.315 | 94.064 |
+| 5 | 96.687 | — |
+
+**Conservative pairing (worst B 94.229 against best A 96.687): 2.54%, 1.026x.**
+The four clean A legs span 0.65% and the B legs 0.43%, and the two sets **do not
+overlap**.
+
+**Leg A3 (109.564 ms) is excluded and named rather than dropped silently.** It is
+13% off the other four A legs, which agree within 0.65% — that is not the ~1%
+this harness drifts by, so something outside the measurement happened. Four
+clean A legs is enough to pair against; three would not have been.
+
+**The mechanism predicts the result**, which is the check that matters more than
+the spread: removing a ~2.1 ms stage from a ~97 ms frame is 2.16%, and 2.54% was
+measured. Agreement at that level says the saving is the stage and not something
+else moving.
+
+### Two harness corrections this forced
+
+- **`examples/frame_bench.rs` does not run on its default ROM.** The committed
+  `render_fill.z64` never brings the VI up inside `MAX_WARM = 300` frames, so the
+  harness aborts on its own liveness assertion. It works on a commercial ROM —
+  Super Mario 64 comes up at `warm=36`, exactly the figure in the file's own
+  comment. Every number here was taken with `RUSTYN64_PROBE_ROM` set. The default
+  is not a working default and should be fixed or replaced.
+- **`tests/gpu_present_cost.rs` measures a floor, not a frame.** It never runs
+  the machine, so nothing is ever dirty and the staging is skipped entirely —
+  which is why its number fell from ~0.78 ms to ~0.45 ms on this change alone.
+  Its module doc now says so and points here. A number in a test gets quoted.
+
+### The GPU tests need `--test-threads=1`
+
+The backend is one Vulkan device **per thread** (`GpuRdp` is `!Send`), so a
+parallel test harness creates several and their thread-local destructors race
+`vkDestroyDevice` against another thread's creation. That produced a **SIGSEGV
+once in roughly five runs** — intermittent, so it would have arrived as CI flake
+rather than as a reproducible failure. CI now serializes them. Production is
+unaffected: exactly one thread ever calls `present`.

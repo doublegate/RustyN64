@@ -67,6 +67,33 @@ All notable changes to RustyN64 are documented here. The format is based on
   preserved because they are values rather than words: `lightgrey` in a
   shields.io badge URL, and GitHub Actions' own `cancelled` run status.
 
+### Changed
+
+- **The GPU backend stages only the RDRAM pages that changed — 2.54% of a
+  frame.** It used to copy and byte-swap all 8 MiB into the GPU's own RDRAM every
+  frame, unconditionally, because it had no way to know what had moved. `Bus` now
+  carries a per-page dirty map (`rdp-tap`, 4 KiB pages) marked at all six RDRAM
+  write sites, and the frontend stages only what is dirty — with a full stage on
+  a freshly built backend, since a rebuilt one has never seen RDRAM.
+
+  Super Mario 64 dirties **27-139 of 2,048 pages** per frame (1.3-6.8%), so the
+  stage sends ~0.1-0.5 MB instead of 8 MB. A-B-A on `frame_bench --features
+  gpu-rdp`: conservative pairing **2.54%, 1.026x**, with four clean A legs
+  spanning 0.65%, B legs 0.43%, and no overlap. The mechanism predicts 2.16%,
+  which is the check that matters more than the spread. One A leg was 13% out and
+  is excluded and named in `docs/performance.md` rather than dropped quietly.
+
+  Two harness corrections fell out of measuring it, both recorded there:
+  `frame_bench` does not run on its committed default ROM (the VI never comes up
+  within its 300-frame limit; every number was taken with `RUSTYN64_PROBE_ROM`
+  set), and `tests/gpu_present_cost.rs` measures a floor rather than a frame
+  because it never runs the machine — so nothing is ever dirty there.
+
+  The GPU tests now run with `--test-threads=1`: the backend is one Vulkan device
+  per thread (`GpuRdp` is `!Send`), and a parallel harness raced
+  `vkDestroyDevice` against another thread's creation, producing a SIGSEGV once in
+  roughly five runs. Production is unaffected — one thread calls `present`.
+
 ### Added
 
 - **The GPU path is verified reproducible** — all 43 `.rvec` vectors identical

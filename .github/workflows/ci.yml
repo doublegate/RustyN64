@@ -273,7 +273,12 @@ jobs:
       - run: cargo clippy -p rustyn64-test-harness --all-targets --features gpu-rdp -- -D warnings
       - uses: ./.github/actions/linux-build-deps
       - run: cargo clippy -p rustyn64-frontend --all-targets --features gpu-rdp -- -D warnings
-      - run: cargo test -p rustyn64-frontend --features gpu-rdp
+      # --test-threads=1: the GPU backend is one Vulkan device PER THREAD (it is
+      # !Send), so a parallel harness creates several and their thread-local
+      # destructors race `vkDestroyDevice` against another thread's creation.
+      # Observed as an intermittent SIGSEGV, which is the kind of thing that
+      # arrives as flake rather than as a failure anyone can reproduce.
+      - run: cargo test -p rustyn64-frontend --features gpu-rdp -- --test-threads=1
       - name: Run the smoke test and report which branch it took
         run: |
           set -euo pipefail

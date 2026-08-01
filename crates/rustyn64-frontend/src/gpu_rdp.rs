@@ -55,6 +55,7 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 use rustyn64_core::Bus;
+use rustyn64_core::bus::RDRAM_PAGE;
 use rustyn64_core::vi;
 use rustyn64_rdp_gpu::{GpuRdp, ScanoutFrame, ViRegister};
 
@@ -102,6 +103,15 @@ const VI_FORWARD: &[(u32, ViRegister)] = &[
 //
 // Keeping the device in TLS means it is created, used, and destroyed on exactly
 // one thread: whichever one calls `present`. No `unsafe`, no claim to defend.
+//
+// **Consequence for tests, and it is not theoretical.** One device per thread
+// means a test harness that runs tests in parallel creates several, and their
+// thread-local destructors then run `vkDestroyDevice` concurrently with another
+// thread creating one. That segfaulted once in roughly five runs of
+// `cargo test -p rustyn64-frontend --features gpu-rdp` — intermittent, so it
+// would have arrived as CI flake rather than as a reproducible failure. Run the
+// GPU tests with `--test-threads=1`; CI does. Production is unaffected because
+// exactly one thread (the emulation thread) ever calls `present`.
 thread_local! {
     static PRESENTER: RefCell<Option<GpuPresenter>> = const { RefCell::new(None) };
     /// Distinguishes "not tried yet" from "tried and there is no device", so a
@@ -202,7 +212,17 @@ pub fn present(bus: &mut Bus, out: &mut [u8], max_w: u32, max_h: u32) -> Option<
     PRESENTER.with(|p| {
         let mut slot = p.borrow_mut();
         let presenter = slot.as_mut()?;
-        match presenter.present(&commands, bus, out) {
+        let outcome = presenter.present(&commands, bus, out);
+
+        // Clear the dirty map only once RDRAM has actually been staged, which is
+        // what every `Ok` means and no `Err` does. Clearing unconditionally would
+        // drop the pages a failed stage never sent; not clearing at all would
+        // re-send all 8 MiB every frame and make the tracking pointless.
+        if outcome.is_ok() {
+            bus.clear_rdram_dirty();
+        }
+
+        match outcome {
             Ok(Some((w, h))) if w <= max_w && h <= max_h => {
                 PRODUCED.fetch_add(1, Ordering::Relaxed);
                 Some((w, h))
@@ -239,6 +259,14 @@ struct Failed;
 /// The GPU display backend, and the scratch it reuses across frames.
 struct GpuPresenter {
     gpu: GpuRdp,
+    /// This backend's RDRAM has never been seeded, so the next stage must be
+    /// complete regardless of what the Bus reports dirty.
+    ///
+    /// Necessary, not defensive: the Bus clears its dirty map after every
+    /// successful stage, so a backend rebuilt after a failure would otherwise
+    /// receive only the pages that changed since — and silently render against
+    /// whatever the allocator left in the rest of RDRAM.
+    needs_full_stage: bool,
     /// Scan-out pixels as `u32` RGBA8, reused across frames so the per-frame
     /// path allocates nothing.
     pixels: Vec<u32>,
@@ -257,6 +285,7 @@ impl GpuPresenter {
         }
         Some(Self {
             gpu,
+            needs_full_stage: true,
             pixels: Vec::new(),
         })
     }
@@ -277,18 +306,33 @@ impl GpuPresenter {
         bus: &Bus,
         out: &mut [u8],
     ) -> Result<Option<(u32, u32)>, Failed> {
-        // Seed RDRAM from the Bus. Whole-buffer and unconditional: the alternative
-        // is knowing which bytes the CPU touched since the last frame, which is
-        // the dirty-region tracker ADR 0014 §5 calls the dangerous part.
+        // Seed RDRAM from the Bus — only the pages something wrote since the last
+        // stage. The whole-buffer version measured ~2.1 ms of the ~2.4 ms a GPU
+        // frame costs, which is what makes this worth the tracking on the Bus
+        // side rather than a micro-optimization.
         //
         // The swap writes STRAIGHT INTO the mapped buffer. Staging it first and
-        // then copying cost a second full pass over 8 MiB — measured at ~2.1 ms
-        // for the swap and ~2.6 ms for the copy, together ~90% of the frame's
-        // GPU cost. Fusing them halves the traffic and removes an 8 MiB
-        // allocation; `docs/performance.md` carries the before/after.
+        // then copying cost a second full pass over 8 MiB — together ~90% of the
+        // frame's GPU cost, and fusing them measured 3.3x (`docs/performance.md`).
+        let full = self.needs_full_stage;
+        let dirty = bus.rdram_dirty_pages();
         self.gpu
-            .with_rdram_mut(|rdram| swap_words_into(rdram, &bus.rdram))
+            .with_rdram_mut(|rdram| {
+                let len = rdram.len().min(bus.rdram.len());
+                for (page, &is_dirty) in dirty.iter().enumerate() {
+                    if !(full || is_dirty) {
+                        continue;
+                    }
+                    let start = page * RDRAM_PAGE;
+                    if start >= len {
+                        break;
+                    }
+                    let end = (start + RDRAM_PAGE).min(len);
+                    swap_words_into(&mut rdram[start..end], &bus.rdram[start..end]);
+                }
+            })
             .ok_or(Failed)?;
+        self.needs_full_stage = false;
 
         let mut consumed = 0usize;
         for cmd in split_commands(commands) {
