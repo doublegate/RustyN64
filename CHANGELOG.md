@@ -94,7 +94,9 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
-- **ADR 0016 — a scoped `unsafe` exception for the RSP vector unit.** Permits
+- **ADR 0016 — a scoped `unsafe` exception for the RSP vector unit.** *Policy
+  governance; no SIMD code ships with this and no crate behavior changes.*
+  Permits
   `core::arch` intrinsics in `vu.rs` only (not raw pointers, not `transmute`,
   not FFI; every other chip crate keeps `forbid(unsafe_code)`), behind four
   gates: a scalar/vector **equivalence** test over the operand space —
@@ -110,9 +112,8 @@ All notable changes to RustyN64 are documented here. The format is based on
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by
-  `examples/work_bench.rs`. Note this identifies a hotspot rather than
-  authorizing a technique: `rustyn64-rsp` is `#![forbid(unsafe_code)]`, and the
-  scoped-exception ADR agreed in principle does not exist yet.
+  `examples/work_bench.rs`. This identifies a hotspot; ADR 0016 above is what
+  authorizes a technique for it, and only behind four gates.
 
   On Super Mario 64: **41% of everything the RSP executes is a VU computation**,
   only 32 of 64 `funct` values ever appear, four operations are half the work,

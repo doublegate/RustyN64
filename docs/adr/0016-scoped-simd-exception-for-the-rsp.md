@@ -19,7 +19,7 @@ bound what is at stake, and both are already merged:
 
 - **The VU is ~8.5% of a frame** (`docs/performance.md`, the `fast-exec`
   profile).
-- **62% of the VU's computational work is one function.** The COP2 census (#250)
+- **62% of the VU's computational work is one function.** The COP2 census ([#250](https://github.com/doublegate/RustyN64/pull/250))
   found that `funct 0x00..=0x0F` — the multiply / multiply-accumulate family — is
   **61.62%** of 14.6 million executed operations, dispatched by `multiply_lane`.
   Only 32 of 64 `funct` values ever appear, and four operations are half the work.
@@ -52,9 +52,25 @@ satisfied.
 1. **`core::arch` intrinsics only.** Not raw pointers, not `transmute`, not
    `get_unchecked`, not FFI. If a change wants `unsafe` for anything other than
    a vendor intrinsic, this ADR does not cover it.
-2. **`vu.rs` only.** The rest of the crate keeps `forbid`. Mechanically: the
-   crate-level `forbid(unsafe_code)` becomes `deny`, and `vu.rs` carries a
-   module-level `#[allow]` with this ADR cited. No other module may.
+
+   **This one is not compiler-enforceable and must not be written as if it
+   were.** `unsafe_code` is a binary lint: it cannot permit an intrinsic call
+   and reject a `transmute` in the same module. Restriction 1 is therefore
+   enforced by **review**, and the narrow module scope in (2) is what makes that
+   review tractable — a reviewer reads one file, not a crate. A CI check that
+   greps `vu.rs` for `unsafe` blocks whose body is not a `core::arch` call would
+   strengthen it and is worth adding if the exception is ever used.
+
+2. **`vu.rs` only**, and precisely:
+
+   - the crate-level attribute changes from `#![forbid(unsafe_code)]` to
+     `#![deny(unsafe_code)]` — necessary because `forbid` cannot be overridden
+     by an inner `allow`, which is the whole point of `forbid`;
+   - `vu.rs` alone carries `#![allow(unsafe_code)]` with this ADR cited;
+   - **every other module is then `deny`, not `forbid`**, which is a real and
+     deliberate weakening: `deny` can be locally overridden and `forbid` cannot.
+     That is the price of the exception and it is why (1) is enforced by review
+     — the compiler stops being the thing that guarantees it.
 3. **Every `unsafe` block carries a `// SAFETY:` comment** naming the invariant
    and who guarantees it — the existing rule, not a new one.
 4. **A safe scalar path remains, compiled and tested.** The intrinsics are an
@@ -76,7 +92,7 @@ four is incomplete.**
    to use, and a divergence outside that set is exactly the bug this ADR's
    technique invites.
 2. **`rsp_categories_report_no_failures` stays at `0 failing`** across 224 RSP
-   tests (#238). Non-negotiable.
+   tests ([#238](https://github.com/doublegate/RustyN64/pull/238)). Non-negotiable.
 3. **Measured against the 5.3% ceiling, A-B-A, on a real workload**, by
    `docs/performance.md`'s standing rules — interleaved legs, conservative
    pairing, outliers named. **A neutral or worse result is reverted**, exactly as
@@ -84,6 +100,13 @@ four is incomplete.**
 4. **A runtime or compile-time feature check with a tested fallback.** SSE2 is
    baseline on `x86_64` but SSSE3/SSE4.1 are not, and `aarch64` is a supported
    target. The fallback path is tested, not assumed.
+
+   Note the structural cost, because it shapes the code rather than decorating
+   it: runtime dispatch means `#[target_feature]` functions, which are
+   themselves `unsafe` to call, do not inline across the boundary, and force the
+   dispatch decision out of the hot loop and up to a level where it is amortized.
+   A design that checks a feature flag per instruction has spent the win before
+   it starts.
 
 ### What this does not do
 
@@ -104,6 +127,8 @@ four is incomplete.**
   that is known (5.3%) rather than assumed (8.5%).
 - The scope is narrow enough to audit: one module, one class of intrinsic, a
   grep for `unsafe` in `crates/rustyn64-rsp` returns either nothing or `vu.rs`.
+  That auditability is what has to carry the weight, since restriction (1) is
+  not compiler-enforced.
 - The equivalence gate is reusable for any future alternate implementation of
   the same operations, including a dynarec.
 
@@ -112,6 +137,10 @@ four is incomplete.**
 - **The tree stops having zero `unsafe` in the chip crates**, which was a
   property worth something on its own — it made "is this crate memory-safe?" a
   question with a one-word answer.
+- **`rustyn64-rsp` drops from `forbid` to `deny`**, so the guarantee for its
+  other modules becomes one a future edit can locally override rather than one
+  the compiler refuses. That is a strictly larger weakening than "`vu.rs` may
+  use intrinsics", and it is the part most likely to be forgotten later.
 - Vendor intrinsics are per-architecture, so the VU acquires a portability
   surface it did not have. The scalar fallback is the mitigation and is also a
   maintenance burden: two implementations that must agree, forever, which is why

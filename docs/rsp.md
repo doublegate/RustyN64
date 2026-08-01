@@ -548,7 +548,7 @@ either way. The histogram additionally needs an explicit
 shipped build must not pay for a measurement. With the feature off both compile
 to nothing and the crate is byte-identical.
 
-### This does not authorize a technique
+### The technique this authorizes, and the gates on it
 
 `crates/rustyn64-rsp` is `#![forbid(unsafe_code)]`. **[ADR 0016](adr/0016-scoped-simd-exception-for-the-rsp.md)
 authorizes a narrow exception** — `core::arch` intrinsics, in `vu.rs` only —
