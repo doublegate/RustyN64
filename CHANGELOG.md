@@ -113,7 +113,7 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 - **ADR 0017 — a CPU recompiler design, put up for review.** *Design only; no
   crate, no code.* The CPU is **32.29%** of a frame and everything else in the
-  plan, added together and assumed perfect, is under 15% — so a recompiler is
+  plan, added together and assumed perfect, is about 15% — so a recompiler is
   the only remaining change that can move the frame rate materially.
 
   Deliberately **not accepted by merging the file**: it is accepted in three
