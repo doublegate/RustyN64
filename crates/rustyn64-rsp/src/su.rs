@@ -372,6 +372,7 @@ impl Rsp {
             // positions: `vt` is at 20..16 (where `rt` normally sits), `vs` at
             // 15..11 and `vd` at 10..6 -- so the natural reading of a MIPS
             // R-type would swap the source and destination.
+            self.count_vu_funct(d.funct);
             let element = d.rs as u32 & 0xF;
             // The single-lane group reads `vs` as a destination *element*
             // rather than a source register, so it is dispatched first.

@@ -160,4 +160,69 @@ fn main() {
          work.\n`per ms` is throughput and moves with the whole frame, so it \
          cannot answer that alone."
     );
+
+    report_vu_histogram(&core);
+}
+
+/// Print which COP2 computational ops a real workload actually runs.
+///
+/// Split from `main` because the two are separate questions — how much
+/// work each subsystem does, and which VU operations that work consists of
+/// — and together they exceed the line-count gate.
+fn report_vu_histogram(core: &EmuCore) {
+    // WHICH VU operations a real workload runs. `vu.rs` is 143 functions;
+    // vectorizing it means `unsafe` intrinsics, so hand-writing all of them to
+    // recover the cost of the few that matter would be the expensive way round.
+    let hist = core.system().bus.rsp.vu_funct_histogram();
+    let total: u64 = hist.iter().sum();
+    assert!(
+        total > 0,
+        "no COP2 computational instructions executed; the histogram would be a          table of zeros, which reads as a result"
+    );
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "counts are far below 2^53 over 120 frames"
+    )]
+    let total_f = total as f64;
+    let mut ranked: Vec<(usize, u64)> = hist
+        .iter()
+        .enumerate()
+        .filter(|&(_, &n)| n > 0)
+        .map(|(i, &n)| (i, n))
+        .collect();
+    ranked.sort_unstable_by_key(|&(_, n)| core::cmp::Reverse(n));
+
+    println!(
+        "\nCOP2 computational ops actually executed ({total} total, {} distinct):",
+        ranked.len()
+    );
+    println!(
+        "{:<10} {:>14} {:>9} {:>9}",
+        "funct", "count", "share", "cumul"
+    );
+    let mut cumulative = 0.0;
+    for (funct, n) in ranked.iter().take(12) {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "counts are far below 2^53 over 120 frames"
+        )]
+        let share = *n as f64 / total_f * 100.0;
+        cumulative += share;
+        println!("{funct:#04x}       {n:>14} {share:>8.2}% {cumulative:>8.2}%");
+    }
+
+    // The rollup that decides where vectorization goes. `funct` 0x00..=0x0F is
+    // the whole multiply/multiply-accumulate family, and it is dispatched by ONE
+    // function (`multiply_lane`) — so its share is the share a single
+    // vectorized function would cover.
+    let mad: u64 = hist[0x00..=0x0F].iter().sum();
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "counts are far below 2^53 over 120 frames"
+    )]
+    let mad_share = mad as f64 / total_f * 100.0;
+    println!(
+        "\nfunct 0x00..=0x0F (the multiply/accumulate family, one dispatch \
+         function): {mad} = {mad_share:.2}%"
+    );
 }

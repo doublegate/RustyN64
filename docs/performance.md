@@ -2183,3 +2183,58 @@ turned out to be **too narrow to reach any register block** (`RDRAM_SIZE * 8` is
 64 MiB; the blocks start at `$0400_0000`), which would have been recorded as
 evidence of a property that had simply not been exercised. A mutation that does
 not fire proves nothing until you have checked it could have.
+
+## Which VU operations actually run — 62% of the work is one dispatch function
+
+`vu.rs` is **143 functions and ~8.5% of a frame**, and vectorizing it means
+writing `unsafe` intrinsics. Hand-vectorizing 143 functions to recover the cost
+of the few that matter would be the expensive way round, so the same method that
+worked for the Bus applies here: **count first**.
+
+`work-counters` now keeps a 64-slot histogram of COP2 computational `funct`
+values, reported by `examples/work_bench.rs`.
+
+### Super Mario 64, 120 frames, 14,577,323 COP2 computational ops
+
+That is ~121,478 per frame against 294,983 RSP instructions per frame — so
+**41% of everything the RSP executes is a VU computation**. Only **32 of the 64
+possible `funct` values ever appear**.
+
+| funct | instruction | share | cumulative |
+| --- | --- | --- | --- |
+| `0x0e` | `VMADN` | 17.60% | 17.60% |
+| `0x0f` | `VMADH` | 14.05% | 31.65% |
+| `0x0d` | `VMADM` | 8.93% | 40.58% |
+| `0x04` | `VMUDL` | 8.60% | 49.18% |
+| `0x11` | `VSUB` | 5.43% | 54.61% |
+| `0x06` | `VMUDN` | 5.14% | 59.76% |
+| `0x15` | `VSUBC` | 4.11% | 63.87% |
+| `0x32` | `VRCPH`/`VRSQH` class | 3.69% | 67.56% |
+| `0x10` | `VADD` | 3.52% | 71.07% |
+| `0x05` | `VMUDM` | 3.29% | 74.36% |
+| `0x33` | `VMOV` | 3.19% | 77.55% |
+| `0x1d` | `VSAR` | 3.14% | 80.69% |
+
+**Four operations are half the work. Twelve are 81%.**
+
+### The result that decides the shape of the work
+
+**`funct 0x00..=0x0F` — the whole multiply / multiply-accumulate family — is
+61.64%, and it is dispatched by a single function, `multiply_lane`.**
+
+So vectorizing *one* function covers **62% of the VU's computational work**, and
+that function is the natural SIMD target anyway: eight independent 16x16 lane
+products into a 48-bit accumulator is exactly what a vector unit does.
+
+This also bounds the ambition honestly. The VU is ~8.5% of a frame; 62% of it is
+~5.3%. Even a perfect vectorization of `multiply_lane` cannot exceed that, and
+the real figure will be lower because the dispatch, the register reads and the
+accumulator writeback do not vanish. **Any SIMD work here must be measured
+against that ceiling, not against the 8.5%.**
+
+### Why this is measured rather than assumed
+
+The alternative was to read `vu.rs` and vectorize what looked hot. Three
+separate figures in this document turned out to belong to configurations that
+were not being run — the VI's 4.64%, the RDP's 6.36%, and the shared-device
+plan's "double PCIe crossing". Reading is how those happened.

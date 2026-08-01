@@ -46,6 +46,18 @@ pub mod vu;
 /// Size of RSP DMEM / IMEM (each 4 KiB).
 pub const SP_MEM_SIZE: usize = 4 * 1024;
 
+/// A zeroed COP2 `funct` histogram, for `#[serde(skip)]`.
+///
+/// **`default` is not optional here.** `[u64; 64]` does not implement `Default`
+/// — the standard impls stop at 32 — so `#[serde(skip)]` alone does not compile.
+/// That is the compiler catching, at the type level, the same class of mistake
+/// #245 shipped at runtime: a skipped field that deserializes into something
+/// unusable.
+#[cfg(feature = "work-counters")]
+fn zeroed_funct_histogram() -> alloc::boxed::Box<[u64; 64]> {
+    alloc::boxed::Box::new([0; 64])
+}
+
 /// RSP architectural state.
 ///
 /// Holds the SU register file, the VU vector register file + accumulator, the
@@ -128,6 +140,19 @@ pub struct Rsp {
     #[cfg(feature = "work-counters")]
     #[serde(skip)]
     retired: u64,
+    /// How many times each COP2 computational `funct` has executed
+    /// (`work-counters`).
+    ///
+    /// `vu.rs` is 143 functions and ~8.5% of a frame. Vectorizing it means
+    /// writing `unsafe` intrinsics, so it matters enormously WHICH operations a
+    /// real workload actually runs — the alternative is 143 hand-vectorized
+    /// functions to recover the cost of the five that matter.
+    ///
+    /// 64 slots because `funct` is six bits. `#[serde(skip)]`, and a
+    /// retired-work tally like [`Self::retired`].
+    #[cfg(feature = "work-counters")]
+    #[serde(skip, default = "zeroed_funct_histogram")]
+    vu_funct: alloc::boxed::Box<[u64; 64]>,
     // TODO(T-RSP-01): VCO/VCC/VCE flag registers, the divide-in/out latches for
     // VRCP/VRSQ, the DMA length/skip latches — see `docs/rsp.md`.
 }
@@ -170,6 +195,8 @@ impl Rsp {
             branch: None,
             #[cfg(feature = "work-counters")]
             retired: 0,
+            #[cfg(feature = "work-counters")]
+            vu_funct: alloc::boxed::Box::new([0; 64]),
         }
     }
 
@@ -245,6 +272,37 @@ impl Rsp {
     #[must_use]
     pub const fn retired(&self) -> u64 {
         self.retired
+    }
+
+    /// Per-`funct` COP2 computational execution counts (`work-counters`).
+    #[cfg(feature = "work-counters")]
+    #[must_use]
+    pub const fn vu_funct_histogram(&self) -> &[u64; 64] {
+        &self.vu_funct
+    }
+
+    /// Count one COP2 computational dispatch of `funct`.
+    #[cfg_attr(
+        not(feature = "work-counters"),
+        allow(
+            clippy::unused_self,
+            reason = "the body is empty without the feature; the call site stays uniform"
+        )
+    )]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "called once per VU instruction; a call would cost more than the count"
+    )]
+    pub(crate) fn count_vu_funct(&mut self, funct: u32) {
+        #[cfg(feature = "work-counters")]
+        {
+            self.vu_funct[(funct & 0x3F) as usize] += 1;
+        }
+        #[cfg(not(feature = "work-counters"))]
+        {
+            let _ = funct;
+        }
     }
 
     /// Count one **executed** instruction.
