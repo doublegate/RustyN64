@@ -681,6 +681,30 @@ can.
    Together that is enough to say the refactor should not be undertaken *on this
    evidence*. A sound positive test is the split itself, which is the work being
    questioned; do it only if some other measurement first shows the copies matter.
+7. **A CPU decode cache** — the sizing probe said **8.1–9.4%**; the implementation
+   measured **1.0% SLOWER**, B never beating A, and was reverted. `black_box` is what
+   stops the optimizer folding the probe away, and that folding is exactly what the real
+   call gets. **Refuted, not deferred — do not rebuild it.** §*What this leaves for
+   ADR 0017*.
+8. **SIMD in the RSP vector unit (`unsafe` intrinsics)** — ceiling **5.3% → 1.056x**,
+   below the 1.5x bar that declined a recompiler at 1.26–1.40x, and it costs an `unsafe`
+   exception inside a chip crate. **ADR 0016** records the decision and the four gates
+   that would have to be met if the bar ever moves. The cheaper restructure was already
+   tried: hoisting the family dispatch out of the lane loop measured **neutral**.
+9. **A CPU recompiler (`rustyn64-jit`)** — realistic band **1.26–1.40x** against ADR
+   0017's own **1.5x** stage-2 gate, which needs 33.3% of the frame removed with zero
+   cost for block lookup, codegen, or invalidation. **ADR 0017** is merged as *"Proposed,
+   and FAILING ITS OWN STAGE-2 GATE"*. The gate is a judgment and the maintainer's to
+   move; the arithmetic under it is not.
+10. **A shared Vulkan device between parallel-rdp and wgpu (A1)** — the whole GPU present
+    path, both PCIe crossings included, is **4.0% of a frame**. Perfect elimination is
+    **1.044x**, and that bounds *all* remaining GPU work, not just A1.
+11. **Promoting the GPU to the machine's rasterizer (A4)** — **1.23%**, not the 6.36% the
+    profile bucket suggested, because deleting rasterization is strictly cheaper than
+    replacing it. It also changes what lands in RDRAM, so it would cost an ADR and the
+    determinism argument in ADR 0015.
+12. **GPU VI scan-out (A5)** — recovers nothing once the present path is known to be 4.0%
+    in total. The VI's apparent 4.64% was already retired by the scan-out memoization.
 
 ## The AI's split-borrow move, and a ceiling that was wrong for the second time
 
@@ -2190,13 +2214,18 @@ not fire proves nothing until you have checked it could have.
 to recover the cost of the few that matter would be the expensive way round, so
 the same method that worked for the Bus applies here: **count first**.
 
-**A note on what this authorizes.** `crates/rustyn64-rsp` is
-`#![forbid(unsafe_code)]`. **ADR 0016** now permits a narrow exception —
-`core::arch` intrinsics in `vu.rs` only — behind four gates, the first being a
-scalar/vector **equivalence** test over the operand space rather than mere
-conformance to the ROM suite. It authorizes a technique; it does not schedule
-the work, and it states the trade is marginal against a CPU bucket six times
-larger.
+**A note on what this authorizes — and why it was then declined.**
+`crates/rustyn64-rsp` is `#![forbid(unsafe_code)]`. **ADR 0016** defines a narrow
+exception — `core::arch` intrinsics in `vu.rs` only — behind four gates, the
+first being a scalar/vector **equivalence** test over the operand space rather
+than mere conformance to the ROM suite.
+
+**It is merged as a decision against itself.** The census below sets the ceiling
+at 5.3% of a frame, which is **1.056x** — and ADR 0017 later set a 1.5x bar and
+used it to decline a CPU recompiler at 1.26–1.40x. A technique whose *perfect*
+outcome is below an already-insufficient figure does not clear it. The exception
+is written down, unused, and recommended against; the crate is still `forbid`.
+See §*Where the optimization program ended*.
 
 `work-counters` now keeps a 64-slot histogram of COP2 computational `funct`
 values, reported by `examples/work_bench.rs`.
@@ -2576,3 +2605,121 @@ its own ADR before anyone starts.
 worse ratio than anything else outstanding, and the CPU's 32.29% dwarfs it. Do
 not implement shape (a) without an ADR: it changes what the presented frame is
 computed from.
+
+## Where the optimization program ended
+
+Written 2026-08-01, after the last item in the GPU-then-CPU plan was decided.
+This section is the index: every item, its outcome, and where the evidence is.
+It exists so the next person reads one table instead of re-deriving twelve
+numbers.
+
+### The ledger
+
+| item | outcome | evidence |
+| --- | --- | --- |
+| **A1** — one Vulkan device shared with wgpu | **retired** — the entire present path is 4.0% | §*The GPU present path is 4% of a frame* |
+| **A2** — dirty-region RDRAM upload | **SHIPPED, 2.54%** | §*The GPU backend staged all 8 MiB* |
+| **A3** — async RDP | **sized at 1.7%, not built**; one of its two shapes is unavailable and the other needs its own ADR | §*The async RDP (A3)* |
+| **A4** — GPU as the machine's rasterizer | **retired for performance — 1.23%**, not 6.36% | §*Why this is an upper bound A4 cannot reach* |
+| **A5** — GPU VI scan-out | **retired** — recovers nothing | ruled-out #12 |
+| **A6** — 2x/4x/8x internal render | **SHIPPED** — quality only, no FPS effect by design | #254 |
+| **B1** — work counters | **SHIPPED**, and it is what sized B2 | §*Which VU operations actually run* |
+| decode cache | **refuted** — probe 8.1%, implementation 1.0% slower | ruled-out #7 |
+| **B2** — RSP VU SIMD | **declined — 1.056x** | ADR 0016, ruled-out #8 |
+| **B3** — CPU recompiler | **declined — 1.26–1.40x vs a 1.5x gate** | ADR 0017, ruled-out #9 |
+
+**Shipped: A2, A6, B1, and the `read_u32` RDRAM fast path.** Everything else was
+measured and not built.
+
+### Do not sum the shipped percentages into an FPS
+
+A2's **2.54%** was measured on a GPU-backend frame (~97 ms); `read_u32`'s
+**1.32%** on a software-path frame (~63 ms). They are percentages of *different
+configurations*, and adding them produces a number no run has ever produced.
+Quote them separately, or re-measure the combination.
+
+### What the program actually produced
+
+Two shipped optimizations worth a few percent, and **nine priority-setting
+figures that did not survive measurement**:
+
+| figure | believed | measured |
+| --- | --- | --- |
+| the VI bucket | 4.64% | retired by memoization |
+| the RDP bucket | 6.36% | 1.23% recoverable |
+| the VU bucket | 8.5% | 5.3% ceiling, 1.056x |
+| CPU `decode` | 8.1–9.4% | ~0, and a cache is slower |
+| the present path | "double PCIe crossing" | 4.0% total |
+| the CPU bucket | 32.29% | 20.46% removable |
+
+Every one came from **reading** — a profile bucket, a code path, an
+architecture note — rather than **counting**. The counting was cheap in each
+case: B1's work counters, a phase timer, a sizing probe, a source-line profile.
+
+That is the transferable result, and it is worth more than the 3.9%: **in this
+codebase, a share attributed by reading has been wrong more often than right.**
+Four substantial pieces were correctly *not* built because someone counted
+first.
+
+### "What if we took all the small wins anyway?"
+
+A fair question, and the answer is arithmetic rather than opinion. **The trap is
+that three of them are the same 4.0%.**
+
+A1, A3 and A5 all live inside the GPU present path, which the phase timers put
+at **4.0% of a frame in total** — A3's 1.7% is explicitly a slice of it
+(§*What it is worth*). Summing them as 4.0 + 1.7 + 0 double-counts. What is
+genuinely disjoint:
+
+| bucket | share | contains |
+| --- | --- | --- |
+| GPU present path | **4.00%** | A1, A3, A5 — perfect elimination of all three |
+| software rasterizer | **1.23%** | A4, and this is an upper bound it cannot reach |
+| RSP vector unit | **5.30%** | B2, perfect vectorization of `multiply_lane` |
+| **total** | **10.53%** | |
+
+> speedup ≤ 1 / (1 − 0.1053) = **1.118x**
+
+Against the `fast-exec` frame of 65.3 ms / 15.31 FPS:
+
+| | frame | FPS |
+| --- | --- | --- |
+| today | 65.3 ms | 15.31 |
+| all small wins, taken perfectly | 58.4 ms | **17.1** |
+| gain | −6.9 ms | **+1.8 FPS** |
+
+**+1.8 FPS, and 60 FPS is still 3.5x away.** Every figure above is a ceiling
+assuming the work is removed *for free*; real implementations pay dispatch,
+synchronization and bookkeeping the ceilings do not charge for. B2 additionally
+costs an `unsafe` exception in a chip crate, A3 needs double-buffered RDRAM and
+its own ADR, and A4 changes what lands in RDRAM.
+
+And the genuinely-zero pile adds nothing to it: the VU family hoist
+(**neutral**), `-C target-cpu=native` (**neutral**), PGO (**4.96% slower**), the
+decode cache (**1.0% slower**), the `Latch` split (**premise refuted**). Those
+are not small wins being left on the table; they are non-wins already tested.
+
+So the answer is: **~1.12x for the entire declined backlog**, which is why each
+was declined individually rather than as a bundle. The bundle is not worth more
+than its parts — that is what the disjointness table is for.
+
+### The honest position on 60 FPS
+
+**It is not reachable from here.** 60 FPS needs 16.67 ms against ~63 ms — a
+**3.92x** gap — and the two largest levers are now both declined on their own
+arithmetic:
+
+- no single bucket is 84% of a frame, so no single subsystem's elimination gets
+  there (§*The 60 FPS target is out of reach for this execution model*);
+- a perfect fast-scheduler caps at **2.15x**; a realistic recompiler at
+  **1.40x**; SIMD at **1.056x**.
+
+Getting to 60 FPS would need a different execution model, not a faster version
+of this one — and this project's premise is cycle accuracy, which is what makes
+the model what it is. `fast-exec` and `fast-scheduler` already trade some of
+that away by ADR and reach ~1.53x combined.
+
+**This is not a stopping instruction.** It is a statement of what the remaining
+work can deliver, so nobody spends a month on a change whose ceiling is 1.05x
+believing it is the path to 60. If the bar moves — if 1.4x for a recompiler is
+worth it — ADR 0017 says so explicitly and the arithmetic is there to re-check.

@@ -15,7 +15,11 @@ Three things, and nothing else:
 
 **Host-performance figures do not belong here** — frame times, FPS, profile shares, and
 ruled-out *optimizations* live in `docs/performance.md`, which carries its own
-"Ruled out by measurement — do not retry" list and its own provenance rules. The three
+"Ruled out by measurement — do not retry" list and its own provenance rules. Its
+§*Where the optimization program ended* (2026-08-01) is the closing index of that work,
+including the two declined ADRs (**0016** RSP SIMD, **0017** CPU recompiler) — neither of
+which is an entry here, because declining an optimization changes no emulated
+behavior. The three
 categories above are about the emulated machine: constants the hardware documentation
 does not supply, behavior known to be wrong, and accuracy approaches that failed. A
 compiler flag that changed no emulated behavior is not an entry here however carefully

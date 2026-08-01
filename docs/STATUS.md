@@ -126,6 +126,40 @@ not the same as a wired gate.
 - The chip stack is `#![no_std]` + `alloc` and cross-compiles to
   `thumbv7em-none-eabihf`; only the frontend carries `std` + `unsafe`.
 
+## Host performance
+
+Full evidence, method, and every ruled-out approach: **`docs/performance.md`**,
+which is authoritative here. This is the summary.
+
+| build | frame | FPS | what it is |
+| --- | --- | --- | --- |
+| default (cycle-accurate) | ~103 ms | **~10** | the five-stage pipeline, lockstep scheduler |
+| `fast-exec` + `fast-scheduler` | ~65 ms | **~15.3** | instruction-granular CPU + bailout scheduler, both by ADR (0011/0013) |
+
+Super Mario 64 on `examples/frame_bench.rs`; the environment is tabled in
+`docs/performance.md` §*Measured (2026-07-30)*. **60 FPS is 16.67 ms — a 3.92x
+gap.**
+
+**The optimization program closed on 2026-08-01.** Shipped: the dirty-region
+RDRAM upload to the GPU backend (2.54%), a `read_u32` RDRAM fast path (1.32%),
+2x/4x/8x GPU internal render (quality only, no FPS cost), and the work counters
+that sized the rest. *Do not add those percentages together* — they were
+measured on different configurations.
+
+**Both large remaining levers are declined on their own arithmetic**, each with
+a merged ADR recording the decision rather than leaving it to be re-argued:
+
+| lever | ceiling | decision |
+| --- | --- | --- |
+| RSP vector-unit SIMD | **1.056x** | **ADR 0016** — recommended against; the crate stays `#![forbid(unsafe_code)]` |
+| CPU recompiler | **1.26–1.40x** | **ADR 0017** — fails its own 1.5x stage-2 gate |
+
+So **60 FPS is not reachable from this execution model**, and that is a
+measured statement, not a deferral: no single bucket is 84% of a frame, a
+perfect fast-scheduler caps at 2.15x, and the two levers above are what remain.
+Both gates are judgments the maintainer can move; the arithmetic under them is
+in `docs/performance.md` §*Where the optimization program ended*.
+
 ## Project infrastructure
 
 Distinct from emulation progress: the scaffolding around the code, and where it
