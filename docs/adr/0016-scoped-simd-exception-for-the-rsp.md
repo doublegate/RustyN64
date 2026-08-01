@@ -1,7 +1,9 @@
 # 0016 — A scoped `unsafe` exception for the RSP vector unit, and the evidence required to use it
 
-Status: **Proposed** — accepted on merge of the PR that introduces this file;
-immutable thereafter.
+Status: **Proposed, and RECOMMENDED AGAINST on its own numbers.** Accepted on
+merge as the record of that decision, not as an approval to write SIMD. See
+*The verdict* below — added after the CPU work established a consistent bar.
+Recommendation: **do not use this exception.**
 Date: 2026-08-01
 Deciders: repo owner
 Supersedes: none · Superseded by: none
@@ -178,6 +180,48 @@ The CPU is **32.29%** of a frame — roughly six times this ceiling — and a
 recompiler there is the only remaining change that can move the frame rate
 materially (`docs/performance.md`). Anyone reaching for this ADR should first
 have a reason not to spend the same effort on that instead.
+
+## The verdict
+
+Written after [ADR 0017](0017-cpu-recompiler.md), which established a bar and
+then failed it. Applying **the same arithmetic and the same bar** to this
+exception settles a status that was otherwise left conditional:
+
+| | share removed | ceiling |
+| --- | --- | --- |
+| **B2** — perfect vectorization of `multiply_lane` | 5.3% | **1.056x** |
+| B2 — the *entire* VU bucket somehow free | 8.5% | 1.093x |
+| B3 — realistic (interpreter driver) | 20.46% | 1.257x |
+| B3 — with all of `pipeline.rs` | 28.70% | 1.403x |
+
+**ADR 0017 set the bar at 1.5x and declined a recompiler at 1.26–1.40x.** This
+exception's *absolute* ceiling is **1.056x** — comfortably below the figure that
+was already judged insufficient, and it costs an `unsafe` exception that a
+recompiler would need anyway for itself.
+
+**So: do not use this exception.** Not "not yet" — the numbers do not improve
+with time, and this is the same conclusion B3 reached, reached more clearly.
+
+### Why the file is kept and merged anyway
+
+Three reasons, none of them "in case we change our mind":
+
+1. **The `AGENTS.md` correction rides with it.** That file claimed "there is
+   zero `unsafe` in the tree today", which has been false since #241 — the
+   parallel-rdp FFI shim has 12 blocks under ADR 0014. That is a fix regardless
+   of this ADR's verdict.
+2. **The gates are reusable.** The equivalence-not-conformance requirement, the
+   portability matrix including `thumbv7em-none-eabihf`, and the note that
+   `#[target_feature]` forces dispatch out of the hot loop apply to *any* future
+   alternate implementation of the VU, `unsafe` or not.
+3. **A decision is worth more written down than absent.** Without this section
+   the next person re-derives the 5.3% and re-argues the exception. With it they
+   read one table.
+
+**If the bar moves, this changes.** 1.5x was chosen to mean "beat what
+`fast-exec` already delivered" (1.53x). A project willing to take 1.05x for an
+`unsafe` exception in a chip crate would reach a different answer, and should
+record why.
 
 ## Notes for whoever implements this
 

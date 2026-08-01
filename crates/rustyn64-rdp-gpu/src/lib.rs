@@ -37,7 +37,7 @@
 pub const AVAILABLE: bool = cfg!(feature = "gpu-rdp");
 
 #[cfg(feature = "gpu-rdp")]
-pub use backend::{GpuRdp, ScanoutFrame, ViRegister};
+pub use backend::{GpuRdp, ScanoutFrame, Upscale, ViRegister};
 
 #[cfg(feature = "gpu-rdp")]
 mod backend {
@@ -58,7 +58,11 @@ mod backend {
     // at run time. These are held correct by review, which is why the header is
     // kept short enough to diff by eye and why both are edited together.
     unsafe extern "C" {
-        fn prdp_create(rdram_size: usize, hidden_rdram_size: usize) -> *mut PrdpCtx;
+        fn prdp_create(
+            rdram_size: usize,
+            hidden_rdram_size: usize,
+            upscale: core::ffi::c_uint,
+        ) -> *mut PrdpCtx;
         fn prdp_destroy(ctx: *mut PrdpCtx);
         fn prdp_device_is_supported(ctx: *const PrdpCtx) -> i32;
         fn prdp_enqueue_command(ctx: *mut PrdpCtx, num_words: u32, words: *const u32) -> i32;
@@ -75,6 +79,41 @@ mod backend {
         fn prdp_rdram_ptr(ctx: *mut PrdpCtx) -> *mut u8;
         fn prdp_end_write_rdram(ctx: *mut PrdpCtx) -> i32;
         fn prdp_rdram_size(ctx: *const PrdpCtx) -> usize;
+    }
+
+    /// Internal render scale for the GPU RDP.
+    ///
+    /// Higher factors are **quality only** — the scan-out is downscaled back to
+    /// 1x, so this is supersampling and costs the emulation thread nothing. The
+    /// GPU has the headroom: `docs/performance.md` measures the whole present
+    /// path at ~4% of a frame, of which the RDP's own rasterization is ~1.7%.
+    ///
+    /// VRAM scales with the **square** of the factor, so `X8` is ~64x the
+    /// buffers. `Native` is the default and the shipped behavior.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Upscale {
+        /// 1x — what the hardware does, and the default.
+        #[default]
+        Native,
+        /// 2x internal render.
+        X2,
+        /// 4x internal render.
+        X4,
+        /// 8x internal render. ~64x the VRAM; offer it, do not default to it.
+        X8,
+    }
+
+    impl Upscale {
+        /// The factor the shim expects.
+        #[must_use]
+        pub const fn factor(self) -> core::ffi::c_uint {
+            match self {
+                Self::Native => 1,
+                Self::X2 => 2,
+                Self::X4 => 4,
+                Self::X8 => 8,
+            }
+        }
     }
 
     /// The VI registers `parallel-rdp` accepts, in its own enum order.
@@ -192,12 +231,35 @@ mod backend {
         /// behavior and a lossy diagnosis beats an unsound one.
         #[must_use]
         pub fn new(rdram_size: usize, hidden_rdram_size: usize) -> Option<Self> {
-            // SAFETY: `prdp_create` takes two sizes by value and allocates its
-            // own storage, so there is no pointer whose validity this call
-            // depends on. It is documented to return null rather than throw on
-            // every failure — including a size that is not a multiple of the
-            // alignment — so no unwind crosses the boundary.
-            let raw = unsafe { prdp_create(rdram_size, hidden_rdram_size) };
+            Self::with_upscale(rdram_size, hidden_rdram_size, Upscale::Native)
+        }
+
+        /// As [`GpuRdp::new`], rendering internally at `upscale`.
+        ///
+        /// **Supersampling, not a bigger picture.** The scan-out is downscaled
+        /// back to 1x, so [`GpuRdp::scanout_sync`] returns identical geometry at
+        /// every factor and nothing downstream resizes. `SUPER_SAMPLED_READ_BACK`
+        /// is never set, so what lands back in RDRAM is the 1x render and the
+        /// emulated machine's state does not vary with this setting.
+        ///
+        /// Returns `None` on **any** failure — no Vulkan, an unsupported device,
+        /// an unsupported factor, an allocation refusal. VRAM is the likeliest
+        /// cause specific to *this* constructor, because it scales with the
+        /// **square** of the factor, but it is not the only one and a caller
+        /// must not report it as such.
+        #[must_use]
+        pub fn with_upscale(
+            rdram_size: usize,
+            hidden_rdram_size: usize,
+            upscale: Upscale,
+        ) -> Option<Self> {
+            // SAFETY: `prdp_create` takes two sizes and a factor by value and
+            // allocates its own storage, so there is no pointer whose validity
+            // this call depends on. It is documented to return null rather than
+            // throw on every failure — including a size that is not a multiple
+            // of the alignment, and an unsupported factor — so no unwind crosses
+            // the boundary. `Upscale` can only produce one of the four it takes.
+            let raw = unsafe { prdp_create(rdram_size, hidden_rdram_size, upscale.factor()) };
             Some(Self {
                 ctx: NonNull::new(raw)?,
                 _not_send: PhantomData,

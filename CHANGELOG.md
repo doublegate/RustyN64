@@ -94,9 +94,103 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
-- **ADR 0016 — a scoped `unsafe` exception for the RSP vector unit.** *Policy
-  governance; no SIMD code ships with this and no crate behavior changes.*
-  Permits
+- **The CPU recompiler is measured out before being built.** Stage 2's
+  decomposition (profiler, source-line attribution, because everything inlines
+  into `run_until_exec` at 61% self time) puts the CPU at **42.88%** of a frame
+  and the Bus at 23.60% — but only **~20-25%** is the interpreter *driver* a
+  recompiler removes. The Bus's memory traffic, address translation and
+  `cop0`/`cop1`/`cache` are real emulated work it keeps.
+
+  Since speedup is bounded by `1 / (1 - share removed)`, the ceiling is
+  **1.26-1.40x**, and 1.5x would need 33.3% of the frame removed — past "delete
+  the whole interpreter" and into perfect register allocation with zero codegen
+  cost. **ADR 0017 therefore fails its own stage-2 gate** and recommends against
+  writing the crate. That gate was set at 1.5x because `fast-exec` already
+  delivered 1.53x.
+
+  It also independently re-refutes the decode probe: `decode.rs` is **4.36%**
+  in the profile, not the 8.1-9.4% the `black_box` sizing reported.
+
+- **ADR 0017 — a CPU recompiler design, put up for review.** *Design only; no
+  crate, no code.* The CPU is **32.29%** of a frame and everything else in the
+  plan, added together and assumed perfect, is about 15% — so a recompiler is
+  the only remaining change that can move the frame rate materially.
+
+  Deliberately **not accepted by merging the file**: it is accepted in three
+  stages, and stage 2 is a **spike that is measured and thrown away**. If it
+  does not clear **1.5x on top of `fast-exec`**, the ADR is superseded and the
+  crate is never written — a recompiler that wins less than the interpreter
+  tweak already shipped is not worth its maintenance surface.
+
+  Stage 2 must also **decompose the 32.29% first**, because the Bus is a
+  separate 18.06% bucket the CPU drives, and a recompiler does not remove it.
+  That is the same mistake as the VI's 4.64% and the RDP's 6.36%, both of which
+  evaporated when measured in the configuration that would actually run.
+
+- **The CPU's decode measured at 8.1-9.4% of a frame — a quarter of its
+  bucket.** ADR 0017 makes decomposing the CPU's 32.29% a precondition on
+  writing a recompiler; this is that decomposition for the largest piece.
+  Sized by making the cost bigger, with `black_box` on the *result* — the trap
+  the RSP's decode sizing already paid for.
+
+  For comparison the same measurement on the RSP gave **0.29%**, so the CPU's
+  decode is ~**28x** more expensive, and a decode cache was rejected there.
+
+  **The obvious inference — that a decode cache captures it — was built and is
+  1.0% SLOWER.** Reverted. The probe forced a decode through `black_box`, which
+  is what stops the optimizer folding it away; the real one is inlined and its
+  fields feed straight into the dispatch, so most of it costs nothing, while a
+  cache hit is a real load that cannot be folded. So 8.1-9.4% bounds an
+  *isolated* decode, not recoverable time — *a hot line is not a hot operation*,
+  walked into with the lesson already written down. A decode cache is
+  **refuted, not deferred**.
+
+- **The async RDP (A3) sized at ~1.7%, with one of its two shapes ruled out.**
+  `present` stages RDRAM *before* enqueueing any command, so every command runs
+  against end-of-frame RDRAM — which makes "submit commands as the frame runs"
+  a change to what the presented picture is computed from rather than a
+  scheduling change, and it would have to re-accumulate the dirty-page map per
+  sub-frame. The viable shape is "do not block; present one frame late", whose
+  cost is a frame of presentation latency and which needs **both**
+  `signal_timeline` and `wait_for_timeline` through the shim. No GPU-to-CPU
+  hazard tracker is needed — **extending ADR 0015**, which already amended ADR
+  0014 §6's premise, since this backend owns its RDRAM.
+
+  But there **is** a new GPU-to-**GPU** ordering hazard the first draft missed:
+  frame N+1's stage writes the same RDRAM frame N's in-flight submission is
+  reading. That needs double-buffering or a stage-side wait, and its own ADR.
+  Recommendation: worth building, but last — and it costs more than the 1.7%
+  suggests.
+
+- **GPU upscaling — 2x/4x/8x internal render, `GpuRdp::with_upscale`.**
+  Supersampling rather than a bigger picture: the scan-out is downscaled back to
+  1x, so geometry is **identical at every factor** and nothing downstream
+  resizes. `SUPER_SAMPLED_READ_BACK` is never set, so RDRAM keeps the 1x render
+  and ADR 0004 stays out of scope — the emulated machine's state does not vary
+  with a display setting. Default `Native`; VRAM scales with the square of the
+  factor. An unsupported factor is refused rather than rounded down.
+
+  Verified: geometry does not move and rendering does not break at 1x/2x/4x.
+  **Not verified**: that the flag takes effect — a flat fill has no edge for
+  supersampling to change, so `docs/rdp.md` records what test would witness it.
+
+- **ADR 0016 — a scoped `unsafe` exception for the RSP vector unit, and a
+  recommendation against using it.** *Policy governance; no SIMD code ships with
+  this and no crate behavior changes.*
+
+  **The verdict, on the same bar that declined the CPU recompiler:** vectorizing
+  `multiply_lane` has a ceiling of 5.3% of a frame, which is **1.056x**. ADR
+  0017 set the bar at 1.5x and declined a recompiler at 1.26–1.40x — so this is
+  comfortably below a figure already judged insufficient, and it costs an
+  `unsafe` exception in a chip crate. **Do not use it.** Not "not yet"; the
+  numbers do not improve with time.
+
+  The file is kept and merged because the `AGENTS.md` correction rides with it
+  (that file claimed "zero `unsafe` in the tree", false since #241's FFI shim),
+  because the gates are reusable by any future alternate VU implementation, and
+  because a recorded decision beats an absent one.
+
+  It permits
   `core::arch` intrinsics in `vu.rs` only (not raw pointers, not `transmute`,
   not FFI; every other chip crate keeps `forbid(unsafe_code)`), behind four
   gates: a scalar/vector **equivalence** test over the operand space —

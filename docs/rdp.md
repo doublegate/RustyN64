@@ -1166,3 +1166,36 @@ answer after all.
   (`ref-docs/research-report.md` §Open questions 3; `docs/performance.md`).
 - **How much of the RDRAM-coherency model commercial games actually need** vs
   what the fuzz suite alone gates.
+
+## Upscaling (`GpuRdp::with_upscale`)
+
+The GPU backend can render internally at **2x, 4x or 8x** and downscale back to
+1x at scan-out — **supersampling, not a bigger picture**.
+
+| property | value |
+| --- | --- |
+| default | `Upscale::Native` (1x); shipped behavior is unchanged |
+| scan-out geometry | **identical at every factor** |
+| what lands in RDRAM | the **1x** render |
+| VRAM | scales with the **square** of the factor (~64x at 8x) |
+| emulation-thread cost | none — the GPU has the headroom |
+
+**`SUPER_SAMPLED_READ_BACK` is never set**, and that is what keeps this out of
+ADR 0004's scope: the machine's framebuffer is the 1x render either way, so the
+emulated state does not vary with a display setting. ares comments that flag out
+over artifacts and simple64 disables it because it can desync; this shim does
+not expose it at all.
+
+An unsupported factor is **refused** (`prdp_create` returns null) rather than
+rounded down, so a caller cannot believe it got upscaling it did not. `Upscale`
+only yields 1/2/4/8, so that path is unreachable from safe Rust — it guards the
+C surface, which is why it exists at all.
+
+**What is verified**: that geometry does not move and rendering does not break
+at 1x/2x/4x (`every_upscale_factor_renders_with_identical_geometry`).
+
+**What is not**: that the flag takes effect. The test fills a flat rectangle,
+which has no edge for supersampling to change — every factor produces the same
+1,568 pixels of the same color, and a backend that dropped the flag would too.
+Witnessing it needs a shape with an edge, compared for distinct-color count.
+Write that before relying on this for image quality.
