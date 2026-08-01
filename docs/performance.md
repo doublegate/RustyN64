@@ -2482,3 +2482,95 @@ defensible and it is not the only defensible bar:
 **Recommendation: do not write the crate on the current evidence.** Reopen it if
 the interpreter's shape changes enough to move the decomposition, or if the bar
 is deliberately lowered with the trade understood.
+
+## The async RDP (A3) is worth ~1.7%, and only one of its two shapes is viable
+
+The GPU plan describes A3 as a pure synchronization change — *"stop stalling the
+emu thread on `scanout_sync`'s fence"*. Sizing it first, as with everything else
+in this document, turns up a constraint the plan does not account for.
+
+### What it is worth
+
+From the phase split above, `scanout` is **3.10–3.44%** of a frame. The `idle()`
+probe decomposed it, on `frame_bench --features gpu-rdp,fast-exec,fast-scheduler`,
+Super Mario 64, 120 frames after `warm=36`, against a 63.2 ms frame:
+
+| | ms/frame | status |
+| --- | --- | --- |
+| wait for RDP rasterization | ~1.06 | **measured** |
+| VI pass + read-back + host copies | ~1.39 | **measured**, same run |
+
+**The 1.7% is derived**, not measured: 1.06 ms over that 63.2 ms frame. So A3's
+ceiling is that share, and it sits inside the **1.044x** ceiling the whole
+present path carries.
+
+### The constraint the plan misses
+
+`present` **stages RDRAM before it enqueues any command**
+(`crates/rustyn64-frontend/src/gpu_rdp.rs`: the dirty-page swap, then the
+`enqueue_command` loop). So every command in a frame is executed by the GPU
+against **end-of-frame RDRAM**.
+
+That is what makes the obvious implementation unavailable:
+
+**(a) Submit commands as the frame runs.** The GPU would then be busy during
+emulation and the fence already signaled at present time — the full 1.7%, with
+no shim work. **But it requires staging RDRAM mid-frame too**, which changes
+*which* memory contents each command reads. That is a change to the presented
+picture, not a scheduling change, and it interacts directly with the dirty-page
+map (#245): a mid-frame stage would have to clear and re-accumulate dirty pages
+per sub-frame. Not free, and not merely a synchronization question.
+
+**(b) Do not block; present one frame late.** Submit at present time as now,
+signal the timeline, and read back the *previous* frame's result. Semantics are
+unchanged — every command still sees end-of-frame RDRAM — and the 1.7% is
+recovered because the wait moves off the critical path.
+
+**(b) is the viable shape.** Its cost is **one frame of presentation latency**
+(~16.7 ms at 60 Hz, more at the current frame rate), which is a real cost for an
+emulator and should be a user-visible option rather than a default. It needs
+`signal_timeline`/`wait_for_timeline` exposed through the shim, which is new C++
+surface.
+
+### No GPU-to-CPU tracker — extending ADR 0015, not contradicting ADR 0014
+
+ADR 0014 §6 calls for a GPU-to-CPU hazard tracker modeled on gopher64's
+dirty-range bitmap. **ADR 0015 already amended that premise** for the
+architecture actually built; this carries the same reasoning one step further
+rather than contradicting the current ADR set.
+
+The tracker applies to a backend whose GPU writes into memory the CPU reads.
+**This backend owns its RDRAM** (ADR 0015), so there is nothing for the CPU to
+race against. The asynchronous shape needs **`signal_timeline` *and*
+`wait_for_timeline`** — both — through the shim, and no tracker.
+
+### But there IS a GPU-to-GPU ordering hazard, and it is new
+
+Removing the CPU-side race does **not** remove ordering *between GPU
+submissions*, and the first version of this section missed it.
+
+Under (b), frame N's commands are still executing when frame N+1's dirty-page
+stage begins writing the backend's RDRAM — **the same buffer the in-flight
+submission is reading**. The synchronous path cannot have this, because
+`scanout_sync` drains everything before the next `present` stages anything.
+
+So (b) is **not** simply "delete the wait". Any implementation owes:
+
+- **RDRAM lifetime per frame** — either double-buffer the backend's RDRAM
+  (8 MiB more, and the dirty-page map becomes per-buffer), or block the stage on
+  the previous frame's timeline value, which reintroduces a wait elsewhere and
+  must be measured rather than assumed cheaper;
+- **staging order** relative to `signal_timeline`;
+- **first-frame and overrun behavior** — what happens when frame N+1 is ready to
+  stage and frame N has not signaled.
+
+**This raises A3's cost above the recommendation below**, and it is exactly the
+kind of thing otherwise discovered halfway through an implementation. It needs
+its own ADR before anyone starts.
+
+### Recommendation
+
+**Worth building, but last.** 1.7% for new FFI surface plus a latency trade is a
+worse ratio than anything else outstanding, and the CPU's 32.29% dwarfs it. Do
+not implement shape (a) without an ADR: it changes what the presented frame is
+computed from.

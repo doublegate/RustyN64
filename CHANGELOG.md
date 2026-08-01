@@ -145,6 +145,23 @@ All notable changes to RustyN64 are documented here. The format is based on
   walked into with the lesson already written down. A decode cache is
   **refuted, not deferred**.
 
+- **The async RDP (A3) sized at ~1.7%, with one of its two shapes ruled out.**
+  `present` stages RDRAM *before* enqueueing any command, so every command runs
+  against end-of-frame RDRAM — which makes "submit commands as the frame runs"
+  a change to what the presented picture is computed from rather than a
+  scheduling change, and it would have to re-accumulate the dirty-page map per
+  sub-frame. The viable shape is "do not block; present one frame late", whose
+  cost is a frame of presentation latency and which needs **both**
+  `signal_timeline` and `wait_for_timeline` through the shim. No GPU-to-CPU
+  hazard tracker is needed — **extending ADR 0015**, which already amended ADR
+  0014 §6's premise, since this backend owns its RDRAM.
+
+  But there **is** a new GPU-to-**GPU** ordering hazard the first draft missed:
+  frame N+1's stage writes the same RDRAM frame N's in-flight submission is
+  reading. That needs double-buffering or a stage-side wait, and its own ADR.
+  Recommendation: worth building, but last — and it costs more than the 1.7%
+  suggests.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by
