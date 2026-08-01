@@ -151,7 +151,27 @@ Stated up front so it is checkable rather than rationalized later:
   needs the Bus restructured has a cost far above this estimate.
 - The 32.29% turns out to be dominated by something a recompiler does not remove
   — memory access through the Bus, say, which is a separate 18.06% bucket and
-  which the census in #248 showed the CPU drives. **This has not been
-  decomposed**, and step 2 must decompose it before the crate is written. It is
-  the same mistake as the VI's 4.64% and the RDP's 6.36%, both of which
-  evaporated when measured in the configuration that would actually run.
+  which the census in #248 showed the CPU drives. **Partially decomposed since
+  this ADR was drafted; the rest is still owed** — see below.
+
+### Update: decode is 8.1–9.4% of a frame, and a decode cache captures it
+
+Measured after this ADR was written (`docs/performance.md`): **the CPU's
+`decode` is 8.1–9.4% of a frame, roughly a quarter of its bucket.** The same
+measurement on the RSP gave 0.29%, so the CPU's is ~28x more expensive.
+
+That changes the case here in two ways, and both are recorded rather than
+argued away:
+
+- **A decode cache captures that ~8% without any of this ADR's cost** — no code
+  generation, no architecture backends, no `unsafe` — and it needs the *same*
+  invalidation machinery on the same Bus page-dirty seam. **It should be built
+  first**, both because it is cheap and because it de-risks gate 4, which is the
+  gate most likely to sink a recompiler quietly.
+- **A recompiler's remaining margin is then ~23% of a frame, not 32.29%.** Still
+  the largest single item by a wide margin, and still the only thing that can
+  approach playable rates — but the spike in stage 2 must clear 1.5x against
+  *that* figure, not the headline one.
+
+**Still owed by stage 2**: how much of the remaining ~23% is Bus work a
+recompiler keeps, versus register-file and ALU work it can fold.

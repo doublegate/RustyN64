@@ -110,6 +110,21 @@ All notable changes to RustyN64 are documented here. The format is based on
   That is the same mistake as the VI's 4.64% and the RDP's 6.36%, both of which
   evaporated when measured in the configuration that would actually run.
 
+- **The CPU's decode measured at 8.1-9.4% of a frame — a quarter of its
+  bucket.** ADR 0017 makes decomposing the CPU's 32.29% a precondition on
+  writing a recompiler; this is that decomposition for the largest piece.
+  Sized by making the cost bigger, with `black_box` on the *result* — the trap
+  the RSP's decode sizing already paid for.
+
+  For comparison the same measurement on the RSP gave **0.29%**, so the CPU's
+  decode is ~**28x** more expensive, and a decode cache was rejected there.
+
+  It names a cheaper option than a recompiler: **a CPU decode cache captures
+  ~8% with no code generation, no architecture backends and no `unsafe`** — and
+  it needs the same invalidation machinery a recompiler would, so building it
+  first de-risks the larger work. A recompiler's remaining margin is then ~23%
+  of a frame rather than 32.29%.
+
 - **A COP2 opcode census, which scopes the RSP vectorization work.** `vu.rs` is
   143 functions and ~8.5% of a frame — so `work-counters` now keeps a 64-slot
   histogram of COP2 computational `funct` values, reported by

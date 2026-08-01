@@ -2254,3 +2254,64 @@ The alternative was to read `vu.rs` and vectorize what looked hot. Three
 separate figures in this document turned out to belong to configurations that
 were not being run — the VI's 4.64%, the RDP's 6.36%, and the shared-device
 plan's "double PCIe crossing". Reading is how those happened.
+
+## The CPU's decode is 8.1–9.4% of a frame — a quarter of its bucket
+
+ADR 0017 makes decomposing the CPU's **32.29%** a precondition on writing a
+recompiler, because a recompiler removes *interpretive overhead* and not the
+work underneath it. This is that decomposition, for the largest piece.
+
+Sized the way this document prescribes for a hot line — **make the cost bigger**
+— with the trap the RSP's decode sizing already paid for: `black_box` on the
+**result**, because an unused result is dead and the optimizer folds the extra
+work away.
+
+### One extra `decode` of the same word, per CPU instruction
+
+| A — 1 decode (ms) | B — 2 decodes (ms) |
+| --- | --- |
+| 63.471 | 68.793 |
+| 62.301 | 68.549 |
+| 62.810 | 68.928 |
+
+The sets do not overlap. **Conservative (best B against worst A): 8.08% of a
+frame. On the means: 9.38%.**
+
+The same word is decoded both times, deliberately, so the extra decode takes the
+same branches as the real one and the extrapolation is 1→2 rather than 1→4.
+
+**A cruder first probe added three decodes of `word ^ d` and extrapolated
+~13.3%.** It is reported and not used: different inputs take different branches,
+so it measures a decode the interpreter never performs, and a 1→4 extrapolation
+is more fragile than 1→2. The shorter measurement is also the *lower* one, which
+is the direction that makes it safe to quote.
+
+### What this settles
+
+**Decode is ~25–29% of the CPU bucket**, and the CPU bucket is 32.29% of a
+frame. For comparison, the same measurement on the **RSP** gave **0.29%** — the
+CPU's decode is roughly **28x** more expensive, which is why a decode cache was
+rejected there and is worth taking seriously here. `Rsp::decode` is eight
+bit-field extractions; `decode(word)` for the VR4300 is a much larger opcode
+match.
+
+### And it names a cheaper option than the recompiler
+
+A recompiler removes decode — it decodes once, at compile time. But **so does a
+decode cache**, at a small fraction of the cost: no code generation, no
+architecture backends, no `unsafe`, and invalidation on the same Bus page-dirty
+seam a recompiler would need anyway.
+
+So the ordering ADR 0017 assumed is wrong in one respect, and it is worth
+stating before anyone starts stage 2:
+
+- **A CPU decode cache is worth ~8% for a fraction of a recompiler's cost**, and
+  it is the natural first slice regardless — a recompiler needs the same
+  invalidation machinery, so building it first de-risks the larger work.
+- **A recompiler's remaining margin is then ~23% of a frame**, not 32.29%. Still
+  by far the largest item, and still the only thing that can approach playable
+  rates — but the honest figure is what is left after the cheap part is taken.
+
+**What is still not decomposed**: how much of the remaining ~23% is the Bus
+(a separate 18.06% bucket the CPU drives) versus register-file and ALU work a
+recompiler keeps. ADR 0017's stage 2 still owes that before a crate exists.
