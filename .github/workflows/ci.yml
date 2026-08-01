@@ -287,6 +287,32 @@ jobs:
             echo "::error::the smoke test neither rendered nor reported a skip; it is no longer witnessing either outcome"
             exit 1
           fi
+      - name: Run the GPU determinism gate and report which branch it took
+        run: |
+          set -euo pipefail
+          # --test-threads=1: both tests create Vulkan instances and devices, and
+          # `replay` builds one per vector, so running them concurrently means
+          # two threads racing to create and destroy devices plus double the peak
+          # GPU memory. Nothing here needs the parallelism.
+          cargo test -p rustyn64-test-harness --release --features gpu-rdp \
+            --test gpu_determinism -- --nocapture --test-threads=1 2>&1 \
+            | tee /tmp/gpu-det.log
+          # BOTH markers, not either. The two tests check different properties
+          # (independent devices, and a stateful sequence), and a mixed
+          # skip/success state must not read as a clean skip -- checking
+          # "^SKIPPED" first would have reported "no device" on a runner where
+          # one test ran and passed.
+          skips=$(grep -c "^SKIPPED" /tmp/gpu-det.log || true)
+          corpus=$(grep -c "identical across" /tmp/gpu-det.log || true)
+          sequence=$(grep -c "reproduced exactly" /tmp/gpu-det.log || true)
+          if [ "$skips" -eq 2 ]; then
+            echo "::notice::no Vulkan device on this runner -- GPU reproducibility was NOT verified here"
+          elif [ "$corpus" -ge 1 ] && [ "$sequence" -ge 1 ]; then
+            echo "both determinism properties were witnessed"
+          else
+            echo "::error::the determinism gate reported neither two skips nor both successes (skips=$skips corpus=$corpus sequence=$sequence)"
+            exit 1
+          fi
       - name: Run the .rvec parity census and report which branch it took
         run: |
           set -euo pipefail

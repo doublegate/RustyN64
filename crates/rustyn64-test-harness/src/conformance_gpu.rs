@@ -299,6 +299,87 @@ pub fn census() -> Result<Census, Unavailable> {
     Ok(c)
 }
 
+/// One run of the whole corpus through the GPU, as a per-vector digest.
+///
+/// Vectors are hashed rather than kept so a comparison names the vector that
+/// diverged instead of dumping megabytes. [`crate::frame::frame_hash`] is the
+/// same hash the visual golden corpus uses.
+///
+/// # Errors
+///
+/// [`Unavailable`] when the GPU backend cannot run.
+pub fn corpus_digest() -> Result<Vec<(&'static str, u64)>, Unavailable> {
+    let mut out = Vec::new();
+    for (name, bytes) in crate::conformance::RDP_VECTORS {
+        let v = crate::conformance::parse(bytes);
+        out.push((*name, crate::frame::frame_hash(&replay(&v)?)));
+    }
+    Ok(out)
+}
+
+/// Render `frames` successive frames on ONE backend, digesting each.
+///
+/// Deliberately reuses a single [`GpuRdp`] across the frames, because RDP state
+/// (TMEM, tile descriptors, the combiner) legitimately persists between frames
+/// on hardware — so "the same input" for frame *n* includes everything frames
+/// *0..n* left behind. A per-frame-fresh context would test a machine that does
+/// not exist and would miss a backend that carried host-dependent state forward.
+///
+/// # Errors
+///
+/// [`Unavailable`] when the GPU backend cannot run.
+///
+/// # Panics
+///
+/// Panics if the backend refuses a command or fails to drain — both are backend
+/// faults rather than divergences, and a determinism run that quietly skipped
+/// them would compare fewer frames than it reported.
+pub fn repeated_frame_digest(frames: usize) -> Result<Vec<u64>, Unavailable> {
+    let Some(mut gpu) = GpuRdp::new(RDRAM_SIZE, HIDDEN_RDRAM_SIZE) else {
+        return Err(Unavailable::NoDevice);
+    };
+    let mut digests = Vec::with_capacity(frames);
+    for (i, (_, bytes)) in crate::conformance::RDP_VECTORS
+        .iter()
+        .cycle()
+        .take(frames)
+        .enumerate()
+    {
+        let v = crate::conformance::parse(bytes);
+        let fb_len = (v.width as usize) * (v.height as usize) * (v.bpp as usize);
+        let fb = v.fb_addr as usize;
+        // Do NOT clear RDRAM between frames — carrying it forward is what makes
+        // this a sequence rather than `frames` independent renders, and a
+        // sequence is where order-dependent nondeterminism would show.
+        let staged = gpu.with_rdram_mut(|rdram| {
+            if i == 0 {
+                rdram.fill(0);
+            }
+            write_region(rdram, v.preload_addr as usize, v.preload);
+            write_region(rdram, v.cmd_addr as usize, v.cmds);
+        });
+        if staged.is_none() {
+            return Err(Unavailable::RdramUnmappable);
+        }
+        for cmd in split_commands(v.cmds) {
+            assert!(
+                gpu.enqueue_command(&cmd),
+                "the GPU backend refused a command"
+            );
+        }
+        assert!(gpu.idle(), "the GPU backend failed to drain");
+        let mut out = vec![0u8; fb_len];
+        if gpu
+            .with_rdram(|rdram| read_region(rdram, fb, &mut out))
+            .is_none()
+        {
+            return Err(Unavailable::RdramUnmappable);
+        }
+        digests.push(crate::frame::frame_hash(&out));
+    }
+    Ok(digests)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{read_region, swap_words_into, write_region};

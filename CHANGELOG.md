@@ -69,6 +69,19 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **The GPU path is verified reproducible** — all 43 `.rvec` vectors identical
+  across 3 × 43 independently created devices, and a 60-frame stateful sequence
+  (36 distinct frames) reproduced exactly. Both mutation-checked, and gated in
+  `crates/rustyn64-test-harness/tests/gpu_determinism.rs`.
+
+  **ADR 0015** states the claim at that scope and corrects ADR 0014's premise:
+  dirty-region synchronization is not what was gating it, because this backend
+  owns its RDRAM and its scan-out is fence-synchronized, so there are no
+  asynchronous GPU writes to synchronize. Not claimed: cross-vendor
+  bit-exactness, parity of picture with the software path, or reproducibility
+  across a runtime fallback. ADR 0004 is untouched — it binds the core, and the
+  core is unchanged.
+
 - **The GPU RDP is wired into the machine, as a display backend.** The
   frontend's default-off `gpu-rdp` feature presents frames rendered by
   parallel-rdp from the real Bus **when one is available**; `Bus::scanout_scaled`
@@ -100,8 +113,8 @@ All notable changes to RustyN64 are documented here. The format is based on
 
   The whole-RDRAM snapshot is kept deliberately: correct by construction, with no
   dirty-region tracker to get subtly wrong. ADR 0004 binds the core and the core
-  is untouched, so no determinism guarantee is broken — but the GPU path makes no
-  determinism claim of its own, and `docs/rdp.md` says which.
+  is untouched, so no determinism guarantee is broken; what the GPU path itself
+  claims is set out in ADR 0015 (see the entry above).
 
   Also documented there: the two backends present **different geometry**.
   parallel-rdp scans out the whole VI raster; `scanout_scaled` crops to the
