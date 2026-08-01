@@ -11,14 +11,20 @@ Amends: the `unsafe` policy stated in `AGENTS.md`
 ("`unsafe` is allowed only in the frontend and FFI"), narrowly and
 conditionally. **`AGENTS.md` is updated in the same change**, so the tree does
 not carry the old blanket rule alongside this exception. `docs/architecture.md`
-is *not* amended — it states no `unsafe` policy; an earlier draft of this line
-claimed it did, which a reviewer caught.
+is *not* amended, and must not be cited as a source for this policy: it contains
+no mention of `unsafe` at all.
 
 ## Context
 
 `crates/rustyn64-rsp` carries `#![forbid(unsafe_code)]`, as every chip crate
-does. That is not incidental: `docs/architecture.md` makes zero `unsafe` in the
-chip crates a property of the design, and the tree has never had any.
+does. That is not incidental: `AGENTS.md` states the policy — "`unsafe` is
+allowed in the frontend and FFI, and **nowhere else without an ADR**" — and the
+crate attributes are what enforce it.
+
+**The chip crates have never had any `unsafe`. The tree has, since #241** —
+`rustyn64-rdp-gpu` carries 12 blocks, the parallel-rdp FFI shim, quarantined
+there deliberately under ADR 0014. That distinction is the whole subject of this
+ADR, so it is stated here rather than left to the reader.
 
 The vector unit is the largest single hot spot outside the CPU. Two measurements
 bound what is at stake, and both are already merged:
