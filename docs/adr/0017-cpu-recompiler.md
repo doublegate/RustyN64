@@ -198,7 +198,8 @@ and inside the CPU: `fastexec.rs` **16.10%**, `pipeline.rs` 8.24%, `decode.rs`
 each.
 
 **What a recompiler removes** is the interpreter driver — roughly `fastexec.rs`
-+ `decode.rs` + part of `pipeline.rs`, **20-25%**. What it does **not** remove is
+plus `decode.rs` plus part of `pipeline.rs`, **20-25%**. What it does **not**
+remove is
 the Bus's 23.60% (memory the emulated program really performs), `addr.rs`
 (translation still happens per access), or `cop0`/`cop1`/`cache` (real emulated
 work).
