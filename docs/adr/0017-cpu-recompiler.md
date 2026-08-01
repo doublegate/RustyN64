@@ -8,7 +8,7 @@ Recommendation: **do not write `rustyn64-jit` on the current evidence.**
 Date: 2026-08-01
 Deciders: repo owner
 Supersedes: none · Superseded by: none
-Builds on: [ADR 0011/0012](0011-fast-path-scheduler.md) (`fast-scheduler`),
+Builds on: [ADR 0011](0011-optional-fast-path-scheduler.md) / [0012](0012-amend-0011-equivalence-and-gate-witness.md) (`fast-scheduler`),
 [ADR 0013](0013-fast-execution-mode.md) (`fast-exec`) — whose equivalence and
 divergence machinery this reuses rather than reinventing.
 
@@ -17,17 +17,18 @@ divergence machinery this reuses rather than reinventing.
 The CPU is **32.29% of a frame** under `fast-exec` (`docs/performance.md`), the
 largest bucket by a wide margin, and every alternative has now been sized:
 
-| item | measured or bounded at |
-| --- | --- |
-| **CPU recompiler** | **32.29%** |
-| RSP vector unit (ADR 0016) | 5.3% ceiling |
-| whole GPU present path | 4.0–4.4% (1.044x ceiling) |
-| async RDP (A3) | 1.7% |
-| dirty-page RDRAM staging | 2.54% — shipped |
-| `read_u32` fast path | 1.32% — shipped |
+| item | share | status |
+| --- | --- | --- |
+| **CPU bucket** (not a recompiler result) | **32.29%** | measured |
+| RSP vector unit (ADR 0016, **open in #252**) | 5.3% | inferred ceiling |
+| whole GPU present path | 4.0–4.4% | measured |
+| async RDP (A3) | 1.7% | inferred from a measured wait |
+| dirty-page RDRAM staging | 2.54% | measured, shipped |
+| `read_u32` fast path | 1.32% | measured, shipped |
 
-**Everything except the CPU, added together and assumed perfect, is under
-15%.** `docs/performance.md` records that 60 FPS needs 6.19x and that a perfect
+**Everything except the CPU, added together and assumed perfect, is about
+15%** — the rows total 14.86–15.26% depending on which end of each range is
+taken, so "under 15%" (an earlier draft) was wrong at the upper end. `docs/performance.md` records that 60 FPS needs 6.19x and that a perfect
 fast-scheduler caps at ~2.15x; a recompiler is the only remaining change that
 can move the frame rate materially rather than incrementally.
 
@@ -57,6 +58,15 @@ is HLE, and nothing here is per-game.
   rediscovered: **state-key block specialization** (a block compiled for
   32-bit-addressing mode is not reused in 64-bit mode) and **deferred cycle
   accounting** (charge the block's cycles once at its exit, not per instruction).
+
+  **Deferred accounting is not free at this seam**, and a reviewer was right to
+  press on it. The interface is instruction-granular — `Cpu::step_instruction_at`
+  returns one instruction's cost and `Cpu::tick_at` takes the scheduler's `Count`
+  position — so charging a whole block at exit delays `Count`/`Compare`,
+  interrupts, exceptions and every Bus-visible effect to the block boundary. An
+  implementation must define **commit points** for each externally visible event
+  and terminate blocks there, gated by ADR 0013's equivalence machinery. A design
+  constraint, not a detail.
 - **`dynasm-rs`**, targeting **x86-64 and aarch64**. Direct assemblers are what
   working recompilers use — sljit in ares, Lightning in parallel-rsp — and a
   general codegen backend would import a compile-time cost per block that is the
@@ -72,8 +82,8 @@ is HLE, and nothing here is per-game.
 ### `unsafe`
 
 Executing generated code requires it. Scoped to `rustyn64-jit` alone; every
-other crate's policy is untouched, including the narrow `vu.rs` exception in
-[ADR 0016](0016-scoped-simd-exception-for-the-rsp.md). Same `// SAFETY:`
+other crate's policy is untouched, including the narrow `vu.rs` exception proposed in ADR 0016 (open in #252; the
+link resolves once that merges). Same `// SAFETY:`
 requirement on every block or operation.
 
 ## How this ADR is accepted — and why that differs from the others
@@ -167,9 +177,14 @@ argued away:
 
 **A decode cache was the obvious inference. It was built, and it is 1.0%
 SLOWER** — reverted under the standing rule (`docs/performance.md`). The 8.1-9.4%
-measured a decode forced through `black_box`; the real one is inlined and its
-fields feed straight into the dispatch `match`, so most of it costs nothing,
-while a cache hit is a real load that cannot be folded and defeats that inlining.
+measured a decode forced through `black_box`.
+
+**The regression is measured; the explanation is INFERRED.** That the real
+`decode` is inlined into the dispatch `match`, and that a cache hit defeats that
+inlining, is the reading most consistent with all three results — but **no
+generated assembly was inspected**, and this ADR must not be cited as if it had
+been. What is measured: the probe said 8.1-9.4%, the profiler says 4.36%, and
+the cache is 1.0% slower.
 
 So, corrected:
 
@@ -189,10 +204,17 @@ on `decode` and reusing it here would have repeated the error. Source-line
 attribution, because **everything inlines into `run_until_exec`** (61% self
 time) and a symbol profile cannot see inside it.
 
+**The buckets are EXCLUSIVE**, and saying so resolves a confusion an earlier
+draft carried: it asked "how much of the 32.29% is Bus work" while also treating
+Bus as a separate bucket. Both cannot hold. Source-line attribution assigns each
+sample to the file it came from, so a sample in `bus.rs` is Bus and never CPU —
+even when inlined into `run_until_exec`. Nothing is double-counted, and the CPU
+bucket contains **no** Bus work.
+
 | share | subsystem |
 | --- | --- |
-| 42.88% | CPU |
-| 23.60% | Bus + scheduler |
+| 42.88% | CPU (`rustyn64-cpu` files only) |
+| 23.60% | Bus + scheduler (`bus.rs`, `scheduler.rs`) |
 | 10.95% | RSP |
 
 and inside the CPU: `fastexec.rs` **16.10%**, `pipeline.rs` 8.24%, `decode.rs`
