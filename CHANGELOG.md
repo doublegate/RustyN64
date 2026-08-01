@@ -109,6 +109,15 @@ All notable changes to RustyN64 are documented here. The format is based on
   changes). It is not being built; `docs/performance.md` records the measurement
   and the reasoning.
 
+  The same work measured, for the first time, that **the GPU backend is 2.1%
+  faster per frame than the software path** (A-B-A, one binary, one feature
+  changed; the two sets do not overlap). Previous figures compared the *present
+  call* rather than the frame, and came from a benchmark that never runs the
+  machine. It also established that **a GPU VI scan-out would recover nothing**:
+  `produce_frame` returns before `scanout_scaled` whenever the GPU produced a
+  picture, so the software VI is already skipped under `gpu-rdp` and the 4.64%
+  attributed to it belongs to a configuration without this backend.
+
 - **The GPU path is verified reproducible** — all 43 `.rvec` vectors identical
   across 3 × 43 independently created devices, and a 60-frame stateful sequence
   (36 distinct frames) reproduced exactly. Both mutation-checked, and gated in

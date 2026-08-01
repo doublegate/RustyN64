@@ -1871,9 +1871,17 @@ time — is on the order of **1% of a frame at the most generous reading, and
   The upload to wgpu happens on the winit thread, concurrently with emulation on
   the emu thread. Removing work that overlaps with the bottleneck does not make
   the bottleneck shorter.
-- Two other GPU items are worth **11.0% between them** (retiring the software
-  rasterizer 6.36%, GPU VI scan-out 4.64%) — roughly **7x** the return, without
-  needing a shared device at all.
+- One other GPU item is worth **6.36%** (retiring the software rasterizer) —
+  roughly **6x** the return, without needing a shared device at all.
+
+**A correction to the first version of this section**, which claimed *two* items
+worth 11.0% by adding a GPU VI scan-out's 4.64% to that 6.36%. **The VI figure
+was already spent.** `EmuCore::produce_frame` returns as soon as the GPU
+produces a picture, *before* `Bus::scanout_scaled` — so under `gpu-rdp` the
+software VI scan-out does not run at all, and moving the VI to the GPU cannot
+recover a cost that is not being paid. The 4.64% came from a profile of a
+configuration that does not have this backend, and quoting it here was reading a
+figure from one configuration into another. Measured below rather than argued.
 
 The general lesson is the one this file keeps re-learning: *a mechanism that is
 real is not thereby worth removing*. "The frame crosses PCIe twice" was an
@@ -1887,3 +1895,60 @@ regression is visible. They are kept rather than reverted because they are the
 gate for the remaining GPU work: an asynchronous RDP and a GPU VI scan-out both
 have to show up in `scanout`, and a change that does not move the phase it
 claims to move has not done what it says.
+
+## The GPU display backend is 2.1% faster than the software path
+
+Nobody had measured this. `docs/rdp.md` and the notes around #243 quoted
+*0.72–0.93 ms against software's 0.75 ms* — a near-tie — but those came from
+`tests/gpu_present_cost.rs`, which never runs the machine (see the correction
+above), and they compared the **present call** rather than the **frame**.
+
+The frame is what matters, because the two paths do not do the same work: the
+GPU path pays a present (4.0–4.4%) and in exchange **skips the software VI
+scan-out entirely** — `produce_frame` returns before `scanout_scaled` whenever
+the GPU produced a picture.
+
+### A-B-A, `examples/frame_bench.rs`, Super Mario 64, `fast-exec,fast-scheduler`
+
+The same example built both ways, so this is one binary shape with one feature
+changed, not two different harnesses.
+
+| A — software | B — `gpu-rdp` |
+| --- | --- |
+| 66.551 | 62.863 |
+| *82.971* | 62.533 |
+| 64.378 | 62.841 |
+| 64.735 | 62.970 |
+| 64.977 | *66.856* |
+| 64.507 | 62.452 |
+| 64.314 | — |
+| 64.694 | — |
+
+**Conservative pairing (worst clean B 62.970 against best A 64.314): 2.09%,
+1.021x.** The clean B legs span 0.8% and the clean A legs 3.5%, and the two sets
+**do not overlap** — every B leg is faster than every A leg.
+
+Two legs are excluded and named rather than dropped silently: A's 82.971 (25%
+off) and B's 66.856 (6% off). Both are far outside this harness's ~1% drift.
+
+**The mechanism accounts for the result.** If the GPU path costs a 2.7 ms
+present and comes out 1.9 ms ahead, the software VI scan-out it skips is worth
+about 4.6 ms — roughly 7% of a frame. That is the same quantity the fast-exec
+profile attributes 4.64% to; the two are measured differently (wall clock against
+sampled attribution) and the standing caution that *a profile share bounds only
+the code it names* covers the gap.
+
+### What this settles
+
+- **The GPU backend is a speedup, not a wash.** It was adopted for accuracy and
+  for retiring the software rasterizer's remaining gaps; that it also wins on
+  frame time was assumed and is now measured.
+- **A GPU VI scan-out recovers nothing here**, because the software VI is
+  already skipped. It remains interesting for *accuracy* — parallel-rdp's VI is
+  a different implementation and the geometry already differs — but it is not a
+  performance item, and the VI parity census should be built for that reason or
+  not at all.
+- **Retiring the software rasterizer (6.36%) is the only large GPU-side
+  performance item left**, and unlike the VI it is genuinely unspent: the
+  software RDP still executes every command, because games read the framebuffer
+  back out of RDRAM and only the software path writes it there.
