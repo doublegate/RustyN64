@@ -2130,6 +2130,39 @@ impl CpuBus for Bus {
                 self.cart.pif_boot_rom_read(off + 3),
             ]);
         }
+        // The RDRAM fast path, mirroring `write_u32`'s.
+        //
+        // Placed here rather than at the top of the function, and the reason is
+        // NOT that the placement is what keeps MMIO safe — it is not.
+        // `rdram_offset` returns `None` for every address outside the 8 MiB
+        // physical window, and every register block lives at `$0400_0000` and
+        // above, so hoisting this to the top would be equally correct. That was
+        // mutation-checked: moving it above the register branches breaks no
+        // test, because it breaks nothing.
+        //
+        // It sits here because *reaching* it means every earlier branch has
+        // already declined, which makes the change provably behavior-identical
+        // to the byte composition it replaces without depending on
+        // `rdram_offset`'s range being disjoint from every present and FUTURE
+        // register block. That is a cheap invariant to not depend on.
+        //
+        // Safe to skip `read_u8` for this range because `read_u8`'s RDRAM arm is
+        // a pure `self.rdram[off]` with no side effect — unlike its PI arm,
+        // which folds in `IOBUSY`. A fast path over a side-effecting read is how
+        // the `SP_SEMAPHORE` bug in this same function happened.
+        //
+        // Found by the `work-counters` dispatch census (#248): a word read cost
+        // FIVE dispatches here where a word write cost one.
+        if let Some(off) = Self::rdram_offset(addr)
+            && off + 3 < self.rdram.len()
+        {
+            return u32::from_be_bytes([
+                self.rdram[off],
+                self.rdram[off + 1],
+                self.rdram[off + 2],
+                self.rdram[off + 3],
+            ]);
+        }
         u32::from_be_bytes([
             self.read_u8(addr),
             self.read_u8(addr.wrapping_add(1)),
@@ -3924,6 +3957,101 @@ mod rdp_tap_tests {
     }
 }
 
+#[cfg(test)]
+mod read_u32_fast_path_tests {
+    use super::Bus;
+    use crate::cpu::Bus as CpuBus;
+
+    /// The RDRAM fast path returns exactly what the byte composition returned.
+    ///
+    /// A fast path that changes a value is a wrong-memory bug with no test to
+    /// catch it — every existing test would still pass, because they assert
+    /// behavior rather than equality between two implementations. So this
+    /// compares the two directly, byte-composition against fast path, over
+    /// addresses chosen to exercise the cases that differ:
+    /// misalignment, page boundaries, and the very end of RDRAM.
+    #[test]
+    fn the_fast_path_agrees_with_byte_composition() {
+        let mut bus = Bus::new();
+        // A pattern where every byte is distinct mod 251, so a swapped or
+        // duplicated lane cannot coincide with the right answer.
+        for (i, b) in bus.rdram.iter_mut().enumerate() {
+            *b = u8::try_from(i % 251).expect("mod 251 fits a u8");
+        }
+        let len = u32::try_from(bus.rdram.len()).expect("RDRAM fits a u32");
+        for addr in [
+            0x8000_0000,
+            0x8000_0001, // misaligned
+            0x8000_0FFE, // straddles a 4 KiB page
+            0x8000_1000,
+            0x8000_1002,
+            0x8000_0000 + len - 4, // the last whole word
+            0x8000_0000 + len - 3, // straddles the END of RDRAM
+            0x8000_0000 + len - 1,
+        ] {
+            let composed = u32::from_be_bytes([
+                CpuBus::read_u8(&mut bus, addr),
+                CpuBus::read_u8(&mut bus, addr.wrapping_add(1)),
+                CpuBus::read_u8(&mut bus, addr.wrapping_add(2)),
+                CpuBus::read_u8(&mut bus, addr.wrapping_add(3)),
+            ]);
+            assert_eq!(
+                CpuBus::read_u32(&mut bus, addr),
+                composed,
+                "read_u32 and the byte composition disagree at {addr:#010X}"
+            );
+        }
+    }
+
+    /// A word read still reaches the SP register file rather than RDRAM.
+    ///
+    /// **What this does NOT test**, stated because the first version of this doc
+    /// claimed it did: it does not pin the fast path's *placement*. Hoisting the
+    /// fast path above every register branch was mutation-checked and **passed**
+    /// — because `rdram_offset` returns `None` outside the 8 MiB window and
+    /// registers live at `$0400_0000` and above, so the placement is defensive
+    /// rather than load-bearing.
+    ///
+    /// What it does test is the property that actually matters and that a wrong
+    /// `rdram_offset` range would break: a word read of a register must return
+    /// the register, not memory. That failure would be silent and word-width
+    /// only.
+    #[test]
+    fn mmio_word_reads_are_not_captured_by_the_fast_path() {
+        let mut bus = Bus::new();
+        // Fill RDRAM with a recognizable pattern, so a read that WAS diverted
+        // returns something identifiable rather than the zero both paths share.
+        bus.rdram.fill(0x5A);
+
+        // Compared against the register file directly rather than a written-back
+        // value: SP index 4 is `SP_STATUS`, whose read is computed rather than a
+        // latch, so a round-trip would be testing the register's semantics
+        // instead of the routing. The routing is what a fast path can break.
+        // 0..=6, NOT 0..=7. Index 7 is `SP_SEMAPHORE`, whose read TAKES the
+        // semaphore — comparing it against a reference read would consume it
+        // first and then compare 0 against 1. That side effect is the reason
+        // `read_u32` handles SP registers before composing bytes at all (see its
+        // comment), so excluding it here is not dodging the case: it is the case
+        // that made the branch exist.
+        for idx in 0..=6u32 {
+            let addr = Bus::SP_REGS_BASE + idx * 4;
+            let direct = bus.rsp.sp.read(idx);
+            // Read ONCE. A second `read_u32` for the second assertion would be a
+            // second access, which is exactly what the semaphore case punishes.
+            let via_bus = CpuBus::read_u32(&mut bus, addr);
+            assert_eq!(
+                via_bus, direct,
+                "a word read of SP register {idx} was not routed to the register file"
+            );
+            assert_ne!(
+                via_bus, 0x5A5A_5A5A,
+                "SP register {idx} returned the RDRAM fill pattern; the fast path \
+                 captured an MMIO address"
+            );
+        }
+    }
+}
+
 #[cfg(all(test, feature = "work-counters"))]
 mod work_counter_tests {
     use super::Bus;
@@ -3980,21 +4108,24 @@ mod work_counter_tests {
         // ASYMMETRIC in a way worth knowing:
         //
         //   read_u8         1
-        //   read_u32        5   <- itself, plus FOUR byte reads
+        //   read_u32        1   <- an RDRAM fast path, as of the change below
         //   write_u8        1
         //   write_u32       1   <- an RDRAM fast path; no decomposition
         //   write_sized w4  1   <- delegates to write_u32
         //   write_sized w8  2   <- two write_u32, which is what a `sd` costs
         //
-        // `read_u32` composes an RDRAM word out of four `read_u8` while
-        // `write_u32` writes one directly. So the unit this counter reports is
-        // **bus dispatch entries**, not CPU requests, and a word read weighs
-        // five times a word write. That is not a flaw in the counter: dispatches
-        // are what the `bus.rs` profile bucket spends its time in, which is the
-        // quantity the count exists to explain.
+        // The unit this counter reports is **bus dispatch entries**, not CPU
+        // requests: dispatches are what the `bus.rs` profile bucket spends its
+        // time in, which is the quantity the count exists to explain.
+        //
+        // `read_u32` used to be 5 — itself plus four `read_u8` — while
+        // `write_u32` was 1, because the write path had an RDRAM fast path and
+        // the read path did not. The census is what surfaced that, and the fast
+        // path that closed it is why this row now reads 1. Left recorded because
+        // the number moving IS the finding.
         assert_eq!(
             got,
-            [1, 5, 1, 1, 1, 2],
+            [1, 1, 1, 1, 1, 2],
             "the CpuBus dispatch shape changed; docs/performance.md quotes these"
         );
     }

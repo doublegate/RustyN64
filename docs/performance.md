@@ -2103,3 +2103,58 @@ gate rather than the frame time.
 **Everything the GPU can still offer totals under about 2%.** The remaining
 89% — CPU, RSP, Bus — is where the frame actually is, and none of it is work a
 GPU can do.
+
+## The read path paid five bus dispatches where the write path paid one — 1.12%
+
+The work-unit census above pinned an asymmetry: a word read of RDRAM cost
+**five** bus dispatches (`read_u32` itself, plus four `read_u8`) while a word
+write cost **one**, because `write_u32` had an RDRAM fast path and `read_u32`
+did not.
+
+That is a lead a *request*-count metric would have hidden entirely, by reporting
+both as 1.
+
+### The change
+
+`read_u32` gains the symmetric fast path. Safe to skip `read_u8` for this range
+because `read_u8`'s RDRAM arm is a pure `self.rdram[off]` with no side effect —
+unlike its PI arm, which folds in `IOBUSY`. A fast path over a side-effecting
+read is how the `SP_SEMAPHORE` bug in this same function happened, and that is
+the reason the whole SP register block is handled before any byte composition.
+
+### A-B-A, `frame_bench --features fast-exec,fast-scheduler`, Super Mario 64
+
+Frame means, milliseconds. Run B-A-B so a monotonic drift cannot be mistaken for
+the effect:
+
+| A — byte composition (ms) | B — fast path (ms) |
+| --- | --- |
+| 64.049 | 62.753 |
+| 63.995 | 62.857 |
+| 63.826 | 63.064 |
+| — | 62.888 |
+| — | 62.989 |
+| — | 63.114 |
+
+**Conservative pairing (worst B 63.114 against best A 63.826): 1.12%, 1.011x.**
+On the clean-leg means it is 1.58%. The A legs span 0.35% and the B legs 0.58%,
+and **the two sets do not overlap** — every B leg is faster than every A leg.
+
+**Accuracy did not move**: `n64-systemtest` reports Phase 1 `0 failing` and RSP
+`0 failing`, 90 suite-wide, identical to before.
+
+### What the guards do and do not cover
+
+`the_fast_path_agrees_with_byte_composition` compares the two implementations
+directly over misaligned addresses, a 4 KiB page straddle, and the last words of
+RDRAM. Mutation-checked: flipping the byte order fails it, and removing the
+`off + 3 < len` bound panics on the end-of-RDRAM cases.
+
+**One mutation did not fire, and that is recorded rather than quietly dropped.**
+Hoisting the fast path above every MMIO branch **passes every test** — because
+`rdram_offset` returns `None` outside the 8 MiB window and registers live at
+`$0400_0000` and above. So the placement is *defensive, not load-bearing*, and
+the first version of both the code comment and the test doc claimed otherwise.
+Both now say what is true: the fast path sits low so the change cannot depend on
+`rdram_offset`'s range staying disjoint from every future register block, which
+is a cheap invariant to not depend on.
