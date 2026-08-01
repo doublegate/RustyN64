@@ -229,6 +229,15 @@ impl Phase {
 /// Both are true, and the resolution is neither — a partial frame must
 /// contribute to **nothing**, so every mean is taken over exactly the frames
 /// that ran every phase.
+/// # On the `as u64` casts that fill this
+///
+/// `Duration::as_nanos` returns `u128` and every timing here narrows it. That is
+/// `clippy::cast_possible_truncation`, which this crate **allows crate-wide**
+/// (`lib.rs`) — an allow added for the VI scan-out and joybus packing, so it
+/// covers these by inheritance rather than by decision. Worth stating the bound
+/// explicitly, since nothing will lint it: `u64` nanoseconds overflow after ~584
+/// years, and this measures one `present` call. A truncation here is not a
+/// tolerated rounding error, it is impossible.
 #[derive(Default)]
 struct FrameTimings {
     /// Indexed by `Phase as usize`, same as [`PHASE_NS`].
@@ -665,6 +674,40 @@ fn split_commands(words: &[u32]) -> impl Iterator<Item = &[u32]> {
 #[cfg(test)]
 mod tests {
     use super::{split_commands, swap_words_into};
+    use std::sync::Mutex;
+
+    /// Serializes the tests that reset and read the **global** phase counters.
+    ///
+    /// Those counters are process-wide, so two such tests running concurrently
+    /// interleave: one's `reset_phase_totals` lands between the other's `commit`
+    /// and its assertions, and the failure is a confusing zero rather than
+    /// anything pointing at the cause.
+    ///
+    /// CI passes `--test-threads=1`, but that flag is there for the Vulkan
+    /// device-destruction race and would mask this rather than fix it — a
+    /// developer running the suite without it would meet a flake. Serializing
+    /// here makes these tests correct under the default harness, on their own
+    /// terms.
+    ///
+    /// **Honest limit on this guard:** removing it and widening the window with
+    /// a 150 ms sleep between `commit` and its assertions did **not** produce a
+    /// failure over five parallel runs. The two tests are serialized by
+    /// accident — one of them builds a Vulkan device first, which takes far
+    /// longer than the other's whole critical section, so their windows do not
+    /// currently overlap. That incidental ordering is exactly the reason to hold
+    /// the lock explicitly: it depends on device-init timing, which is a
+    /// property of the host rather than of the tests.
+    static COUNTER_TESTS: Mutex<()> = Mutex::new(());
+
+    /// Take [`COUNTER_TESTS`], ignoring poisoning.
+    ///
+    /// A panic in one counter test must not turn every sibling into a second,
+    /// unrelated failure that hides which assertion actually broke.
+    fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
+        COUNTER_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     /// The swap is an involution, and it is the 4-byte one.
     ///
@@ -827,6 +870,7 @@ mod tests {
     #[test]
     fn commit_publishes_every_phase_with_its_frame() {
         use super::{FrameTimings, Phase, phase_totals, present_total, reset_phase_totals};
+        let _guard = counter_lock();
         reset_phase_totals();
 
         let mut t = FrameTimings::default();
@@ -867,6 +911,7 @@ mod tests {
     /// The VI is left unprogrammed, which is what makes the frames picture-less.
     #[test]
     fn a_frame_with_no_picture_contributes_nothing() {
+        let _guard = counter_lock();
         if !super::probe_for_test() {
             println!("SKIPPED: no usable Vulkan device — nothing was verified.");
             return;
