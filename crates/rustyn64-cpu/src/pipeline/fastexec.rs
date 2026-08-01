@@ -270,6 +270,11 @@ impl Pipeline {
         // Multiply and divide (UM Table 3-12), raised by `execute` itself.
         cost = cost.saturating_add(e.stall_cycles);
 
+        // Census BEFORE the latch is built: the question this answers is how
+        // often building it is avoidable at all.
+        #[cfg(feature = "work-counters")]
+        self.count_commit(e.cop0, e.mem, e.write_back);
+
         // Stage the instruction into the latch the commit path reads. This is
         // reuse, not a shortcut: `wb_stage` and `apply_cop0_read` are the accurate
         // path's own code, and giving them the same input is what makes the two

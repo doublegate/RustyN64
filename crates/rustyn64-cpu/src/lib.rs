@@ -54,6 +54,8 @@ pub use alu::{HiLo, MulDiv};
 pub use decode::{Decoded, Op, decode};
 pub use exec::{Executed, WriteBack, execute};
 pub use mem::{LoadKind, StoreKind};
+#[cfg(feature = "work-counters")]
+pub use pipeline::commit_class;
 pub use pipeline::{Exception, Interlock, Latch, Pipeline, Stage};
 pub use regs::Regs;
 pub use sysad::{BlockOrder, Phase, Transaction, Width, block_order};

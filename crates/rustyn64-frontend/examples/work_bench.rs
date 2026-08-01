@@ -166,6 +166,56 @@ fn main() {
     );
 
     report_vu_histogram(&core, &vu_before);
+    report_commit_census(&core);
+}
+
+/// **How much of the instruction stream a direct commit path could actually
+/// serve.**
+///
+/// `fast-exec` builds a 120-byte `Latch` for every instruction and runs it
+/// through the accurate path's `wb_stage` — deliberately, because that is what
+/// keeps COP0, COP1, TLB and retirement semantics identical in both modes
+/// without a second implementation. A direct commit would skip that, but only
+/// safely for instructions that touch none of it.
+///
+/// This is the fraction that decides whether such a path is worth writing.
+/// Sizing it on an assumed "most instructions are simple ALU ops" is exactly the
+/// move that produced four reverted changes in the previous program.
+fn report_commit_census(core: &EmuCore) {
+    use rustyn64_core::cpu::commit_class as cc;
+    let census = core.system().cpu.pipeline.commit_census();
+    let total: u64 = census.iter().sum();
+    assert!(
+        total > 0,
+        "no instructions were classified — the census is not wired into the \
+         executing path, and a table of zeros reads as a result"
+    );
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "counts over a bench run are far below 2^53"
+    )]
+    let pct = |n: u64| n as f64 / total as f64 * 100.0;
+    let names = [
+        (cc::SIMPLE, "SIMPLE  (GPR or nothing)"),
+        (cc::MEM, "MEM     (has a DC access)"),
+        (cc::COP, "COP     (COP0/COP1)"),
+        (cc::HILO, "HILO    (mul/div)"),
+        (cc::OTHER, "OTHER"),
+    ];
+    println!("\ncommit classes over {total} retired instructions:");
+    for (idx, label) in names {
+        println!(
+            "  {label:<28} {:>12}  {:>6.2}%",
+            census[idx],
+            pct(census[idx])
+        );
+    }
+    println!(
+        "\nA direct commit path could serve the SIMPLE class only: {:.2}%.\n\
+         That share bounds what skipping the Latch can win — the rest must keep \
+         going through wb_stage.",
+        pct(census[cc::SIMPLE])
+    );
 }
 
 /// Print which COP2 computational ops a real workload actually runs.
