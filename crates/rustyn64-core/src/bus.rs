@@ -294,6 +294,17 @@ const RDRAM_PAGE_SHIFT: usize = 12;
 
 const _: () = assert!(1 << RDRAM_PAGE_SHIFT == RDRAM_PAGE);
 
+/// A dirty map with every page set, for construction **and for `serde`**.
+///
+/// All-dirty is the only correct starting state in both cases: at power-on the
+/// consumer has never seen this RDRAM, and loading a save-state replaces all of
+/// it at once. Coming back clean would present the previous state's framebuffer
+/// until something happened to overwrite it.
+#[cfg(feature = "rdp-tap")]
+fn all_pages_dirty() -> alloc::boxed::Box<[bool]> {
+    alloc::vec![true; RDRAM_SIZE.div_ceil(RDRAM_PAGE)].into_boxed_slice()
+}
+
 /// The RCP MIPS-interface (MI) interrupt lines.
 ///
 /// Each bit, when set and unmasked (via [`RcpRegs::mi_mask`]), drives the VR4300
@@ -419,8 +430,14 @@ pub struct Bus {
     ///
     /// `#[serde(skip)]` like the tap: it is per-frame scratch, and skipping keeps
     /// the save-state layout identical with the feature on or off.
+    ///
+    /// **`default` is not optional here.** `#[serde(skip)]` alone fills the field
+    /// from `Default`, and `Box<[bool]>::default()` is **empty** — so the first
+    /// RDRAM store after loading a save-state would index page `off >> 12` into a
+    /// zero-length slice and panic. `rdp_tap` survives the same attribute only
+    /// because `Vec::default()` is empty *and pushable*; an indexed map is not.
     #[cfg(feature = "rdp-tap")]
-    #[serde(skip)]
+    #[serde(skip, default = "all_pages_dirty")]
     rdram_dirty: alloc::boxed::Box<[bool]>,
     /// The PI DMA engine (T-14-001), pulled forward from Phase 5 because
     /// n64-systemtest loads the rest of its own ELF through it.
@@ -512,7 +529,7 @@ impl Default for Bus {
             // the first upload must be complete. Starting clean would hand the GPU
             // an empty framebuffer and whatever the allocator left behind.
             #[cfg(feature = "rdp-tap")]
-            rdram_dirty: alloc::vec![true; RDRAM_SIZE.div_ceil(RDRAM_PAGE)].into_boxed_slice(),
+            rdram_dirty: all_pages_dirty(),
             rsp: Rsp::new(),
             rdp: Rdp::new(),
             vi: Vi::new(),
@@ -702,6 +719,9 @@ impl Bus {
     fn mark_rdram_dirty_range(&mut self, off: usize, len: usize) {
         #[cfg(feature = "rdp-tap")]
         {
+            if len == 0 {
+                return;
+            }
             let first = off >> RDRAM_PAGE_SHIFT;
             let last = (off + len - 1) >> RDRAM_PAGE_SHIFT;
             for p in first..=last.min(self.rdram_dirty.len() - 1) {
@@ -3925,6 +3945,69 @@ mod rdram_dirty_tests {
             bus.rdram[4 * RDRAM_PAGE],
             0x5A,
             "the DMA did not actually transfer, so the marking assertion is vacuous"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "rdp-tap"))]
+mod rdram_dirty_savestate_tests {
+    use super::{Bus, RDRAM_PAGE, RDRAM_SIZE};
+    use crate::cpu::Bus as CpuBus;
+
+    /// A Bus restored from a save-state must still be able to take a store.
+    ///
+    /// **This is a crash, not a cosmetic gap.** `#[serde(skip)]` fills the field
+    /// from `Default`, and `Box<[bool]>::default()` is **empty** — so the first
+    /// RDRAM store after a load indexes page `off >> 12` into a zero-length slice
+    /// and panics. `rdp_tap` gets away with the same attribute only because
+    /// `Vec::default()` is empty *and pushable*; an indexed map is not.
+    ///
+    /// Caught in review of #245, not by any gate here, because nothing had
+    /// round-tripped a Bus with the feature on.
+    #[test]
+    fn a_deserialized_bus_can_still_take_a_store() {
+        let mut bus = Bus::new();
+        CpuBus::write_u8(&mut bus, 0x8000_1000, 0x11);
+        let bytes = bincode::serialize(&bus).expect("serialize");
+        let mut restored: Bus = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(
+            restored.rdram_dirty_pages().len(),
+            bus.rdram_dirty_pages().len(),
+            "the dirty map came back a different size, so the next store is a panic"
+        );
+        // The store itself is the assertion: without a `serde(default)` this
+        // panics with an out-of-bounds index.
+        CpuBus::write_u8(&mut restored, 0x8000_2000, 0x22);
+        assert!(
+            restored.rdram_dirty_pages()[2],
+            "the restored Bus did not track the store"
+        );
+    }
+
+    /// A restored Bus starts **entirely** dirty.
+    ///
+    /// Its consumer is a GPU backend that has never seen this machine's RDRAM —
+    /// loading a save-state is exactly the moment every page is new. Coming back
+    /// clean would present the previous state's framebuffer until something
+    /// happened to overwrite it.
+    #[test]
+    fn a_deserialized_bus_starts_entirely_dirty() {
+        let mut bus = Bus::new();
+        bus.clear_rdram_dirty();
+        let bytes = bincode::serialize(&bus).expect("serialize");
+        let restored: Bus = bincode::deserialize(&bytes).expect("deserialize");
+        // Length FIRST: `.all()` on an empty iterator is vacuously true, and the
+        // first version of this test passed that way against the very bug it was
+        // written for.
+        assert_eq!(
+            restored.rdram_dirty_pages().len(),
+            RDRAM_SIZE.div_ceil(RDRAM_PAGE),
+            "the dirty map came back the wrong size"
+        );
+        assert!(
+            restored.rdram_dirty_pages().iter().all(|d| *d),
+            "a restored Bus came back with clean pages the GPU has never seen"
         );
     }
 }

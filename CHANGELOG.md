@@ -67,8 +67,6 @@ All notable changes to RustyN64 are documented here. The format is based on
   preserved because they are values rather than words: `lightgrey` in a
   shields.io badge URL, and GitHub Actions' own `cancelled` run status.
 
-### Changed
-
 - **The GPU backend stages only the RDRAM pages that changed — 2.54% of a
   frame.** It used to copy and byte-swap all 8 MiB into the GPU's own RDRAM every
   frame, unconditionally, because it had no way to know what had moved. `Bus` now

@@ -319,7 +319,9 @@ impl GpuPresenter {
         self.gpu
             .with_rdram_mut(|rdram| {
                 let len = rdram.len().min(bus.rdram.len());
-                for (page, &is_dirty) in dirty.iter().enumerate() {
+                // Bounded by what is actually stageable rather than by the map's
+                // length, so a smaller RDRAM does not walk pages that cannot exist.
+                for (page, &is_dirty) in dirty.iter().take(len.div_ceil(RDRAM_PAGE)).enumerate() {
                     if !(full || is_dirty) {
                         continue;
                     }
