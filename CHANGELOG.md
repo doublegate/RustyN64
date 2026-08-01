@@ -100,10 +100,10 @@ All notable changes to RustyN64 are documented here. The format is based on
   the work-unit census below, which a request-count metric would have hidden by
   reporting both as 1.
 
-  A-B-A on `frame_bench`, run B-A-B so drift cannot be mistaken for the effect:
-  the sets do not overlap, conservative pairing **1.12%** (1.58% on means).
-  Accuracy unmoved — `n64-systemtest` Phase 1 and RSP both `0 failing`, 90
-  suite-wide.
+  Measured A-C-A-C on `frame_bench`, interleaved so drift cannot be mistaken for
+  the effect: five legs each, the sets do not overlap, conservative pairing
+  **1.32%** (1.76% on means). Accuracy unmoved — `n64-systemtest` Phase 1 and
+  RSP both `0 failing`, 90 suite-wide.
 
 - **Work-unit counters** (`work-counters`): RSP instructions executed and Bus
   accesses serviced, plus `examples/work_bench.rs` to report them per frame and

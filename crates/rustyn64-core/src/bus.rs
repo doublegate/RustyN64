@@ -2132,36 +2132,23 @@ impl CpuBus for Bus {
         }
         // The RDRAM fast path, mirroring `write_u32`'s.
         //
-        // Placed here rather than at the top of the function, and the reason is
-        // NOT that the placement is what keeps MMIO safe — it is not.
-        // `rdram_offset` returns `None` for every address outside the 8 MiB
-        // physical window, and every register block lives at `$0400_0000` and
-        // above, so hoisting this to the top would be equally correct. That was
-        // mutation-checked: moving it above the register branches breaks no
-        // test, because it breaks nothing.
+        // Safe to skip `read_u8` for this range because its RDRAM arm is a pure
+        // `self.rdram[off]` with no side effect — unlike its PI arm, which folds
+        // in `IOBUSY`. A fast path over a side-effecting read is how the
+        // `SP_SEMAPHORE` bug in this same function happened.
         //
-        // It sits here because *reaching* it means every earlier branch has
-        // already declined, which makes the change provably behavior-identical
-        // to the byte composition it replaces without depending on
-        // `rdram_offset`'s range being disjoint from every present and FUTURE
-        // register block. That is a cheap invariant to not depend on.
+        // Placed after every register branch rather than at the top. That is
+        // DEFENSIVE, not load-bearing: `rdram_offset` already returns `None`
+        // outside the 8 MiB window, so hoisting it would be equally correct
+        // today. Sitting here means the change cannot come to depend on that
+        // range staying disjoint from a future register block.
         //
-        // Safe to skip `read_u8` for this range because `read_u8`'s RDRAM arm is
-        // a pure `self.rdram[off]` with no side effect — unlike its PI arm,
-        // which folds in `IOBUSY`. A fast path over a side-effecting read is how
-        // the `SP_SEMAPHORE` bug in this same function happened.
-        //
-        // Found by the `work-counters` dispatch census (#248): a word read cost
-        // FIVE dispatches here where a word write cost one.
-        if let Some(off) = Self::rdram_offset(addr)
-            && off + 3 < self.rdram.len()
+        // Provenance and the measurement: `docs/performance.md`.
+        if let Some(word) = Self::rdram_offset(addr)
+            .and_then(|off| self.rdram.get(off..off + 4))
+            .and_then(|s| <[u8; 4]>::try_from(s).ok())
         {
-            return u32::from_be_bytes([
-                self.rdram[off],
-                self.rdram[off + 1],
-                self.rdram[off + 2],
-                self.rdram[off + 3],
-            ]);
+            return u32::from_be_bytes(word);
         }
         u32::from_be_bytes([
             self.read_u8(addr),
@@ -4035,10 +4022,13 @@ mod read_u32_fast_path_tests {
         // that made the branch exist.
         for idx in 0..=6u32 {
             let addr = Bus::SP_REGS_BASE + idx * 4;
-            let direct = bus.rsp.sp.read(idx);
-            // Read ONCE. A second `read_u32` for the second assertion would be a
-            // second access, which is exactly what the semaphore case punishes.
+            // The BUS read first, and the reference second. Either order is fine
+            // for these seven registers today, but if one ever grows a
+            // read-side-effect the reference would consume it and the thing
+            // under test would see the second read. Index 7 already works this
+            // way, which is why it is excluded rather than reordered.
             let via_bus = CpuBus::read_u32(&mut bus, addr);
+            let direct = bus.rsp.sp.read(idx);
             assert_eq!(
                 via_bus, direct,
                 "a word read of SP register {idx} was not routed to the register file"

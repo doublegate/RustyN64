@@ -2116,29 +2116,41 @@ both as 1.
 
 ### The change
 
-`read_u32` gains the symmetric fast path. Safe to skip `read_u8` for this range
-because `read_u8`'s RDRAM arm is a pure `self.rdram[off]` with no side effect —
-unlike its PI arm, which folds in `IOBUSY`. A fast path over a side-effecting
-read is how the `SP_SEMAPHORE` bug in this same function happened, and that is
-the reason the whole SP register block is handled before any byte composition.
+`read_u32` gains the symmetric fast path, as a single range lookup:
 
-### A-B-A, `frame_bench --features fast-exec,fast-scheduler`, Super Mario 64
+```rust
+Self::rdram_offset(addr)
+    .and_then(|off| self.rdram.get(off..off + 4))
+    .and_then(|s| <[u8; 4]>::try_from(s).ok())
+```
 
-Frame means, milliseconds. Run B-A-B so a monotonic drift cannot be mistaken for
-the effect:
+One bounds check rather than four, and no manual index arithmetic to reason
+about. Safe to skip `read_u8` for this range because its RDRAM arm is a pure
+`self.rdram[off]` with no side effect — unlike its PI arm, which folds in
+`IOBUSY`. A fast path over a side-effecting read is how the `SP_SEMAPHORE` bug
+in this same function happened, and that is why the whole SP register block is
+handled before any byte composition.
 
-| A — byte composition (ms) | B — fast path (ms) |
+### A-C-A-C, `frame_bench --features fast-exec,fast-scheduler`, Super Mario 64
+
+Interleaved rather than run in two blocks, so a monotonic drift over the session
+cannot be mistaken for the effect. Frame means, milliseconds:
+
+| A — byte composition (ms) | C — fast path (ms) |
 | --- | --- |
-| 64.049 | 62.753 |
-| 63.995 | 62.857 |
-| 63.826 | 63.064 |
-| — | 62.888 |
-| — | 62.989 |
-| — | 63.114 |
+| 63.826 | 62.861 |
+| 63.845 | 62.931 |
+| 64.069 | 62.672 |
+| 63.773 | 62.749 |
+| 64.040 | 62.713 |
 
-**Conservative pairing (worst B 63.114 against best A 63.826): 1.12%, 1.011x.**
-On the clean-leg means it is 1.58%. The A legs span 0.35% and the B legs 0.58%,
-and **the two sets do not overlap** — every B leg is faster than every A leg.
+**Conservative pairing (worst C 62.931 against best A 63.773): 1.32%, 1.013x.**
+On the means it is 1.76%. The A legs span 0.46% and the C legs 0.41%, and **the
+two sets do not overlap** — every C leg is faster than every A leg.
+
+An earlier form using four separate index reads measured 1.12% conservatively.
+The slice form is at least as fast and is better code; the difference between
+the two is not distinguishable from this harness's drift, and is not claimed.
 
 **Accuracy did not move**: `n64-systemtest` reports Phase 1 `0 failing` and RSP
 `0 failing`, 90 suite-wide, identical to before.
