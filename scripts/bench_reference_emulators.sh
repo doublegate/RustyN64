@@ -20,7 +20,7 @@
 #     to be worth adopting.
 #
 # WHAT DEFEATED THE ALTERNATIVES, recorded so nobody re-derives it:
-#   * **gopher64** opens a window and initialises Vulkan but never advances the
+#   * **gopher64** opens a window and initializes Vulkan but never advances the
 #     machine when launched from a non-interactive session -- 0.5 s of CPU over
 #     60 s. It has a Slint GUI and evidently wants real desktop interaction.
 #   * **ares** does emulate, but exposes no frame counter to the command line, and
@@ -39,7 +39,7 @@
 #     cycles/emulated-instruction = cycles/frame / 1_430_000
 #
 # where 1.43 M is Super Mario 64's emulated VR4300 instructions per frame, measured
-# by `examples/frame_bench.rs`. That last figure is what RustyN64 optimises against.
+# by `examples/frame_bench.rs`. That last figure is what RustyN64 optimizes against.
 #
 # TWO CAVEATS, because this comparison is cheap and therefore easy to over-read:
 #   * The scenes are not pinned to the same frame. Both emulators boot the same ROM,

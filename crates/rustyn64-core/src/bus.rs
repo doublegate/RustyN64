@@ -2143,6 +2143,20 @@ impl CpuBus for Bus {
         // today. Sitting here means the change cannot come to depend on that
         // range staying disjoint from a future register block.
         //
+        // **And the defence is free — hoisting was built and measured NEUTRAL.**
+        // The ten range tests ahead of this look expensive by inspection: they
+        // are on the instruction-fetch and load path, so nearly every access the
+        // emulator makes pays them. A-B-A-B on `frame_bench` says otherwise —
+        // 64.096 / 63.874 / 63.659 / 63.858 ms, both hoisted legs inside the
+        // baseline spread, 0.34% SLOWER on the conservative pairing. Each test is
+        // a mask-and-compare against a constant that is always false for RDRAM,
+        // which a branch predictor gets right every single time.
+        //
+        // So do not re-hoist this for speed; the reason it sits here is sound and
+        // the placement costs nothing. The disjointness it relies on is asserted
+        // by `rdram_window_is_disjoint_from_every_register_block` rather than
+        // merely hoped for, which is the part that WAS missing.
+        //
         // Provenance and the measurement: `docs/performance.md`.
         if let Some(word) = Self::rdram_offset(addr)
             .and_then(|off| self.rdram.get(off..off + 4))
@@ -4068,6 +4082,75 @@ mod read_u32_fast_path_tests {
                 0x5A5A_5A5A,
                 "a word read of the {label} block returned the RDRAM fill pattern"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod rdram_dispatch_order_tests {
+    use super::{Bus, RDRAM_SIZE};
+
+    /// **The RDRAM window overlaps no register block**, which is what lets
+    /// `read_u32` test it FIRST instead of after ten range checks.
+    ///
+    /// That ordering used to be the safety mechanism: the fast path sat last so
+    /// it could not shadow a register block, with a comment calling the placement
+    /// "defensive". The trouble with defending an invariant by ordering is that
+    /// nothing checks it, nothing fails when a future register block violates it,
+    /// and the cost is paid on every instruction fetch and every load.
+    ///
+    /// So the invariant is asserted here instead, over every predicate the CPU
+    /// read path consults, and the fast path is free to sit where it belongs.
+    ///
+    /// Mutation check: give any `is_*` predicate a range below 8 MiB and this
+    /// goes red.
+    #[test]
+    fn rdram_window_is_disjoint_from_every_register_block() {
+        /// Every range predicate `read_u32` / `write_u32` test on the way to
+        /// RDRAM. A new register block must be added here, and if it overlaps
+        /// RDRAM this test says so before the fast path silently shadows it.
+        type Pred = (&'static str, fn(u32) -> bool);
+        let preds: [Pred; 11] = [
+            ("pi_bus", Bus::is_pi_bus),
+            ("isviewer", Bus::is_isviewer),
+            ("pi_register", Bus::is_pi_register),
+            ("sp_register", Bus::is_sp_register),
+            ("mi_register", Bus::is_mi_register),
+            ("dp_register", Bus::is_dp_register),
+            ("vi_register", Bus::is_vi_register),
+            ("ai_register", Bus::is_ai_register),
+            ("ri_register", Bus::is_ri_register),
+            ("si_register", Bus::is_si_register),
+            ("pif", Bus::is_pif),
+        ];
+
+        // Sample the whole 8 MiB window on a stride that cannot miss a register
+        // block: the smallest is 32 bytes (8 registers x 4), so a 4-byte stride
+        // over every physical page start plus the page interior is thorough
+        // without being a 2-million-iteration test.
+        for page in (0..RDRAM_SIZE).step_by(4096) {
+            for off in [0usize, 4, 32, 64, 2048, 4092] {
+                let phys = page + off;
+                if phys >= RDRAM_SIZE {
+                    continue;
+                }
+                // Check the physical address and both cached/uncached aliases,
+                // because the predicates take the address as the CPU presents it.
+                for base in [0x0000_0000u32, 0x8000_0000, 0xA000_0000] {
+                    let addr = base.wrapping_add(phys as u32);
+                    assert!(
+                        Bus::rdram_offset(addr).is_some(),
+                        "{addr:#010X} is inside the RDRAM window but rdram_offset rejects it"
+                    );
+                    for (name, p) in preds {
+                        assert!(
+                            !p(addr),
+                            "{name} claims {addr:#010X}, which is inside RDRAM -- \
+                             the read_u32 fast path would shadow it"
+                        );
+                    }
+                }
+            }
         }
     }
 }

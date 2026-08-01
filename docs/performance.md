@@ -2732,3 +2732,91 @@ that away by ADR and reach ~1.53x combined.
 work can deliver, so nobody spends a month on a change whose ceiling is 1.05x
 believing it is the path to 60. If the bar moves — if 1.4x for a recompiler is
 worth it — ADR 0017 says so explicitly and the arithmetic is there to re-check.
+
+## Phase 0/1 of the competitive program: a reference number, and two refuted leads
+
+**Provenance.** Super Mario 64 (`17ce0773…`), i9-10850K, `rustc 1.96.0`,
+`--release`, `fast-exec,fast-scheduler`, tree at `1cc7dce`, load < 3.0 unless
+stated. Differential over a post-warm-up window in every case.
+
+### cen64: 36.5 FPS, cycle-accurate, no dynarec
+
+`scripts/bench_reference_emulators.sh`. cen64 runs headless and prints its own
+frame rate, so this needs no display and no assumption about what the rate is.
+
+| | FPS | cycles/frame | cycles/instruction |
+| --- | --- | --- | --- |
+| **cen64** (cycle-accurate) | **36.5** | 131 M | **92** |
+| RustyN64 accurate | 10.0 | 501 M | 350 |
+| RustyN64 `fast-exec` | 15.9 | 314 M | 218 |
+| 60 FPS on this host | 60.0 | 83 M | 58 |
+
+**3.8x, in the same accuracy class**, and cen64's figure was taken at load 6.97,
+which penalises it. This retires the standing explanation that cycle accuracy is
+what costs us 10 FPS. It is not: cen64 pays the same modeling cost and lands
+within 1.6x of 60 FPS.
+
+Other subjects were attempted and are recorded in the script header: **gopher64**
+never advances when launched non-interactively (0.5 s of CPU over 60 s),
+**ares** exposes no CLI frame counter and varied 2x in CPU draw between samples,
+**MangoHud** writes no log here, **RetroArch** segfaults under `--max-frames`.
+
+### The `fast-exec` profile, by source file
+
+`perf record -F 999 -e cycles:u -D 4000`, source-line attribution.
+
+| share | file | |
+| --- | --- | --- |
+| 18.44% | `bus.rs` | memory + MMIO |
+| 15.74% | `fastexec.rs` | the per-instruction driver |
+| 8.07% | `pipeline.rs` | still 8% with the timing model bypassed |
+| 7.77% | `uint_macros.rs` | stdlib `saturating_add` / `wrapping_add` / `bswap` |
+| 5.30% | `vu.rs` | RSP vector |
+| 5.09% | `scheduler.rs` | |
+| 4.89% | `decode.rs` | |
+| 4.72% | `su.rs` | RSP scalar |
+| 4.46% | `vi.rs` | |
+| **4.41%** | **`addr.rs`** | **all address translation** |
+| **2.78%** | **`cache.rs`** | **all cache simulation** |
+
+### Two leads this refutes, before either was built on
+
+**1. Fastmem is not the big win the plan assumed.** The plan called a page table
+"expected to be the largest single win", on the reasoning that every access pays
+a segment walk, a TLB lookup, a cache-line lookup and an MMIO match chain.
+Measured, that whole surface is `addr.rs` **4.41%** + `cache.rs` **2.78%** =
+**7.2%**, a ceiling of **1.08x** for a *perfect* page table. It is not the
+biggest item and it does not close a 3.8x gap.
+
+**2. The Bus's MMIO dispatch order costs nothing.** `read_u32` tests ten register
+ranges before reaching RDRAM — the instruction-fetch and load path, so nearly
+every access pays them. Hoisting the RDRAM check to the top was built and
+measured **A-B-A-B: 64.096 / 63.874 / 63.659 / 63.858 ms**, both hoisted legs
+inside the baseline spread, **0.34% slower** on the conservative pairing.
+Reverted. Each test is a mask-and-compare against a constant that is always false
+for RDRAM, and a branch predictor gets that right every time.
+
+The invariant the old placement was defending is now **asserted** rather than
+implied by ordering (`rdram_window_is_disjoint_from_every_register_block`,
+mutation-checked), so the comment's claim is checkable even though the ordering
+stays.
+
+**3. And a lead that dissolved on reading.** `vi.rs:208` shows **3.58%** on a line
+containing a 64-bit division, which reads as an obvious memoization target.
+`Vi::tick` early-outs above it, and a half-line elapses on about **one call in
+1,980** — so that division runs ~500 times a frame, on the order of 0.007% of it.
+The 3.58% is attribution, not the divide. Same shape as the `Latch` refutation.
+
+### What the profile actually says
+
+**It is flat.** After one attribution-suspect line at 10.4%
+(`fastexec.rs:334`, the `self.dc_wb = latch` store that ends a large inlined
+block — the `Latch` refutation's exact signature), nothing exceeds 3.6%. There is
+no hot spot to fix, which is why the last program's incremental slices kept
+returning 1-3%.
+
+What is large is **per-instruction driver overhead**: `fastexec.rs` 15.74% +
+`pipeline.rs` 8.07% + `decode.rs` 4.89% + `scheduler.rs` 5.09% = **33.8%**, all of
+it work done once per instruction that a block-oriented design does once per
+block. That, not fastmem, is where a 3.8x gap can be attacked — so the plan's
+Phase 1 and Phase 2 swap places.
