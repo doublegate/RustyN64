@@ -278,6 +278,13 @@ jobs:
       # destructors race `vkDestroyDevice` against another thread's creation.
       # Observed as an intermittent SIGSEGV, which is the kind of thing that
       # arrives as flake rather than as a failure anyone can reproduce.
+      #
+      # This is a WORKAROUND, not a fix, and it should not read as one. The race
+      # is in the driver, across threads, so no amount of lifecycle management
+      # inside `GpuPresenter` removes it — the fix is to stop having two
+      # unrelated `VkDevice`s at all, which is the device-sharing work planned
+      # for the frontend. Delete this flag when that lands, and expect the
+      # SIGSEGV back if it did not actually unify the devices.
       - run: cargo test -p rustyn64-frontend --features gpu-rdp -- --test-threads=1
       - name: Run the smoke test and report which branch it took
         run: |
