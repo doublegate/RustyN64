@@ -2103,3 +2103,83 @@ gate rather than the frame time.
 **Everything the GPU can still offer totals under about 2%.** The remaining
 89% — CPU, RSP, Bus — is where the frame actually is, and none of it is work a
 GPU can do.
+
+## The read path paid five bus dispatches where the write path paid one — 1.12%
+
+The work-unit census above pinned an asymmetry: a word read of RDRAM cost
+**five** bus dispatches (`read_u32` itself, plus four `read_u8`) while a word
+write cost **one**, because `write_u32` had an RDRAM fast path and `read_u32`
+did not.
+
+That is a lead a *request*-count metric would have hidden entirely, by reporting
+both as 1.
+
+### The change
+
+`read_u32` gains the symmetric fast path, as a single range lookup:
+
+```rust
+Self::rdram_offset(addr)
+    .and_then(|off| self.rdram.get(off..off + 4))
+    .and_then(|s| <[u8; 4]>::try_from(s).ok())
+```
+
+One bounds check rather than four, and no manual index arithmetic to reason
+about. Safe to skip `read_u8` for this range because its RDRAM arm is a pure
+`self.rdram[off]` with no side effect — unlike its PI arm, which folds in
+`IOBUSY`. A fast path over a side-effecting read is how the `SP_SEMAPHORE` bug
+in this same function happened, and that is why the whole SP register block is
+handled before any byte composition.
+
+### A-C-A-C, `frame_bench --features fast-exec,fast-scheduler`, Super Mario 64
+
+Interleaved rather than run in two blocks, so a monotonic drift over the session
+cannot be mistaken for the effect. Frame means, milliseconds:
+
+| A — byte composition (ms) | C — fast path (ms) |
+| --- | --- |
+| 63.826 | 62.861 |
+| 63.845 | 62.931 |
+| 64.069 | 62.672 |
+| 63.773 | 62.749 |
+| 64.040 | 62.713 |
+
+**Conservative pairing (worst C 62.931 against best A 63.773): 1.32%, 1.013x.**
+On the means it is 1.76%. The A legs span 0.46% and the C legs 0.41%, and **the
+two sets do not overlap** — every C leg is faster than every A leg.
+
+An earlier form using four separate index reads measured 1.12% conservatively.
+The slice form is at least as fast and is better code; the difference between
+the two is not distinguishable from this harness's drift, and is not claimed.
+
+**Accuracy did not move**: `n64-systemtest` reports Phase 1 `0 failing` and RSP
+`0 failing`, 90 suite-wide, identical to before.
+
+### What the guards do and do not cover
+
+`the_fast_path_agrees_with_byte_composition` compares the two implementations
+directly over misaligned addresses, a 4 KiB page straddle, and the last words of
+RDRAM. Mutation-checked: flipping the byte order fails it, and replacing
+`.get(off..off + 4)` with an unchecked index panics on the end-of-RDRAM cases —
+the partial-word rejection is the whole reason for the range form.
+
+**MMIO is protected twice over, and no SINGLE mutation reveals it.** That took
+three attempts to establish and is worth recording in full:
+
+| mutation | result |
+| --- | --- |
+| hoist the fast path above every register branch | passes |
+| widen `rdram_offset` to accept every address | passes |
+| **both together** | **fails** |
+
+The register branches run first **and** `rdram_offset` returns `None` outside
+the 8 MiB window. Either alone is sufficient, so breaking one leaves the other
+holding.
+
+Two corrections came out of that. The first version of the code comment and the
+test doc claimed the *placement* is what keeps MMIO safe — it is one of two
+protections, not the one under test. And an intermediate mutation that "passed"
+turned out to be **too narrow to reach any register block** (`RDRAM_SIZE * 8` is
+64 MiB; the blocks start at `$0400_0000`), which would have been recorded as
+evidence of a property that had simply not been exercised. A mutation that does
+not fire proves nothing until you have checked it could have.

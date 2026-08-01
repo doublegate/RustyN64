@@ -94,6 +94,17 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Added
 
+- **`read_u32` gains an RDRAM fast path — 1.12% of a frame.** A word read cost
+  **five** bus dispatches (itself plus four `read_u8`) where a word write cost
+  one, because `write_u32` had this fast path and `read_u32` did not. Found by
+  the work-unit census below, which a request-count metric would have hidden by
+  reporting both as 1.
+
+  Measured A-C-A-C on `frame_bench`, interleaved so drift cannot be mistaken for
+  the effect: five legs each, the sets do not overlap, conservative pairing
+  **1.32%** (1.76% on means). Accuracy unmoved — `n64-systemtest` Phase 1 and
+  RSP both `0 failing`, 90 suite-wide.
+
 - **Work-unit counters** (`work-counters`): RSP instructions executed and Bus
   accesses serviced, plus `examples/work_bench.rs` to report them per frame and
   per mode. Default-OFF — the Bus increment sits in the emulator's hottest path —
