@@ -3942,12 +3942,19 @@ mod work_counter_tests {
     /// stale.
     #[test]
     fn the_cpu_bus_dispatch_shape_is_pinned() {
-        // (label, operation, expected accesses)
+        // EVERY case below uses an RDRAM address (0x8000_1000), and the
+        // expectations are only claimed for that route.
         //
-        // `write_sized` at an 8-BYTE width is TWO accesses on purpose: it decomposes
-        // into two `write_u32`, and a `sd` genuinely is two word accesses on
-        // this bus. If that ever became 1, the leaf counting has been replaced
-        // by counting the entry point, which double-counts everything else.
+        // `write_sized` at an 8-BYTE width is TWO dispatches here because it
+        // decomposes into two `write_u32` for RDRAM. That is NOT universal: on
+        // the RCP-internal route `write_sized` takes the high word and drops the
+        // second entirely (its own comment, ~line 2247), so a `sd` to an RCP
+        // register is ONE dispatch. Pinning the RDRAM number as if it were the
+        // rule is how a scoped measurement becomes a false general claim.
+        //
+        // If the 2 ever became 1 *for RDRAM*, the leaf counting has been
+        // replaced by counting the entry point, which double-counts everything
+        // else.
         /// One operation to time, so the array type stays legible.
         type Op = fn(&mut Bus);
         let cases: [Op; 6] = [
