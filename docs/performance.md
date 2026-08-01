@@ -2334,7 +2334,7 @@ So (b) is **not** simply "delete the wait". Any implementation owes:
   must be measured rather than assumed cheaper;
 - **staging order** relative to `signal_timeline`;
 - **first-frame and overrun behavior** — what happens when frame N+1 is ready to
-  stage and frame N has not signalled.
+  stage and frame N has not signaled.
 
 **This raises A3's cost above the recommendation below**, and it is exactly the
 kind of thing otherwise discovered halfway through an implementation. It needs
