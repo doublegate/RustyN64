@@ -5,8 +5,12 @@ immutable thereafter.
 Date: 2026-08-01
 Deciders: repo owner
 Supersedes: none · Superseded by: none
-Amends: the `unsafe` policy stated in `AGENTS.md` and `docs/architecture.md`
-("`unsafe` is allowed only in the frontend and FFI"), narrowly and conditionally.
+Amends: the `unsafe` policy stated in `AGENTS.md`
+("`unsafe` is allowed only in the frontend and FFI"), narrowly and
+conditionally. **`AGENTS.md` is updated in the same change**, so the tree does
+not carry the old blanket rule alongside this exception. `docs/architecture.md`
+is *not* amended — it states no `unsafe` policy; an earlier draft of this line
+claimed it did, which a reviewer caught.
 
 ## Context
 
@@ -31,8 +35,12 @@ accumulator writeback do not vanish.
 Two cheaper things were tried first and are recorded as negative results:
 
 - **Hoisting the family's dispatch out of the lane loop**: built, verified
-  accurate, and **measured neutral**. Reverted under the standing rule.
-- **A decode cache**: sized at **0.29%** for a perfect one.
+  accurate, and **measured neutral** — `docs/performance.md`, *"The VU family
+  hoist: built, accurate, and measured NEUTRAL"*. Reverted under the standing
+  rule. Status: **measured**.
+- **A decode cache**: **0.29%** for a *perfect* one — same document, the decode
+  sizing above that section. Status: **an inferred upper bound**, not a
+  measurement of an implementation, because none was built.
 
 `core::simd` is still unstable on the pinned toolchain (exact 1.96.0, held for
 libretro build reproducibility), so a safe portable-SIMD path does not exist.
@@ -71,8 +79,11 @@ satisfied.
      deliberate weakening: `deny` can be locally overridden and `forbid` cannot.
      That is the price of the exception and it is why (1) is enforced by review
      — the compiler stops being the thing that guarantees it.
-3. **Every `unsafe` block carries a `// SAFETY:` comment** naming the invariant
-   and who guarantees it — the existing rule, not a new one.
+3. **Every `unsafe` block *or operation* carries a `// SAFETY:` comment** naming
+   the invariant and who guarantees it — the existing rule quoted in full, not a
+   new one. "Block" alone would leave an `unsafe` operation inside an `unsafe
+   fn` unexplained, which is the case most likely to arise here: intrinsics are
+   often called from a `#[target_feature]` function, and those are `unsafe fn`.
 4. **A safe scalar path remains, compiled and tested.** The intrinsics are an
    alternative implementation, never the only one. Targets without the required
    feature use the scalar path, and it stays exercised in CI rather than
@@ -97,9 +108,21 @@ four is incomplete.**
    `docs/performance.md`'s standing rules — interleaved legs, conservative
    pairing, outliers named. **A neutral or worse result is reverted**, exactly as
    the family hoist and PGO were.
-4. **A runtime or compile-time feature check with a tested fallback.** SSE2 is
-   baseline on `x86_64` but SSSE3/SSE4.1 are not, and `aarch64` is a supported
-   target. The fallback path is tested, not assumed.
+4. **A named portability matrix, all of it built and tested** — "a tested
+   fallback" was too vague to hold anyone to:
+
+   | target | what must pass |
+   | --- | --- |
+   | `x86_64`, SSE2 only | the vectorized path, since SSE2 is the baseline |
+   | `x86_64`, SSSE3/SSE4.1 present | whichever wider path is added |
+   | `aarch64` | NEON path, or the scalar fallback |
+   | `thumbv7em-none-eabihf`, `--no-default-features` | **the scalar path**, and this is the hard one |
+
+   The embedded target is the constraint that decides the design: the chip
+   stack must keep building `no_std + alloc` there, and it has no SIMD at all.
+   So the scalar path is not a courtesy fallback — it is a first-class
+   implementation that a supported target depends on, which is why gate 1 is
+   equivalence between the two rather than conformance of the fast one.
 
    Note the structural cost, because it shapes the code rather than decorating
    it: runtime dispatch means `#[target_feature]` functions, which are
