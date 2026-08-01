@@ -138,19 +138,39 @@ mod imp {
     /// presentation are separate concerns, and together they exceed the line
     /// limit the lint gate enforces.
     fn report(path: &str, warm: usize, gpu_frames: u64, counted: u64, mean_ms: f64) {
+        // ONE snapshot of the counters, taken before anything is printed, and
+        // ONE divisor for every row. Reading the globals per row would let the
+        // table disagree with itself — `stage` divided by one frame count and
+        // `copy` by another — which is a table nobody could debug from. The
+        // divisor is `counted`, the value the caller already sampled and
+        // asserted non-zero, so the rows are also consistent with the header.
+        assert!(
+            counted > 0,
+            "report called with no complete frames; every row would be NaN"
+        );
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "ns and frame counts are far below 2^53"
+        )]
+        let divisor = counted as f64;
+        let phase_ns: [u64; Phase::COUNT] = Phase::ALL.map(|p| phase_totals(p).0);
+        // The whole of `present`, measured independently of the four phases — so
+        // the residual below is a real check on the split rather than an assertion
+        // that it is complete.
+        let whole_ns = present_total().0;
+
         println!("rom={path}");
         println!("frames={FRAMES} warm={warm} gpu_frames={gpu_frames} counted={counted}");
         println!("frame mean = {mean_ms:.3} ms\n");
         println!("{:<10} {:>10} {:>10}", "phase", "ms/frame", "% of frame");
 
         let mut summed_ms = 0.0;
-        for phase in Phase::ALL {
-            let (ns, frames) = phase_totals(phase);
+        for (phase, &ns) in Phase::ALL.into_iter().zip(&phase_ns) {
             #[allow(
                 clippy::cast_precision_loss,
                 reason = "ns and frame counts are far below 2^53"
             )]
-            let ms = ns as f64 / NANOS_PER_MS / frames as f64;
+            let ms = ns as f64 / NANOS_PER_MS / divisor;
             summed_ms += ms;
             println!(
                 "{:<10} {:>10.4} {:>9.3}%",
@@ -159,15 +179,11 @@ mod imp {
                 ms / mean_ms * 100.0
             );
         }
-        // The whole of `present`, measured independently of the four phases — so
-        // the residual below is a real check on the split rather than an assertion
-        // that it is complete.
-        let (whole_ns, whole_frames) = present_total();
         #[allow(
             clippy::cast_precision_loss,
             reason = "ns and frame counts are far below 2^53"
         )]
-        let present_ms = whole_ns as f64 / NANOS_PER_MS / whole_frames as f64;
+        let present_ms = whole_ns as f64 / NANOS_PER_MS / divisor;
 
         println!(
             "{:<10} {:>10.4} {:>9.3}%   <- the four phases",
