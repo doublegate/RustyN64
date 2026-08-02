@@ -666,13 +666,21 @@ fn curate_fuzz_candidates() {
 /// for reasons that are not the thing it is named after, which is worse than not
 /// running: a red test nobody can act on gets ignored by hand instead.
 ///
-/// Mutation check once live: remove either `write_coverage` call (the no-Z span
-/// or `depth_span`) and it must go red. Both were needed — fixing only the first
-/// left 74.91% of a real frame's pixels at exactly `cvg4`.
+/// **Mutation check, and it covers ONE of the two write sites.** Removing the
+/// no-Z span's `write_coverage` turns this red — verified. It cannot check
+/// `depth_span`'s, because this vector's triangle carries no Z block and never
+/// reaches that path; saying otherwise would claim a check that does not run.
+/// That half is witnessed instead by the Super Mario 64 coverage histogram: with
+/// only the no-Z span fixed, **74.91%** of pixels sat at exactly `cvg4`; with
+/// both, `cvg7` reaches **70.95%** (ledger R-24).
+///
+/// A Z-buffered companion vector would close that gap and is worth adding.
 #[test]
-#[ignore = "blocked on findings 1b and 2 recorded above: coverage reaches only \
-            28 of 64 drawn pixels, and the plane's power-on state differs"]
 fn aa_triangle_coverage_matches_angrylion_in_the_hidden_plane() {
+    /// Pixels this vector's triangle covers. Pinned rather than derived so the
+    /// comparison set cannot silently shrink to nothing.
+    const DRAWN: usize = 28;
+
     let bytes = include_bytes!("vectors/aa_tri_coverage_16.rvec");
     let v = parse(bytes);
     let golden_hidden = v
@@ -687,18 +695,32 @@ fn aa_triangle_coverage_matches_angrylion_in_the_hidden_plane() {
     // The plane is the point. Compare per pixel so a failure names the pixel
     // rather than reporting that two 64-byte blobs differ.
     assert_eq!(hidden.len(), golden_hidden.len(), "hidden plane length");
+    let mut drawn = 0usize;
     let mut wrong = Vec::new();
     for (i, (got, want)) in hidden.iter().zip(golden_hidden).enumerate() {
+        // "Drawn" == a non-zero pixel. Sound for THIS vector because its prim
+        // color is white; it would NOT be for one rendering black, which is
+        // exactly what an earlier revision of this vector did — and why the count
+        // below is asserted.
+        let px = u16::from_be_bytes([v.golden_fb[i * 2], v.golden_fb[i * 2 + 1]]);
+        if px == 0 {
+            continue;
+        }
+        drawn += 1;
         if got != want {
             wrong.push((i % v.width as usize, i / v.width as usize, *got, *want));
         }
     }
+    assert_eq!(
+        drawn, DRAWN,
+        "the vector drew {drawn} pixels, not {DRAWN}: the comparison set moved, so \
+         this test is no longer checking what it was pinned against"
+    );
     assert!(
         wrong.is_empty(),
-        "hidden coverage plane diverged from Angrylion at {} of {} pixels; \
+        "hidden coverage plane diverged from Angrylion at {} of {drawn} DRAWN pixels; \
          first few (x, y, got, want): {:?}",
         wrong.len(),
-        hidden.len(),
         &wrong[..wrong.len().min(6)]
     );
 
