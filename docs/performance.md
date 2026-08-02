@@ -3262,6 +3262,25 @@ That is the design the 1.156x is behind. It is a real scheduler change with real
 exactness obligations, not the hoist tried here — and the hoist's neutrality is
 the evidence that the shortcut does not exist.
 
+### The per-boundary cost cannot be bisected by removal
+
+The obvious next step — delete the interrupt sampling from the idle path and see
+what the frame costs — is **vacuous here, and it fails loudly rather than
+quietly**: the idle loop is *exited* by the interrupt, so with the check gone the
+machine never leaves it and the VI never comes up (`frame_bench` asserts on
+exactly this and did). The check is load-bearing, not incidental.
+
+That leaves doubling, and doubling is not free here either: `sample_interrupt_lines`
+calls `Cop0::timer_edge`, which is **edge-detecting and carries internal state**,
+so calling it twice per boundary consumes the edge rather than measuring it. A
+sound doubling probe has to duplicate `set_now` and `interrupt_pending` — the
+pure reads — and leave the latching half alone, which measures only part of what
+a batch would remove.
+
+**So the 13.5% is currently a total, not a decomposition**, and the batch design
+below should be built against the total with its own A-B-A rather than against a
+per-component estimate that does not exist yet.
+
 ### And the ceiling should be re-derived before it is attempted
 
 1.156x was measured against a 31.76 ms frame. Anything landed between now and
