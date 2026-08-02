@@ -2888,3 +2888,38 @@ The predicate is pinned to the real early-outs by
 `census_predicate_agrees_with_the_real_early_outs`, including that it is
 **read-only** — `tick_without_bus` decrements the stall it tests, and a census
 that did the same would change what it measures.
+
+### The event scheduler, built and reverted — and why its ceiling was wrong
+
+Guarding `rsp_tick` on `!halted()` is the whole RSP half of an event-driven
+scheduler, and the occupancy census above sized it at **1.096x**. Built,
+A-B-A-B:
+
+| leg | frame |
+| --- | --- |
+| A always-step | 56.739 ms |
+| B skip | 56.589 ms |
+| A always-step | 56.652 ms |
+| B skip | 56.450 ms |
+
+**0.11% on the conservative pairing — neutral, and reverted.**
+
+**The ceiling arithmetic was wrong, and the error generalizes:
+`idle-fraction x profile-share` overstates a skip whenever the idle path is
+already cheap.** `su::su_step` early-returns on its halt check before doing
+anything, so the 78.11% of steps where the RSP is halted already cost almost
+nothing; the 11.25% profile share is spent almost entirely on the 21.89% of steps
+where it actually runs. The census answered *how often* the RSP is idle. Sizing a
+skip needs *how much the idle steps cost*, which is a different measurement — and
+it was the one missing.
+
+That is the third ceiling this program has produced that did not survive being
+built (after fastmem's 7.2% and the block cache's decode share), and all three
+failed the same way: a share was multiplied by something it is not proportional
+to.
+
+**One real defect came out of it.** `rcp_steps` was incremented at the tail of
+`Bus::rsp_tick`, so "RCP steps" meant "RSP ticks" — invisible while the RSP was
+stepped unconditionally, and immediately wrong under the skip, which stopped the
+clock with the chip. The charge now lives in `System::step_rcp` and is pinned by
+`an_rcp_step_is_charged_even_when_every_chip_is_idle`.

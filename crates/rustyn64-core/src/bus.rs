@@ -631,6 +631,17 @@ impl Bus {
             // `mtc0 DP_END` submits a command list to the RDP.
             self.rdp.dpc_write(u32::from(off), val);
         }
+    }
+
+    /// Charge one **RCP step** to the step counter.
+    ///
+    /// Called from `System::step_rcp`, not from `rsp_tick`. It used to live at the
+    /// tail of `rsp_tick`, which made "RCP steps" mean "RSP ticks" — invisible
+    /// while the RSP was stepped unconditionally, and immediately wrong once the
+    /// halted-RSP skip landed: `three_cpu_and_two_rcp_steps_per_six_ticks` began
+    /// failing because the counter tracked a chip rather than the clock. The
+    /// counter now measures what its name says.
+    pub(crate) const fn charge_rcp_step(&mut self) {
         self.rcp_steps = self.rcp_steps.wrapping_add(1);
     }
 

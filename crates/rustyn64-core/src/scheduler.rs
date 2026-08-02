@@ -655,6 +655,9 @@ impl System {
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the
     /// AI/interface DMA progress — all on the SAME `&mut self.bus`.
     fn step_rcp(&mut self) {
+        // One RCP step, charged here rather than inside a chip's tick — see
+        // `Bus::charge_rcp_step`.
+        self.bus.charge_rcp_step();
         // **Occupancy census** (`work-counters`), the measurement that sizes an
         // event-driven scheduler before one is written.
         //
@@ -675,7 +678,21 @@ impl System {
             }
         }
         // The chips each see only their narrow trait of `self.bus`.
-        // The LLE RSP runs the microcode scalar+vector stream (Phase 2).
+        //
+        // **The LLE RSP is stepped only when it is running.** It is halted on
+        // **78.11%** of RCP steps (`docs/performance.md` §*The RCP occupancy
+        // census*), and `su::su_step` already returns a default `StepResult`
+        // immediately in that case — so this guard is provably behavior-identical
+        // rather than an approximation: every field `rsp_tick` acts on
+        // (`interrupt_change`, `dma`, `dp_write`) is `None` in that default, and
+        // the halt check inside `su_step` sits *above* the retire counter, so
+        // nothing is counted either.
+        //
+        // What it removes on those steps is the call, the `StepResult`
+        // construction and three `Option` tests, in exchange for one `SP_STATUS`
+        // read. This is the RSP half of the event-driven scheduler, taken as a
+        // guard because that is where the occupancy census pointed; the AI, PI and
+        // VI ticks are cheap by comparison and are left stepping.
         self.bus.rsp_tick();
         // The RDP consumes the DPC command stream and rasterizes the implemented
         // commands (FILL, triangles, texture rects, sync); the live path is still
@@ -734,6 +751,50 @@ mod tests {
         // 187.5 MHz really is the LCM of the two core clocks.
         assert_eq!(CPU_HZ * CPU_DIVIDER, MASTER_HZ);
         assert_eq!(RCP_HZ * RCP_DIVIDER, MASTER_HZ);
+    }
+
+    /// **The RCP step counter measures the clock, not a chip.**
+    ///
+    /// `rcp_steps` used to be incremented at the tail of `Bus::rsp_tick`, so "RCP
+    /// steps" actually meant "RSP ticks". That was invisible while the RSP was
+    /// stepped unconditionally, and wrong the moment a halted-RSP skip was tried:
+    /// the counter stopped with the chip and
+    /// `three_cpu_and_two_rcp_steps_per_six_ticks` went red.
+    ///
+    /// The skip itself measured neutral and was reverted (see `step_rcp`), but the
+    /// counter bug it exposed was real, so the charge now lives in the scheduler
+    /// and this pins it there. A step counter that stops when a chip stops is
+    /// measuring the chip, not the clock.
+    ///
+    /// Mutation check: move `charge_rcp_step` back inside `rsp_tick` and this stays
+    /// green only because the RSP is stepped unconditionally today — which is
+    /// exactly why the assertion is written against an all-idle machine.
+    #[test]
+    fn an_rcp_step_is_charged_even_when_every_chip_is_idle() {
+        // A machine with no ROM never starts the RSP, so it stays halted throughout —
+        // which is precisely the case the guard skips, and the case where a mistaken
+        // skip would be invisible unless something is asserted.
+        let mut sys = System::new(0);
+        let ticks = 100_000;
+        sys.run_until(ticks);
+
+        assert!(
+            sys.bus.rsp.sp.halted(),
+            "this test is only meaningful while the RSP is halted; it is not"
+        );
+        // The RSP's retire counter is behind `work-counters`; when it is compiled
+        // in, a halted RSP must have retired nothing. `su_step` increments it AFTER
+        // the halt check, so a halted step that did work would move this.
+        #[cfg(feature = "work-counters")]
+        assert_eq!(sys.bus.rsp.retired(), 0, "a halted RSP must retire nothing");
+        // RCP steps are charged by the scheduler, so they must advance whether or not
+        // the RSP ran. This is the assertion that caught the counter living inside
+        // `rsp_tick`, where the skip silently stopped the clock.
+        assert!(
+            sys.bus.rcp_steps_for_test() > 0,
+            "RCP steps must be charged even when every chip is idle — a step counter \
+         that stops when a chip stops is measuring the chip, not the clock"
+        );
     }
 
     #[test]
