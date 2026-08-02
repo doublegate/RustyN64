@@ -2820,3 +2820,36 @@ What is large is **per-instruction driver overhead**: `fastexec.rs` 15.74% +
 it work done once per instruction that a block-oriented design does once per
 block. That, not fastmem, is where a 3.8x gap can be attacked — so the plan's
 Phase 1 and Phase 2 swap places.
+
+### The VI coverage histogram, and why the VI optimization was NOT taken
+
+This document previously recorded an outstanding measurement, in the
+`vi_divot` ruled-out entry: *"Settling it needs a coverage histogram over a real
+frame."* Taken 2026-08-01, Super Mario 64, **27,150,246 filtered pixels**:
+
+| value | share |
+| --- | --- |
+| `cvg == 0` | 22.45% |
+| `cvg == 4` | 77.55% |
+| every other value | **0.00%** |
+
+The hypothesis that entry called untested is confirmed, and more strongly than it
+was stated: **`cvg == 7` is not rare, it never occurs.** So every filtered pixel
+takes the AA-edge filter and the 8-tap de-dither path is unreachable — even
+though `dither_filter` is enabled on 100% of pixels.
+
+**That reads as a large VI win, and it was not taken.** Inside the AA-edge filter
+the six neighbor taps are kept only `if nb_cvg == 7`, so all six RDRAM reads are
+discarded on every pixel — six of seven reads provably dead, ~163 M wasted reads
+across the benchmark.
+
+They are dead because of **a defect, not a property of the workload**. Only two
+coverage values appear and both have the low two bits clear, which is the exact
+fingerprint of ledger **R-24**: the RDP never writes the color buffer's hidden
+9th-bit plane, so the low two bits of every coverage value are dropped. Skipping
+the reads would have made the emulator faster at producing a picture with its
+anti-aliasing disabled, and cemented the bug behind a performance argument.
+
+**The general rule this is an instance of:** when a hot path turns out to be
+doing provably useless work, ask why the work is useless before removing it. Dead
+work is sometimes a bug wearing an optimization's clothes.
