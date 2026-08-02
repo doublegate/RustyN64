@@ -2707,7 +2707,9 @@ a range too. Against the `fast-exec` frame of 65.3 ms / 15.31 FPS:
 | all small wins, taken perfectly | 58.4–58.2 ms | **17.1–17.2** |
 | gain | −6.9 to −7.1 ms | **+1.8 to +1.9 FPS** |
 
-**+1.8 FPS, and 60 FPS is still 3.5x away.** Every figure above is a ceiling
+**+1.8 FPS, and 60 FPS is still 3.5x away.** — *re-derived: the same bundle is
+worth +3.6 FPS against today's frame, because these shares were of a 65.3 ms
+frame that has since halved. See §*The declined backlog, re-derived*.* Every figure above is a ceiling
 assuming the work is removed *for free*; real implementations pay dispatch,
 synchronization and bookkeeping the ceilings do not charge for. B2 additionally
 costs an `unsafe` exception in a chip crate, A3 needs double-buffered RDRAM and
@@ -2723,6 +2725,13 @@ was declined individually rather than as a bundle. The bundle is not worth more
 than its parts — that is what the disjointness table is for.
 
 ### The honest position on 60 FPS
+
+> **SUPERSEDED, 2026-08-02.** This section reasoned entirely from profile shares
+> of the existing execution path, and what closed most of the gap was not a
+> faster version of any bucket in it — it was that ~90% of the instructions did
+> not need to run at all. Ocarina of Time is at **52.5 FPS** today. Kept as the
+> record of the reasoning; do not cite it as a current claim. See §*The declined
+> backlog, re-derived against a frame half the size*.
 
 **It is not reachable from here.** 60 FPS needs 16.67 ms against the 65.3 ms
 `fast-exec` frame — a **3.92x** gap — and the two largest levers are now both declined on their own
@@ -3110,3 +3119,52 @@ The skip is per-iteration — it still returns to the scheduler every two idle
 instructions and still pays `sample_interrupt_lines` there. Jumping straight to
 the next scheduled event would remove that too, and belongs with the event-driven
 scheduler.
+
+## The declined backlog, re-derived against a frame half the size
+
+`§Where the optimization program ended` priced the entire declined backlog at
+**~1.12x / +1.8 FPS** and used that to argue each item was not worth taking. That
+arithmetic was correct and it is now stale, for a reason worth stating plainly:
+**every one of those figures was a share of a 65.3 ms frame.** The idle-loop skip,
+the fast commit and the VI coverage memo removed CPU and VI cost, not RDP, GPU or
+RSP cost — so the backlog's *absolute* cost is unchanged while the frame it is
+measured against has halved. Its share roughly doubled.
+
+| item | as measured | absolute | share of a 31.6 ms frame |
+| --- | --- | --- | --- |
+| **A3** async RDP | 1.7% of 65.3 ms | 1.11 ms | 3.5% |
+| **A4** GPU as rasterizer | 1.23% of 65.3 ms | 0.80 ms | 2.5% |
+| **B2** VU vectorization | 2.6–2.7% of 50.8 ms | 1.36 ms | 4.3% |
+| **all three, taken perfectly** | | **3.27 ms** | **10.3% -> 1.115x** |
+
+The multiplier barely moves; **the FPS it buys does**, because FPS is not linear
+in frame time. Against Super Mario 64's 31.6 ms that is 31.6 -> 28.4 ms, **31.6 ->
+35.2 FPS (+3.6)** — double the +1.8 the same bundle was worth before. Against
+Ocarina of Time's 19.06 ms it is 19.06 -> 17.1 ms, **52.5 -> 58.6 FPS**, which
+puts a real title within a percent of the target.
+
+**None of the three is free, and none of them is a code change alone.**
+
+- **A3** needs double-buffered RDRAM and its own ADR.
+- **A4** changes what lands in RDRAM, so it reopens the determinism argument in
+  ADR 0015 — a maintainer decision, not an implementation one.
+- **B2** costs the `unsafe` exception ADR 0016 wrote down and recommended
+  against, and its ceiling was re-measured *downward* (§*`multiply_lane` measures
+  2.6–2.7%*).
+
+**And the rest of the pile is still worth nothing.** The VU family hoist
+(neutral), `-C target-cpu=native` (neutral), PGO (4.96% slower), the decode cache
+(1.0% slower), the `Latch` split (premise refuted), the RSP idle-step skip (0.11%,
+built and reverted), the MMIO read ordering (0.34% slower). Taking those would be
+a regression, not a small win — the distinction the original section drew, and it
+still holds.
+
+### The 60 FPS position has changed, and the old one should not be quoted
+
+`§The honest position on 60 FPS` said 60 FPS "is not reachable from here",
+against a 3.92x gap and two declined levers. That conclusion is **superseded**: it
+was reasoned entirely from profile shares of the existing execution path, and the
+thing that closed most of the gap was not a faster version of any bucket in that
+profile — it was noticing that ~90% of the instructions did not need to run at
+all. Ocarina of Time is at 52.5 FPS today. The section stands as a record of the
+reasoning; it should not be cited as a current claim.
