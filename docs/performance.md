@@ -2275,6 +2275,16 @@ the real figure will be lower because the dispatch, the register reads and the
 accumulator writeback do not vanish. **Any SIMD work here must be measured
 against that ceiling, not against the 8.5%.**
 
+> **SUPERSEDED — the 5.3% is wrong, and this paragraph is the reason it needed
+> checking.** `62% x 8.5%` multiplies an operation-count share by a time share,
+> which assumes `multiply_lane` costs what the average `vu.rs` function costs.
+> Measured by doubling, it is **2.6–2.7% of a frame** — a ~1.028x ceiling, half
+> this figure — because the multiply/accumulate family is among the *cheapest*
+> things the VU does while the transcendental and permute families it was
+> averaged against are the dearest. See §*`multiply_lane` measures 2.6–2.7% of a
+> frame*. The instruction in bold above stands; it was followed, and the answer
+> changed.
+
 **The figures above are a delta over the timed window.** The first version
 reported the raw cumulative counters, folding ~36 warm-up frames into a table
 captioned "120 frames" — caught in review. The effect turned out to be 0.06%
@@ -2968,3 +2978,69 @@ still valid — its reference walk uses `ViSampler::new(cfg, 0, -1)`, and
 property now rests entirely on the `bypass.span == 0` assertion rather than on
 which function is called. Without that assertion the test would have quietly
 become a comparison of the memo against itself.
+
+## `multiply_lane` measures 2.6–2.7% of a frame, not 5.3% — and the first probe was invalid
+
+The VU census above ended with an instruction: *"Any SIMD work here must be
+measured against that ceiling, not against the 8.5%."* The ceiling it set —
+**5.3%, 1.056x** — was itself `62% x 8.5%`: an **operation-count** share
+multiplied by a **time** share. That is the same shape as the three ceilings this
+program produced that did not survive being built, so it was re-derived by
+measurement.
+
+### The obvious probe was contaminated, and the counters caught it
+
+Replacing `multiply_lane`'s 16-arm dispatch and all its arithmetic with one XOR
+measured **50.25 -> 40.03 ms, a 1.255x speedup** — `multiply_lane` apparently
+20.4% of a frame, four times the census figure.
+
+It is not. `work-counters` shows why:
+
+| | real | elided |
+| --- | --- | --- |
+| CPU instructions / frame | 1,443,787 | 1,443,787 |
+| **RSP instructions / frame** | **294,983** | **121,715** |
+| COP2 computational ops (120 frames) | 14,569,003 | 4,462,734 |
+
+The garbage results changed the microcode's own control flow: the RSP executed
+**59% fewer instructions**. Most of that 10.3 ms was *avoided RSP work*, not
+`multiply_lane`'s cost. The CPU counter was unmoved — 80 instructions out of
+173 M — which is exactly why checking only `retired` would have passed this
+through. **An elision probe is only valid where the elided value cannot steer
+the machine, and a VU result steers the RSP.**
+
+### Doubling instead, because it cannot change control flow
+
+The inverted method from ruled-out #6: **make the work bigger and take the
+delta.** `multiply_lane` was split into a `#[inline(never)] multiply_lane_body`
+called once (A) or twice (B), with `vu_acc[lane]` saved and restored around the
+discarded first pass so the final machine state is bit-identical. Both legs carry
+the `inline(never)`, so the differential is one body call and nothing else.
+
+| leg | mean frame | retired |
+| --- | --- | --- |
+| A 1x | 50.814 ms | 173254496 |
+| B 2x | 52.141 ms | 173254496 |
+| A 1x | 50.743 ms | 173254496 |
+| B 2x | 52.205 ms | 173254496 |
+
+**`retired` is identical in all four legs** — the workload did not move.
+
+**One `multiply_lane` pass is 1.33–1.39 ms of a ~50.8 ms frame: 2.6–2.7%.** At
+598,507 calls per frame (74,813 multiply-family ops x 8 lanes) that is ~2.3 ns,
+about 11 host cycles for a call, a 16-arm match and a 64-bit multiply — a
+plausible figure, which the 20.4% was not.
+
+### Why the arithmetic was wrong, and it is not the usual reason
+
+The census assumed `multiply_lane` costs what the average `vu.rs` function costs,
+because it multiplied an op-count share by a time share. It does not: `VMADN`,
+`VMADH` and `VMUDL` are among the *cheapest* things the VU does, while the
+transcendental, permute and compare families it was averaged against are the
+expensive ones. **61.6% of the operations are well under 61.6% of the time.**
+
+So the ceiling on a perfect vectorization of `multiply_lane` is about **1.028x**,
+not 1.056x — half what ADR 0016 declined it at, against a 1.5x bar, and with the
+cost unchanged: it drops `crates/rustyn64-rsp` from `forbid(unsafe_code)` to
+`deny`. **B2 stays declined, now on a measurement rather than on a product of two
+shares.** The census's 5.3% should be read as superseded by this section.
