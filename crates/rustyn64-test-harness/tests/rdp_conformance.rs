@@ -640,11 +640,21 @@ fn curate_fuzz_candidates() {
 /// `replay_with_hidden`) is what took the work, and the two gaps below are each
 /// worth their own change rather than being smuggled into this one.
 ///
-/// 1. **We render nothing for this vector.** Our framebuffer is all zeros where
-///    Angrylion's is not, so the triangle is not drawing at all under 1-cycle +
-///    `aa_enable`. Every other committed vector renders in FILL mode, so this is
-///    the first to exercise that path — the divergence is real and unrelated to
-///    coverage.
+/// 1. ~~We render nothing for this vector.~~ **FIXED.** It was ledger R-21's
+///    still-open half: a *flat* triangle took the fill register whatever the
+///    cycle type, because `has_color` keyed off the presence of a shade/texture
+///    block rather than the cycle type. The framebuffer now matches the oracle.
+///
+///    The first version of this vector could not have shown that, and the reason
+///    is worth keeping: its combine emitted black, so "drawn black" and "not
+///    drawn at all" were the same framebuffer and the comparison was **vacuous**.
+///    It now selects the prim color (adder input 3) and renders white.
+///
+/// 1b. **What remains: we write coverage for 28 of 64 pixels, the oracle for 64.**
+///    Every divergence is `got 0, want 3` on a pixel we demonstrably *drew* (the
+///    framebuffer matches), so the write-back is not reaching the interior. That
+///    is a third defect, distinct from R-24's missing store and from R-21's path
+///    selection, and it needs its own investigation rather than a widened test.
 /// 2. **The hidden plane's power-on state differs.** Angrylion clears it to `3`
 ///    (`HB_CLEAN` in its `rdram.c`), we power on at `0`. So untouched pixels can
 ///    never match, whatever the renderer does, and a comparison of raw planes is
@@ -660,8 +670,8 @@ fn curate_fuzz_candidates() {
 /// or `depth_span`) and it must go red. Both were needed — fixing only the first
 /// left 74.91% of a real frame's pixels at exactly `cvg4`.
 #[test]
-#[ignore = "blocked on two findings recorded above: we render nothing for an AA \
-            1-cycle triangle, and the hidden plane's power-on state differs"]
+#[ignore = "blocked on findings 1b and 2 recorded above: coverage reaches only \
+            28 of 64 drawn pixels, and the plane's power-on state differs"]
 fn aa_triangle_coverage_matches_angrylion_in_the_hidden_plane() {
     let bytes = include_bytes!("vectors/aa_tri_coverage_16.rvec");
     let v = parse(bytes);

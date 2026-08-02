@@ -2447,7 +2447,30 @@ impl Rdp {
         // Texture block (bit 57): the combiner samples tile 0 at the interpolated
         // (non-perspective) coordinate. The perspective divide is a later slice.
         let tex_setup = Self::decode_texture(hi, cmd_base, bus);
-        let has_color = shade_setup.is_some() || tex_setup.is_some();
+        // **The CYCLE TYPE decides the path, not the presence of a shade block**
+        // (ledger R-21's still-open half, now closed). A *flat* triangle — one
+        // with no shade and no texture coefficients — used to fall through to
+        // `fill_pixel` whatever the cycle type, so a 1-cycle flat triangle
+        // rasterized the `SET_FILL_COLOR` register instead of running the
+        // combiner. That is the identical defect `fill_rectangle` had, resolved
+        // there against the oracle (vector `fill_rect_1cycle_16`): a 1-cycle
+        // rectangle renders the *prim* color, never the fill register.
+        //
+        // The rule is the same for both primitives because it is a property of
+        // the cycle type rather than of the primitive: FILL and COPY write the
+        // fill register, 1-/2-cycle run the combiner — which for a flat triangle
+        // sees only its register inputs (prim/env/…), exactly as for a flat
+        // rectangle.
+        //
+        // Found by `aa_tri_coverage_16`, the first committed vector to render a
+        // triangle in 1-cycle mode; every earlier one is FILL, which is why R-21
+        // recorded this half as unexercised.
+        let has_color = shade_setup.is_some()
+            || tex_setup.is_some()
+            || !matches!(
+                self.other_modes.cycle_type,
+                CYCLE_TYPE_COPY | CYCLE_TYPE_FILL
+            );
         let y_base = yh >> 2;
 
         // 1-/2-cycle mode rasterizes with sub-pixel coverage; FILL/COPY mode
@@ -5805,6 +5828,13 @@ mod tests {
         rdp.color_image_width = 8;
         rdp.color_image = 0x200;
         rdp.fill_color = 0xAABB_CCDD;
+        // FILL mode, explicitly. This test is named for FILL-mode behavior
+        // and asserts the fill register lands in the framebuffer, but it used
+        // to leave `cycle_type` at its 1-cycle default and pass anyway --
+        // because a flat triangle took the fill register whatever the mode
+        // (ledger R-21's triangle half). It was testing the bug. Same fallout
+        // R-21 recorded for the five `fill_rectangle_*` tests.
+        rdp.other_modes.cycle_type = CYCLE_TYPE_FILL;
         rdp.scissor_lrx = 8 << 2;
         rdp.scissor_lry = 8 << 2;
         // word0: opcode 0x08, flip/lmajor (bit 55), yl=16, ym=16, yh=0.
@@ -5854,6 +5884,10 @@ mod tests {
         rdp.color_image_width = 8;
         rdp.color_image = 0x200;
         rdp.fill_color = 0xAABB_CCDD;
+        // FILL mode, explicitly — see the sibling test above: this asserts the
+        // fill register reaches the framebuffer and used to pass without ever
+        // selecting the mode that makes that true (ledger R-21's triangle half).
+        rdp.other_modes.cycle_type = CYCLE_TYPE_FILL;
         rdp.scissor_lrx = 3 << 2; // right edge at x=3 -> clips x>=4
         rdp.scissor_lry = 8 << 2; // all rows kept
         rdp.dispatch(0x08, 0x0880_0010, 0x0010_0000, 0x300, &mut bus);
