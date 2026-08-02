@@ -3168,3 +3168,50 @@ thing that closed most of the gap was not a faster version of any bucket in that
 profile — it was noticing that ~90% of the instructions did not need to run at
 all. Ocarina of Time is at 52.5 FPS today. The section stands as a record of the
 reasoning; it should not be cited as a current claim.
+
+## The idle skip's remaining per-iteration overhead is 13.5% — larger than A3 and B2 together
+
+The idle-loop skip is per-iteration: it returns to the scheduler every two idle
+instructions and pays `count_ticks`, `set_now`, `sample_interrupt_lines` (a bus
+IRQ poll), the NMI check and the RCP catch-up loop's setup each time. Sizing what
+a multi-iteration skip could remove, **by measurement rather than by adding those
+up**:
+
+Charging **64 `PCycle`s per skip instead of 2** runs emulated time fast through
+the idle loop, so the number of CPU-side idle iterations drops 32x while the
+frame's total emulated ticks — and therefore the total RCP step count — are
+unchanged. The delta is 31/32 of the per-iteration overhead. (The probe is not
+correct; `retired` falls to 20.5 M, which is the point.)
+
+| leg | mean frame |
+| --- | --- |
+| A per-iteration (x1) | 31.674 ms |
+| B 32x fewer iterations | 27.625 ms |
+| A per-iteration (x1) | 31.841 ms |
+| B 32x fewer iterations | 27.558 ms |
+
+**4.17 ms, so the full overhead is ~4.30 ms of a 31.76 ms frame: 13.5%, a
+1.156x ceiling.** Super Mario 64 would go 31.6 -> 36.3 FPS.
+
+### What that does to the priority order
+
+| item | ceiling on today's frame | cost |
+| --- | --- | --- |
+| **multi-iteration idle skip** | **13.5% -> 1.156x** | none — ADR 0013's existing mode |
+| B2 VU vectorization (ADR 0020) | 4.3% -> 1.045x | `forbid(unsafe_code)` -> `deny` |
+| A3 async RDP (ADR 0018) | 3.5% -> 1.036x | one frame of latency, off by default |
+| A4 GPU rasterizer (ADR 0019) | 2.5% | blocked — an accuracy regression today |
+
+**The free item is larger than the two paid ones combined.** It should be built
+first, and both paid items should be re-sized against the frame it leaves behind
+rather than against this one — the same error the backlog re-derivation above
+corrects, and it would be careless to repeat it immediately.
+
+### The constraint any implementation has to respect
+
+An idle pair is 2 `PCycle`s = 4 master ticks; the RCP steps every 3. So the RCP
+steps **more often than the CPU idles** (~1.33 per pair), and no amount of
+batching removes an RCP step. A multi-iteration skip therefore cannot simply jump
+to the next event: it must still walk the RCP edges. What it can remove is the
+CPU-side work between them — which is exactly the 13.5% measured here, and is
+why the ceiling is 1.156x rather than the whole idle path.
