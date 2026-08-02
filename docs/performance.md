@@ -3215,3 +3215,55 @@ batching removes an RCP step. A multi-iteration skip therefore cannot simply jum
 to the next event: it must still walk the RCP edges. What it can remove is the
 CPU-side work between them — which is exactly the 13.5% measured here, and is
 why the ceiling is 1.156x rather than the whole idle path.
+
+## The easy multi-iteration idle skip is NEUTRAL — the 13.5% is in the boundary check
+
+The section above sized the idle skip's remaining per-iteration overhead at
+**13.5%** and assumed the obvious implementation would recover most of it: hoist
+the scheduler's own scaffolding — `boot_nmi_halt`, the RCP edge setup, the report
+tally — out of a stretch where the CPU provably does nothing. Built, with
+`retired` bit-identical:
+
+| | mean frame |
+| --- | --- |
+| baseline (per-iteration) | 31.674 / 31.841 ms |
+| scaffolding hoisted out of the idle stretch | **32.137 ms** |
+
+**Slower, outside the baseline spread. Reverted.**
+
+### What that locates
+
+The 64-`PCycle` probe reduced the number of `step_instruction_at` **calls** by
+32x, not just the loop around them. The hoist kept those calls at their original
+frequency and moved only what surrounds them — and gained nothing. So the 13.5%
+is inside the per-boundary work itself: `set_now`, `sample_interrupt_lines`
+(`poll_irq` plus `timer_edge`), the NMI check, `interrupt_pending`, and the call.
+
+**It is deliberately not batchable by the easy route.** Reducing how often the
+interrupt check runs changes the cycle an interrupt is recognized on — a behavior
+change wearing an optimization's clothes.
+
+### What would actually recover it, stated so the next attempt starts here
+
+A batch is sound only if it can prove nothing changes across it, and each input
+can in fact be bounded:
+
+- **`poll_irq`** flips only when an RCP chip sets `mi_intr`, which happens only at
+  an RCP step. The idle loop steps the RCP itself, so it can test the (cheap)
+  level right after each `step_rcp` and leave the batch at the first instruction
+  boundary at or after the raising edge — same recognition cycle, far fewer full
+  boundary evaluations.
+- **`timer_edge`** is `Count` against `Compare`, and `Count` is derived from
+  `master_ticks`. The tick of the next match is computable, so it bounds the batch
+  rather than needing a per-boundary test.
+- **`Random`** and the retired tally are pure arithmetic: `-= 2N` and `+= 2N`.
+
+That is the design the 1.156x is behind. It is a real scheduler change with real
+exactness obligations, not the hoist tried here — and the hoist's neutrality is
+the evidence that the shortcut does not exist.
+
+### And the ceiling should be re-derived before it is attempted
+
+1.156x was measured against a 31.76 ms frame. Anything landed between now and
+then moves it, in the same way the declined backlog's shares moved when the frame
+halved. Re-measure the 64-`PCycle` probe first; do not inherit this number.
