@@ -3369,3 +3369,36 @@ a delta against `last_count`, and because `COUNT_DIVIDER` is exactly twice
 on the boundary the per-instruction walk would have found it on; `Status`'s masks
 cannot move because no instruction executes. Leaving the batch does not consume
 the boundary that ends it.
+
+## The O(1) `Random` advance closes most of the idle-batch gap — 1.028x / 1.057x
+
+`retire_idle_pairs` ticked `Random` in a loop, which put a per-pair cost back
+into the batch that exists to remove per-pair costs. Replacing it with a closed
+form (`Cop0::tick_random_by`):
+
+| | A legs (ms) | B legs (ms) | conservative |
+| --- | --- | --- | --- |
+| Super Mario 64 | 28.546 / 28.616 / 28.618 | 27.608 / 27.602 / 27.764 | **1.028x** |
+| Mario Kart 64 | 21.360 / 21.310 / 21.479 | 20.160 / 20.189 / 20.181 | **1.057x** |
+
+Every B leg beats every A leg; leg spreads are 0.14–0.79% on the no-build
+harness. 35.0 -> 36.2 FPS on Super Mario 64, 46.9 -> 49.6 on Mario Kart 64.
+
+**Batch plus closed form, against the pre-batch baseline: 1.105x (SM64) and
+1.145x (Mario Kart 64), against the 1.156x ceiling the probe set.** Mario Kart
+essentially reaches it, which is the first time in this program that a measured
+implementation has landed on its predicted ceiling rather than well under it.
+
+### Why the closed form is not `random - n`
+
+`Random` walks down to `Wired` and then jumps to **31**, so the sequence is a
+transient followed by a cycle of `31 ..= Wired`. Three cases look impossible and
+are reachable, because both fields are masked to 6 bits on write: `Wired > 31`,
+`Random < Wired`, and `Random > 31`. Each *lengthens* the walk rather than
+erroring, so both distances are taken modulo 64 rather than assumed in range.
+
+A closed form that assumes `Wired <= 31` is right for every value software
+sensibly writes and wrong for exactly the ones a test ROM probes. The test sweeps
+the whole space — 64 x 64 x 71 tick counts, plus a million-tick case for the
+modulo — rather than sampling it, and the naive `random - n` dies at
+`wired 0, random 0, 32 ticks`: the wrap, on the first cycle.

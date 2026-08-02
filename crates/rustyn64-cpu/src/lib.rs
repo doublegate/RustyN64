@@ -319,15 +319,14 @@ impl Cpu {
     /// change across the batch, and is why this is not simply a loop over
     /// [`Cpu::step_instruction_at`].
     ///
-    /// `Random` is ticked rather than computed: it wraps to 31 at `Wired`
-    /// (UM §6.3.3), so `random -= 2n` is wrong whenever the batch crosses that
-    /// boundary, and the batch is long precisely when it would.
+    /// `Random` advances through [`Cop0::tick_random_by`], which is the closed
+    /// form of the wrap-at-`Wired` walk (UM §6.3.3) rather than `random -= 2n` —
+    /// that shortcut is wrong exactly when the batch crosses the wrap, and the
+    /// batch is long precisely when it would.
     #[cfg(feature = "fast-exec")]
     pub fn retire_idle_pairs(&mut self, pairs: u64) {
         self.pipeline.retired = self.pipeline.retired.wrapping_add(pairs.wrapping_mul(2));
-        for _ in 0..pairs.wrapping_mul(2) {
-            self.pipeline.cop0.tick_random();
-        }
+        self.pipeline.cop0.tick_random_by(pairs.wrapping_mul(2));
         self.retired = self.pipeline.retired;
     }
 

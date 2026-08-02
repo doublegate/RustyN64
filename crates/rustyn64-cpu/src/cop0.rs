@@ -425,6 +425,45 @@ impl Cop0 {
         edge
     }
 
+    /// Advance `Random` by `n` ticks in constant time.
+    ///
+    /// Equivalent to calling [`Cop0::tick_random`] `n` times, and pinned to it
+    /// exhaustively by `tick_random_by_matches_the_loop_everywhere`. The scheduler's
+    /// idle batch needs this: `n` there is a whole stretch of idle pairs, and a
+    /// loop over it put the per-pair cost back that the batch exists to remove.
+    ///
+    /// **The wrap is at `Wired`, not at zero** (UM §6.3.3), so `random - n` is
+    /// wrong — and wrong precisely when `n` is large enough for the batch to be
+    /// worth having. `Random` walks down to `Wired` and then jumps to 31, so the
+    /// sequence is a *transient* followed by a cycle:
+    ///
+    /// * `d` ticks to walk from `cur` down to `Wired`, then
+    /// * a cycle of `31 ..= Wired` re-entered from 31, of length `(31 - Wired) + 1`.
+    ///
+    /// Both distances are taken modulo 64 rather than assumed in range, because
+    /// `Wired` and `Random` are masked to 6 bits on write: `Wired > 31` and
+    /// `cur < Wired` are both reachable from guest code, and each produces a
+    /// longer walk rather than an error. Assuming `Wired <= 31` here would be a
+    /// closed form that is right for every value software sensibly writes and
+    /// wrong for the ones a test ROM checks.
+    pub const fn tick_random_by(&mut self, n: u64) {
+        let wired = (self.regs[reg::WIRED as usize] & 0x3F) as u32;
+        let cur = (self.regs[reg::RANDOM as usize] & 0x3F) as u32;
+        // Ticks until the walk reaches `Wired`. Zero means it is already there,
+        // and the *next* tick is the one that jumps to 31.
+        let d = cur.wrapping_sub(wired) & 0x3F;
+        let value = if n <= d as u64 {
+            cur.wrapping_sub(n as u32) & 0x3F
+        } else {
+            let cycle = (31u32.wrapping_sub(wired) & 0x3F) + 1;
+            // `n - d - 1` is how far into the cycle we are, counting the jump to
+            // 31 as position zero.
+            let into = (n - d as u64 - 1) % cycle as u64;
+            31u32.wrapping_sub(into as u32) & 0x3F
+        };
+        self.regs[reg::RANDOM as usize] = value as u64;
+    }
+
     /// How many `Count` ticks may pass before [`Cop0::timer_edge`] could latch
     /// `IP7`, measured from the last poll.
     ///
@@ -730,6 +769,70 @@ pub const fn cop0_reg(d: Decoded) -> u8 {
 
 #[cfg(test)]
 mod tests {
+
+    /// `tick_random_by(n)` must equal `n` calls to `tick_random`, for **every**
+    /// reachable `(Wired, Random)` pair — not just the ones software sensibly
+    /// writes.
+    ///
+    /// Both fields are masked to 6 bits on write, so `Wired > 31` and
+    /// `Random < Wired` are reachable from guest code and each lengthens the
+    /// walk instead of erroring. A closed form that assumes `Wired <= 31` is
+    /// right for every ordinary value and wrong for exactly the ones a test ROM
+    /// probes, which is why this sweeps the whole space rather than sampling it.
+    ///
+    /// `n` runs past the longest possible cycle (64) so the modulo is exercised
+    /// on both sides of a wrap, and includes 0 — where the closed form must be
+    /// the identity.
+    #[test]
+    fn tick_random_by_matches_the_loop_everywhere() {
+        for wired in 0u64..64 {
+            for start in 0u64..64 {
+                for n in 0u64..=70 {
+                    let mut loops = Cop0::new();
+                    loops.write(reg::WIRED, wired);
+                    loops.write(reg::RANDOM, start);
+                    for _ in 0..n {
+                        loops.tick_random();
+                    }
+
+                    let mut closed = Cop0::new();
+                    closed.write(reg::WIRED, wired);
+                    closed.write(reg::RANDOM, start);
+                    closed.tick_random_by(n);
+
+                    assert_eq!(
+                        closed.read(reg::RANDOM),
+                        loops.read(reg::RANDOM),
+                        "wired {wired}, random {start}, {n} ticks"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A batch that spans many whole cycles must land where the loop does — the
+    /// case the modulo exists for, and the one a small-`n` sweep cannot reach.
+    #[test]
+    fn tick_random_by_survives_many_whole_cycles() {
+        for wired in [0u64, 5, 31] {
+            let mut closed = Cop0::new();
+            closed.write(reg::WIRED, wired);
+            closed.write(reg::RANDOM, 31);
+            closed.tick_random_by(1_000_003);
+
+            let mut loops = Cop0::new();
+            loops.write(reg::WIRED, wired);
+            loops.write(reg::RANDOM, 31);
+            for _ in 0..1_000_003u64 {
+                loops.tick_random();
+            }
+            assert_eq!(
+                closed.read(reg::RANDOM),
+                loops.read(reg::RANDOM),
+                "wired {wired}"
+            );
+        }
+    }
     use super::*;
 
     /// The list of 64-bit registers has no generating rule, so it is asserted
