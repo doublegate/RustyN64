@@ -510,6 +510,26 @@ pub struct Pipeline {
     pub tlb: Tlb,
     /// The 16 KiB primary instruction cache (T-11-003).
     pub icache: crate::cache::Icache,
+    /// The PC of a recognized self-branch idle loop, or `None` (ADR 0013 mode only).
+    ///
+    /// `beq $0, $0, -1` followed by a `nop` is a branch to itself: after both
+    /// instructions the PC is back where it started and no register, no memory
+    /// word and no COP0 field other than `Count` and `Random` has changed. Super
+    /// Mario 64 and Mario Kart 64 spend roughly **90% of every instruction they
+    /// retire** in exactly that loop — it is the N64 idle thread — so recognizing
+    /// it and charging its cost without fetching, decoding or executing it is
+    /// worth 1.65x and 1.93x respectively (`docs/performance.md`).
+    ///
+    /// **Why caching this is as correct as the hardware.** The N64 does not snoop
+    /// DMA against the I-cache: software that overwrites code must issue a `CACHE`
+    /// instruction itself, and until it does the CPU keeps executing the stale
+    /// cached line. So a recognition keyed to the I-cache's own lifetime cannot
+    /// diverge from the machine — [`Pipeline::cache_op`] clears this, which covers
+    /// every invalidate, fill and tag write, and so does taking any exception.
+    ///
+    /// Kept on `Pipeline` rather than in `fastexec` so it lives with the `icache`
+    /// whose validity it borrows; it is simply never set on the accurate path.
+    pub(crate) idle_pc: Option<u64>,
     /// The 8 KiB primary write-back data cache (T-11-003).
     pub dcache: crate::cache::Dcache,
     /// The COP0 register file (T-12-001).
@@ -584,6 +604,7 @@ impl Pipeline {
             fpr: Fpr::new(),
             tlb: Tlb::new(),
             icache: crate::cache::Icache::new(),
+            idle_pc: None,
             dcache: crate::cache::Dcache::new(),
             cop0: Cop0::new(),
             ll_bit: false,
@@ -1784,6 +1805,14 @@ impl Pipeline {
     ///
     /// A TLB fault, on the address-addressed operations only.
     fn cache_op<B: Bus>(&mut self, bus: &mut B, addr: u64, op: u8) -> Result<WriteBack, Exception> {
+        // Any cache operation can change what the I-cache would serve, so the
+        // idle-loop recognition that borrows the I-cache's validity stops being
+        // valid here. This hook is the ONLY thing that makes caching that
+        // recognition sound (see `Pipeline::idle_pc`), so it sits at the single
+        // entry point for every CACHE variant rather than at the invalidating
+        // ones — a narrower hook would have to be re-argued every time a variant
+        // is added, and being wrong about one would be silent.
+        self.idle_pc = None;
         if (op >> 2) >= 3 {
             let p = self.translate_data(addr, false)?;
             self.cache_hit_op(bus, op, p.addr);

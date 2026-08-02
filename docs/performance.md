@@ -3044,3 +3044,69 @@ not 1.056x — half what ADR 0016 declined it at, against a 1.5x bar, and with t
 cost unchanged: it drops `crates/rustyn64-rsp` from `forbid(unsafe_code)` to
 `deny`. **B2 stays declined, now on a measurement rather than on a product of two
 shares.** The census's 5.3% should be read as superseded by this section.
+
+## Most titles spend ~90% of their CPU in a two-instruction idle loop — 1.59x to 2.05x
+
+Sizing the block cache found something much larger than the block cache. Two
+independent methods put the average sequential run at **2.14 instructions**, and
+a PC histogram says why:
+
+```text
+0xffffffff80246dd8  word=0x1000ffff   97,122,219   47.70%
+0xffffffff80246ddc  word=0x00000000   97,122,219   47.70%
+```
+
+`0x1000ffff` is `beq $0, $0, -1` — a branch to itself — with a `nop` delay slot.
+**~95% of every CPU instruction Super Mario 64 retires is that two-instruction
+spin.** Mario Kart 64 is identical in shape at a different address (~90%). It is
+the N64 idle thread: the CPU waiting for the RCP, and this emulator was faithfully
+burning host cycles on it.
+
+### Why this had to come before the block cache
+
+A block cache measured against a workload that is 90% a two-instruction loop
+would have looked spectacular and then mostly evaporated once the loop stopped
+executing. The same distortion explains the CPU-bucket shares this document has
+been quoting for months: they were dominated by an idle loop nobody had looked at.
+
+### The result
+
+Skipping it is not an approximation. After `beq $0,$0,-1` and its `nop` the PC is
+back where it started and the only state either instruction touches is `Count`
+(derived) and `Random` (reproduced by hand). A-B-A-B, conservative pairing:
+
+| title | base | idle skip | |
+| --- | --- | --- | --- |
+| Zelda: Ocarina of Time | 38.980 ms | 19.056 ms | **2.046x** -> 52.5 FPS |
+| Mario Kart 64 | 44.404 ms | 24.184 ms | **1.836x** -> 41.3 FPS |
+| Super Mario 64 | 50.274 ms | 31.639 ms | **1.589x** -> 31.6 FPS |
+| Banjo-Kazooie | 46.829 ms | 46.671 ms | 1.003x — neutral |
+
+**`retired` is identical in every leg of every title**, which is the strongest
+available statement that the accounting is exact rather than approximately right.
+Banjo-Kazooie is the control: its sequential-run length is 5.93, it does not use
+this loop, and it moves 0.3%.
+
+For scale, everything else measured in this program: the VI coverage memo 1.119x,
+`multiply_lane`'s entire vectorization ceiling 1.028x, the event scheduler 0.11%.
+
+### The probe that was wrong first, and how it was caught
+
+The obvious way to size this was to elide `multiply_lane`-style — replace the
+work and take the delta. Applied to the CPU's fetch it gave a clean-looking
+**32.8% of a frame**, which exceeds the entire CPU bucket. It was `black_box`
+holding the duplicated `decode` un-fused, measuring a standalone decode rather
+than the one the loop actually emits — the same mechanism that made the decode
+cache's 8.1% probe turn into a 1.0% regression. Splitting it gave fetch ~25.8%
+and standalone decode ~12.8%, and neither number survives being added.
+
+`retired` was identical across all six legs, so the workload never moved. That is
+the check that makes a doubling probe trustworthy and an elision probe suspect:
+**an elision is only valid where the elided value cannot steer the machine.**
+
+### What it is not, yet
+
+The skip is per-iteration — it still returns to the scheduler every two idle
+instructions and still pays `sample_interrupt_lines` there. Jumping straight to
+the next scheduled event would remove that too, and belongs with the event-driven
+scheduler.
