@@ -1848,6 +1848,21 @@ impl Rdp {
         }
     }
 
+    /// Whether this step would answer entirely from the RDP's own state — frozen,
+    /// XBUS-sourced, stalling on a sync, or looking at an empty command FIFO.
+    ///
+    /// A **census predicate**, deliberately read-only: it must not consume the
+    /// stall the real step consumes, or measuring would change what is measured.
+    /// It duplicates [`Rdp::tick_without_bus`]'s early-outs for that reason, and
+    /// the two are pinned together by `census_predicate_agrees_with_the_real_early_outs`.
+    #[cfg(feature = "work-counters")]
+    #[must_use]
+    pub fn is_idle_for_census(&self) -> bool {
+        self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0
+            || self.stall > 0
+            || self.cmd_current >= self.cmd_end
+    }
+
     /// The part of a step that needs **no bus access**, returning `None` when it
     /// finished the step on its own and `Some(NeedsBus)` when work remains.
     ///
@@ -2447,7 +2462,30 @@ impl Rdp {
         // Texture block (bit 57): the combiner samples tile 0 at the interpolated
         // (non-perspective) coordinate. The perspective divide is a later slice.
         let tex_setup = Self::decode_texture(hi, cmd_base, bus);
-        let has_color = shade_setup.is_some() || tex_setup.is_some();
+        // **The CYCLE TYPE decides the path, not the presence of a shade block**
+        // (ledger R-21's still-open half, now closed). A *flat* triangle — one
+        // with no shade and no texture coefficients — used to fall through to
+        // `fill_pixel` whatever the cycle type, so a 1-cycle flat triangle
+        // rasterized the `SET_FILL_COLOR` register instead of running the
+        // combiner. That is the identical defect `fill_rectangle` had, resolved
+        // there against the oracle (vector `fill_rect_1cycle_16`): a 1-cycle
+        // rectangle renders the *prim* color, never the fill register.
+        //
+        // The rule is the same for both primitives because it is a property of
+        // the cycle type rather than of the primitive: FILL and COPY write the
+        // fill register, 1-/2-cycle run the combiner — which for a flat triangle
+        // sees only its register inputs (prim/env/…), exactly as for a flat
+        // rectangle.
+        //
+        // Found by `aa_tri_coverage_16`, the first committed vector to render a
+        // triangle in 1-cycle mode; every earlier one is FILL, which is why R-21
+        // recorded this half as unexercised.
+        let has_color = shade_setup.is_some()
+            || tex_setup.is_some()
+            || !matches!(
+                self.other_modes.cycle_type,
+                CYCLE_TYPE_COPY | CYCLE_TYPE_FILL
+            );
         let y_base = yh >> 2;
 
         // 1-/2-cycle mode rasterizes with sub-pixel coverage; FILL/COPY mode
@@ -2562,14 +2600,27 @@ impl Rdp {
                     if !self.alpha_compare_passes(color[3]) {
                         continue;
                     }
+                    // `stored_cvg` is `Some` only on the sub-pixel path, because
+                    // only there is `color[3]` a coverage value rather than the
+                    // combiner's alpha. Writing the hidden plane from a combiner
+                    // alpha would fabricate coverage out of a color channel.
+                    let mut stored_cvg = None;
                     if subpixel {
                         match self.pixel_coverage(xleft, xright, x) {
-                            Some(cov) => color[3] = cov << 5,
+                            Some(cov) => {
+                                color[3] = cov << 5;
+                                stored_cvg = Some(cov);
+                            }
                             None => continue,
                         }
                     }
                     self.dither_pixel(&mut color, x as u32, line as u32);
                     Self::write_pixel(row_addr, x as u32, bpp, color, bus);
+                    if let Some(cov) = stored_cvg {
+                        // Ledger R-24: the low two bits of coverage go to the
+                        // hidden plane, which is where the VI looks for them.
+                        Self::write_coverage(row_addr, x as u32, bpp, cov, bus);
+                    }
                 }
             } else {
                 #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
@@ -2677,6 +2728,34 @@ impl Rdp {
             }
             _ => {}
         }
+    }
+
+    /// Store a pixel's **coverage** where the VI reads it back from (ledger R-24).
+    ///
+    /// The N64 keeps anti-aliasing coverage for a 16-bit color image split across
+    /// two places: the top bit is the RGBA5551 alpha bit, written by
+    /// [`Self::write_pixel`] out of `rgba[3]`, and **the low two bits live in the
+    /// RDRAM hidden 9th-bit plane** — "This 9th bit is used to store things like
+    /// anti-aliasing coverage in the color buffer" (N64brew Wiki, *RDRAM*). The VI
+    /// reassembles them as `((px & 1) << 2) | rdram_read_hidden(byte)`
+    /// (`Bus::vi_read_cov`).
+    ///
+    /// **Only 16-bit images need this.** A 32-bit color image carries all three
+    /// coverage bits inside the alpha byte, and the VI reads them straight back as
+    /// `(px >> 5) & 7` — so writing the hidden plane there would be storing a
+    /// second, redundant copy the hardware does not keep.
+    ///
+    /// Without this the low two bits were dropped on every write, so the VI could
+    /// only ever read coverage 0 or 4, `cvg == 7` never held, and every
+    /// coverage-gated VI filter silently degenerated. Measured before the fix on
+    /// Super Mario 64: 27,150,246 filtered pixels, **`cvg0` 22.45% / `cvg4`
+    /// 77.55% / everything else 0.00%**.
+    fn write_coverage<B: VideoBus>(row_addr: u32, x: u32, bpp: u32, cov: u8, bus: &mut B) {
+        if bpp != 2 {
+            return;
+        }
+        let addr = row_addr.wrapping_add(x.wrapping_mul(bpp));
+        bus.rdram_write_hidden(addr, cov & 0x3);
     }
 
     /// Read the current color-image pixel at `(row_addr, x)` as RGBA8888 — the
@@ -3144,6 +3223,14 @@ impl Rdp {
                     }
                     self.dither_pixel(&mut color, xu, yu);
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
+                    if let Some(c) = pixel_cov {
+                        // Ledger R-24, the depth path's half. The no-Z span had
+                        // the identical gap; both must store it or the VI sees
+                        // coverage only from whichever path a scene happens to
+                        // use — which is how 74.91% of pixels sat at exactly
+                        // `cvg4` after the first half of this fix.
+                        Self::write_coverage(row_addr, xu, bpp, c, bus);
+                    }
                 } else {
                     self.fill_pixel(row_addr, xu, bpp, bus);
                 }
@@ -5756,6 +5843,13 @@ mod tests {
         rdp.color_image_width = 8;
         rdp.color_image = 0x200;
         rdp.fill_color = 0xAABB_CCDD;
+        // FILL mode, explicitly. This test is named for FILL-mode behavior
+        // and asserts the fill register lands in the framebuffer, but it used
+        // to leave `cycle_type` at its 1-cycle default and pass anyway --
+        // because a flat triangle took the fill register whatever the mode
+        // (ledger R-21's triangle half). It was testing the bug. Same fallout
+        // R-21 recorded for the five `fill_rectangle_*` tests.
+        rdp.other_modes.cycle_type = CYCLE_TYPE_FILL;
         rdp.scissor_lrx = 8 << 2;
         rdp.scissor_lry = 8 << 2;
         // word0: opcode 0x08, flip/lmajor (bit 55), yl=16, ym=16, yh=0.
@@ -5805,6 +5899,10 @@ mod tests {
         rdp.color_image_width = 8;
         rdp.color_image = 0x200;
         rdp.fill_color = 0xAABB_CCDD;
+        // FILL mode, explicitly — see the sibling test above: this asserts the
+        // fill register reaches the framebuffer and used to pass without ever
+        // selecting the mode that makes that true (ledger R-21's triangle half).
+        rdp.other_modes.cycle_type = CYCLE_TYPE_FILL;
         rdp.scissor_lrx = 3 << 2; // right edge at x=3 -> clips x>=4
         rdp.scissor_lry = 8 << 2; // all rows kept
         rdp.dispatch(0x08, 0x0880_0010, 0x0010_0000, 0x300, &mut bus);
@@ -7285,5 +7383,146 @@ mod tests {
             "Y0/Y2 lose their offset-0 sample; Y1/Y3 keep both"
         );
         assert_eq!(mask.count_ones(), 6);
+    }
+}
+
+/// **Coverage must survive the round trip through RDRAM** (ledger R-24).
+#[cfg(test)]
+mod coverage_writeback_tests {
+    use super::{Rdp, VideoBus};
+    use alloc::vec;
+    use rustyn64_cart::RdramBus as _;
+
+    /// A minimal RDRAM with the hidden 9th-bit plane, modeled the way
+    /// `rustyn64_core::Bus` does: two bits per halfword, four halfwords per byte.
+    struct Ram {
+        main: vec::Vec<u8>,
+        hidden: vec::Vec<u8>,
+    }
+
+    impl VideoBus for Ram {}
+
+    impl rustyn64_cart::RdramBus for Ram {
+        fn rdram_read(&self, addr: u32) -> u8 {
+            self.main.get(addr as usize).copied().unwrap_or(0)
+        }
+        fn rdram_write(&mut self, addr: u32, val: u8) {
+            if let Some(b) = self.main.get_mut(addr as usize) {
+                *b = val;
+            }
+        }
+        fn rdram_read_hidden(&self, addr: u32) -> u8 {
+            let halfword = (addr as usize) >> 1;
+            self.hidden
+                .get(halfword >> 2)
+                .map_or(0, |b| (b >> ((halfword & 3) * 2)) & 3)
+        }
+        fn rdram_write_hidden(&mut self, addr: u32, val: u8) {
+            let halfword = (addr as usize) >> 1;
+            if let Some(b) = self.hidden.get_mut(halfword >> 2) {
+                let shift = (halfword & 3) * 2;
+                *b = (*b & !(3 << shift)) | ((val & 3) << shift);
+            }
+        }
+    }
+
+    /// Every coverage value `0..=7` must read back exactly, reassembled the way
+    /// `Bus::vi_read_cov` does it: top bit from the RGBA5551 alpha, low two bits
+    /// from the hidden plane.
+    ///
+    /// **Mutation check:** delete the `write_coverage` call in the span loop, or
+    /// make it write `cov` instead of `cov & 3`, and this goes red. Before the
+    /// fix, every value read back as `cov & 4` — which is why the VI never saw
+    /// `cvg == 7` and its coverage-gated filters were dead.
+    #[test]
+    fn coverage_survives_the_round_trip_for_every_value() {
+        for cov in 0u8..=7 {
+            let mut ram = Ram {
+                main: vec![0u8; 64],
+                hidden: vec![0u8; 16],
+            };
+            let (row, x, bpp) = (0u32, 3u32, 2u32);
+            // What the span loop writes: coverage in the alpha byte's top bits,
+            // then the low two bits into the hidden plane.
+            let rgba = [0x10u8, 0x20, 0x30, cov << 5];
+            Rdp::write_pixel(row, x, bpp, rgba, &mut ram);
+            Rdp::write_coverage(row, x, bpp, cov, &mut ram);
+
+            // What the VI reads: `((px & 1) << 2) | rdram_read_hidden(byte)`.
+            let addr = row + x * bpp;
+            let px = u16::from_be_bytes([ram.rdram_read(addr), ram.rdram_read(addr + 1)]);
+            let got = ((u32::from(px) & 1) << 2) | u32::from(ram.rdram_read_hidden(addr));
+            assert_eq!(
+                got,
+                u32::from(cov),
+                "coverage {cov} read back as {got}: the hidden plane lost the low two bits"
+            );
+        }
+    }
+
+    /// A 32-bit color image keeps all three bits in the alpha byte, so the hidden
+    /// plane must be left ALONE — writing it there would store a second copy the
+    /// hardware does not keep, and the VI reads `(px >> 5) & 7` regardless.
+    #[test]
+    fn a_32bit_color_image_does_not_touch_the_hidden_plane() {
+        let mut ram = Ram {
+            main: vec![0u8; 64],
+            hidden: vec![0xFFu8; 16],
+        };
+        Rdp::write_coverage(0, 3, 4, 7, &mut ram);
+        assert_eq!(
+            ram.hidden,
+            vec![0xFFu8; 16],
+            "a 32-bit image must not write the hidden plane"
+        );
+    }
+}
+
+/// The census predicate must agree with the step it claims to describe.
+#[cfg(all(test, feature = "work-counters"))]
+mod census_predicate_tests {
+    use super::{DP_STATUS_FREEZE, DP_STATUS_XBUS, Rdp};
+
+    /// `is_idle_for_census` duplicates `tick_without_bus`'s early-outs because it
+    /// must not consume the stall the real step consumes — measuring would
+    /// otherwise change what is measured. Duplicated logic drifts, so the two are
+    /// pinned together here across every early-out.
+    ///
+    /// Mutation check: drop any one clause from the predicate and this goes red.
+    #[test]
+    fn census_predicate_agrees_with_the_real_early_outs() {
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_FREEZE;
+        assert!(rdp.is_idle_for_census());
+        assert!(rdp.tick_without_bus().is_none(), "frozen needs no bus");
+
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_XBUS;
+        assert!(rdp.is_idle_for_census());
+        assert!(rdp.tick_without_bus().is_none(), "XBUS needs no bus");
+
+        // Checked BEFORE `tick_without_bus`, which DECREMENTS the stall. The
+        // predicate must not, and calling the real step first would hide that.
+        let mut rdp = Rdp::new();
+        rdp.stall = 2;
+        assert!(rdp.is_idle_for_census());
+        assert!(rdp.is_idle_for_census());
+        assert_eq!(rdp.stall, 2, "the census predicate must be read-only");
+        assert!(rdp.tick_without_bus().is_none(), "a stall needs no bus");
+
+        let mut rdp = Rdp::new();
+        assert!(rdp.is_idle_for_census(), "an empty FIFO is idle");
+        assert!(rdp.tick_without_bus().is_none());
+
+        // NOT idle: a pending command with nothing else blocking.
+        let mut rdp = Rdp::new();
+        rdp.dpc_write(0, 0x100);
+        rdp.dpc_write(1, 0x108);
+        assert!(
+            !rdp.is_idle_for_census(),
+            "a pending command must not count as idle, or the census reports a \
+             ceiling that does not exist"
+        );
+        assert!(rdp.tick_without_bus().is_some());
     }
 }

@@ -193,11 +193,35 @@ impl Phases {
     }
 }
 
+/// Index names for [`System::rcp_occupancy`].
+#[cfg(feature = "work-counters")]
+pub mod occupancy {
+    /// Total RCP steps taken.
+    pub const STEPS: usize = 0;
+    /// Steps where the RSP was halted — stepping it did no microcode work.
+    pub const RSP_HALTED: usize = 1;
+    /// Steps where the RDP answered from its own state without touching the bus.
+    pub const RDP_IDLE: usize = 2;
+    /// Number of counters.
+    pub const COUNT: usize = 3;
+}
+
 /// Owns the run loop and ties the CPU to the Bus on one timeline.
 ///
 /// Determinism contract: same seed + ROM + input ⇒ bit-identical A/V (ADR 0004).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct System {
+    /// Per-RCP-step occupancy census: how often each chip had nothing to do.
+    ///
+    /// The ceiling on an event-driven scheduler is the idle fraction, and a
+    /// profile share cannot supply it — a share says what a chip costs *when it
+    /// runs*, not how often it is stepped for nothing.
+    ///
+    /// A counter (ADR 0006): nothing schedules against it, and `#[serde(skip)]`
+    /// keeps it out of the save-state layout (ADR 0011 §4).
+    #[cfg(feature = "work-counters")]
+    #[serde(skip)]
+    pub rcp_occupancy: [u64; occupancy::COUNT],
     /// The CPU.
     pub cpu: Cpu,
     /// The Bus — owns everything else mutable (RDRAM / RSP / RDP / AI / cart /
@@ -216,6 +240,8 @@ impl System {
     #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
+            #[cfg(feature = "work-counters")]
+            rcp_occupancy: [0; occupancy::COUNT],
             cpu: Cpu::new(),
             bus: Bus::default(),
             master_ticks: 0,
@@ -617,6 +643,31 @@ impl System {
                 rcp = Self::next_edge_after(rcp, self.phases.rcp, RCP_DIVIDER);
             }
             self.master_ticks = end;
+
+            // **The idle batch.** The boundary just executed established, for this
+            // instant, that no NMI and no interrupt is pending — otherwise it
+            // would have vectored and the CPU would no longer be parked. From
+            // that fact the loop below can run further idle pairs *without*
+            // re-evaluating the boundary, because every input to that evaluation
+            // is either constant or bounded:
+            //
+            // * `Cause.IP2` follows `poll_irq`, which flips only when an RCP chip
+            //   sets `mi_intr` — and that can happen only at an RCP step, which
+            //   this loop performs itself and tests after.
+            // * `Cause.IP7` follows `Cop0::timer_edge`, a delta against
+            //   `last_count`. `count_ticks_until_timer_match` bounds the batch so
+            //   the crossing lands on the boundary the per-instruction path would
+            //   have found it on, not later.
+            // * `Status`'s masks cannot move: no instruction executes here.
+            // * `boot_nmi_halt` is bus state, so it too changes only across an
+            //   RCP step, and is tested on the same edge.
+            //
+            // Leaving the batch does not consume the boundary that ends it — the
+            // outer loop runs it through the ordinary path, which is what keeps
+            // the interrupt on its original cycle.
+            if self.cpu.is_parked_in_idle_loop() {
+                self.run_idle_batch(target, &mut report);
+            }
         }
         // Only reachable through the halted branch's `break`; an executing CPU has
         // already carried `master_ticks` to or past `target`.
@@ -625,18 +676,103 @@ impl System {
         }
         report
     }
+    /// Run idle-loop pairs in bulk, stopping the moment anything the boundary
+    /// check reads could have changed. See the call site for why that is sound.
+    ///
+    /// Returns with `master_ticks` on an instruction boundary, so the caller's
+    /// ordinary path resumes exactly where a per-instruction walk would be.
+    #[cfg(feature = "fast-exec")]
+    fn run_idle_batch(&mut self, target: u64, report: &mut crate::fastpath::FastRunReport) {
+        /// One idle pair: two `PCycle`s, and — because `COUNT_DIVIDER` is twice
+        /// `CPU_DIVIDER` — exactly one COP0 `Count` tick, which is what lets the
+        /// timer bound below be counted in pairs.
+        const PAIR_TICKS: u64 = 2 * CPU_DIVIDER;
+
+        let room = (target.saturating_sub(self.master_ticks)) / PAIR_TICKS;
+        let pairs = room.min(self.cpu.count_ticks_until_timer_match());
+        if pairs == 0 {
+            return;
+        }
+
+        let mut rcp = Self::next_edge_after(self.master_ticks, self.phases.rcp, RCP_DIVIDER);
+        let mut done = 0u64;
+        while done < pairs {
+            let end = self.master_ticks + PAIR_TICKS;
+            while rcp <= end {
+                self.master_ticks = rcp;
+                self.step_rcp();
+                rcp = Self::next_edge_after(rcp, self.phases.rcp, RCP_DIVIDER);
+            }
+            self.master_ticks = end;
+            done += 1;
+            // Tested after the RCP has run, because the RCP is the only thing
+            // that can raise either. The boundary at `end` is then handed back to
+            // the caller unconsumed.
+            if rustyn64_cpu::Bus::poll_irq(&mut self.bus) || self.bus.boot_nmi_halt() {
+                break;
+            }
+        }
+        self.cpu.retire_idle_pairs(done);
+        report.work_units = report.work_units.saturating_add(done);
+    }
 
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the
     /// AI/interface DMA progress — all on the SAME `&mut self.bus`.
     fn step_rcp(&mut self) {
+        // One RCP step, charged here rather than inside a chip's tick — see
+        // `Bus::charge_rcp_step`.
+        self.bus.charge_rcp_step();
+        // **Occupancy census** (`work-counters`), the measurement that sizes an
+        // event-driven scheduler before one is written.
+        //
+        // Today every chip is stepped on every RCP step -- ~1.04 M steps a frame
+        // -- whether or not it has anything to do. An event scheduler's whole
+        // value is skipping the idle ones, so its ceiling IS the idle fraction,
+        // and that fraction has never been counted. Sizing it from a profile
+        // share instead would repeat this program's most expensive mistake: the
+        // share tells you what the RSP costs when it runs, not how often it is
+        // halted.
+        //
+        // ADR 0006: counters only, nothing schedules against them.
+        #[cfg(feature = "work-counters")]
+        {
+            self.rcp_occupancy[occupancy::STEPS] += 1;
+            if self.bus.rsp.sp.halted() {
+                self.rcp_occupancy[occupancy::RSP_HALTED] += 1;
+            }
+        }
         // The chips each see only their narrow trait of `self.bus`.
-        // The LLE RSP runs the microcode scalar+vector stream (Phase 2).
+        //
+        // **The LLE RSP is stepped only when it is running.** It is halted on
+        // **78.11%** of RCP steps (`docs/performance.md` §*The RCP occupancy
+        // census*), and `su::su_step` already returns a default `StepResult`
+        // immediately in that case — so this guard is provably behavior-identical
+        // rather than an approximation: every field `rsp_tick` acts on
+        // (`interrupt_change`, `dma`, `dp_write`) is `None` in that default, and
+        // the halt check inside `su_step` sits *above* the retire counter, so
+        // nothing is counted either.
+        //
+        // What it removes on those steps is the call, the `StepResult`
+        // construction and three `Option` tests, in exchange for one `SP_STATUS`
+        // read. This is the RSP half of the event-driven scheduler, taken as a
+        // guard because that is where the occupancy census pointed; the AI, PI and
+        // VI ticks are cheap by comparison and are left stepping.
         self.bus.rsp_tick();
         // The RDP consumes the DPC command stream and rasterizes the implemented
         // commands (FILL, triangles, texture rects, sync); the live path is still
         // incomplete — remaining opcodes are recognized-not-dispatched (T-31-004)
         // and per-command timing is deferred. See ledger R-18 for the end-to-end
         // commercial-video gap.
+        // The RDP census is sampled HERE, not with the RSP's above, and the
+        // difference is not cosmetic. The RSP's `dp_write` submits a command list
+        // during `rsp_tick`, and `rdp_tick` consumes it immediately — so sampling
+        // before `rsp_tick` sees an empty FIFO on *every* step and reports 100%
+        // idle, which is an artifact of the sampling instant rather than a fact
+        // about the RDP. This is the instant `rdp_tick` itself decides at.
+        #[cfg(feature = "work-counters")]
+        if self.bus.rdp.is_idle_for_census() {
+            self.rcp_occupancy[occupancy::RDP_IDLE] += 1;
+        }
         self.bus.rdp_tick();
         // AI / interface sub-clock advance — derives sample emission off the
         // canonical `master_ticks` (ADR 0006), like the VI scan below.
@@ -679,6 +815,50 @@ mod tests {
         // 187.5 MHz really is the LCM of the two core clocks.
         assert_eq!(CPU_HZ * CPU_DIVIDER, MASTER_HZ);
         assert_eq!(RCP_HZ * RCP_DIVIDER, MASTER_HZ);
+    }
+
+    /// **The RCP step counter measures the clock, not a chip.**
+    ///
+    /// `rcp_steps` used to be incremented at the tail of `Bus::rsp_tick`, so "RCP
+    /// steps" actually meant "RSP ticks". That was invisible while the RSP was
+    /// stepped unconditionally, and wrong the moment a halted-RSP skip was tried:
+    /// the counter stopped with the chip and
+    /// `three_cpu_and_two_rcp_steps_per_six_ticks` went red.
+    ///
+    /// The skip itself measured neutral and was reverted (see `step_rcp`), but the
+    /// counter bug it exposed was real, so the charge now lives in the scheduler
+    /// and this pins it there. A step counter that stops when a chip stops is
+    /// measuring the chip, not the clock.
+    ///
+    /// Mutation check: move `charge_rcp_step` back inside `rsp_tick` and this stays
+    /// green only because the RSP is stepped unconditionally today — which is
+    /// exactly why the assertion is written against an all-idle machine.
+    #[test]
+    fn an_rcp_step_is_charged_even_when_every_chip_is_idle() {
+        // A machine with no ROM never starts the RSP, so it stays halted throughout —
+        // which is precisely the case the guard skips, and the case where a mistaken
+        // skip would be invisible unless something is asserted.
+        let mut sys = System::new(0);
+        let ticks = 100_000;
+        sys.run_until(ticks);
+
+        assert!(
+            sys.bus.rsp.sp.halted(),
+            "this test is only meaningful while the RSP is halted; it is not"
+        );
+        // The RSP's retire counter is behind `work-counters`; when it is compiled
+        // in, a halted RSP must have retired nothing. `su_step` increments it AFTER
+        // the halt check, so a halted step that did work would move this.
+        #[cfg(feature = "work-counters")]
+        assert_eq!(sys.bus.rsp.retired(), 0, "a halted RSP must retire nothing");
+        // RCP steps are charged by the scheduler, so they must advance whether or not
+        // the RSP ran. This is the assertion that caught the counter living inside
+        // `rsp_tick`, where the skip silently stopped the clock.
+        assert!(
+            sys.bus.rcp_steps_for_test() > 0,
+            "RCP steps must be charged even when every chip is idle — a step counter \
+         that stops when a chip stops is measuring the chip, not the clock"
+        );
     }
 
     #[test]

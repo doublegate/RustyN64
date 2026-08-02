@@ -99,4 +99,53 @@ fn main() {
     );
 
     println!("frames={FRAMES} warm={warm} retired={retired} mean={mean_ms:.3}ms");
+    report_cost(retired, mean_ms);
+}
+
+/// The headline number: **host cycles spent per emulated instruction.**
+///
+/// FPS hides how much work the ROM asked for, and a profile share hides absolute
+/// cost entirely — a subsystem can be 40% of a frame whether the frame is fast or
+/// catastrophically slow. This figure has neither problem, and it is directly
+/// comparable to what other emulators and the literature quote:
+///
+/// | | host cycles / instruction |
+/// | --- | --- |
+/// | a recompiler | 2–10 |
+/// | a competent interpreter | 20–50 |
+/// | **60 FPS on this host** | **~58** |
+///
+/// `HOST_GHZ` is the *assumed* clock, not a measured one, and everything derived
+/// from it inherits that. It is stated rather than hidden because the alternative
+/// — reading the actual TSC frequency, or `perf stat`'s cycle count — is the
+/// right long-term fix and this is the honest interim. A boosting CPU makes this
+/// an approximation in the optimistic direction: if the core is running below
+/// `HOST_GHZ`, the true cycles/instruction is *lower* than reported.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "retired counts over 120 frames are far below 2^53"
+)]
+fn report_cost(retired: u64, mean_ms: f64) {
+    /// Single-core boost clock of the development host (i9-10850K).
+    const HOST_GHZ: f64 = 5.0;
+    /// The VR4300 runs at 93.75 MHz and retires close to one instruction per
+    /// cycle, so a full-speed frame is this many instructions.
+    const TARGET_FPS: f64 = 60.0;
+
+    let insns = retired as f64 / f64::from(FRAMES);
+    let secs = mean_ms / 1000.0;
+    let mips = insns / secs / 1e6;
+    let cycles_per_insn = HOST_GHZ * 1e9 / (mips * 1e6);
+    let needed_mips = insns * TARGET_FPS / 1e6;
+    let needed_cycles = HOST_GHZ * 1e9 / (needed_mips * 1e6);
+
+    println!(
+        "insns/frame={insns:.0} MIPS={mips:.1} cycles/insn={cycles_per_insn:.0} \
+         (assumed {HOST_GHZ} GHz)"
+    );
+    println!(
+        "for {TARGET_FPS:.0} FPS: MIPS={needed_mips:.1} cycles/insn={needed_cycles:.0} \
+         -> {:.2}x away",
+        needed_mips / mips
+    );
 }

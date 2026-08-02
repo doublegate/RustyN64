@@ -410,6 +410,27 @@ struct Pending {
 #[cfg(feature = "fast-exec")]
 mod fastexec;
 
+/// How a retired instruction's commit was classified, for
+/// [`Pipeline::commit_census`]. The order is the reporting order.
+#[cfg(feature = "work-counters")]
+pub mod commit_class {
+    /// Commit is a GPR write or nothing: no COP0/COP1 access, no memory op, no
+    /// abort. **This is the set a direct commit path could serve** without a
+    /// second implementation of the subtle cases.
+    pub const SIMPLE: usize = 0;
+    /// Has a memory operation (`DC` work).
+    pub const MEM: usize = 1;
+    /// Touches COP0 or COP1 — the cases whose semantics live in `wb_stage` and
+    /// must not be duplicated.
+    pub const COP: usize = 2;
+    /// Writes `HI`/`LO` (every multiply and divide).
+    pub const HILO: usize = 3;
+    /// Anything else, including aborts.
+    pub const OTHER: usize = 4;
+    /// Number of classes.
+    pub const COUNT: usize = 5;
+}
+
 /// The four inter-stage latches plus the pipeline control state.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 // The bools are independent hardware lines and latches -- `prev_was_run`,
@@ -419,6 +440,18 @@ mod fastexec;
 // what makes the exception and interrupt rules readable.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Pipeline {
+    /// Retired-instruction census by commit class, indexed by [`commit_class`].
+    ///
+    /// A **counter**, not a schedule input (ADR 0006). It exists to answer one
+    /// question before any code is written against it: what fraction of executed
+    /// instructions could a direct commit path actually serve? Sizing a change on
+    /// an assumed fraction is how the last program produced four reverts.
+    ///
+    /// `#[serde(skip)]` because it is diagnostic and must not enter the
+    /// save-state layout (ADR 0011 §4).
+    #[cfg(feature = "work-counters")]
+    #[serde(skip)]
+    commit_census: [u64; commit_class::COUNT],
     /// The **whole** of COP2: one 64-bit latch.
     ///
     /// COP2 is not populated on the VR4300, and what remains is a single
@@ -477,6 +510,26 @@ pub struct Pipeline {
     pub tlb: Tlb,
     /// The 16 KiB primary instruction cache (T-11-003).
     pub icache: crate::cache::Icache,
+    /// The PC of a recognized self-branch idle loop, or `None` (ADR 0013 mode only).
+    ///
+    /// `beq $0, $0, -1` followed by a `nop` is a branch to itself: after both
+    /// instructions the PC is back where it started and no register, no memory
+    /// word and no COP0 field other than `Count` and `Random` has changed. Super
+    /// Mario 64 and Mario Kart 64 spend roughly **90% of every instruction they
+    /// retire** in exactly that loop — it is the N64 idle thread — so recognizing
+    /// it and charging its cost without fetching, decoding or executing it is
+    /// worth 1.65x and 1.93x respectively (`docs/performance.md`).
+    ///
+    /// **Why caching this is as correct as the hardware.** The N64 does not snoop
+    /// DMA against the I-cache: software that overwrites code must issue a `CACHE`
+    /// instruction itself, and until it does the CPU keeps executing the stale
+    /// cached line. So a recognition keyed to the I-cache's own lifetime cannot
+    /// diverge from the machine — [`Pipeline::cache_op`] clears this, which covers
+    /// every invalidate, fill and tag write, and so does taking any exception.
+    ///
+    /// Kept on `Pipeline` rather than in `fastexec` so it lives with the `icache`
+    /// whose validity it borrows; it is simply never set on the accurate path.
+    pub(crate) idle_pc: Option<u64>,
     /// The 8 KiB primary write-back data cache (T-11-003).
     pub dcache: crate::cache::Dcache,
     /// The COP0 register file (T-12-001).
@@ -532,6 +585,8 @@ impl Pipeline {
             mem: None,
         };
         Self {
+            #[cfg(feature = "work-counters")]
+            commit_census: [0; commit_class::COUNT],
             // Power-on value: a documented zero (ADR 0004).
             cop2_latch: 0,
             ic_rf: EMPTY,
@@ -549,6 +604,7 @@ impl Pipeline {
             fpr: Fpr::new(),
             tlb: Tlb::new(),
             icache: crate::cache::Icache::new(),
+            idle_pc: None,
             dcache: crate::cache::Dcache::new(),
             cop0: Cop0::new(),
             ll_bit: false,
@@ -751,6 +807,43 @@ impl Pipeline {
     }
 
     /// `WB` — commit the result and retire the instruction.
+    /// The retired-instruction census by commit class ([`commit_class`]).
+    #[cfg(feature = "work-counters")]
+    #[must_use]
+    pub const fn commit_census(&self) -> &[u64; commit_class::COUNT] {
+        &self.commit_census
+    }
+
+    /// Classify one retired instruction for the census.
+    ///
+    /// Takes the pieces rather than the assembled `Latch`, so it can be called
+    /// from the fast path *before* the latch is built — the whole point being to
+    /// find out how often building it is avoidable.
+    #[cfg(feature = "work-counters")]
+    pub(crate) fn count_commit(
+        &mut self,
+        cop0: Option<crate::exec::Cop0Access>,
+        mem: Option<crate::exec::MemOp>,
+        write_back: crate::exec::WriteBack,
+    ) {
+        use crate::exec::WriteBack as W;
+        // Order matters: an instruction with BOTH a memory op and a COP0 access
+        // is not simple, and must not be counted as if the cheaper class applied.
+        let class = if cop0.is_some() {
+            commit_class::COP
+        } else if mem.is_some() {
+            commit_class::MEM
+        } else {
+            match write_back {
+                W::None | W::Gpr { .. } => commit_class::SIMPLE,
+                W::HiLo(_) | W::Hi(_) | W::Lo(_) => commit_class::HILO,
+                #[allow(unreachable_patterns, reason = "future WriteBack variants land here")]
+                _ => commit_class::OTHER,
+            }
+        };
+        self.commit_census[class] = self.commit_census[class].saturating_add(1);
+    }
+
     fn wb_stage(&mut self, regs: &mut Regs) {
         if self.dc_wb.occupied && self.dc_wb.abort.is_none() {
             // The COP0 WRITE lands here (UM §4.6.9). A `Read` in this latch was
@@ -1712,6 +1805,14 @@ impl Pipeline {
     ///
     /// A TLB fault, on the address-addressed operations only.
     fn cache_op<B: Bus>(&mut self, bus: &mut B, addr: u64, op: u8) -> Result<WriteBack, Exception> {
+        // Any cache operation can change what the I-cache would serve, so the
+        // idle-loop recognition that borrows the I-cache's validity stops being
+        // valid here. This hook is the ONLY thing that makes caching that
+        // recognition sound (see `Pipeline::idle_pc`), so it sits at the single
+        // entry point for every CACHE variant rather than at the invalidating
+        // ones — a narrower hook would have to be re-argued every time a variant
+        // is added, and being wrong about one would be silent.
+        self.idle_pc = None;
         if (op >> 2) >= 3 {
             let p = self.translate_data(addr, false)?;
             self.cache_hit_op(bus, op, p.addr);
@@ -7414,5 +7515,91 @@ mod tests {
             "the sweep found {coprocessor} coprocessor and {sixty_four} 64-bit \
              encodings; with either at zero it proves nothing"
         );
+    }
+}
+
+/// The commit census must classify what it claims to classify.
+///
+/// A census that silently called every instruction SIMPLE would report a
+/// wonderful 100% and send a fast commit path off to serve loads it cannot
+/// serve. The measured share on Super Mario 64 (96.81% SIMPLE, 3.11% MEM) is
+/// low enough on MEM to be worth disbelieving until the classifier is witnessed
+/// doing its job.
+#[cfg(all(test, feature = "work-counters"))]
+mod commit_census_tests {
+    use super::{Pipeline, commit_class as cc};
+    use crate::exec::{Cop0Access, MemOp, WriteBack};
+    use crate::mem::{LoadKind, StoreKind};
+
+    #[test]
+    fn each_commit_class_is_reachable_and_distinct() {
+        let mut p = Pipeline::new();
+
+        // A plain ALU result.
+        p.count_commit(None, None, WriteBack::Gpr { dest: 3, value: 1 });
+        // A branch: commits nothing.
+        p.count_commit(None, None, WriteBack::None);
+        // A load. `mem` is what makes it not-simple, whatever the write-back says.
+        p.count_commit(
+            None,
+            Some(MemOp::Load {
+                kind: LoadKind::SignedWord,
+                addr: 0x8000_0000,
+                dest: 4,
+            }),
+            WriteBack::None,
+        );
+        // A store.
+        p.count_commit(
+            None,
+            Some(MemOp::Store {
+                kind: StoreKind::Word,
+                addr: 0x8000_0000,
+                value: 0,
+            }),
+            WriteBack::None,
+        );
+        // A multiply.
+        p.count_commit(
+            None,
+            None,
+            WriteBack::HiLo(crate::alu::HiLo { hi: 0, lo: 0 }),
+        );
+
+        let c = p.commit_census();
+        assert_eq!(
+            c[cc::SIMPLE],
+            2,
+            "GPR write and no-write-back are both simple"
+        );
+        assert_eq!(c[cc::MEM], 2, "a load and a store both have a DC access");
+        assert_eq!(c[cc::HILO], 1, "a multiply writes HI/LO");
+        assert_eq!(c[cc::COP], 0);
+        assert_eq!(c[cc::OTHER], 0);
+    }
+
+    /// A COP0 access outranks a memory op: an instruction with both is NOT
+    /// something a direct commit path may serve, and counting it as MEM would
+    /// understate the class that must keep using `wb_stage`.
+    #[test]
+    fn a_cop_access_outranks_a_memory_op() {
+        let mut p = Pipeline::new();
+        p.count_commit(
+            Some(Cop0Access::Read {
+                src: 12,
+                dest: 3,
+                wide: false,
+            }),
+            Some(MemOp::Store {
+                kind: StoreKind::Word,
+                addr: 0x8000_0000,
+                value: 0,
+            }),
+            WriteBack::None,
+        );
+        let c = p.commit_census();
+        assert_eq!(c[cc::COP], 1, "the COP class must win");
+        assert_eq!(c[cc::MEM], 0);
+        assert_eq!(c[cc::SIMPLE], 0);
     }
 }

@@ -54,6 +54,8 @@ pub use alu::{HiLo, MulDiv};
 pub use decode::{Decoded, Op, decode};
 pub use exec::{Executed, WriteBack, execute};
 pub use mem::{LoadKind, StoreKind};
+#[cfg(feature = "work-counters")]
+pub use pipeline::commit_class;
 pub use pipeline::{Exception, Interlock, Latch, Pipeline, Stage};
 pub use regs::Regs;
 pub use sysad::{BlockOrder, Phase, Transaction, Width, block_order};
@@ -290,6 +292,41 @@ impl Cpu {
     pub fn tick_at<B: Bus>(&mut self, bus: &mut B, count_now: u64) {
         self.pipeline
             .advance_at(bus, &mut self.regs, &mut self.pc, count_now);
+        self.retired = self.pipeline.retired;
+    }
+
+    /// Whether the CPU is parked at a recognized self-branch idle loop.
+    #[cfg(feature = "fast-exec")]
+    #[must_use]
+    pub const fn is_parked_in_idle_loop(&self) -> bool {
+        matches!(self.pipeline.idle_pc, Some(pc) if pc == self.pc)
+    }
+
+    /// `Count` ticks the scheduler may batch before the timer could latch `IP7`.
+    /// One idle pair is exactly one `Count` tick, so this is also a pair count.
+    #[cfg(feature = "fast-exec")]
+    #[must_use]
+    pub const fn count_ticks_until_timer_match(&self) -> u64 {
+        self.pipeline.cop0.count_ticks_until_timer_match()
+    }
+
+    /// Retire `pairs` iterations of a recognized idle loop.
+    ///
+    /// The per-boundary path's state changes for the idle pair, applied `pairs`
+    /// times: two instructions retired and `Random` ticked twice. Everything the
+    /// per-boundary path does *besides* this — sampling the interrupt lines,
+    /// the NMI check, `set_now` — is what the caller has established cannot
+    /// change across the batch, and is why this is not simply a loop over
+    /// [`Cpu::step_instruction_at`].
+    ///
+    /// `Random` advances through [`Cop0::tick_random_by`], which is the closed
+    /// form of the wrap-at-`Wired` walk (UM §6.3.3) rather than `random -= 2n` —
+    /// that shortcut is wrong exactly when the batch crosses the wrap, and the
+    /// batch is long precisely when it would.
+    #[cfg(feature = "fast-exec")]
+    pub fn retire_idle_pairs(&mut self, pairs: u64) {
+        self.pipeline.retired = self.pipeline.retired.wrapping_add(pairs.wrapping_mul(2));
+        self.pipeline.cop0.tick_random_by(pairs.wrapping_mul(2));
         self.retired = self.pipeline.retired;
     }
 

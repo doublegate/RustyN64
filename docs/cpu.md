@@ -746,6 +746,43 @@ programs of the same length differing only in `MULT`/`DIV` versus `NOP`. A first
 version used a threshold on a single run and **passed with the charge deleted**
 because eight cold I-cache fills cleared the bar on their own.
 
+#### The idle-loop skip
+
+`beq $0, $0, -1` followed by a `nop` is a branch to itself. After both
+instructions the PC is back where it started, and the only state either one
+touches is `Count` (derived from the scheduler's tick) and `Random`. So
+recognizing the pair and charging its two `PCycle`s **is** executing it — not an
+approximation of it — and `Pipeline::idle_pc` does exactly that.
+
+It matters because it is not a corner case. It is the N64 idle thread, and it is
+where most titles spend most of their CPU:
+
+| title | share of retired instructions | frame |
+| --- | --- | --- |
+| Super Mario 64 | ~95% | 50.27 -> 31.64 ms (**1.589x**) |
+| Mario Kart 64 | ~90% | 44.40 -> 24.18 ms (**1.836x**) |
+| Zelda: Ocarina of Time | (not histogrammed) | 38.98 -> 19.06 ms (**2.046x**) |
+| Banjo-Kazooie | does not use this loop | 46.83 -> 46.67 ms (neutral) |
+
+**Why caching the recognition is as correct as the hardware.** The N64 does not
+snoop DMA against the I-cache: software that overwrites code must issue a `CACHE`
+instruction itself, and until it does the CPU keeps executing the stale cached
+line. A recognition keyed to the I-cache's own lifetime therefore cannot diverge
+from the machine. `Pipeline::cache_op` clears it — at the single entry point for
+every `CACHE` variant, not only the invalidating ones — and so does taking any
+exception.
+
+**What it does not change.** `retired` is bit-identical to the executing path on
+all five ROMs measured, n64-systemtest is unchanged (Phase 1 and RSP categories
+`Failed: 0`, 90 suite-wide), and the skip is reached only after NMI and interrupt
+recognition, so the loop is left on exactly the cycle an interrupt would leave
+it. It adds nothing to ledger C-16.
+
+**What it is not, yet.** The skip is per-iteration: it still returns to the
+scheduler every two idle instructions and still pays `sample_interrupt_lines`
+there. Jumping straight to the next scheduled event would remove that too, and
+needs the event-driven scheduler rather than this.
+
 ### Exceptions
 
 Address-error (unaligned), TLB refill/invalid/modified, integer overflow

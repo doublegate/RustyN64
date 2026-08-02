@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 
 [features]
+# Occupancy census hooks (ADR 0006: counters only).
+work-counters = []
 default = ["std"]
 std = []
 

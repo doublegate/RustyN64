@@ -48,6 +48,8 @@ pub use rustyn64_rdp as rdp;
 pub use rustyn64_rsp as rsp;
 
 pub use bus::{Bus, MiInterrupt, RDRAM_SIZE, RcpRegs};
+#[cfg(feature = "work-counters")]
+pub use scheduler::occupancy;
 pub use scheduler::{
     COUNT_DIVIDER, CPU_DIVIDER, CPU_HZ, MASTER_HZ, PHASE_PERIOD, PIF_DIVIDER, RCP_DIVIDER, RCP_HZ,
     SI_DIVIDER, System,

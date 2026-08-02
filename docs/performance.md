@@ -2275,6 +2275,16 @@ the real figure will be lower because the dispatch, the register reads and the
 accumulator writeback do not vanish. **Any SIMD work here must be measured
 against that ceiling, not against the 8.5%.**
 
+> **SUPERSEDED — the 5.3% is wrong, and this paragraph is the reason it needed
+> checking.** `62% x 8.5%` multiplies an operation-count share by a time share,
+> which assumes `multiply_lane` costs what the average `vu.rs` function costs.
+> Measured by doubling, it is **2.6–2.7% of a frame** — a ~1.028x ceiling, half
+> this figure — because the multiply/accumulate family is among the *cheapest*
+> things the VU does while the transcendental and permute families it was
+> averaged against are the dearest. See §*`multiply_lane` measures 2.6–2.7% of a
+> frame*. The instruction in bold above stands; it was followed, and the answer
+> changed.
+
 **The figures above are a delta over the timed window.** The first version
 reported the raw cumulative counters, folding ~36 warm-up frames into a table
 captioned "120 frames" — caught in review. The effect turned out to be 0.06%
@@ -2697,7 +2707,9 @@ a range too. Against the `fast-exec` frame of 65.3 ms / 15.31 FPS:
 | all small wins, taken perfectly | 58.4–58.2 ms | **17.1–17.2** |
 | gain | −6.9 to −7.1 ms | **+1.8 to +1.9 FPS** |
 
-**+1.8 FPS, and 60 FPS is still 3.5x away.** Every figure above is a ceiling
+**+1.8 FPS, and 60 FPS is still 3.5x away.** — *re-derived: the same bundle is
+worth +3.6 FPS against today's frame, because these shares were of a 65.3 ms
+frame that has since halved. See §*The declined backlog, re-derived*.* Every figure above is a ceiling
 assuming the work is removed *for free*; real implementations pay dispatch,
 synchronization and bookkeeping the ceilings do not charge for. B2 additionally
 costs an `unsafe` exception in a chip crate, A3 needs double-buffered RDRAM and
@@ -2713,6 +2725,13 @@ was declined individually rather than as a bundle. The bundle is not worth more
 than its parts — that is what the disjointness table is for.
 
 ### The honest position on 60 FPS
+
+> **SUPERSEDED, 2026-08-02.** This section reasoned entirely from profile shares
+> of the existing execution path, and what closed most of the gap was not a
+> faster version of any bucket in it — it was that ~90% of the instructions did
+> not need to run at all. Ocarina of Time is at **52.5 FPS** today. Kept as the
+> record of the reasoning; do not cite it as a current claim. See §*The declined
+> backlog, re-derived against a frame half the size*.
 
 **It is not reachable from here.** 60 FPS needs 16.67 ms against the 65.3 ms
 `fast-exec` frame — a **3.92x** gap — and the two largest levers are now both declined on their own
@@ -2732,3 +2751,654 @@ that away by ADR and reach ~1.53x combined.
 work can deliver, so nobody spends a month on a change whose ceiling is 1.05x
 believing it is the path to 60. If the bar moves — if 1.4x for a recompiler is
 worth it — ADR 0017 says so explicitly and the arithmetic is there to re-check.
+
+## Phase 0/1 of the competitive program: a reference number, and two refuted leads
+
+**Provenance.** Super Mario 64 (`17ce0773…`), i9-10850K, `rustc 1.96.0`,
+`--release`, `fast-exec,fast-scheduler`, tree at `1cc7dce`, load < 3.0 unless
+stated. Differential over a post-warm-up window in every case.
+
+### cen64: 36.5 FPS, cycle-accurate, no dynarec
+
+`scripts/bench_reference_emulators.sh`. cen64 runs headless and prints its own
+frame rate, so this needs no display and no assumption about what the rate is.
+
+| | FPS | cycles/frame | cycles/instruction |
+| --- | --- | --- | --- |
+| **cen64** (cycle-accurate) | **36.5** | 131 M | **92** |
+| RustyN64 accurate | 10.0 | 501 M | 350 |
+| RustyN64 `fast-exec` | 15.9 | 314 M | 218 |
+| 60 FPS on this host | 60.0 | 83 M | 58 |
+
+**3.8x, in the same accuracy class**, and cen64's figure was taken at load 6.97,
+which penalises it. This retires the standing explanation that cycle accuracy is
+what costs us 10 FPS. It is not: cen64 pays the same modeling cost and lands
+within 1.6x of 60 FPS.
+
+Other subjects were attempted and are recorded in the script header: **gopher64**
+never advances when launched non-interactively (0.5 s of CPU over 60 s),
+**ares** exposes no CLI frame counter and varied 2x in CPU draw between samples,
+**MangoHud** writes no log here, **RetroArch** segfaults under `--max-frames`.
+
+### The `fast-exec` profile, by source file
+
+`perf record -F 999 -e cycles:u -D 4000`, source-line attribution.
+
+| share | file | |
+| --- | --- | --- |
+| 18.44% | `bus.rs` | memory + MMIO |
+| 15.74% | `fastexec.rs` | the per-instruction driver |
+| 8.07% | `pipeline.rs` | still 8% with the timing model bypassed |
+| 7.77% | `uint_macros.rs` | stdlib `saturating_add` / `wrapping_add` / `bswap` |
+| 5.30% | `vu.rs` | RSP vector |
+| 5.09% | `scheduler.rs` | |
+| 4.89% | `decode.rs` | |
+| 4.72% | `su.rs` | RSP scalar |
+| 4.46% | `vi.rs` | |
+| **4.41%** | **`addr.rs`** | **all address translation** |
+| **2.78%** | **`cache.rs`** | **all cache simulation** |
+
+### Two leads this refutes, before either was built on
+
+**1. Fastmem is not the big win the plan assumed.** The plan called a page table
+"expected to be the largest single win", on the reasoning that every access pays
+a segment walk, a TLB lookup, a cache-line lookup and an MMIO match chain.
+Measured, that whole surface is `addr.rs` **4.41%** + `cache.rs` **2.78%** =
+**7.2%**, a ceiling of **1.08x** for a *perfect* page table. It is not the
+biggest item and it does not close a 3.8x gap.
+
+**2. The Bus's MMIO dispatch order costs nothing.** `read_u32` tests ten register
+ranges before reaching RDRAM — the instruction-fetch and load path, so nearly
+every access pays them. Hoisting the RDRAM check to the top was built and
+measured **A-B-A-B: 64.096 / 63.874 / 63.659 / 63.858 ms**, both hoisted legs
+inside the baseline spread, **0.34% slower** on the conservative pairing.
+Reverted. Each test is a mask-and-compare against a constant that is always false
+for RDRAM, and a branch predictor gets that right every time.
+
+The invariant the old placement was defending is now **asserted** rather than
+implied by ordering (`rdram_window_is_disjoint_from_every_register_block`,
+mutation-checked), so the comment's claim is checkable even though the ordering
+stays.
+
+**3. And a lead that dissolved on reading.** `vi.rs:208` shows **3.58%** on a line
+containing a 64-bit division, which reads as an obvious memoization target.
+`Vi::tick` early-outs above it, and a half-line elapses on about **one call in
+1,980** — so that division runs ~500 times a frame, on the order of 0.007% of it.
+The 3.58% is attribution, not the divide. Same shape as the `Latch` refutation.
+
+### What the profile actually says
+
+**It is flat.** After one attribution-suspect line at 10.4%
+(`fastexec.rs:334`, the `self.dc_wb = latch` store that ends a large inlined
+block — the `Latch` refutation's exact signature), nothing exceeds 3.6%. There is
+no hot spot to fix, which is why the last program's incremental slices kept
+returning 1-3%.
+
+What is large is **per-instruction driver overhead**: `fastexec.rs` 15.74% +
+`pipeline.rs` 8.07% + `decode.rs` 4.89% + `scheduler.rs` 5.09% = **33.8%**, all of
+it work done once per instruction that a block-oriented design does once per
+block. That, not fastmem, is where a 3.8x gap can be attacked — so the plan's
+Phase 1 and Phase 2 swap places.
+
+### The VI coverage histogram, and why the VI optimization was NOT taken
+
+This document previously recorded an outstanding measurement, in the
+`vi_divot` ruled-out entry: *"Settling it needs a coverage histogram over a real
+frame."* Taken 2026-08-01, Super Mario 64, **27,150,246 filtered pixels**:
+
+| value | share |
+| --- | --- |
+| `cvg == 0` | 22.45% |
+| `cvg == 4` | 77.55% |
+| every other value | **0.00%** |
+
+The hypothesis that entry called untested is confirmed, and more strongly than it
+was stated: **`cvg == 7` is not rare, it never occurs.** So every filtered pixel
+takes the AA-edge filter and the 8-tap de-dither path is unreachable — even
+though `dither_filter` is enabled on 100% of pixels.
+
+**That reads as a large VI win, and it was not taken.** Inside the AA-edge filter
+the six neighbor taps are kept only `if nb_cvg == 7`, so all six RDRAM reads are
+discarded on every pixel — six of seven reads provably dead, ~163 M wasted reads
+across the benchmark.
+
+They are dead because of **a defect, not a property of the workload**. Only two
+coverage values appear and both have the low two bits clear, which is the exact
+fingerprint of ledger **R-24**: the RDP never writes the color buffer's hidden
+9th-bit plane, so the low two bits of every coverage value are dropped. Skipping
+the reads would have made the emulator faster at producing a picture with its
+anti-aliasing disabled, and cemented the bug behind a performance argument.
+
+**The general rule this is an instance of:** when a hot path turns out to be
+doing provably useless work, ask why the work is useless before removing it. Dead
+work is sometimes a bug wearing an optimization's clothes.
+
+### The RCP occupancy census: what an event scheduler could actually skip
+
+Same provenance as above. `work-counters`, `examples/work_bench.rs`, **162,500,080
+RCP steps**.
+
+| | idle share |
+| --- | --- |
+| **RSP halted** | **78.11%** |
+| **RDP idle** (frozen, XBUS, stalling, or empty FIFO) | **99.97%** |
+
+Every chip is stepped on every RCP step today, so an event-driven scheduler's
+ceiling **is** the idle fraction. That is not the same quantity as a profile
+share, and the difference is the whole reason this was measured: a share says
+what the RSP costs *when it runs*, not how often it is stepped while halted.
+
+**The ceiling, for the RSP:** its profile share is `vu.rs` 5.94% + `su.rs` 5.31%
+= **11.25%**, of which 78.11% is spent halted — so at most **8.79%** of a frame
+is recoverable, or **1.096x**. The RDP's 99.97% looks larger but is worth far
+less: the split-borrow it guards was already made conditional
+(§*The Bus split-borrow moves 1.35 GB a frame*), so the remaining per-step cost
+is the predicate itself.
+
+**One methodological trap, recorded because the first run fell into it.** Sampling
+the RDP's idle state *before* `rsp_tick` reported **100.00%** — an artifact, not a
+result. The RSP's `dp_write` submits a command list during `rsp_tick` and
+`rdp_tick` consumes it in the same step, so the FIFO is always empty at that
+instant. The census now samples where `rdp_tick` itself decides, which moves the
+figure to 99.97%. A census must sample at the point the decision it is modeling
+would actually be made.
+
+The predicate is pinned to the real early-outs by
+`census_predicate_agrees_with_the_real_early_outs`, including that it is
+**read-only** — `tick_without_bus` decrements the stall it tests, and a census
+that did the same would change what it measures.
+
+### The event scheduler, built and reverted — and why its ceiling was wrong
+
+Guarding `rsp_tick` on `!halted()` is the whole RSP half of an event-driven
+scheduler, and the occupancy census above sized it at **1.096x**. Built,
+A-B-A-B:
+
+| leg | frame |
+| --- | --- |
+| A always-step | 56.739 ms |
+| B skip | 56.589 ms |
+| A always-step | 56.652 ms |
+| B skip | 56.450 ms |
+
+**0.11% on the conservative pairing — neutral, and reverted.**
+
+**The ceiling arithmetic was wrong, and the error generalizes:
+`idle-fraction x profile-share` overstates a skip whenever the idle path is
+already cheap.** `su::su_step` early-returns on its halt check before doing
+anything, so the 78.11% of steps where the RSP is halted already cost almost
+nothing; the 11.25% profile share is spent almost entirely on the 21.89% of steps
+where it actually runs. The census answered *how often* the RSP is idle. Sizing a
+skip needs *how much the idle steps cost*, which is a different measurement — and
+it was the one missing.
+
+That is the third ceiling this program has produced that did not survive being
+built (after fastmem's 7.2% and the block cache's decode share), and all three
+failed the same way: a share was multiplied by something it is not proportional
+to.
+
+**One real defect came out of it.** `rcp_steps` was incremented at the tail of
+`Bus::rsp_tick`, so "RCP steps" meant "RSP ticks" — invisible while the RSP was
+stepped unconditionally, and immediately wrong under the skip, which stopped the
+clock with the chip. The charge now lives in `System::step_rcp` and is pinned by
+`an_rcp_step_is_charged_even_when_every_chip_is_idle`.
+
+## The VI's coverage taps were recomputed three times per pixel — 1.119x
+
+The scan-out's memo (`ViSampler::cells`) keys on the **output** of the filter
+chain, which is the right key for the repeated sampling a 2x upscale creates and
+no help at all for the divot filter — because the divot runs *inside* one `cells`
+miss. `Bus::vi_divot` calls `Bus::vi_fetch_cov` three times per output pixel
+(`x - 1`, `x`, `x + 1`), and advancing one column recomputes two of those three
+from scratch. Each is 6 (AA-edge) or 8 (de-dither) `Bus::vi_read_cov` calls plus
+its own center read.
+
+**Sized by elision, not by arithmetic.** The three ceilings this program produced
+that did not survive being built all failed the same way — a profile share
+multiplied by something it is not proportional to — so this one was sized by
+stubbing the taps out and taking the delta: **16.7% of a frame (9.40 ms)**, which
+is what perfect elimination would be worth (1.200x). A window memo cannot reach
+all of it, so the honest band before building was **1.09–1.12x**, expecting the
+low end because the window's own bookkeeping was unmeasured.
+
+**The fix: a second memo layer, one level lower.** `ViSampler::cov_cells` caches
+`vi_fetch_cov` results keyed on `x - (x_lo - 1)` — two columns wider than `cells`
+on each side, so the divot's outer taps land inside the window rather than missing
+on every row's first and last column. Same two rows, same `row_y`, same eviction;
+`row_slot` now clears both layers, which is mutation-checked (deleting the
+`cov_cells` clear turns `memoized_scanout_matches_uncached_recomputation` red).
+
+| leg | mean frame |
+| --- | --- |
+| A no second layer | 56.832 ms |
+| B `cov_cells` | 50.749 ms |
+| A no second layer | 56.805 ms |
+| B `cov_cells` | 50.338 ms |
+
+**1.119x on the conservative pairing** (worst B against best A) — the top of the
+predicted band. 17.60 -> 19.79 FPS; **197 -> 176 host cycles per emulated
+instruction**. All 13 Angrylion VI conformance vectors still pass byte-for-byte.
+
+**One thing the change had to be careful about.** `memoized_scanout_matches_uncached_recomputation`
+used to describe `Bus::vi_sample_direct` as bypassing the memo, and that stopped
+being true the moment the second layer was consulted from inside it. The test is
+still valid — its reference walk uses `ViSampler::new(cfg, 0, -1)`, and
+`cov_span()` keeps zero at zero, so *both* layers decline together — but the
+property now rests entirely on the `bypass.span == 0` assertion rather than on
+which function is called. Without that assertion the test would have quietly
+become a comparison of the memo against itself.
+
+## `multiply_lane` measures 2.6–2.7% of a frame, not 5.3% — and the first probe was invalid
+
+The VU census above ended with an instruction: *"Any SIMD work here must be
+measured against that ceiling, not against the 8.5%."* The ceiling it set —
+**5.3%, 1.056x** — was itself `62% x 8.5%`: an **operation-count** share
+multiplied by a **time** share. That is the same shape as the three ceilings this
+program produced that did not survive being built, so it was re-derived by
+measurement.
+
+### The obvious probe was contaminated, and the counters caught it
+
+Replacing `multiply_lane`'s 16-arm dispatch and all its arithmetic with one XOR
+measured **50.25 -> 40.03 ms, a 1.255x speedup** — `multiply_lane` apparently
+20.4% of a frame, four times the census figure.
+
+It is not. `work-counters` shows why:
+
+| | real | elided |
+| --- | --- | --- |
+| CPU instructions / frame | 1,443,787 | 1,443,787 |
+| **RSP instructions / frame** | **294,983** | **121,715** |
+| COP2 computational ops (120 frames) | 14,569,003 | 4,462,734 |
+
+The garbage results changed the microcode's own control flow: the RSP executed
+**59% fewer instructions**. Most of that 10.3 ms was *avoided RSP work*, not
+`multiply_lane`'s cost. The CPU counter was unmoved — 80 instructions out of
+173 M — which is exactly why checking only `retired` would have passed this
+through. **An elision probe is only valid where the elided value cannot steer
+the machine, and a VU result steers the RSP.**
+
+### Doubling instead, because it cannot change control flow
+
+The inverted method from ruled-out #6: **make the work bigger and take the
+delta.** `multiply_lane` was split into a `#[inline(never)] multiply_lane_body`
+called once (A) or twice (B), with `vu_acc[lane]` saved and restored around the
+discarded first pass so the final machine state is bit-identical. Both legs carry
+the `inline(never)`, so the differential is one body call and nothing else.
+
+| leg | mean frame | retired |
+| --- | --- | --- |
+| A 1x | 50.814 ms | 173254496 |
+| B 2x | 52.141 ms | 173254496 |
+| A 1x | 50.743 ms | 173254496 |
+| B 2x | 52.205 ms | 173254496 |
+
+**`retired` is identical in all four legs** — the workload did not move.
+
+**One `multiply_lane` pass is 1.33–1.39 ms of a ~50.8 ms frame: 2.6–2.7%.** At
+598,507 calls per frame (74,813 multiply-family ops x 8 lanes) that is ~2.3 ns,
+about 11 host cycles for a call, a 16-arm match and a 64-bit multiply — a
+plausible figure, which the 20.4% was not.
+
+### Why the arithmetic was wrong, and it is not the usual reason
+
+The census assumed `multiply_lane` costs what the average `vu.rs` function costs,
+because it multiplied an op-count share by a time share. It does not: `VMADN`,
+`VMADH` and `VMUDL` are among the *cheapest* things the VU does, while the
+transcendental, permute and compare families it was averaged against are the
+expensive ones. **61.6% of the operations are well under 61.6% of the time.**
+
+So the ceiling on a perfect vectorization of `multiply_lane` is about **1.028x**,
+not 1.056x — half what ADR 0016 declined it at, against a 1.5x bar, and with the
+cost unchanged: it drops `crates/rustyn64-rsp` from `forbid(unsafe_code)` to
+`deny`. **B2 stays declined, now on a measurement rather than on a product of two
+shares.** The census's 5.3% should be read as superseded by this section.
+
+## Most titles spend ~90% of their CPU in a two-instruction idle loop — 1.59x to 2.05x
+
+Sizing the block cache found something much larger than the block cache. Two
+independent methods put the average sequential run at **2.14 instructions**, and
+a PC histogram says why:
+
+```text
+0xffffffff80246dd8  word=0x1000ffff   97,122,219   47.70%
+0xffffffff80246ddc  word=0x00000000   97,122,219   47.70%
+```
+
+`0x1000ffff` is `beq $0, $0, -1` — a branch to itself — with a `nop` delay slot.
+**~95% of every CPU instruction Super Mario 64 retires is that two-instruction
+spin.** Mario Kart 64 is identical in shape at a different address (~90%). It is
+the N64 idle thread: the CPU waiting for the RCP, and this emulator was faithfully
+burning host cycles on it.
+
+### Why this had to come before the block cache
+
+A block cache measured against a workload that is 90% a two-instruction loop
+would have looked spectacular and then mostly evaporated once the loop stopped
+executing. The same distortion explains the CPU-bucket shares this document has
+been quoting for months: they were dominated by an idle loop nobody had looked at.
+
+### The result
+
+Skipping it is not an approximation. After `beq $0,$0,-1` and its `nop` the PC is
+back where it started and the only state either instruction touches is `Count`
+(derived) and `Random` (reproduced by hand). A-B-A-B, conservative pairing:
+
+| title | base | idle skip | |
+| --- | --- | --- | --- |
+| Zelda: Ocarina of Time | 38.980 ms | 19.056 ms | **2.046x** -> 52.5 FPS |
+| Mario Kart 64 | 44.404 ms | 24.184 ms | **1.836x** -> 41.3 FPS |
+| Super Mario 64 | 50.274 ms | 31.639 ms | **1.589x** -> 31.6 FPS |
+| Banjo-Kazooie | 46.829 ms | 46.671 ms | 1.003x — neutral |
+
+**`retired` is identical in every leg of every title**, which is the strongest
+available statement that the accounting is exact rather than approximately right.
+Banjo-Kazooie is the control: its sequential-run length is 5.93, it does not use
+this loop, and it moves 0.3%.
+
+For scale, everything else measured in this program: the VI coverage memo 1.119x,
+`multiply_lane`'s entire vectorization ceiling 1.028x, the event scheduler 0.11%.
+
+### The probe that was wrong first, and how it was caught
+
+The obvious way to size this was to elide `multiply_lane`-style — replace the
+work and take the delta. Applied to the CPU's fetch it gave a clean-looking
+**32.8% of a frame**, which exceeds the entire CPU bucket. It was `black_box`
+holding the duplicated `decode` un-fused, measuring a standalone decode rather
+than the one the loop actually emits — the same mechanism that made the decode
+cache's 8.1% probe turn into a 1.0% regression. Splitting it gave fetch ~25.8%
+and standalone decode ~12.8%, and neither number survives being added.
+
+`retired` was identical across all six legs, so the workload never moved. That is
+the check that makes a doubling probe trustworthy and an elision probe suspect:
+**an elision is only valid where the elided value cannot steer the machine.**
+
+### What it is not, yet
+
+The skip is per-iteration — it still returns to the scheduler every two idle
+instructions and still pays `sample_interrupt_lines` there. Jumping straight to
+the next scheduled event would remove that too, and belongs with the event-driven
+scheduler.
+
+## The declined backlog, re-derived against a frame half the size
+
+`§Where the optimization program ended` priced the entire declined backlog at
+**~1.12x / +1.8 FPS** and used that to argue each item was not worth taking. That
+arithmetic was correct and it is now stale, for a reason worth stating plainly:
+**every one of those figures was a share of a 65.3 ms frame.** The idle-loop skip,
+the fast commit and the VI coverage memo removed CPU and VI cost, not RDP, GPU or
+RSP cost — so the backlog's *absolute* cost is unchanged while the frame it is
+measured against has halved. Its share roughly doubled.
+
+| item | as measured | absolute | share of a 31.6 ms frame |
+| --- | --- | --- | --- |
+| **A3** async RDP | 1.7% of 65.3 ms | 1.11 ms | 3.5% |
+| **A4** GPU as rasterizer | 1.23% of 65.3 ms | 0.80 ms | 2.5% |
+| **B2** VU vectorization | 2.6–2.7% of 50.8 ms | 1.36 ms | 4.3% |
+| **all three, taken perfectly** | | **3.27 ms** | **10.3% -> 1.115x** |
+
+The multiplier barely moves; **the FPS it buys does**, because FPS is not linear
+in frame time. Against Super Mario 64's 31.6 ms that is 31.6 -> 28.4 ms, **31.6 ->
+35.2 FPS (+3.6)** — double the +1.8 the same bundle was worth before. Against
+Ocarina of Time's 19.06 ms it is 19.06 -> 17.1 ms, **52.5 -> 58.6 FPS**, which
+puts a real title within a percent of the target.
+
+**None of the three is free, and none of them is a code change alone.**
+
+- **A3** needs double-buffered RDRAM and its own ADR.
+- **A4** changes what lands in RDRAM, so it reopens the determinism argument in
+  ADR 0015 — a maintainer decision, not an implementation one.
+- **B2** costs the `unsafe` exception ADR 0016 wrote down and recommended
+  against, and its ceiling was re-measured *downward* (§*`multiply_lane` measures
+  2.6–2.7%*).
+
+**And the rest of the pile is still worth nothing.** The VU family hoist
+(neutral), `-C target-cpu=native` (neutral), PGO (4.96% slower), the decode cache
+(1.0% slower), the `Latch` split (premise refuted), the RSP idle-step skip (0.11%,
+built and reverted), the MMIO read ordering (0.34% slower). Taking those would be
+a regression, not a small win — the distinction the original section drew, and it
+still holds.
+
+### The 60 FPS position has changed, and the old one should not be quoted
+
+`§The honest position on 60 FPS` said 60 FPS "is not reachable from here",
+against a 3.92x gap and two declined levers. That conclusion is **superseded**: it
+was reasoned entirely from profile shares of the existing execution path, and the
+thing that closed most of the gap was not a faster version of any bucket in that
+profile — it was noticing that ~90% of the instructions did not need to run at
+all. Ocarina of Time is at 52.5 FPS today. The section stands as a record of the
+reasoning; it should not be cited as a current claim.
+
+## The idle skip's remaining per-iteration overhead is 13.5% — larger than A3 and B2 together
+
+The idle-loop skip is per-iteration: it returns to the scheduler every two idle
+instructions and pays `count_ticks`, `set_now`, `sample_interrupt_lines` (a bus
+IRQ poll), the NMI check and the RCP catch-up loop's setup each time. Sizing what
+a multi-iteration skip could remove, **by measurement rather than by adding those
+up**:
+
+Charging **64 `PCycle`s per skip instead of 2** runs emulated time fast through
+the idle loop, so the number of CPU-side idle iterations drops 32x while the
+frame's total emulated ticks — and therefore the total RCP step count — are
+unchanged. The delta is 31/32 of the per-iteration overhead. (The probe is not
+correct; `retired` falls to 20.5 M, which is the point.)
+
+| leg | mean frame |
+| --- | --- |
+| A per-iteration (x1) | 31.674 ms |
+| B 32x fewer iterations | 27.625 ms |
+| A per-iteration (x1) | 31.841 ms |
+| B 32x fewer iterations | 27.558 ms |
+
+**4.17 ms, so the full overhead is ~4.30 ms of a 31.76 ms frame: 13.5%, a
+1.156x ceiling.** Super Mario 64 would go 31.6 -> 36.3 FPS.
+
+### What that does to the priority order
+
+| item | ceiling on today's frame | cost |
+| --- | --- | --- |
+| **multi-iteration idle skip** | **13.5% -> 1.156x** | none — ADR 0013's existing mode |
+| B2 VU vectorization (ADR 0020) | 4.3% -> 1.045x | `forbid(unsafe_code)` -> `deny` |
+| A3 async RDP (ADR 0018) | 3.5% -> 1.036x | one frame of latency, off by default |
+| A4 GPU rasterizer (ADR 0019) | 2.5% | blocked — an accuracy regression today |
+
+**The free item is larger than the two paid ones combined.** It should be built
+first, and both paid items should be re-sized against the frame it leaves behind
+rather than against this one — the same error the backlog re-derivation above
+corrects, and it would be careless to repeat it immediately.
+
+### The constraint any implementation has to respect
+
+An idle pair is 2 `PCycle`s = 4 master ticks; the RCP steps every 3. So the RCP
+steps **more often than the CPU idles** (~1.33 per pair), and no amount of
+batching removes an RCP step. A multi-iteration skip therefore cannot simply jump
+to the next event: it must still walk the RCP edges. What it can remove is the
+CPU-side work between them — which is exactly the 13.5% measured here, and is
+why the ceiling is 1.156x rather than the whole idle path.
+
+## The easy multi-iteration idle skip is NEUTRAL — the 13.5% is in the boundary check
+
+The section above sized the idle skip's remaining per-iteration overhead at
+**13.5%** and assumed the obvious implementation would recover most of it: hoist
+the scheduler's own scaffolding — `boot_nmi_halt`, the RCP edge setup, the report
+tally — out of a stretch where the CPU provably does nothing. Built, with
+`retired` bit-identical:
+
+| | mean frame |
+| --- | --- |
+| baseline (per-iteration) | 31.674 / 31.841 ms |
+| scaffolding hoisted out of the idle stretch | **32.137 ms** |
+
+**Slower, outside the baseline spread. Reverted.**
+
+### What that locates
+
+The 64-`PCycle` probe reduced the number of `step_instruction_at` **calls** by
+32x, not just the loop around them. The hoist kept those calls at their original
+frequency and moved only what surrounds them — and gained nothing. So the 13.5%
+is inside the per-boundary work itself: `set_now`, `sample_interrupt_lines`
+(`poll_irq` plus `timer_edge`), the NMI check, `interrupt_pending`, and the call.
+
+**It is deliberately not batchable by the easy route.** Reducing how often the
+interrupt check runs changes the cycle an interrupt is recognized on — a behavior
+change wearing an optimization's clothes.
+
+### What would actually recover it, stated so the next attempt starts here
+
+A batch is sound only if it can prove nothing changes across it, and each input
+can in fact be bounded:
+
+- **`poll_irq`** flips only when an RCP chip sets `mi_intr`, which happens only at
+  an RCP step. The idle loop steps the RCP itself, so it can test the (cheap)
+  level right after each `step_rcp` and leave the batch at the first instruction
+  boundary at or after the raising edge — same recognition cycle, far fewer full
+  boundary evaluations.
+- **`timer_edge`** is `Count` against `Compare`, and `Count` is derived from
+  `master_ticks`. The tick of the next match is computable, so it bounds the batch
+  rather than needing a per-boundary test.
+- **`Random`** and the retired tally are pure arithmetic: `-= 2N` and `+= 2N`.
+
+That is the design the 1.156x is behind. It is a real scheduler change with real
+exactness obligations, not the hoist tried here — and the hoist's neutrality is
+the evidence that the shortcut does not exist.
+
+### The per-boundary cost cannot be bisected by removal
+
+The obvious next step — delete the interrupt sampling from the idle path and see
+what the frame costs — is **vacuous here, and it fails loudly rather than
+quietly**: the idle loop is *exited* by the interrupt, so with the check gone the
+machine never leaves it and the VI never comes up (`frame_bench` asserts on
+exactly this and did). The check is load-bearing, not incidental.
+
+That leaves doubling, and doubling is not free here either: `sample_interrupt_lines`
+calls `Cop0::timer_edge`, which is **edge-detecting and carries internal state**,
+so calling it twice per boundary consumes the edge rather than measuring it. A
+sound doubling probe has to duplicate `set_now` and `interrupt_pending` — the
+pure reads — and leave the latching half alone, which measures only part of what
+a batch would remove.
+
+**So the 13.5% is currently a total, not a decomposition**, and the batch design
+below should be built against the total with its own A-B-A rather than against a
+per-component estimate that does not exist yet.
+
+### And the ceiling should be re-derived before it is attempted
+
+1.156x was measured against a 31.76 ms frame. Anything landed between now and
+then moves it, in the same way the declined backlog's shares moved when the frame
+halved. Re-measure the 64-`PCycle` probe first; do not inherit this number.
+
+## Rebuilding between A-B-A legs biases the measurement — the harness was the bug
+
+Three consecutive attempts to measure the idle batch came back contaminated, and
+the cause was self-inflicted rather than environmental.
+
+**Every leg ran `cargo build` and then timed immediately after it.** A parallel
+release build is itself a multi-core job, and `/proc/loadavg` is a **1-minute
+exponential average** — so it is still decaying from *this harness's own build*
+when the timing starts. One mechanism explains all three failures:
+
+- Run 1 had a leg 60% high, which read like a cold page cache and was not.
+- Run 2's A legs drifted **monotonically** upward (30.46 -> 31.39 -> 31.45) —
+  a trend, not scatter — and one title's B legs spread **36%**.
+- Run 3's load gate passed at 0.78 and then aborted at 1.75 mid-run, because the
+  thing that pushed it to 1.75 was the build the gate had just waited in front of.
+
+**Interleaving does not cancel this.** A-B-A is designed to cancel *monotonic
+session drift*, and it does — but here *both* legs are preceded by a build, so
+the bias is applied to both and the difference between them is what carries the
+noise. The protection people expect from A-B-A is simply absent for this term.
+
+### The fix: no compilation inside the measurement window
+
+Build every leg first, copy the binaries aside, wait **once** for the load to
+decay, then alternate with nothing but the benchmark running
+(`/tmp/rustyn64-bench/aba_nobuild.sh`, the shape worth keeping). The difference
+is not subtle:
+
+| | leg spread, rebuild-per-leg | leg spread, binaries pre-built |
+| --- | --- | --- |
+| Super Mario 64 | up to 3.2% | **0.64% (A), 0.34% (B)** |
+| Mario Kart 64 | **36%** | **0.25% (A), 1.1% (B)** |
+
+### What this does and does not invalidate
+
+It does **not** touch any result decided by `retired` — the accuracy work, the
+workload-change checks, every "identical in every leg" claim. Those are exact.
+
+It **does** mean that recorded deltas near the noise floor deserve less
+confidence than their write-ups imply, in whichever direction the bias fell.
+Large results (the idle skip at 1.59–2.05x, the fast commit at 1.22x, the VI memo
+at 1.12x) are far outside it and stand. Small ones — the 1.12% read path, the
+0.11% RSP idle skip, the 1.0% decode-cache regression, `target-cpu=native`'s
+"neutral" — were all decided against a rebuild-per-leg harness and should be
+re-run on this one before anyone leans on them. **They are not hereby overturned;
+they are downgraded to unverified.**
+
+## The batched idle skip is 1.064x–1.072x
+
+With the harness fixed, the batch measures cleanly. Every B leg beats every A
+leg on both titles:
+
+| | A legs (ms) | B legs (ms) | conservative |
+| --- | --- | --- | --- |
+| Super Mario 64 | 30.685 / 30.535 / 30.731 | 28.611 / 28.709 / 28.701 | **1.064x** |
+| Mario Kart 64 | 23.186 / 23.127 / 23.166 | 21.567 / 21.325 / 21.447 | **1.072x** |
+
+`retired` is bit-identical to the per-instruction path in every leg. 32.6 -> 34.8
+FPS on Super Mario 64, 43.2 -> 46.6 on Mario Kart 64. n64-systemtest unchanged
+(Phase 1 and RSP categories `Failed: 0`, 90 suite-wide).
+
+### Against the 1.156x ceiling
+
+This recovers a little under half of it. The remainder is the per-pair work the
+batch keeps on purpose: `poll_irq` after each RCP step, and `retire_idle_pairs`
+ticking `Random` in a loop. **`Random` wraps to 31 at `Wired`, not at zero**, so
+`random -= 2n` is wrong exactly when a long batch crosses that wrap — and the
+batch is long precisely when it would. Making that O(1) safely, with the
+`Wired`-sweep test already in place as the gate, is the next increment.
+
+### Why the batch is sound
+
+Entered only *after* a boundary has executed without vectoring, which is what
+establishes that nothing is pending. From there every input to the boundary check
+is constant or bounded: `Cause.IP2` follows `poll_irq`, which flips only at an RCP
+step the batch performs itself and tests after; `Cause.IP7` follows `timer_edge`,
+a delta against `last_count`, and because `COUNT_DIVIDER` is exactly twice
+`CPU_DIVIDER` one idle pair is exactly one `Count` tick, so
+`count_ticks_until_timer_match` bounds the batch in pairs and keeps the crossing
+on the boundary the per-instruction walk would have found it on; `Status`'s masks
+cannot move because no instruction executes. Leaving the batch does not consume
+the boundary that ends it.
+
+## The O(1) `Random` advance closes most of the idle-batch gap — 1.028x / 1.057x
+
+`retire_idle_pairs` ticked `Random` in a loop, which put a per-pair cost back
+into the batch that exists to remove per-pair costs. Replacing it with a closed
+form (`Cop0::tick_random_by`):
+
+| | A legs (ms) | B legs (ms) | conservative |
+| --- | --- | --- | --- |
+| Super Mario 64 | 28.546 / 28.616 / 28.618 | 27.608 / 27.602 / 27.764 | **1.028x** |
+| Mario Kart 64 | 21.360 / 21.310 / 21.479 | 20.160 / 20.189 / 20.181 | **1.057x** |
+
+Every B leg beats every A leg; leg spreads are 0.14–0.79% on the no-build
+harness. 35.0 -> 36.2 FPS on Super Mario 64, 46.9 -> 49.6 on Mario Kart 64.
+
+**Batch plus closed form, against the pre-batch baseline: 1.105x (SM64) and
+1.145x (Mario Kart 64), against the 1.156x ceiling the probe set.** Mario Kart
+essentially reaches it, which is the first time in this program that a measured
+implementation has landed on its predicted ceiling rather than well under it.
+
+### Why the closed form is not `random - n`
+
+`Random` walks down to `Wired` and then jumps to **31**, so the sequence is a
+transient followed by a cycle of `31 ..= Wired`. Three cases look impossible and
+are reachable, because both fields are masked to 6 bits on write: `Wired > 31`,
+`Random < Wired`, and `Random > 31`. Each *lengthens* the walk rather than
+erroring, so both distances are taken modulo 64 rather than assumed in range.
+
+A closed form that assumes `Wired <= 31` is right for every value software
+sensibly writes and wrong for exactly the ones a test ROM probes. The test sweeps
+the whole space — 64 x 64 x 71 tick counts, plus a million-tick case for the
+modulo — rather than sampling it, and the naive `random - n` dies at
+`wired 0, random 0, 32 ticks`: the wrap, on the first cycle.
