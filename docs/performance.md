@@ -2923,3 +2923,48 @@ to.
 stepped unconditionally, and immediately wrong under the skip, which stopped the
 clock with the chip. The charge now lives in `System::step_rcp` and is pinned by
 `an_rcp_step_is_charged_even_when_every_chip_is_idle`.
+
+## The VI's coverage taps were recomputed three times per pixel — 1.119x
+
+The scan-out's memo (`ViSampler::cells`) keys on the **output** of the filter
+chain, which is the right key for the repeated sampling a 2x upscale creates and
+no help at all for the divot filter — because the divot runs *inside* one `cells`
+miss. `Bus::vi_divot` calls `Bus::vi_fetch_cov` three times per output pixel
+(`x - 1`, `x`, `x + 1`), and advancing one column recomputes two of those three
+from scratch. Each is 6 (AA-edge) or 8 (de-dither) `Bus::vi_read_cov` calls plus
+its own center read.
+
+**Sized by elision, not by arithmetic.** The three ceilings this program produced
+that did not survive being built all failed the same way — a profile share
+multiplied by something it is not proportional to — so this one was sized by
+stubbing the taps out and taking the delta: **16.7% of a frame (9.40 ms)**, which
+is what perfect elimination would be worth (1.200x). A window memo cannot reach
+all of it, so the honest band before building was **1.09–1.12x**, expecting the
+low end because the window's own bookkeeping was unmeasured.
+
+**The fix: a second memo layer, one level lower.** `ViSampler::cov_cells` caches
+`vi_fetch_cov` results keyed on `x - (x_lo - 1)` — two columns wider than `cells`
+on each side, so the divot's outer taps land inside the window rather than missing
+on every row's first and last column. Same two rows, same `row_y`, same eviction;
+`row_slot` now clears both layers, which is mutation-checked (deleting the
+`cov_cells` clear turns `memoized_scanout_matches_uncached_recomputation` red).
+
+| leg | mean frame |
+| --- | --- |
+| A no second layer | 56.832 ms |
+| B `cov_cells` | 50.749 ms |
+| A no second layer | 56.805 ms |
+| B `cov_cells` | 50.338 ms |
+
+**1.119x on the conservative pairing** (worst B against best A) — the top of the
+predicted band. 17.60 -> 19.79 FPS; **197 -> 176 host cycles per emulated
+instruction**. All 13 Angrylion VI conformance vectors still pass byte-for-byte.
+
+**One thing the change had to be careful about.** `memoized_scanout_matches_uncached_recomputation`
+used to describe `Bus::vi_sample_direct` as bypassing the memo, and that stopped
+being true the moment the second layer was consulted from inside it. The test is
+still valid — its reference walk uses `ViSampler::new(cfg, 0, -1)`, and
+`cov_span()` keeps zero at zero, so *both* layers decline together — but the
+property now rests entirely on the `bypass.span == 0` assertion rather than on
+which function is called. Without that assertion the test would have quietly
+become a comparison of the memo against itself.
