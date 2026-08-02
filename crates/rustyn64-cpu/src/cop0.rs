@@ -425,6 +425,32 @@ impl Cop0 {
         edge
     }
 
+    /// How many `Count` ticks may pass before [`Cop0::timer_edge`] could latch
+    /// `IP7`, measured from the last poll.
+    ///
+    /// `timer_edge` is a *delta* against `last_count`, not a per-tick equality,
+    /// so skipping calls does not lose an edge — it widens the window and the
+    /// next call still reports the crossing. That is what makes an idle batch
+    /// possible at all, and it is also the trap: a skipped edge would be reported
+    /// **late**, at whatever boundary polls next. Bounding a batch by this value
+    /// keeps the crossing on the boundary the per-instruction path would have
+    /// found it, because `n == to_compare` makes the very next poll see
+    /// `traveled == to_compare` and fire.
+    ///
+    /// `0` means `Compare` sits exactly on `last_count`, which `timer_edge`
+    /// treats as *not* an edge; the next match is then a full `u32` away, so this
+    /// reports that rather than a zero that would stall a caller's batch forever.
+    #[must_use]
+    pub const fn count_ticks_until_timer_match(&self) -> u64 {
+        let compare = self.regs[reg::COMPARE as usize] as u32;
+        let to_compare = compare.wrapping_sub(self.last_count);
+        if to_compare == 0 {
+            u32::MAX as u64
+        } else {
+            to_compare as u64
+        }
+    }
+
     /// Set or clear a `Cause.IP` bit.
     ///
     /// `bit` is 0..=7. `IP1:IP0` are software interrupts and are written through

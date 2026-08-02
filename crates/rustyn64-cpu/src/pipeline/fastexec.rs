@@ -629,6 +629,53 @@ mod idle_loop_tests {
         );
     }
 
+    /// `retire_idle_pairs(n)` must equal `n` trips through the per-boundary skip.
+    ///
+    /// The scheduler's idle batch calls it instead of stepping, so any drift here
+    /// is drift in `Random` and the retired tally that no ROM test would localize.
+    /// `Wired` is swept because `Random` wraps to 31 *at* `Wired` rather than at
+    /// zero — a batch that crosses that wrap is exactly where a closed-form
+    /// shortcut would go wrong, and the loop this asserts against is why one is
+    /// not used.
+    #[test]
+    fn a_batch_of_idle_pairs_matches_the_same_number_of_boundaries() {
+        for wired in [0u64, 1, 7, 30, 31] {
+            for pairs in [1u64, 2, 31, 32, 33, 97] {
+                let (mut one, mut one_bus) = parked();
+                one.pipeline
+                    .cop0
+                    .write(super::super::super::cop0::reg::WIRED, wired);
+                let (mut many, mut many_bus) = parked();
+                many.pipeline
+                    .cop0
+                    .write(super::super::super::cop0::reg::WIRED, wired);
+
+                // Recognize the loop on both, so the comparison starts aligned.
+                let _ = one.step_instruction_at(&mut one_bus, 0);
+                let _ = many.step_instruction_at(&mut many_bus, 0);
+
+                for i in 0..pairs {
+                    let _ = one.step_instruction_at(&mut one_bus, i + 1);
+                }
+                many.retire_idle_pairs(pairs);
+
+                assert_eq!(
+                    many.retired, one.retired,
+                    "wired {wired}, {pairs} pairs: retired tally diverged"
+                );
+                assert_eq!(
+                    many.pipeline
+                        .cop0
+                        .read(super::super::super::cop0::reg::RANDOM),
+                    one.pipeline
+                        .cop0
+                        .read(super::super::super::cop0::reg::RANDOM),
+                    "wired {wired}, {pairs} pairs: `Random` diverged"
+                );
+            }
+        }
+    }
+
     /// The skip charges what the two instructions charge. `execute_one` bills one
     /// `PCycle` to issue and neither a `beq` nor a `nop` can request a stall, so
     /// the pair is exactly two — and a wrong constant here would silently change

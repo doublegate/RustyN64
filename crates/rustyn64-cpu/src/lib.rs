@@ -295,6 +295,42 @@ impl Cpu {
         self.retired = self.pipeline.retired;
     }
 
+    /// Whether the CPU is parked at a recognized self-branch idle loop.
+    #[cfg(feature = "fast-exec")]
+    #[must_use]
+    pub const fn is_parked_in_idle_loop(&self) -> bool {
+        matches!(self.pipeline.idle_pc, Some(pc) if pc == self.pc)
+    }
+
+    /// `Count` ticks the scheduler may batch before the timer could latch `IP7`.
+    /// One idle pair is exactly one `Count` tick, so this is also a pair count.
+    #[cfg(feature = "fast-exec")]
+    #[must_use]
+    pub const fn count_ticks_until_timer_match(&self) -> u64 {
+        self.pipeline.cop0.count_ticks_until_timer_match()
+    }
+
+    /// Retire `pairs` iterations of a recognized idle loop.
+    ///
+    /// The per-boundary path's state changes for the idle pair, applied `pairs`
+    /// times: two instructions retired and `Random` ticked twice. Everything the
+    /// per-boundary path does *besides* this — sampling the interrupt lines,
+    /// the NMI check, `set_now` — is what the caller has established cannot
+    /// change across the batch, and is why this is not simply a loop over
+    /// [`Cpu::step_instruction_at`].
+    ///
+    /// `Random` is ticked rather than computed: it wraps to 31 at `Wired`
+    /// (UM §6.3.3), so `random -= 2n` is wrong whenever the batch crosses that
+    /// boundary, and the batch is long precisely when it would.
+    #[cfg(feature = "fast-exec")]
+    pub fn retire_idle_pairs(&mut self, pairs: u64) {
+        self.pipeline.retired = self.pipeline.retired.wrapping_add(pairs.wrapping_mul(2));
+        for _ in 0..pairs.wrapping_mul(2) {
+            self.pipeline.cop0.tick_random();
+        }
+        self.retired = self.pipeline.retired;
+    }
+
     /// Execute one instruction (plus its delay slot, if it branches) and return
     /// the `PCycle`s it cost — the **instruction-granular** path (ADR 0013),
     /// behind the default-off `fast-exec` feature.

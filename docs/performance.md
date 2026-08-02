@@ -3286,3 +3286,86 @@ per-component estimate that does not exist yet.
 1.156x was measured against a 31.76 ms frame. Anything landed between now and
 then moves it, in the same way the declined backlog's shares moved when the frame
 halved. Re-measure the 64-`PCycle` probe first; do not inherit this number.
+
+## Rebuilding between A-B-A legs biases the measurement — the harness was the bug
+
+Three consecutive attempts to measure the idle batch came back contaminated, and
+the cause was self-inflicted rather than environmental.
+
+**Every leg ran `cargo build` and then timed immediately after it.** A parallel
+release build is itself a multi-core job, and `/proc/loadavg` is a **1-minute
+exponential average** — so it is still decaying from *this harness's own build*
+when the timing starts. One mechanism explains all three failures:
+
+- Run 1 had a leg 60% high, which read like a cold page cache and was not.
+- Run 2's A legs drifted **monotonically** upward (30.46 -> 31.39 -> 31.45) —
+  a trend, not scatter — and one title's B legs spread **36%**.
+- Run 3's load gate passed at 0.78 and then aborted at 1.75 mid-run, because the
+  thing that pushed it to 1.75 was the build the gate had just waited in front of.
+
+**Interleaving does not cancel this.** A-B-A is designed to cancel *monotonic
+session drift*, and it does — but here *both* legs are preceded by a build, so
+the bias is applied to both and the difference between them is what carries the
+noise. The protection people expect from A-B-A is simply absent for this term.
+
+### The fix: no compilation inside the measurement window
+
+Build every leg first, copy the binaries aside, wait **once** for the load to
+decay, then alternate with nothing but the benchmark running
+(`/tmp/rustyn64-bench/aba_nobuild.sh`, the shape worth keeping). The difference
+is not subtle:
+
+| | leg spread, rebuild-per-leg | leg spread, binaries pre-built |
+| --- | --- | --- |
+| Super Mario 64 | up to 3.2% | **0.64% (A), 0.34% (B)** |
+| Mario Kart 64 | **36%** | **0.25% (A), 1.1% (B)** |
+
+### What this does and does not invalidate
+
+It does **not** touch any result decided by `retired` — the accuracy work, the
+workload-change checks, every "identical in every leg" claim. Those are exact.
+
+It **does** mean that recorded deltas near the noise floor deserve less
+confidence than their write-ups imply, in whichever direction the bias fell.
+Large results (the idle skip at 1.59–2.05x, the fast commit at 1.22x, the VI memo
+at 1.12x) are far outside it and stand. Small ones — the 1.12% read path, the
+0.11% RSP idle skip, the 1.0% decode-cache regression, `target-cpu=native`'s
+"neutral" — were all decided against a rebuild-per-leg harness and should be
+re-run on this one before anyone leans on them. **They are not hereby overturned;
+they are downgraded to unverified.**
+
+## The batched idle skip is 1.064x–1.072x
+
+With the harness fixed, the batch measures cleanly. Every B leg beats every A
+leg on both titles:
+
+| | A legs (ms) | B legs (ms) | conservative |
+| --- | --- | --- | --- |
+| Super Mario 64 | 30.685 / 30.535 / 30.731 | 28.611 / 28.709 / 28.701 | **1.064x** |
+| Mario Kart 64 | 23.186 / 23.127 / 23.166 | 21.567 / 21.325 / 21.447 | **1.072x** |
+
+`retired` is bit-identical to the per-instruction path in every leg. 32.6 -> 34.8
+FPS on Super Mario 64, 43.2 -> 46.6 on Mario Kart 64. n64-systemtest unchanged
+(Phase 1 and RSP categories `Failed: 0`, 90 suite-wide).
+
+### Against the 1.156x ceiling
+
+This recovers a little under half of it. The remainder is the per-pair work the
+batch keeps on purpose: `poll_irq` after each RCP step, and `retire_idle_pairs`
+ticking `Random` in a loop. **`Random` wraps to 31 at `Wired`, not at zero**, so
+`random -= 2n` is wrong exactly when a long batch crosses that wrap — and the
+batch is long precisely when it would. Making that O(1) safely, with the
+`Wired`-sweep test already in place as the gate, is the next increment.
+
+### Why the batch is sound
+
+Entered only *after* a boundary has executed without vectoring, which is what
+establishes that nothing is pending. From there every input to the boundary check
+is constant or bounded: `Cause.IP2` follows `poll_irq`, which flips only at an RCP
+step the batch performs itself and tests after; `Cause.IP7` follows `timer_edge`,
+a delta against `last_count`, and because `COUNT_DIVIDER` is exactly twice
+`CPU_DIVIDER` one idle pair is exactly one `Count` tick, so
+`count_ticks_until_timer_match` bounds the batch in pairs and keeps the crossing
+on the boundary the per-instruction walk would have found it on; `Status`'s masks
+cannot move because no instruction executes. Leaving the batch does not consume
+the boundary that ends it.

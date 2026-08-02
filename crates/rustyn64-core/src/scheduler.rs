@@ -643,6 +643,31 @@ impl System {
                 rcp = Self::next_edge_after(rcp, self.phases.rcp, RCP_DIVIDER);
             }
             self.master_ticks = end;
+
+            // **The idle batch.** The boundary just executed established, for this
+            // instant, that no NMI and no interrupt is pending — otherwise it
+            // would have vectored and the CPU would no longer be parked. From
+            // that fact the loop below can run further idle pairs *without*
+            // re-evaluating the boundary, because every input to that evaluation
+            // is either constant or bounded:
+            //
+            // * `Cause.IP2` follows `poll_irq`, which flips only when an RCP chip
+            //   sets `mi_intr` — and that can happen only at an RCP step, which
+            //   this loop performs itself and tests after.
+            // * `Cause.IP7` follows `Cop0::timer_edge`, a delta against
+            //   `last_count`. `count_ticks_until_timer_match` bounds the batch so
+            //   the crossing lands on the boundary the per-instruction path would
+            //   have found it on, not later.
+            // * `Status`'s masks cannot move: no instruction executes here.
+            // * `boot_nmi_halt` is bus state, so it too changes only across an
+            //   RCP step, and is tested on the same edge.
+            //
+            // Leaving the batch does not consume the boundary that ends it — the
+            // outer loop runs it through the ordinary path, which is what keeps
+            // the interrupt on its original cycle.
+            if self.cpu.is_parked_in_idle_loop() {
+                self.run_idle_batch(target, &mut report);
+            }
         }
         // Only reachable through the halted branch's `break`; an executing CPU has
         // already carried `master_ticks` to or past `target`.
@@ -650,6 +675,45 @@ impl System {
             self.master_ticks = target;
         }
         report
+    }
+    /// Run idle-loop pairs in bulk, stopping the moment anything the boundary
+    /// check reads could have changed. See the call site for why that is sound.
+    ///
+    /// Returns with `master_ticks` on an instruction boundary, so the caller's
+    /// ordinary path resumes exactly where a per-instruction walk would be.
+    #[cfg(feature = "fast-exec")]
+    fn run_idle_batch(&mut self, target: u64, report: &mut crate::fastpath::FastRunReport) {
+        /// One idle pair: two `PCycle`s, and — because `COUNT_DIVIDER` is twice
+        /// `CPU_DIVIDER` — exactly one COP0 `Count` tick, which is what lets the
+        /// timer bound below be counted in pairs.
+        const PAIR_TICKS: u64 = 2 * CPU_DIVIDER;
+
+        let room = (target.saturating_sub(self.master_ticks)) / PAIR_TICKS;
+        let pairs = room.min(self.cpu.count_ticks_until_timer_match());
+        if pairs == 0 {
+            return;
+        }
+
+        let mut rcp = Self::next_edge_after(self.master_ticks, self.phases.rcp, RCP_DIVIDER);
+        let mut done = 0u64;
+        while done < pairs {
+            let end = self.master_ticks + PAIR_TICKS;
+            while rcp <= end {
+                self.master_ticks = rcp;
+                self.step_rcp();
+                rcp = Self::next_edge_after(rcp, self.phases.rcp, RCP_DIVIDER);
+            }
+            self.master_ticks = end;
+            done += 1;
+            // Tested after the RCP has run, because the RCP is the only thing
+            // that can raise either. The boundary at `end` is then handed back to
+            // the caller unconsumed.
+            if rustyn64_cpu::Bus::poll_irq(&mut self.bus) || self.bus.boot_nmi_halt() {
+                break;
+            }
+        }
+        self.cpu.retire_idle_pairs(done);
+        report.work_units = report.work_units.saturating_add(done);
     }
 
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the
