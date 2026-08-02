@@ -2562,14 +2562,27 @@ impl Rdp {
                     if !self.alpha_compare_passes(color[3]) {
                         continue;
                     }
+                    // `stored_cvg` is `Some` only on the sub-pixel path, because
+                    // only there is `color[3]` a coverage value rather than the
+                    // combiner's alpha. Writing the hidden plane from a combiner
+                    // alpha would fabricate coverage out of a color channel.
+                    let mut stored_cvg = None;
                     if subpixel {
                         match self.pixel_coverage(xleft, xright, x) {
-                            Some(cov) => color[3] = cov << 5,
+                            Some(cov) => {
+                                color[3] = cov << 5;
+                                stored_cvg = Some(cov);
+                            }
                             None => continue,
                         }
                     }
                     self.dither_pixel(&mut color, x as u32, line as u32);
                     Self::write_pixel(row_addr, x as u32, bpp, color, bus);
+                    if let Some(cov) = stored_cvg {
+                        // Ledger R-24: the low two bits of coverage go to the
+                        // hidden plane, which is where the VI looks for them.
+                        Self::write_coverage(row_addr, x as u32, bpp, cov, bus);
+                    }
                 }
             } else {
                 #[allow(clippy::cast_sign_loss, reason = "x >= 0 within a clipped span")]
@@ -2677,6 +2690,34 @@ impl Rdp {
             }
             _ => {}
         }
+    }
+
+    /// Store a pixel's **coverage** where the VI reads it back from (ledger R-24).
+    ///
+    /// The N64 keeps anti-aliasing coverage for a 16-bit color image split across
+    /// two places: the top bit is the RGBA5551 alpha bit, written by
+    /// [`Self::write_pixel`] out of `rgba[3]`, and **the low two bits live in the
+    /// RDRAM hidden 9th-bit plane** — "This 9th bit is used to store things like
+    /// anti-aliasing coverage in the color buffer" (N64brew Wiki, *RDRAM*). The VI
+    /// reassembles them as `((px & 1) << 2) | rdram_read_hidden(byte)`
+    /// (`Bus::vi_read_cov`).
+    ///
+    /// **Only 16-bit images need this.** A 32-bit color image carries all three
+    /// coverage bits inside the alpha byte, and the VI reads them straight back as
+    /// `(px >> 5) & 7` — so writing the hidden plane there would be storing a
+    /// second, redundant copy the hardware does not keep.
+    ///
+    /// Without this the low two bits were dropped on every write, so the VI could
+    /// only ever read coverage 0 or 4, `cvg == 7` never held, and every
+    /// coverage-gated VI filter silently degenerated. Measured before the fix on
+    /// Super Mario 64: 27,150,246 filtered pixels, **`cvg0` 22.45% / `cvg4`
+    /// 77.55% / everything else 0.00%**.
+    fn write_coverage<B: VideoBus>(row_addr: u32, x: u32, bpp: u32, cov: u8, bus: &mut B) {
+        if bpp != 2 {
+            return;
+        }
+        let addr = row_addr.wrapping_add(x.wrapping_mul(bpp));
+        bus.rdram_write_hidden(addr, cov & 0x3);
     }
 
     /// Read the current color-image pixel at `(row_addr, x)` as RGBA8888 — the
@@ -3144,6 +3185,14 @@ impl Rdp {
                     }
                     self.dither_pixel(&mut color, xu, yu);
                     Self::write_pixel(row_addr, xu, bpp, color, bus);
+                    if let Some(c) = pixel_cov {
+                        // Ledger R-24, the depth path's half. The no-Z span had
+                        // the identical gap; both must store it or the VI sees
+                        // coverage only from whichever path a scene happens to
+                        // use — which is how 74.91% of pixels sat at exactly
+                        // `cvg4` after the first half of this fix.
+                        Self::write_coverage(row_addr, xu, bpp, c, bus);
+                    }
                 } else {
                     self.fill_pixel(row_addr, xu, bpp, bus);
                 }
@@ -7285,5 +7334,97 @@ mod tests {
             "Y0/Y2 lose their offset-0 sample; Y1/Y3 keep both"
         );
         assert_eq!(mask.count_ones(), 6);
+    }
+}
+
+/// **Coverage must survive the round trip through RDRAM** (ledger R-24).
+#[cfg(test)]
+mod coverage_writeback_tests {
+    use super::{Rdp, VideoBus};
+    use alloc::vec;
+    use rustyn64_cart::RdramBus as _;
+
+    /// A minimal RDRAM with the hidden 9th-bit plane, modeled the way
+    /// `rustyn64_core::Bus` does: two bits per halfword, four halfwords per byte.
+    struct Ram {
+        main: vec::Vec<u8>,
+        hidden: vec::Vec<u8>,
+    }
+
+    impl VideoBus for Ram {}
+
+    impl rustyn64_cart::RdramBus for Ram {
+        fn rdram_read(&self, addr: u32) -> u8 {
+            self.main.get(addr as usize).copied().unwrap_or(0)
+        }
+        fn rdram_write(&mut self, addr: u32, val: u8) {
+            if let Some(b) = self.main.get_mut(addr as usize) {
+                *b = val;
+            }
+        }
+        fn rdram_read_hidden(&self, addr: u32) -> u8 {
+            let halfword = (addr as usize) >> 1;
+            self.hidden
+                .get(halfword >> 2)
+                .map_or(0, |b| (b >> ((halfword & 3) * 2)) & 3)
+        }
+        fn rdram_write_hidden(&mut self, addr: u32, val: u8) {
+            let halfword = (addr as usize) >> 1;
+            if let Some(b) = self.hidden.get_mut(halfword >> 2) {
+                let shift = (halfword & 3) * 2;
+                *b = (*b & !(3 << shift)) | ((val & 3) << shift);
+            }
+        }
+    }
+
+    /// Every coverage value `0..=7` must read back exactly, reassembled the way
+    /// `Bus::vi_read_cov` does it: top bit from the RGBA5551 alpha, low two bits
+    /// from the hidden plane.
+    ///
+    /// **Mutation check:** delete the `write_coverage` call in the span loop, or
+    /// make it write `cov` instead of `cov & 3`, and this goes red. Before the
+    /// fix, every value read back as `cov & 4` — which is why the VI never saw
+    /// `cvg == 7` and its coverage-gated filters were dead.
+    #[test]
+    fn coverage_survives_the_round_trip_for_every_value() {
+        for cov in 0u8..=7 {
+            let mut ram = Ram {
+                main: vec![0u8; 64],
+                hidden: vec![0u8; 16],
+            };
+            let (row, x, bpp) = (0u32, 3u32, 2u32);
+            // What the span loop writes: coverage in the alpha byte's top bits,
+            // then the low two bits into the hidden plane.
+            let rgba = [0x10u8, 0x20, 0x30, cov << 5];
+            Rdp::write_pixel(row, x, bpp, rgba, &mut ram);
+            Rdp::write_coverage(row, x, bpp, cov, &mut ram);
+
+            // What the VI reads: `((px & 1) << 2) | rdram_read_hidden(byte)`.
+            let addr = row + x * bpp;
+            let px = u16::from_be_bytes([ram.rdram_read(addr), ram.rdram_read(addr + 1)]);
+            let got = ((u32::from(px) & 1) << 2) | u32::from(ram.rdram_read_hidden(addr));
+            assert_eq!(
+                got,
+                u32::from(cov),
+                "coverage {cov} read back as {got}: the hidden plane lost the low two bits"
+            );
+        }
+    }
+
+    /// A 32-bit color image keeps all three bits in the alpha byte, so the hidden
+    /// plane must be left ALONE — writing it there would store a second copy the
+    /// hardware does not keep, and the VI reads `(px >> 5) & 7` regardless.
+    #[test]
+    fn a_32bit_color_image_does_not_touch_the_hidden_plane() {
+        let mut ram = Ram {
+            main: vec![0u8; 64],
+            hidden: vec![0xFFu8; 16],
+        };
+        Rdp::write_coverage(0, 3, 4, 7, &mut ram);
+        assert_eq!(
+            ram.hidden,
+            vec![0xFFu8; 16],
+            "a 32-bit image must not write the hidden plane"
+        );
     }
 }
