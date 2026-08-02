@@ -619,3 +619,89 @@ fn curate_fuzz_candidates() {
         println!("PASS {p}");
     }
 }
+
+/// **Coverage must match Angrylion in the hidden plane, not just on screen**
+/// (ledger R-24).
+///
+/// Every other vector in this file compares rendered pixels, and that is exactly
+/// why the defect this pins survived all 164 of them: the N64 keeps anti-aliasing
+/// coverage for a 16-bit color image in RDRAM's hidden 9th-bit plane, which is
+/// invisible in the framebuffer. The RDP computed coverage correctly and stored
+/// only its top bit — so the VI read back 0 or 4 and never 7, and every
+/// coverage-gated VI filter silently degenerated.
+///
+/// `aa_tri_coverage_16` is the first vector rendered with `aa_enable` in 1-cycle
+/// mode rather than FILL, so the rasterizer actually produces sub-pixel coverage,
+/// and the first emitted at `.rvec` **v3**, which carries the oracle's plane.
+///
+/// **`#[ignore]`d, and the reason is two findings this vector surfaced on its
+/// first run — not a flaky test.** It is committed in this state deliberately:
+/// the infrastructure (`.rvec` v3, the generator's plane dump, the parser,
+/// `replay_with_hidden`) is what took the work, and the two gaps below are each
+/// worth their own change rather than being smuggled into this one.
+///
+/// 1. **We render nothing for this vector.** Our framebuffer is all zeros where
+///    Angrylion's is not, so the triangle is not drawing at all under 1-cycle +
+///    `aa_enable`. Every other committed vector renders in FILL mode, so this is
+///    the first to exercise that path — the divergence is real and unrelated to
+///    coverage.
+/// 2. **The hidden plane's power-on state differs.** Angrylion clears it to `3`
+///    (`HB_CLEAN` in its `rdram.c`), we power on at `0`. So untouched pixels can
+///    never match, whatever the renderer does, and a comparison of raw planes is
+///    not yet meaningful. Whether `3` is the hardware's reset state or an
+///    Angrylion convention is not established here and must not be assumed —
+///    ADR 0004 makes power-on state a documented value, not a copied one.
+///
+/// Un-ignore this once (1) is fixed and (2) is decided. Until then it would fail
+/// for reasons that are not the thing it is named after, which is worse than not
+/// running: a red test nobody can act on gets ignored by hand instead.
+///
+/// Mutation check once live: remove either `write_coverage` call (the no-Z span
+/// or `depth_span`) and it must go red. Both were needed — fixing only the first
+/// left 74.91% of a real frame's pixels at exactly `cvg4`.
+#[test]
+#[ignore = "blocked on two findings recorded above: we render nothing for an AA \
+            1-cycle triangle, and the hidden plane's power-on state differs"]
+fn aa_triangle_coverage_matches_angrylion_in_the_hidden_plane() {
+    let bytes = include_bytes!("vectors/aa_tri_coverage_16.rvec");
+    let v = parse(bytes);
+    let golden_hidden = v
+        .golden_hidden
+        .expect("aa_tri_coverage_16 must be a v3 vector carrying the hidden plane");
+    let (fb, hidden) = rustyn64_test_harness::conformance::replay_with_hidden(&v);
+
+    // The framebuffer still has to match, or a "coverage" agreement could be
+    // reached by rendering something else entirely.
+    assert_eq!(fb, v.golden_fb, "framebuffer diverged from the oracle");
+
+    // The plane is the point. Compare per pixel so a failure names the pixel
+    // rather than reporting that two 64-byte blobs differ.
+    assert_eq!(hidden.len(), golden_hidden.len(), "hidden plane length");
+    let mut wrong = Vec::new();
+    for (i, (got, want)) in hidden.iter().zip(golden_hidden).enumerate() {
+        if got != want {
+            wrong.push((i % v.width as usize, i / v.width as usize, *got, *want));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "hidden coverage plane diverged from Angrylion at {} of {} pixels; \
+         first few (x, y, got, want): {:?}",
+        wrong.len(),
+        hidden.len(),
+        &wrong[..wrong.len().min(6)]
+    );
+
+    // Witness that the vector exercises what it claims: a plane of all-zeros
+    // would "match" a renderer that writes nothing if the oracle also wrote
+    // nothing, and an all-identical plane would not distinguish edges from
+    // interior. Angrylion's plane must carry more than one distinct value.
+    let mut seen: Vec<u8> = golden_hidden.to_vec();
+    seen.sort_unstable();
+    seen.dedup();
+    assert!(
+        seen.len() > 1,
+        "the oracle's hidden plane is uniform ({seen:?}) — this vector cannot \
+         distinguish a renderer that stores coverage from one that does not"
+    );
+}
