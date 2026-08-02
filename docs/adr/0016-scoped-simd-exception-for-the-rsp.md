@@ -14,6 +14,11 @@ not carry the old blanket rule alongside this exception. `docs/architecture.md`
 is *not* amended, and must not be cited as a source for this policy: it contains
 no mention of `unsafe` at all.
 
+> **AMENDED by [ADR 0020](0020-amend-0016-accept-the-simd-exception.md),
+> 2026-08-02.** The recommendation below ("do not use this exception") is no
+> longer current: 0020 accepts it for `multiply_lane` only. The four gates in
+> this ADR are carried forward unchanged and remain the operative requirements.
+
 ## Addendum, 2026-08-02 — the 5.3% ceiling was re-derived by measurement, and it is smaller
 
 Every figure below is built on **5.3% of a frame / 1.056x**, which this ADR took
