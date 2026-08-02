@@ -167,6 +167,45 @@ fn main() {
 
     report_vu_histogram(&core, &vu_before);
     report_commit_census(&core);
+    report_rcp_occupancy(&core);
+}
+
+/// **How often each RCP chip is stepped with nothing to do.**
+///
+/// The whole value of an event-driven scheduler is skipping idle chips, so its
+/// ceiling *is* the idle fraction. A profile share cannot supply that: it says
+/// what the RSP costs when it runs, not how often it is stepped while halted.
+/// This is the number that decides whether the phase is worth building.
+fn report_rcp_occupancy(core: &EmuCore) {
+    use rustyn64_core::occupancy as occ;
+    let c = core.system().rcp_occupancy;
+    let steps = c[occ::STEPS];
+    assert!(
+        steps > 0,
+        "no RCP steps were censused — the counter is not wired into the stepping \
+         path, and a table of zeros reads as a result"
+    );
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "step counts over a bench run are far below 2^53"
+    )]
+    let pct = |n: u64| n as f64 / steps as f64 * 100.0;
+    println!("\nRCP occupancy over {steps} steps:");
+    println!(
+        "  RSP halted   {:>12}  {:>6.2}%",
+        c[occ::RSP_HALTED],
+        pct(c[occ::RSP_HALTED])
+    );
+    println!(
+        "  RDP idle     {:>12}  {:>6.2}%",
+        c[occ::RDP_IDLE],
+        pct(c[occ::RDP_IDLE])
+    );
+    println!(
+        "\nAn event scheduler can skip only the idle steps, so those percentages \
+         are its ceiling\nfor each chip — not the profile share the chip occupies \
+         when it does run."
+    );
 }
 
 /// **How much of the instruction stream a direct commit path could actually

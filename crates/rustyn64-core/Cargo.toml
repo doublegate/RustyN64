@@ -34,7 +34,7 @@ rdp-tap = []
 # Bus increment sits in the hottest path in the emulator and a shipped build must
 # not pay for a measurement. Both fields are `#[serde(skip)]`, so the save-state
 # layout is identical either way (ADR 0005).
-work-counters = ["rustyn64-rsp/work-counters", "rustyn64-cpu/work-counters"]
+work-counters = ["rustyn64-rsp/work-counters", "rustyn64-cpu/work-counters", "rustyn64-rdp/work-counters"]
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

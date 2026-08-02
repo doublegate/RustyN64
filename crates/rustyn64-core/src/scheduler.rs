@@ -193,11 +193,35 @@ impl Phases {
     }
 }
 
+/// Index names for [`System::rcp_occupancy`].
+#[cfg(feature = "work-counters")]
+pub mod occupancy {
+    /// Total RCP steps taken.
+    pub const STEPS: usize = 0;
+    /// Steps where the RSP was halted — stepping it did no microcode work.
+    pub const RSP_HALTED: usize = 1;
+    /// Steps where the RDP answered from its own state without touching the bus.
+    pub const RDP_IDLE: usize = 2;
+    /// Number of counters.
+    pub const COUNT: usize = 3;
+}
+
 /// Owns the run loop and ties the CPU to the Bus on one timeline.
 ///
 /// Determinism contract: same seed + ROM + input ⇒ bit-identical A/V (ADR 0004).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct System {
+    /// Per-RCP-step occupancy census: how often each chip had nothing to do.
+    ///
+    /// The ceiling on an event-driven scheduler is the idle fraction, and a
+    /// profile share cannot supply it — a share says what a chip costs *when it
+    /// runs*, not how often it is stepped for nothing.
+    ///
+    /// A counter (ADR 0006): nothing schedules against it, and `#[serde(skip)]`
+    /// keeps it out of the save-state layout (ADR 0011 §4).
+    #[cfg(feature = "work-counters")]
+    #[serde(skip)]
+    pub rcp_occupancy: [u64; occupancy::COUNT],
     /// The CPU.
     pub cpu: Cpu,
     /// The Bus — owns everything else mutable (RDRAM / RSP / RDP / AI / cart /
@@ -216,6 +240,8 @@ impl System {
     #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
+            #[cfg(feature = "work-counters")]
+            rcp_occupancy: [0; occupancy::COUNT],
             cpu: Cpu::new(),
             bus: Bus::default(),
             master_ticks: 0,
@@ -629,6 +655,25 @@ impl System {
     /// One RCP step: the RSP microcode unit, then the RDP rasterizer, then the
     /// AI/interface DMA progress — all on the SAME `&mut self.bus`.
     fn step_rcp(&mut self) {
+        // **Occupancy census** (`work-counters`), the measurement that sizes an
+        // event-driven scheduler before one is written.
+        //
+        // Today every chip is stepped on every RCP step -- ~1.04 M steps a frame
+        // -- whether or not it has anything to do. An event scheduler's whole
+        // value is skipping the idle ones, so its ceiling IS the idle fraction,
+        // and that fraction has never been counted. Sizing it from a profile
+        // share instead would repeat this program's most expensive mistake: the
+        // share tells you what the RSP costs when it runs, not how often it is
+        // halted.
+        //
+        // ADR 0006: counters only, nothing schedules against them.
+        #[cfg(feature = "work-counters")]
+        {
+            self.rcp_occupancy[occupancy::STEPS] += 1;
+            if self.bus.rsp.sp.halted() {
+                self.rcp_occupancy[occupancy::RSP_HALTED] += 1;
+            }
+        }
         // The chips each see only their narrow trait of `self.bus`.
         // The LLE RSP runs the microcode scalar+vector stream (Phase 2).
         self.bus.rsp_tick();
@@ -637,6 +682,16 @@ impl System {
         // incomplete — remaining opcodes are recognized-not-dispatched (T-31-004)
         // and per-command timing is deferred. See ledger R-18 for the end-to-end
         // commercial-video gap.
+        // The RDP census is sampled HERE, not with the RSP's above, and the
+        // difference is not cosmetic. The RSP's `dp_write` submits a command list
+        // during `rsp_tick`, and `rdp_tick` consumes it immediately — so sampling
+        // before `rsp_tick` sees an empty FIFO on *every* step and reports 100%
+        // idle, which is an artifact of the sampling instant rather than a fact
+        // about the RDP. This is the instant `rdp_tick` itself decides at.
+        #[cfg(feature = "work-counters")]
+        if self.bus.rdp.is_idle_for_census() {
+            self.rcp_occupancy[occupancy::RDP_IDLE] += 1;
+        }
         self.bus.rdp_tick();
         // AI / interface sub-clock advance — derives sample emission off the
         // canonical `master_ticks` (ADR 0006), like the VI scan below.

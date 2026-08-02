@@ -2853,3 +2853,38 @@ anti-aliasing disabled, and cemented the bug behind a performance argument.
 **The general rule this is an instance of:** when a hot path turns out to be
 doing provably useless work, ask why the work is useless before removing it. Dead
 work is sometimes a bug wearing an optimization's clothes.
+
+### The RCP occupancy census: what an event scheduler could actually skip
+
+Same provenance as above. `work-counters`, `examples/work_bench.rs`, **162,500,080
+RCP steps**.
+
+| | idle share |
+| --- | --- |
+| **RSP halted** | **78.11%** |
+| **RDP idle** (frozen, XBUS, stalling, or empty FIFO) | **99.97%** |
+
+Every chip is stepped on every RCP step today, so an event-driven scheduler's
+ceiling **is** the idle fraction. That is not the same quantity as a profile
+share, and the difference is the whole reason this was measured: a share says
+what the RSP costs *when it runs*, not how often it is stepped while halted.
+
+**The ceiling, for the RSP:** its profile share is `vu.rs` 5.94% + `su.rs` 5.31%
+= **11.25%**, of which 78.11% is spent halted — so at most **8.79%** of a frame
+is recoverable, or **1.096x**. The RDP's 99.97% looks larger but is worth far
+less: the split-borrow it guards was already made conditional
+(§*The Bus split-borrow moves 1.35 GB a frame*), so the remaining per-step cost
+is the predicate itself.
+
+**One methodological trap, recorded because the first run fell into it.** Sampling
+the RDP's idle state *before* `rsp_tick` reported **100.00%** — an artifact, not a
+result. The RSP's `dp_write` submits a command list during `rsp_tick` and
+`rdp_tick` consumes it in the same step, so the FIFO is always empty at that
+instant. The census now samples where `rdp_tick` itself decides, which moves the
+figure to 99.97%. A census must sample at the point the decision it is modeling
+would actually be made.
+
+The predicate is pinned to the real early-outs by
+`census_predicate_agrees_with_the_real_early_outs`, including that it is
+**read-only** — `tick_without_bus` decrements the stall it tests, and a census
+that did the same would change what it measures.

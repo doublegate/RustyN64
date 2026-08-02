@@ -1848,6 +1848,21 @@ impl Rdp {
         }
     }
 
+    /// Whether this step would answer entirely from the RDP's own state — frozen,
+    /// XBUS-sourced, stalling on a sync, or looking at an empty command FIFO.
+    ///
+    /// A **census predicate**, deliberately read-only: it must not consume the
+    /// stall the real step consumes, or measuring would change what is measured.
+    /// It duplicates [`Rdp::tick_without_bus`]'s early-outs for that reason, and
+    /// the two are pinned together by `census_predicate_agrees_with_the_real_early_outs`.
+    #[cfg(feature = "work-counters")]
+    #[must_use]
+    pub fn is_idle_for_census(&self) -> bool {
+        self.status & (DP_STATUS_FREEZE | DP_STATUS_XBUS) != 0
+            || self.stall > 0
+            || self.cmd_current >= self.cmd_end
+    }
+
     /// The part of a step that needs **no bus access**, returning `None` when it
     /// finished the step on its own and `Some(NeedsBus)` when work remains.
     ///
@@ -7460,5 +7475,54 @@ mod coverage_writeback_tests {
             vec![0xFFu8; 16],
             "a 32-bit image must not write the hidden plane"
         );
+    }
+}
+
+/// The census predicate must agree with the step it claims to describe.
+#[cfg(all(test, feature = "work-counters"))]
+mod census_predicate_tests {
+    use super::{DP_STATUS_FREEZE, DP_STATUS_XBUS, Rdp};
+
+    /// `is_idle_for_census` duplicates `tick_without_bus`'s early-outs because it
+    /// must not consume the stall the real step consumes — measuring would
+    /// otherwise change what is measured. Duplicated logic drifts, so the two are
+    /// pinned together here across every early-out.
+    ///
+    /// Mutation check: drop any one clause from the predicate and this goes red.
+    #[test]
+    fn census_predicate_agrees_with_the_real_early_outs() {
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_FREEZE;
+        assert!(rdp.is_idle_for_census());
+        assert!(rdp.tick_without_bus().is_none(), "frozen needs no bus");
+
+        let mut rdp = Rdp::new();
+        rdp.status |= DP_STATUS_XBUS;
+        assert!(rdp.is_idle_for_census());
+        assert!(rdp.tick_without_bus().is_none(), "XBUS needs no bus");
+
+        // Checked BEFORE `tick_without_bus`, which DECREMENTS the stall. The
+        // predicate must not, and calling the real step first would hide that.
+        let mut rdp = Rdp::new();
+        rdp.stall = 2;
+        assert!(rdp.is_idle_for_census());
+        assert!(rdp.is_idle_for_census());
+        assert_eq!(rdp.stall, 2, "the census predicate must be read-only");
+        assert!(rdp.tick_without_bus().is_none(), "a stall needs no bus");
+
+        let mut rdp = Rdp::new();
+        assert!(rdp.is_idle_for_census(), "an empty FIFO is idle");
+        assert!(rdp.tick_without_bus().is_none());
+
+        // NOT idle: a pending command with nothing else blocking.
+        let mut rdp = Rdp::new();
+        rdp.dpc_write(0, 0x100);
+        rdp.dpc_write(1, 0x108);
+        assert!(
+            !rdp.is_idle_for_census(),
+            "a pending command must not count as idle, or the census reports a \
+             ceiling that does not exist"
+        );
+        assert!(rdp.tick_without_bus().is_some());
     }
 }
