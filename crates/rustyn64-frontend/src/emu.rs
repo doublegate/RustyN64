@@ -37,6 +37,16 @@ const MASTER_TICKS_PER_FRAME: u64 = rustyn64_core::MASTER_HZ / 60;
 /// The default host output rate (Hz) before a `cpal` device reports its own.
 const DEFAULT_OUTPUT_RATE: u32 = 48_000;
 
+/// The furthest one emulated frame's audio may be stretched over host time.
+///
+/// A bound, not a tuning knob. It answers "how slow may the core get before the
+/// frontend stops trying to hide it", and **12.0 means 5 FPS** — below that the
+/// audio chops again rather than degenerating into an unrecognizable drone that
+/// also pins the ring. The measured floor this has to clear is the default
+/// build's ~8.5 FPS, which needs 7.06 (`docs/audio.md`), so the bound is chosen
+/// to sit clear of the worst case actually observed rather than at it.
+pub const MAX_AUDIO_STRETCH: f64 = 12.0;
+
 /// A produced video frame: an RGBA8 buffer plus its active dimensions.
 ///
 /// The N64 VI resolution is variable; `w`/`h` give the active sub-rectangle the
@@ -81,6 +91,17 @@ pub struct EmuCore {
     /// rate conversion stays continuous (click-free) across frames. Frontend-only
     /// state — the deterministic core never sees it (ADR 0004).
     resample_pos: f64,
+    /// How far to stretch one emulated frame's audio over host time, set by the
+    /// pacer's servo. `1.0` is real time.
+    ///
+    /// The core produces exactly one emulated frame of audio per emulated frame,
+    /// so when it runs at `fps` the device is offered `fps / 60` of what it
+    /// consumes and the rest is silence (`docs/audio.md`). Stretching by
+    /// `60 / fps` makes the stream continuous at the cost of pitch — the
+    /// slow-tape sound — which is the policy this frontend ships. Frontend-only,
+    /// like `resample_pos`: it is a function of host wall-clock and must never
+    /// reach the core.
+    audio_stretch: f64,
     /// Produced-frame counter, surfaced via `frame_count` for the status bar.
     frames: u64,
     /// `true` while paused (the pacer keeps running, the core does not advance).
@@ -99,6 +120,7 @@ impl EmuCore {
             audio: Vec::new(),
             output_rate: DEFAULT_OUTPUT_RATE,
             resample_pos: 0.0,
+            audio_stretch: 1.0,
             frames: 0,
             paused: false,
             loaded: false,
@@ -139,6 +161,27 @@ impl EmuCore {
         if rate != 0 {
             self.output_rate = rate;
         }
+    }
+
+    /// Set how far one emulated frame's audio is stretched over host time.
+    ///
+    /// `1.0` is real time and is the default, so a caller that never touches
+    /// this gets exactly the previous behavior. The pacer's servo drives it
+    /// (`emu_thread::AudioServo`); it is host-timing state and never reaches the
+    /// core (ADR 0004).
+    ///
+    /// Out-of-range and non-finite values are clamped where they are used
+    /// (`stretched_rate`) rather than rejected here, so a servo that
+    /// misbehaves degrades to a bounded pitch shift instead of a panic on the
+    /// audio path.
+    pub const fn set_audio_stretch(&mut self, stretch: f64) {
+        self.audio_stretch = stretch;
+    }
+
+    /// The current audio stretch factor.
+    #[must_use]
+    pub const fn audio_stretch(&self) -> f64 {
+        self.audio_stretch
     }
 
     /// Observed AI buffer underruns (starvations) — surfaced so the frontend /
@@ -432,20 +475,54 @@ impl EmuCore {
         self.audio.clear();
         let in_rate = self.system.bus.audio.sample_rate();
         let samples = self.system.bus.drain_audio_samples();
+        // The rate the resampler targets: the device rate stretched by however
+        // much slower than real time the core is running. At `stretch == 1.0`
+        // this is exactly `output_rate` and the arithmetic below is a no-op, so
+        // a build with no servo attached is unchanged.
+        let effective = stretched_rate(self.output_rate, self.audio_stretch);
         if in_rate == 0 || samples.is_empty() {
-            // Idle: one frame of silence at the host rate (keeps the ring fed).
-            let pairs = (self.output_rate / 60) as usize;
+            // Idle: one frame of silence at the stretched rate (keeps the ring
+            // fed). This has to stretch too — a silent frame that stayed 1/60 s
+            // long would leave exactly the gap the stretch exists to close.
+            let pairs = (effective / 60) as usize;
             self.audio.resize(pairs * 2, 0.0);
             return;
         }
         resample_stereo(
             &samples,
             in_rate,
-            self.output_rate,
+            effective,
             &mut self.resample_pos,
             &mut self.audio,
         );
     }
+}
+
+/// The device rate scaled by `stretch`, saturating rather than wrapping.
+///
+/// Split out and pure so the saturation is testable without running a frame. The
+/// clamp matters: `stretch` arrives from a servo reading host wall-clock, and an
+/// `as`-cast of a `f64` that has gone non-finite or enormous would produce a
+/// nonsense rate silently. `MIN` keeps the divisor positive so
+/// `resample_stereo`'s `debug_assert` cannot trip and the idle path cannot
+/// produce a zero-length frame.
+fn stretched_rate(output_rate: u32, stretch: f64) -> u32 {
+    /// Never resample to under a quarter of the device rate: past that the
+    /// output is too sparse to interpolate meaningfully, and the case does not
+    /// arise from a slow core anyway (which only ever stretches upward).
+    const MIN: f64 = 0.25;
+    let s = if stretch.is_finite() {
+        stretch.clamp(MIN, MAX_AUDIO_STRETCH)
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [output_rate/4, output_rate*MAX_AUDIO_STRETCH], well inside u32"
+    )]
+    let scaled = (f64::from(output_rate) * s) as u32;
+    scaled.max(1)
 }
 
 /// The geometry to present from a scan-out `(w, h)`: `Some((w, h))` when it is a
@@ -512,6 +589,59 @@ mod tests {
         emu.run_frame();
         assert!(emu.master_ticks() > before);
         assert_eq!(emu.frame_count(), 1);
+    }
+
+    /// **The stretch changes how many samples a frame stages** — the effect,
+    /// not just the setter. A `set_audio_stretch` that stored the value and was
+    /// never read would satisfy an assertion on `audio_stretch()` alone.
+    #[test]
+    fn a_stretched_frame_stages_proportionally_more_samples() {
+        let count = |stretch: f64| {
+            let mut emu = EmuCore::new(0);
+            emu.loaded = true;
+            emu.set_output_rate(48_000);
+            emu.set_audio_stretch(stretch);
+            emu.run_frame();
+            emu.drain_audio().len()
+        };
+        let real_time = count(1.0);
+        let quadruple = count(4.0);
+        assert!(real_time > 0, "a frame must stage some audio");
+        // The idle path resizes to `effective / 60 * 2`, so the ratio is exact
+        // up to the integer division.
+        let ratio = quadruple as f64 / real_time as f64;
+        assert!(
+            (ratio - 4.0).abs() < 0.01,
+            "a 4x stretch must stage ~4x the samples; got {real_time} -> {quadruple} ({ratio:.3}x)"
+        );
+    }
+
+    /// The clamp is what stops a servo reading a wall clock from turning a
+    /// glitch into a nonsense rate; `as`-casting a non-finite `f64` is UB-adjacent
+    /// nonsense that would surface as silence or a panic deep in the resampler.
+    #[test]
+    fn stretched_rate_saturates_rather_than_trusting_the_servo() {
+        assert_eq!(stretched_rate(48_000, 1.0), 48_000);
+        assert_eq!(stretched_rate(48_000, 4.0), 192_000);
+        assert_eq!(
+            stretched_rate(48_000, 1.0e9),
+            (48_000.0 * MAX_AUDIO_STRETCH) as u32,
+            "an absurd stretch clamps to the documented maximum"
+        );
+        assert_eq!(
+            stretched_rate(48_000, f64::NAN),
+            48_000,
+            "a non-finite stretch falls back to real time"
+        );
+        assert_eq!(
+            stretched_rate(48_000, f64::INFINITY),
+            48_000,
+            "infinity is not finite, so it falls back too"
+        );
+        assert!(
+            stretched_rate(48_000, -5.0) > 0,
+            "a negative stretch must still yield a usable rate"
+        );
     }
 
     #[test]

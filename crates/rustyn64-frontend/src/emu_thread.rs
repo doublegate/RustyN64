@@ -10,8 +10,13 @@
 //! Rate control, save-states, rewind, and run-ahead orchestration belong HERE
 //! (frontend-side), never in the core — the determinism contract. The loop is a
 //! wall-clock pacer driving a [`SaveStateCoordinator`] (rewind capture +
-//! run-ahead + save/load), which is a plain `run_frame` when both are off. The
-//! resampler servo is still a roadmap refinement.
+//! run-ahead + save/load), which is a plain `run_frame` when both are off.
+//!
+//! **The resampler servo is implemented** (`AudioServo`, private): it stretches each
+//! emulated frame's audio over the wall-clock time that frame actually took, so
+//! a core slower than real time produces a continuous stream instead of
+//! `fps / 60` of one. Measured 14.2% -> 90.9% delivered, 100% in steady state
+//! (`docs/audio.md`).
 //!
 //! # The pacer, and the bug it replaces
 //!
@@ -37,7 +42,7 @@ use web_time::{Duration, Instant};
 
 use crate::audio::AudioRing;
 use crate::config::Region;
-use crate::emu::EmuCore;
+use crate::emu::{EmuCore, MAX_AUDIO_STRETCH};
 use crate::input::SharedInput;
 use crate::present_buffer::PresentBuffer;
 use crate::savestate::{RewindConfig, RunAhead, SaveStateControls, SaveStateCoordinator};
@@ -69,6 +74,88 @@ const SLEEP_CHUNK: Duration = Duration::from_millis(2);
 /// which is exactly the bug this pacer replaces.
 const MAX_CATCHUP_FRAMES: u32 = 3;
 
+/// The audio rate-control servo: how far to stretch one emulated frame's audio
+/// so the device hears a continuous stream from a core slower than real time.
+///
+/// **The problem it solves** (`docs/audio.md`): the core stages exactly one
+/// emulated frame of audio per emulated frame, and the device consumes in
+/// wall-clock time, so supply is `fps / 60` — measured at **14.2%** on the
+/// default build. No buffering manufactures the rest. Stretching the resample by
+/// `60 / fps` fills the gap with real samples instead of silence, at the cost of
+/// pitch: the slow-tape sound. That is the shipped policy, chosen deliberately
+/// over chopping and over muting.
+///
+/// **Feed-forward plus a trim, not a pure integrator.** The dominant term is
+/// measured directly — the wall-clock interval between produced frames — so the
+/// servo is correct on its first frame instead of converging over seconds, which
+/// a pure occupancy integrator with a 7x range to cover would not be. The
+/// occupancy term only removes residual drift, because the feed-forward term
+/// cannot know about samples already banked in the ring.
+///
+/// Pure and separately testable, like [`Schedule`] above and for the same
+/// reason: the decisions are checkable with synthetic inputs, no thread, no real
+/// clock, no timing flake.
+#[derive(Debug)]
+struct AudioServo {
+    /// Smoothed wall-clock interval between produced frames.
+    interval: Option<Duration>,
+}
+
+impl AudioServo {
+    /// Weight of a new sample in the interval EMA. Low enough that one slow
+    /// frame does not swing the pitch audibly, high enough to track a real
+    /// change in load within a few frames.
+    const SMOOTHING: u32 = 8;
+
+    /// How hard the ring's fill level trims the feed-forward term.
+    ///
+    /// **Measured, and deliberately the smallest of the three tried.** 0.2, 0.4
+    /// and 0.6 all reach **100.0% steady-state delivery** and all reach their
+    /// first fully-fed callback at the same place (#15, ~320 ms); the only
+    /// difference is in the whole-window figure (90.6 / 91.3 / 91.9%), which is
+    /// dominated by the startup ramp from an empty ring and is not a
+    /// steady-state result. Picking 0.6 for that 1.3-point edge would be tuning
+    /// against a transient, so the lowest gain wins on the tiebreak that matters
+    /// here: a larger gain makes the pitch hunt audibly, and nothing was bought
+    /// with it. Re-run `measure_audio_gaps_at_the_device_boundary` before
+    /// changing it.
+    const TRIM_GAIN: f64 = 0.2;
+
+    const fn new() -> Self {
+        Self { interval: None }
+    }
+
+    /// Fold one measured frame interval into the estimate.
+    fn observe(&mut self, frame: Duration) {
+        self.interval = Some(self.interval.map_or(frame, |prev| {
+            (prev * (Self::SMOOTHING - 1) + frame) / Self::SMOOTHING
+        }));
+    }
+
+    /// The stretch factor for the next frame.
+    ///
+    /// `fill` is the ring's occupancy as a fraction of capacity. Returns `1.0`
+    /// (real time, i.e. the previous behavior) until an interval has been
+    /// observed, and never *compresses* below real time: a core running faster
+    /// than 60 FPS is already supplying more than the device wants, and the
+    /// ring's drop-oldest is the right answer there.
+    fn stretch(&self, period: Duration, fill: f64) -> f64 {
+        let Some(interval) = self.interval else {
+            return 1.0;
+        };
+        let period = period.as_secs_f64();
+        if period <= 0.0 {
+            return 1.0;
+        }
+        // Feed-forward: one emulated frame must cover one wall-clock interval.
+        let base = interval.as_secs_f64() / period;
+        // Trim toward a half-full ring. Under half, stretch a little more;
+        // over half, a little less.
+        let trim = Self::TRIM_GAIN.mul_add(0.5 - fill.clamp(0.0, 1.0), 1.0);
+        (base * trim).clamp(1.0, MAX_AUDIO_STRETCH)
+    }
+}
+
 /// Wall-clock pacing diagnostics.
 ///
 /// Published for the UI and for the later perf work. Counters only — nothing
@@ -82,6 +169,30 @@ pub struct PacerStats {
     pub snap_forwards: AtomicU64,
     /// Frames the pacer has produced.
     pub produced: AtomicU64,
+    /// The most recent audio stretch factor, as `f64::to_bits`, or **zero when
+    /// the servo has never run** — which is the case whenever no ring is
+    /// attached.
+    ///
+    /// Zero is a usable sentinel because `AudioServo::stretch` is clamped to
+    /// `[1.0, MAX_AUDIO_STRETCH]` and so can never produce it. That distinction
+    /// is the point: it lets a test tell "the servo ran and asked for real time"
+    /// apart from "the servo was never consulted", which are otherwise identical
+    /// from outside — the failure mode where rate control is computed correctly
+    /// and then never applied.
+    ///
+    /// A diagnostic. Nothing schedules against it (ADR 0006).
+    pub audio_stretch_bits: AtomicU64,
+}
+
+impl PacerStats {
+    /// The last stretch the servo asked for, or `None` if it never ran.
+    #[must_use]
+    pub fn audio_stretch(&self) -> Option<f64> {
+        match self.audio_stretch_bits.load(Ordering::Relaxed) {
+            0 => None,
+            bits => Some(f64::from_bits(bits)),
+        }
+    }
 }
 
 /// Everything [`EmuThread::spawn`] needs.
@@ -232,6 +343,11 @@ impl EmuThread {
                 // ADR 0004); with rewind off and run-ahead 0 the coordinator is a
                 // plain `run_frame` + drain, so output stays byte-identical.
                 let mut coordinator = SaveStateCoordinator::new(rewind, run_ahead, controls);
+                // Audio rate control. Only meaningful with a ring attached; with
+                // `ring: None` the servo is never consulted and the core keeps
+                // its default 1.0 stretch, so a headless build is unchanged.
+                let mut servo = AudioServo::new();
+                let mut last_frame = Instant::now();
                 while run_flag.load(Ordering::Relaxed) {
                     let due = schedule.frames_due(Instant::now());
                     let mut produced = 0u32;
@@ -242,10 +358,33 @@ impl EmuThread {
                     // UI stall. Per-frame gives the UI a window between each.
                     while produced < due && run_flag.load(Ordering::Relaxed) {
                         let ports = input.load_all();
+                        // Measured BEFORE the frame runs, from the last frame's
+                        // completion: the servo needs the interval the device
+                        // actually experienced, and the frame about to run has
+                        // not happened yet.
+                        let stretch = ring.as_ref().map(|r| {
+                            let now = Instant::now();
+                            servo.observe(now - last_frame);
+                            last_frame = now;
+                            #[allow(
+                                clippy::cast_precision_loss,
+                                reason = "ring occupancy and capacity are far below 2^53"
+                            )]
+                            let fill = r.occupancy() as f64 / r.capacity().max(1) as f64;
+                            servo.stretch(period, fill)
+                        });
+                        if let Some(stretch) = stretch {
+                            thread_stats
+                                .audio_stretch_bits
+                                .store(stretch.to_bits(), Ordering::Relaxed);
+                        }
                         let audio = emu.lock().map_or_else(
                             |_| Vec::new(),
                             |mut core| {
                                 core.set_controllers(ports);
+                                if let Some(stretch) = stretch {
+                                    core.set_audio_stretch(stretch);
+                                }
                                 let audio = coordinator.step(&mut core);
                                 // Published under the lock we already hold (as
                                 // RustyNES's emu thread does): one memcpy instead of
@@ -402,6 +541,393 @@ mod tests {
             handoff_max <= lock_max || lock_max < Duration::from_millis(1),
             "the handoff must not be slower than the emu mutex it replaces"
         );
+    }
+
+    /// Before any frame has been timed the servo asks for real time, so a build
+    /// that never observes an interval is byte-identical to the pre-servo one.
+    #[test]
+    fn the_servo_asks_for_real_time_until_it_has_measured_something() {
+        let servo = AudioServo::new();
+        let s = servo.stretch(Duration::from_secs_f64(1.0 / 60.0), 0.0);
+        assert!(
+            (s - 1.0).abs() < f64::EPSILON,
+            "an unmeasured servo must not change the rate; got {s}"
+        );
+    }
+
+    /// The feed-forward term IS the ratio of wall-clock interval to frame
+    /// period: a core running at a quarter speed must stretch four-fold, or the
+    /// device gets three-quarters silence.
+    #[test]
+    fn the_servo_stretches_by_exactly_how_far_behind_real_time_the_core_is() {
+        let period = Duration::from_secs_f64(1.0 / 60.0);
+        let mut servo = AudioServo::new();
+        // A quarter speed: each emulated frame takes four frame periods.
+        servo.observe(period * 4);
+        // Half-full ring, so the trim term is exactly 1 and only the
+        // feed-forward term is under test.
+        let s = servo.stretch(period, 0.5);
+        assert!(
+            (s - 4.0).abs() < 1e-9,
+            "a quarter-speed core needs a 4x stretch; got {s}"
+        );
+    }
+
+    /// The trim pushes toward a half-full ring in both directions, and it is a
+    /// *trim*: it must not swamp the feed-forward term.
+    #[test]
+    fn the_trim_pushes_toward_half_full_without_swamping_the_feed_forward() {
+        let period = Duration::from_secs_f64(1.0 / 60.0);
+        let mut servo = AudioServo::new();
+        servo.observe(period * 4);
+        let empty = servo.stretch(period, 0.0);
+        let half = servo.stretch(period, 0.5);
+        let full = servo.stretch(period, 1.0);
+        assert!(
+            empty > half && half > full,
+            "an emptier ring must ask for more stretch: {empty} / {half} / {full}"
+        );
+        // Within 10% of the feed-forward term at either extreme (TRIM_GAIN/2).
+        assert!(
+            (empty - 4.0).abs() < 0.5 && (full - 4.0).abs() < 0.5,
+            "the trim must not dominate: {empty} / {full}"
+        );
+    }
+
+    /// A core running FASTER than real time must not compress: it is already
+    /// supplying more than the device consumes, and the ring's drop-oldest is
+    /// the right answer. Compressing would raise the pitch of a fast core.
+    #[test]
+    fn a_core_faster_than_real_time_is_never_compressed() {
+        let period = Duration::from_secs_f64(1.0 / 60.0);
+        let mut servo = AudioServo::new();
+        servo.observe(period / 4);
+        assert!(
+            servo.stretch(period, 0.0) >= 1.0 && servo.stretch(period, 1.0) >= 1.0,
+            "stretch must never drop below real time"
+        );
+    }
+
+    /// The bound holds even for a core that has effectively stopped, so one
+    /// pathological stall cannot ask for a minutes-long stretch.
+    #[test]
+    fn a_stalled_core_is_clamped_to_the_documented_maximum() {
+        let period = Duration::from_secs_f64(1.0 / 60.0);
+        let mut servo = AudioServo::new();
+        servo.observe(Duration::from_secs(30));
+        let s = servo.stretch(period, 0.0);
+        assert!(
+            (s - MAX_AUDIO_STRETCH).abs() < f64::EPSILON,
+            "expected the clamp at {MAX_AUDIO_STRETCH}; got {s}"
+        );
+    }
+
+    /// **The servo is actually applied to the core, not merely computed.**
+    ///
+    /// Rate control that is calculated correctly and then dropped on the floor
+    /// passes every unit test above — this repo's decoded-but-no-op failure
+    /// mode, which has cost it real time before.
+    ///
+    /// Asserting the applied *value* is not enough on its own: a ROM-less core
+    /// runs far faster than real time, so the servo legitimately asks for `1.0`,
+    /// which is also the default. **So the destination is seeded with a value
+    /// the servo can never produce** (`SENTINEL`, outside the clamp range) and
+    /// the test asserts it was overwritten — the "seed the destination so it
+    /// differs from the expected result" rule, applied to a field whose
+    /// legitimate value is indistinguishable from its default.
+    ///
+    /// Mutation checks, both verified:
+    /// - delete `core.set_audio_stretch(stretch)` → the sentinel survives → red;
+    /// - delete the `ring.as_ref().map(...)` block → `audio_stretch()` stays
+    ///   `None` → red.
+    #[test]
+    fn the_servo_is_applied_to_the_core_when_a_ring_is_attached() {
+        /// Outside `[1.0, MAX_AUDIO_STRETCH]`, so no servo output can equal it.
+        const SENTINEL: f64 = 99.0;
+
+        let run = |ring: Option<Arc<AudioRing>>| {
+            let mut core = EmuCore::new(0);
+            core.set_audio_stretch(SENTINEL);
+            let emu = Arc::new(Mutex::new(core));
+            let thread = EmuThread::spawn(EmuThreadParams {
+                emu: Arc::clone(&emu),
+                input: Arc::new(SharedInput::new()),
+                present: PresentBuffer::new(),
+                ring,
+                region: Region::default(),
+                rewind: RewindConfig::default(),
+                run_ahead: RunAhead::default(),
+                controls: Arc::new(SaveStateControls::default()),
+            });
+            // Long enough for several frame periods at 60 Hz.
+            std::thread::sleep(Duration::from_millis(200));
+            let reported = thread.stats().audio_stretch();
+            drop(thread);
+            let applied = emu.lock().expect("emu mutex").audio_stretch();
+            (reported, applied)
+        };
+
+        let (reported, applied) = run(Some(Arc::new(AudioRing::new(4096))));
+        let reported = reported.expect("the servo must run when a ring is attached");
+        assert!(
+            (1.0..=MAX_AUDIO_STRETCH).contains(&reported),
+            "the servo's output must be in range; got {reported}"
+        );
+        assert!(
+            (applied - SENTINEL).abs() > f64::EPSILON,
+            "the servo ran but its value never reached the core: the sentinel survived"
+        );
+        assert!(
+            (applied - reported).abs() < f64::EPSILON,
+            "the core must hold what the servo last asked for: {applied} vs {reported}"
+        );
+
+        let (reported, applied) = run(None);
+        assert_eq!(
+            reported, None,
+            "with no ring there is nothing to rate-control, so the servo must not run"
+        );
+        assert!(
+            (applied - SENTINEL).abs() < f64::EPSILON,
+            "with no ring the core's stretch must be left exactly as the caller set it"
+        );
+    }
+
+    /// **What the audio device actually experiences** — the host half of the
+    /// ~1 s on / ~1 s off report, measured rather than reasoned about.
+    ///
+    /// `examples/audio_probe.rs` measures the *core* half and settles it: the
+    /// emulated AI produces a continuous stream, and supply is exactly
+    /// `fps / 60`. Neither of those is what a listener hears. This spawns the
+    /// real [`EmuThread`] against a real [`AudioRing`] and drains it from a
+    /// wall-clock-paced consumer standing in for the `cpal` callback, so the
+    /// **period** of the gaps is observed at the point the symptom is reported.
+    ///
+    /// No audio device is opened. That is deliberate: a real device would add
+    /// its own scheduling to the thing being measured, and the quantity of
+    /// interest — how much of each buffer is real samples — is entirely
+    /// determined by [`AudioRing::pull`].
+    ///
+    /// Needs a ROM with a running audio engine; skips loudly without one.
+    ///
+    /// ```text
+    /// RUSTYN64_PROBE_ROM=/path/rom.z64 cargo test -p rustyn64-frontend --release \
+    ///     --lib measure_audio_gaps -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate; ~10 s and needs a commercial ROM"]
+    fn measure_audio_gaps_at_the_device_boundary() {
+        /// Stereo samples per simulated device callback: 1024 frames, giving a
+        /// ~21 ms cadence.
+        ///
+        /// **A representative size, not a `cpal` default.**
+        /// `cpal::BufferSize::Default` defers to the host and device, so there is
+        /// no single figure to call the default — an earlier revision of this
+        /// comment claimed there was. What matters for this measurement is that
+        /// the cadence is in the right order of magnitude; the delivered-sample
+        /// percentage is a ratio and does not depend on it.
+        const BUF: usize = 2048;
+        /// Host rate the ring and consumer agree on.
+        const RATE: u32 = 48_000;
+        /// Wall-clock seconds to observe. Must span several of the reported
+        /// ~1 s cycles, or a run could straddle one and show nothing.
+        const OBSERVE: Duration = Duration::from_secs(10);
+        /// Below this a sample counts as silence. Matches `audio_probe.rs`'s
+        /// `SILENCE_FLOOR`, and exists because real audio contains exact zeros.
+        const FLOOR: f32 = 1.0e-4;
+
+        let Ok(path) = std::env::var("RUSTYN64_PROBE_ROM") else {
+            println!("SKIP: set RUSTYN64_PROBE_ROM to a ROM that runs an audio engine");
+            return;
+        };
+        let raw = std::fs::read(&path).expect("probe ROM readable");
+        let mut core = EmuCore::new(0);
+        core.set_output_rate(RATE);
+        core.load_rom(&raw).expect("probe ROM boots");
+        // Warm past boot: the first frames are silent while the game starts its
+        // audio engine, and counting those would report a gap that is not the
+        // reported one.
+        for _ in 0..48 {
+            core.run_frame();
+            drop(core.drain_audio());
+        }
+
+        // Same capacity the shipped `AudioOutput::open` uses: 0.25 s of stereo.
+        let ring = Arc::new(AudioRing::new(RATE as usize * 2 / 4));
+        let emu = Arc::new(Mutex::new(core));
+
+        // A stand-in for the UI thread's OCCASIONAL emu-mutex takers (load ROM,
+        // save state, pause — `app.rs`; the per-frame present path uses the
+        // handoff and never takes this lock). The pacer's post-snap yield exists
+        // to keep these from starving, so any change to it has to be judged
+        // against this latency and not against throughput alone.
+        let ui_emu = Arc::clone(&emu);
+        let ui_stop = Arc::new(AtomicBool::new(false));
+        let ui_flag = Arc::clone(&ui_stop);
+        let ui = std::thread::spawn(move || {
+            let mut waits = Vec::new();
+            while !ui_flag.load(Ordering::Relaxed) {
+                let t = Instant::now();
+                drop(ui_emu.lock().map(|c| c.frame_count()));
+                waits.push(t.elapsed());
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            waits
+        });
+
+        let thread = EmuThread::spawn(EmuThreadParams {
+            emu: Arc::clone(&emu),
+            input: Arc::new(SharedInput::new()),
+            present: PresentBuffer::new(),
+            ring: Some(Arc::clone(&ring)),
+            region: Region::default(),
+            rewind: RewindConfig::default(),
+            run_ahead: RunAhead::default(),
+            controls: Arc::new(SaveStateControls::default()),
+        });
+
+        let period = Duration::from_secs_f64(BUF as f64 / 2.0 / f64::from(RATE));
+        let mut buf = vec![0.0f32; BUF];
+        let mut fed = Vec::new();
+        let start = Instant::now();
+        let mut next = start;
+        while start.elapsed() < OBSERVE {
+            next += period;
+            while Instant::now() < next {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            ring.pull(&mut buf);
+            // How much of this buffer was real audio. `pull` zero-fills the
+            // tail on underrun, so trailing silence IS the underrun — but a
+            // genuinely quiet passage also reads as zero, which is why the core
+            // probe establishes separately that the stream is not silent.
+            //
+            // Thresholded rather than `!= 0.0`: real audio crosses zero, and an
+            // exact-zero test misreads a waveform crossing at the buffer tail as
+            // underrun. It biases DOWNWARD, so it understated both legs of the
+            // before/after equally and the comparison held — but the absolute
+            // percentages were pessimistic.
+            let real = buf
+                .iter()
+                .rposition(|s| s.abs() > FLOOR)
+                .map_or(0, |i| i + 1);
+            fed.push(real);
+        }
+        let stats = thread.stats();
+        let (produced, bursts, snaps) = (
+            stats.produced.load(Ordering::Relaxed),
+            stats.catchup_bursts.load(Ordering::Relaxed),
+            stats.snap_forwards.load(Ordering::Relaxed),
+        );
+        drop(thread);
+        ui_stop.store(true, Ordering::Relaxed);
+        let mut waits = ui.join().expect("UI stand-in thread finishes");
+        waits.sort_unstable();
+
+        let callbacks = fed.len();
+        report_audio_gaps(
+            &fed,
+            BUF,
+            period,
+            &waits,
+            (produced, bursts, snaps),
+            OBSERVE,
+        );
+
+        assert!(
+            callbacks > 100,
+            "the consumer must actually have run; got {callbacks} callbacks"
+        );
+    }
+
+    /// Print what the device saw. Split from the measurement so the two are
+    /// separable — and because together they exceed the line gate.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "callback counts over a 10 s window are far below 2^53"
+    )]
+    fn report_audio_gaps(
+        fed: &[usize],
+        buf: usize,
+        period: Duration,
+        waits: &[Duration],
+        pacer: (u64, u64, u64),
+        observe: Duration,
+    ) {
+        let callbacks = fed.len();
+        let starved = fed.iter().filter(|n| **n < buf).count();
+        let empty = fed.iter().filter(|n| **n == 0).count();
+        let delivered: usize = fed.iter().sum();
+        let wanted = callbacks * buf;
+        // Run lengths of fully-empty callbacks: the "off" half of the report.
+        let mut gaps = Vec::new();
+        let mut run = 0usize;
+        for n in fed {
+            if *n == 0 {
+                run += 1;
+            } else if run > 0 {
+                gaps.push(run);
+                run = 0;
+            }
+        }
+        if run > 0 {
+            gaps.push(run);
+        }
+        let ms = |n: usize| n as f64 * period.as_secs_f64() * 1000.0;
+        let (produced, bursts, snaps) = pacer;
+
+        println!("--- {callbacks} device callbacks of {buf} samples over {observe:?} ---");
+        println!(
+            "  callbacks fully fed   : {}/{callbacks}",
+            callbacks - starved
+        );
+        println!("  callbacks fully empty : {empty}/{callbacks}");
+        println!(
+            "  samples delivered     : {delivered}/{wanted} ({:.1}%)",
+            delivered as f64 / wanted as f64 * 100.0
+        );
+        // The second half separately: with a servo attached the first seconds
+        // are its ramp (an empty ring being banked), and a whole-window figure
+        // charges that startup transient to steady-state quality.
+        let half = callbacks / 2;
+        let tail: usize = fed[half..].iter().sum();
+        println!(
+            "  ...second half only   : {:.1}%  (steady state; the first half includes any servo ramp)",
+            tail as f64 / ((callbacks - half) * buf) as f64 * 100.0
+        );
+        println!(
+            "  first fully-fed call  : {}",
+            fed.iter().position(|n| *n == buf).map_or_else(
+                || "never".to_string(),
+                |i| format!("#{i} ({:.0} ms in)", ms(i))
+            )
+        );
+        println!(
+            "  silent runs           : {}, mean {:.1} ms, max {:.1} ms",
+            gaps.len(),
+            ms(gaps.iter().sum::<usize>()) / gaps.len().max(1) as f64,
+            ms(gaps.iter().copied().max().unwrap_or(0)),
+        );
+        println!("  pacer: {produced} frames, {bursts} bursts, {snaps} snap-forwards");
+        println!(
+            "  UI emu-lock wait      : p50 {:.3?}  p99 {:.3?}  max {:.3?}  (n={})",
+            waits[waits.len() / 2],
+            waits[waits.len() * 99 / 100],
+            waits[waits.len() - 1],
+            waits.len()
+        );
+        print!("  timeline: ");
+        for n in fed {
+            print!(
+                "{}",
+                match *n {
+                    0 => '.',
+                    x if x == buf => '#',
+                    _ => '+',
+                }
+            );
+        }
+        println!();
     }
 
     /// **End-to-end: the producer actually publishes into the handoff.** The

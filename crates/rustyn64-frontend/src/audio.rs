@@ -18,17 +18,42 @@
 //! need `unsafe` or a new dependency and is still worth doing; this removes the
 //! deadline hazard without either.
 //!
-//! **What this does not fix — and what the ~1 s on / ~1 s off chopping actually
-//! is.** The producer stages one *emulated frame* of audio per emulated frame
+//! **What this does not fix — and what the chopping actually is. MEASURED, and
+//! the earlier revision of this paragraph asserted it instead.** The producer
+//! stages one *emulated frame* of audio per emulated frame
 //! (`EmuCore::produce_audio`, private — hence a code span and not a link, which
-//! `rustdoc -D warnings` rejects from public docs); the device consumes in wall-clock
-//! time. So the supply ratio is exactly `fps / 60`, and at the ~10 FPS this core
-//! currently sustains the ring receives under a fifth of what it must deliver.
+//! `rustdoc -D warnings` rejects from public docs); the device consumes in
+//! wall-clock time. So the supply ratio is exactly `fps / 60`. Two probes now
+//! confirm that on Super Mario 64 rather than reasoning it (`docs/audio.md`
+//! §*The chopping, measured at both boundaries*):
+//!
+//! - `examples/audio_probe.rs` — the emulated AI stream is **continuous**
+//!   (108/120 frames audible, 3 underruns), staging exactly `rate / 60` samples
+//!   per frame, and supply is **26.1%** against `fps / 60 = 26.1%`.
+//! - `emu_thread`'s `measure_audio_gaps_at_the_device_boundary` — at the device,
+//!   **0 of 469** callbacks were fully fed and **14.2%** of samples arrived.
+//!
 //! That is **starvation by throughput**, not a ring defect and not a resampler
-//! defect: no buffering strategy manufactures the missing 80%. It closes when the
-//! core gets faster and not before — see `docs/performance.md`, which also records
-//! that 60 FPS is out of reach for this execution model, so some form of explicit
-//! slow-running audio policy will eventually be needed instead.
+//! defect: no buffering strategy manufactures the missing 74%.
+//!
+//! **The reported "~1 s on / ~1 s off" does not reproduce, and this paragraph
+//! used to repeat it as fact.** The measured silent runs are **95 ms mean,
+//! 128 ms max** — a ~10 Hz chop, an order of magnitude off the report. The
+//! period is set by the pacer (one frame plus its yield), not by this ring's
+//! 0.25 s capacity, so "the ~1 s period is the ring's capacity" was wrong twice
+//! over.
+//!
+//! The underlying shortfall closes only when the core gets faster — see
+//! `docs/performance.md`, which records that 60 FPS is out of reach for this
+//! execution model. What the frontend can choose is *which* failure a listener
+//! hears, and it now chooses continuity over pitch.
+//!
+//! **The servo described above now exists** — `emu_thread::AudioServo`, which
+//! reads [`AudioRing::occupancy`] as its trim term. It does not create the
+//! missing samples (nothing can); it spends the ones there are over the whole
+//! wall-clock frame, trading pitch for continuity. Measured **14.2% -> 90.9%**
+//! delivered and **100% in steady state**, with the shortfall confined to the
+//! ~4 s ramp from an empty ring at startup.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
