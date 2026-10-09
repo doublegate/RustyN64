@@ -144,11 +144,14 @@ impl AudioServo {
             return 1.0;
         };
         let period = period.as_secs_f64();
-        if period <= 0.0 {
+        if period <= 0.0 || !period.is_finite() {
             return 1.0;
         }
         // Feed-forward: one emulated frame must cover one wall-clock interval.
         let base = interval.as_secs_f64() / period;
+        if !base.is_finite() {
+            return 1.0;
+        }
         // Trim toward a half-full ring. Under half, stretch a little more;
         // over half, a little less.
         let trim = Self::TRIM_GAIN.mul_add(0.5 - fill.clamp(0.0, 1.0), 1.0);
@@ -162,6 +165,7 @@ impl AudioServo {
 /// schedules against them (ADR 0006: `master_ticks` is the only clock position
 /// that is ever incremented).
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct PacerStats {
     /// Iterations that ran more than one frame back-to-back.
     pub catchup_bursts: AtomicU64,
@@ -347,10 +351,30 @@ impl EmuThread {
                 // `ring: None` the servo is never consulted and the core keeps
                 // its default 1.0 stretch, so a headless build is unchanged.
                 let mut servo = AudioServo::new();
-                let mut last_frame = Instant::now();
+                let mut last_cycle = Instant::now();
                 while run_flag.load(Ordering::Relaxed) {
-                    let due = schedule.frames_due(Instant::now());
+                    let now = Instant::now();
+                    let cycle_interval = now - last_cycle;
+                    last_cycle = now;
+
+                    let due = schedule.frames_due(now);
                     let mut produced = 0u32;
+                    // Measured once per pacer cycle against wall time: the servo needs
+                    // the interval the device actually experienced, rather than sub-frame
+                    // burst execution times during catch-up bursts.
+                    let stretch = ring.as_ref().map(|r| {
+                        servo.observe(cycle_interval);
+                        #[allow(
+                            clippy::cast_precision_loss,
+                            reason = "ring occupancy and capacity are far below 2^53"
+                        )]
+                        let fill = r.occupancy() as f64 / r.capacity().max(1) as f64;
+                        let s = servo.stretch(period, fill);
+                        thread_stats
+                            .audio_stretch_bits
+                            .store(s.to_bits(), Ordering::Relaxed);
+                        s
+                    });
                     // Bounded catch-up burst. The emu lock is taken and released
                     // PER FRAME rather than across the whole burst — a deliberate
                     // deviation from the RustyNES port, because an N64 frame costs
@@ -358,32 +382,12 @@ impl EmuThread {
                     // UI stall. Per-frame gives the UI a window between each.
                     while produced < due && run_flag.load(Ordering::Relaxed) {
                         let ports = input.load_all();
-                        // Measured BEFORE the frame runs, from the last frame's
-                        // completion: the servo needs the interval the device
-                        // actually experienced, and the frame about to run has
-                        // not happened yet.
-                        let stretch = ring.as_ref().map(|r| {
-                            let now = Instant::now();
-                            servo.observe(now - last_frame);
-                            last_frame = now;
-                            #[allow(
-                                clippy::cast_precision_loss,
-                                reason = "ring occupancy and capacity are far below 2^53"
-                            )]
-                            let fill = r.occupancy() as f64 / r.capacity().max(1) as f64;
-                            servo.stretch(period, fill)
-                        });
-                        if let Some(stretch) = stretch {
-                            thread_stats
-                                .audio_stretch_bits
-                                .store(stretch.to_bits(), Ordering::Relaxed);
-                        }
                         let audio = emu.lock().map_or_else(
                             |_| Vec::new(),
                             |mut core| {
                                 core.set_controllers(ports);
-                                if let Some(stretch) = stretch {
-                                    core.set_audio_stretch(stretch);
+                                if let Some(s) = stretch {
+                                    core.set_audio_stretch(s);
                                 }
                                 let audio = coordinator.step(&mut core);
                                 // Published under the lock we already hold (as
