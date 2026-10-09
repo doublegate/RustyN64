@@ -296,11 +296,6 @@ impl Pipeline {
         // Multiply and divide (UM Table 3-12), raised by `execute` itself.
         cost = cost.saturating_add(e.stall_cycles);
 
-        // Census BEFORE the latch is built: the question this answers is how
-        // often building it is avoidable at all.
-        #[cfg(feature = "work-counters")]
-        self.count_commit(e.cop0, e.mem, e.write_back);
-
         let write_back = self.apply_cop2(decoded, target, e.write_back);
 
         // ---- The commit fast path ----
@@ -344,6 +339,8 @@ impl Pipeline {
                     regs.write(dest, value);
                 }
                 self.retired = self.retired.wrapping_add(1);
+                #[cfg(feature = "work-counters")]
+                self.count_commit(None, None, wb);
                 self.cop0.tick_random();
                 // No `pending` check and no FP stall cost: both are raised by
                 // `wb_stage`, which cannot run for an instruction with no COP0
@@ -431,10 +428,11 @@ impl Pipeline {
     /// rather than going through `abort_from`, which captures its context out of
     /// the latch belonging to a [`Stage`](super::Stage) — a selection that has no
     /// meaning without a pipeline.
-    /// Fold the COP2 move family into a write-back.
+    /// Fold the COP2 move opcode family (`Mtc2`, `Mfc2`, `Dmfc2`) into a write-back.
     ///
-    /// COP2 is one 64-bit latch rather than a register file, and the register
-    /// index is ignored (ledger C-15's shape, twice over). Handled outside
+    /// COP2 is not populated with a full coprocessor unit on the VR4300, and
+    /// what hardware implements is a single 64-bit latch rather than a register
+    /// file; the register index field is ignored (ledger C-20, UM §C-20). Handled outside
     /// `execute` for the same reason `ex_stage` handles it: it needs the `rt`
     /// value, which `execute` cannot reach.
     fn apply_cop2(

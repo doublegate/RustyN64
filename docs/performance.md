@@ -2754,9 +2754,10 @@ worth it — ADR 0017 says so explicitly and the arithmetic is there to re-check
 
 ## Phase 0/1 of the competitive program: a reference number, and two refuted leads
 
-**Provenance.** Super Mario 64 (`17ce0773…`), i9-10850K, `rustc 1.96.0`,
-`--release`, `fast-exec,fast-scheduler`, tree at `1cc7dce`, load < 3.0 unless
-stated. Differential over a post-warm-up window in every case.
+**Provenance.** Super Mario 64 (USA, SHA256: `17ce077343c6133f4199bf45e72e383a56ac34114d4d9b5d4c18b8c067941260`),
+i9-10850K, `rustc 1.96.0`, `--release`, `fast-exec,fast-scheduler`, tree at `1cc7dce`,
+cen64 revision `upstream/master` commit `409405f` (built with `cmake .. -DCMAKE_BUILD_TYPE=Release && make -j`),
+load < 3.0 unless stated. Differential over a post-warm-up window in every case.
 
 ### cen64: 36.5 FPS, cycle-accurate, no dynarec
 
@@ -2767,7 +2768,7 @@ frame rate, so this needs no display and no assumption about what the rate is.
 | --- | --- | --- | --- |
 | **cen64** (cycle-accurate) | **36.5** | 131 M | **92** |
 | RustyN64 accurate | 10.0 | 501 M | 350 |
-| RustyN64 `fast-exec` | 15.9 | 314 M | 218 |
+| RustyN64 `fast-exec` | 15.9 | 314 M | 220 |
 | 60 FPS on this host | 60.0 | 83 M | 58 |
 
 **3.8x, in the same accuracy class**, and cen64's figure was taken at load 6.97,
@@ -2797,6 +2798,7 @@ never advances when launched non-interactively (0.5 s of CPU over 60 s),
 | 4.46% | `vi.rs` | |
 | **4.41%** | **`addr.rs`** | **all address translation** |
 | **2.78%** | **`cache.rs`** | **all cache simulation** |
+| 18.33% | *unlisted / other* | remainder (kernel, libc, runtime overhead, unprofiled functions) |
 
 ### Two leads this refutes, before either was built on
 

@@ -59,7 +59,7 @@ pub struct Shell {
     /// Stated because the tempting justification — "`Instant` panics on wasm" —
     /// is true of the crate and **not** of this module, and would have been a
     /// reason that quietly stopped applying.
-    fps_sampled_at: f64,
+    fps_sampled_at: Option<f64>,
     /// The produced-frame count at that sample.
     fps_sampled_frames: u64,
     /// The rate shown in the status bar, or `None` before the first interval has
@@ -73,7 +73,7 @@ impl Shell {
     pub const fn new() -> Self {
         Self {
             debugger_open: false,
-            fps_sampled_at: 0.0,
+            fps_sampled_at: None,
             fps_sampled_frames: 0,
             fps: None,
         }
@@ -90,12 +90,12 @@ impl Shell {
     /// counter that goes backwards (a reset, a state load) yields `None` rather
     /// than a negative rate.
     fn sample_fps(&mut self, now: f64, frames: u64) {
-        if self.fps_sampled_at <= 0.0 {
-            self.fps_sampled_at = now;
+        let Some(sampled_at) = self.fps_sampled_at else {
+            self.fps_sampled_at = Some(now);
             self.fps_sampled_frames = frames;
             return;
-        }
-        let elapsed = now - self.fps_sampled_at;
+        };
+        let elapsed = now - sampled_at;
         if elapsed < Self::FPS_INTERVAL {
             return;
         }
@@ -103,7 +103,7 @@ impl Shell {
             .checked_sub(self.fps_sampled_frames)
             .filter(|_| elapsed > 0.0)
             .map(|d| (d as f64 / elapsed) as f32);
-        self.fps_sampled_at = now;
+        self.fps_sampled_at = Some(now);
         self.fps_sampled_frames = frames;
     }
 

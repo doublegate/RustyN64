@@ -102,6 +102,8 @@ fn main() {
     // needs the same treatment: a reviewer caught it being reported RAW, which
     // folded ~36 warm-up frames into a table captioned "120 frames".
     let vu_before: [u64; 64] = *core.system().bus.rsp.vu_funct_histogram();
+    let census_before: [u64; rustyn64_core::cpu::commit_class::COUNT] =
+        *core.system().cpu.pipeline.commit_census();
 
     let t0 = Instant::now();
     for _ in 0..FRAMES {
@@ -166,7 +168,7 @@ fn main() {
     );
 
     report_vu_histogram(&core, &vu_before);
-    report_commit_census(&core);
+    report_commit_census(&core, &census_before, cpu);
     report_rcp_occupancy(&core);
 }
 
@@ -220,14 +222,22 @@ fn report_rcp_occupancy(core: &EmuCore) {
 /// This is the fraction that decides whether such a path is worth writing.
 /// Sizing it on an assumed "most instructions are simple ALU ops" is exactly the
 /// move that produced four reverted changes in the previous program.
-fn report_commit_census(core: &EmuCore) {
+fn report_commit_census(core: &EmuCore, before: &[u64; cc::COUNT], cpu_retired: u64) {
     use rustyn64_core::cpu::commit_class as cc;
-    let census = core.system().cpu.pipeline.commit_census();
+    let current = core.system().cpu.pipeline.commit_census();
+    let mut census = [0u64; cc::COUNT];
+    for (i, val) in census.iter_mut().enumerate() {
+        *val = current[i].saturating_sub(before[i]);
+    }
     let total: u64 = census.iter().sum();
     assert!(
         total > 0,
-        "no instructions were classified — the census is not wired into the \
+        "no instructions were classified in the timed window — the census is not wired into the \
          executing path, and a table of zeros reads as a result"
+    );
+    assert_eq!(
+        total, cpu_retired,
+        "commit census class delta ({total}) does not equal CPU retired delta ({cpu_retired})"
     );
     #[allow(
         clippy::cast_precision_loss,
@@ -241,7 +251,7 @@ fn report_commit_census(core: &EmuCore) {
         (cc::HILO, "HILO    (mul/div)"),
         (cc::OTHER, "OTHER"),
     ];
-    println!("\ncommit classes over {total} retired instructions:");
+    println!("\ncommit classes over {total} retired instructions in timed window:");
     for (idx, label) in names {
         println!(
             "  {label:<28} {:>12}  {:>6.2}%",

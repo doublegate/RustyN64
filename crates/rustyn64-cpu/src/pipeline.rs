@@ -425,7 +425,7 @@ pub mod commit_class {
     pub const COP: usize = 2;
     /// Writes `HI`/`LO` (every multiply and divide).
     pub const HILO: usize = 3;
-    /// Anything else, including aborts.
+    /// Reserved for future instruction classes (aborted instructions never reach retirement).
     pub const OTHER: usize = 4;
     /// Number of classes.
     pub const COUNT: usize = 5;
@@ -806,7 +806,6 @@ impl Pipeline {
         }
     }
 
-    /// `WB` — commit the result and retire the instruction.
     /// The retired-instruction census by commit class ([`commit_class`]).
     #[cfg(feature = "work-counters")]
     #[must_use]
@@ -844,6 +843,7 @@ impl Pipeline {
         self.commit_census[class] = self.commit_census[class].saturating_add(1);
     }
 
+    /// `WB` — commit the result and retire the instruction.
     fn wb_stage(&mut self, regs: &mut Regs) {
         if self.dc_wb.occupied && self.dc_wb.abort.is_none() {
             // The COP0 WRITE lands here (UM §4.6.9). A `Read` in this latch was
@@ -951,6 +951,8 @@ impl Pipeline {
                 WriteBack::Lo(v) => regs.lo = v,
             }
             self.retired = self.retired.wrapping_add(1);
+            #[cfg(feature = "work-counters")]
+            self.count_commit(self.dc_wb.cop0, self.dc_wb.mem, self.dc_wb.write_back);
             // "Random decrements as each instruction executes" (UM §5.4.2,
             // p. 147) -- advanced HERE, at retirement, so it counts executed
             // instructions rather than cycles.
@@ -7532,7 +7534,7 @@ mod commit_census_tests {
     use crate::mem::{LoadKind, StoreKind};
 
     #[test]
-    fn each_commit_class_is_reachable_and_distinct() {
+    fn reachable_commit_classes_are_distinct() {
         let mut p = Pipeline::new();
 
         // A plain ALU result.
@@ -7601,5 +7603,25 @@ mod commit_census_tests {
         assert_eq!(c[cc::COP], 1, "the COP class must win");
         assert_eq!(c[cc::MEM], 0);
         assert_eq!(c[cc::SIMPLE], 0);
+    }
+
+    #[test]
+    fn unretired_or_aborted_instructions_do_not_increment_census() {
+        let mut p = Pipeline::new();
+        let mut regs = crate::regs::Regs::new();
+        // A latch with abort set: does not retire
+        p.dc_wb = super::Latch {
+            occupied: true,
+            abort: Some(super::Exception::Breakpoint),
+            ..Default::default()
+        };
+        p.wb_stage(&mut regs);
+        let c = p.commit_census();
+        assert_eq!(p.retired, 0);
+        assert_eq!(c[cc::SIMPLE], 0);
+        assert_eq!(c[cc::MEM], 0);
+        assert_eq!(c[cc::COP], 0);
+        assert_eq!(c[cc::HILO], 0);
+        assert_eq!(c[cc::OTHER], 0);
     }
 }

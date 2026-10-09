@@ -1047,6 +1047,20 @@ or `0x22` (2.2, later) on retail, `0x40` on iQue.
 - **TLB:** refill/invalid/modified exceptions across all page sizes; `Random`/
   `Wired` index behavior; `TLBP`/`TLBR`/`TLBWI`/`TLBWR`.
 
+## Work-counters instrumentation contract
+
+The `work-counters` feature gate provides diagnostic instrumentation for CPU instruction retirement classification without affecting runtime emulation behavior or determinism.
+
+- **Feature Gate**: `work-counters` (opt-in, off by default in release builds).
+- **Classification Scope**: Instructions are classified upon retirement into mutually exclusive categories ([`commit_class`]):
+  - `SIMPLE` (0): Plain ALU / GPR writes or branch instructions with no memory or coprocessor side effects.
+  - `MEM` (1): Instructions with memory access (`DC` stage operations: load/store).
+  - `COP` (2): Instructions accessing COP0 or COP1 registers or control state.
+  - `HILO` (3): Instructions modifying `HI` / `LO` registers (multiplies and divides).
+  - `OTHER` (4): Reserved for future instruction classes (aborted instructions never reach retirement).
+- **Cumulative Lifetime**: Counters accumulate from power-on across the execution lifetime. Benchmarks and diagnostic tools snapshot counter values before a measured interval to report interval deltas.
+- **Save-State Behavior**: Fields are marked with `#[serde(skip)]`. Restoring a save state leaves the diagnostic counters unchanged, ensuring save-state wire compatibility (ADR 0011 §4).
+
 ## Open questions
 
 - **Interpreter vs dynarec ordering.** Start interpreter-only (the determinism

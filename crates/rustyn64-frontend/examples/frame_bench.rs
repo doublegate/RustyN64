@@ -102,14 +102,14 @@ fn main() {
     report_cost(retired, mean_ms);
 }
 
-/// The headline number: **host cycles spent per emulated instruction.**
+/// The headline number: **estimated host cycles per emulated instruction.**
 ///
 /// FPS hides how much work the ROM asked for, and a profile share hides absolute
 /// cost entirely — a subsystem can be 40% of a frame whether the frame is fast or
 /// catastrophically slow. This figure has neither problem, and it is directly
 /// comparable to what other emulators and the literature quote:
 ///
-/// | | host cycles / instruction |
+/// | | estimated host cycles / instruction |
 /// | --- | --- |
 /// | a recompiler | 2–10 |
 /// | a competent interpreter | 20–50 |
@@ -118,33 +118,38 @@ fn main() {
 /// `HOST_GHZ` is the *assumed* clock, not a measured one, and everything derived
 /// from it inherits that. It is stated rather than hidden because the alternative
 /// — reading the actual TSC frequency, or `perf stat`'s cycle count — is the
-/// right long-term fix and this is the honest interim. A boosting CPU makes this
-/// an approximation in the optimistic direction: if the core is running below
-/// `HOST_GHZ`, the true cycles/instruction is *lower* than reported.
+/// right long-term fix and this is the honest interim. A CPU running below
+/// `HOST_GHZ` makes this estimate conservative/pessimistic regarding emulator cost:
+/// the true host cycles spent per instruction would be lower than reported.
 #[allow(
     clippy::cast_precision_loss,
     reason = "retired counts over 120 frames are far below 2^53"
 )]
 fn report_cost(retired: u64, mean_ms: f64) {
-    /// Single-core boost clock of the development host (i9-10850K).
-    const HOST_GHZ: f64 = 5.0;
-    /// The VR4300 runs at 93.75 MHz and retires close to one instruction per
-    /// cycle, so a full-speed frame is this many instructions.
+    /// Baseline single-core boost clock of the development host (i9-10850K).
+    const DEFAULT_HOST_GHZ: f64 = 5.0;
+    /// Target display refresh rate (frames per second) used to calculate the
+    /// throughput and host cycle budget required for real-time play.
     const TARGET_FPS: f64 = 60.0;
+
+    let host_ghz: f64 = std::env::var("RUSTYN64_HOST_GHZ")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_HOST_GHZ);
 
     let insns = retired as f64 / f64::from(FRAMES);
     let secs = mean_ms / 1000.0;
     let mips = insns / secs / 1e6;
-    let cycles_per_insn = HOST_GHZ * 1e9 / (mips * 1e6);
+    let cycles_per_insn = host_ghz * 1e9 / (mips * 1e6);
     let needed_mips = insns * TARGET_FPS / 1e6;
-    let needed_cycles = HOST_GHZ * 1e9 / (needed_mips * 1e6);
+    let needed_cycles = host_ghz * 1e9 / (needed_mips * 1e6);
 
     println!(
-        "insns/frame={insns:.0} MIPS={mips:.1} cycles/insn={cycles_per_insn:.0} \
-         (assumed {HOST_GHZ} GHz)"
+        "insns/frame={insns:.0} MIPS={mips:.1} est_cycles/insn={cycles_per_insn:.0} \
+         (assumed {host_ghz} GHz)"
     );
     println!(
-        "for {TARGET_FPS:.0} FPS: MIPS={needed_mips:.1} cycles/insn={needed_cycles:.0} \
+        "for {TARGET_FPS:.0} FPS: MIPS={needed_mips:.1} est_cycles/insn={needed_cycles:.0} \
          -> {:.2}x away",
         needed_mips / mips
     );

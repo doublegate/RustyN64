@@ -52,11 +52,17 @@
 # USAGE
 #   scripts/bench_reference_emulators.sh <rom.z64> <pifdata.bin> [seconds]
 
-set -uo pipefail
+set -euo pipefail
 
 ROM="${1:?usage: $0 <rom.z64> <pifdata.bin> [seconds]}"
 PIF="${2:?usage: $0 <rom.z64> <pifdata.bin> [seconds]}"
 SECS="${3:-100}"
+INSN_PER_FRAME="${BENCH_INSN_PER_FRAME:-1430000}"
+
+if ! [[ "$SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: seconds must be a positive integer, got '$SECS'" >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CEN64="$ROOT/ref-proj/cen64/build/cen64"
@@ -82,23 +88,45 @@ flock -n 9 || { echo "another sweep is running -- refusing" >&2; exit 1; }
 # Refuse to measure on a busy machine. A competing multi-core job inflated a
 # RustyN64 frame from 100 ms to 189 ms during this work: 1.9x, larger than any
 # optimization being evaluated, and invisible in the result.
+NUM_CPUS=$(nproc 2>/dev/null || echo 1)
 LOAD=$(cut -d' ' -f1 /proc/loadavg)
-if awk -v l="$LOAD" 'BEGIN {exit !(l > 3.0)}'; then
-  echo "load average is $LOAD -- too busy to measure (want < 3.0)" >&2
+BUSY_THRESHOLD=$(awk -v c="$NUM_CPUS" 'BEGIN { t = c * 0.5; if (t < 3.0) t = 3.0; printf "%.1f", t }')
+if awk -v l="$LOAD" -v t="$BUSY_THRESHOLD" 'BEGIN {exit !(l > t)}'; then
+  echo "load average is $LOAD (threshold $BUSY_THRESHOLD for $NUM_CPUS CPUs) -- too busy to measure" >&2
   [ "${BENCH_FORCE:-0}" = "1" ] || { echo "set BENCH_FORCE=1 to override" >&2; exit 1; }
   echo "BENCH_FORCE=1 -- results are NOT comparable" >&2
 fi
 
 echo "rom    : $(basename "$ROM")  sha256 $(sha256sum "$ROM" | cut -c1-16)…"
 echo "host   : $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
-echo "window : ${SECS}s   load $(cut -d' ' -f1-3 /proc/loadavg)"
+echo "window : ${SECS}s   load $(cut -d' ' -f1-3 /proc/loadavg)   cpus: $NUM_CPUS"
 echo
 
+set +e
 perf stat -e cycles:u -o "$OUT/cen64.perf" \
   timeout -k 5 -s TERM "$SECS" stdbuf -oL \
   "$CEN64" -headless "$PIF" "$ROM" > "$OUT/cen64.log" 2>&1
+PERF_STATUS=$?
+set -e
+
+if [ "$PERF_STATUS" -ne 124 ] && [ "$PERF_STATUS" -ne 0 ] && [ "$PERF_STATUS" -ne 143 ]; then
+  echo "cen64 or perf stat failed with exit status $PERF_STATUS. See $OUT/cen64.log" >&2
+  exit 1
+fi
+
+if grep -q '<not counted>' "$OUT/cen64.perf" 2>/dev/null || grep -q '<not supported>' "$OUT/cen64.perf" 2>/dev/null; then
+  echo "Error: perf counter cycles:u was not counted or not supported by host. Output:" >&2
+  cat "$OUT/cen64.perf" >&2
+  exit 1
+fi
 
 CYCLES=$(grep -oE '^[ ]*[0-9,]+[ ]+cycles:u' "$OUT/cen64.perf" | tr -dc '0-9')
+if [ -z "$CYCLES" ] || [ "$CYCLES" -eq 0 ] 2>/dev/null; then
+  echo "Error: failed to extract non-zero cycles from perf output:" >&2
+  cat "$OUT/cen64.perf" >&2
+  exit 1
+fi
+
 SAMPLES=$(grep -c 'VI/s' "$OUT/cen64.log")
 
 if [ "${SAMPLES:-0}" -lt 5 ]; then
@@ -110,19 +138,24 @@ fi
 
 # The tail only: cen64's first samples are boot, where there is nothing to render
 # and it briefly reports 150-200 VI/s. Averaging those in would overstate it.
-awk -v c="$CYCLES" -v s="$SECS" '
+awk -v c="$CYCLES" -v s="$SECS" -v insn="$INSN_PER_FRAME" '
   /VI\/s/ { v[n++] = $2 }
   END {
+    if (n == 0) { exit 1 }
+    for (i = 0; i < n; i++) { sum_all += v[i] }
+    full_fps = sum_all / n
+
     lo = (n > 20) ? n - 20 : 0
     for (i = lo; i < n; i++) { sum += v[i]; m++ }
     fps = sum / m
     printf "cen64 (cycle-accurate, headless)\n"
     printf "  steady-state       : %.1f VI/s  (mean of last %d samples of %d)\n", fps, m, n
+    printf "  full-run average   : %.1f VI/s  (%d total samples)\n", full_fps, n
     printf "  cycles/frame       : %.0f M\n", c / s / fps / 1e6
-    printf "  cycles/instruction : %.0f\n", c / s / fps / 1430000
+    printf "  cycles/instruction : %.0f\n", c / s / fps / insn
     printf "\nRustyN64 for comparison (examples/frame_bench.rs, same ROM):\n"
     printf "  accurate           : 10.0 FPS, 500 M cycles/frame, 350 cycles/insn\n"
-    printf "  fast-exec          : 15.9 FPS, 314 M cycles/frame, 218 cycles/insn\n"
+    printf "  fast-exec          : 15.9 FPS, 314 M cycles/frame, 220 cycles/insn\n"
     printf "  60 FPS needs       : 60.0 FPS,  83 M cycles/frame,  58 cycles/insn\n"
   }' "$OUT/cen64.log"
 
