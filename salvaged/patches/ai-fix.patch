@@ -1,0 +1,150 @@
+diff --git a/crates/rustyn64-audio/src/lib.rs b/crates/rustyn64-audio/src/lib.rs
+index 5b7377b..758f8f2 100644
+--- a/crates/rustyn64-audio/src/lib.rs
++++ b/crates/rustyn64-audio/src/lib.rs
+@@ -212,6 +212,22 @@ impl Audio {
+     /// The 8 KiB (`0x2000`) page whose crossing arms the delayed-carry bug.
+     const PAGE: u32 = 0x2000;
+ 
++    /// DAC rate used while `AI_DACRATE` is unprogrammed.
++    ///
++    /// **A modelling default, not a measured hardware value — see ledger R-16.**
++    /// `AI_DACRATE`'s reset value is not documented anywhere this project
++    /// mirrors, so no rate can be *derived* for the pre-programmed window. What
++    /// matters, and what IS established, is structural: the DAC has no stopped
++    /// state, so the transfer queue must be able to retire before software
++    /// programs the rate. This value is taken from ares (ISC, vendorable), whose
++    /// `AI::power()` sets `dac.frequency = 44100`.
++    ///
++    /// Nothing observable should depend on the exact number: every title
++    /// programs `AI_DACRATE` before it plays anything, so this rate only governs
++    /// how fast an unprogrammed DAC drains silence. If a future change makes an
++    /// output depend on it, that dependency is the bug, not this constant.
++    const DEFAULT_DAC_HZ: u32 = 44_100;
++
+     /// Construct at power-on (NTSC, idle).
+     #[must_use]
+     pub const fn new() -> Self {
+@@ -224,7 +240,12 @@ impl Audio {
+             dac_rate: 0,
+             bit_rate: 0,
+             video_clock: VIDEO_CLOCK_NTSC,
+-            sample_rate: 0,
++            // Must match what `recompute_rate` yields for `dac_rate == 0`. Left
++            // at 0 here, the default would only take effect once something
++            // happened to call `recompute_rate` (a DACRATE or region write), so a
++            // machine that never programmed the AI would still have a stopped DAC
++            // — the exact state ledger R-16's livelock needs.
++            sample_rate: Self::DEFAULT_DAC_HZ,
+             next_sample_tick: 0,
+             last_tick: 0,
+             dac_hold: StereoSample { left: 0, right: 0 },
+@@ -397,12 +418,27 @@ impl Audio {
+     /// Re-derive [`Audio::sample_rate`] from the current video clock and
+     /// `AI_DACRATE`.
+     const fn recompute_rate(&mut self) {
+-        // Either operand being zero means "not meaningfully programmed → emit
+-        // nothing". `video_clock` is never 0 in practice, so this is really the
+-        // `dac_rate == 0` gate: without it, `set_region()` before `AI_DACRATE`
+-        // is written would compute `video_clock / 1` ≈ 48 MHz and flood the sink.
+-        self.sample_rate = if self.dac_rate == 0 || self.video_clock == 0 {
++        // An unprogrammed `AI_DACRATE` falls back to [`Self::DEFAULT_DAC_HZ`]
++        // rather than to zero. Zero used to mean "emit nothing", which is wrong
++        // in a way that reaches far past audio: with the DAC stopped, `tick()`
++        // returns before `emit_sample`, and `emit_sample` is the ONLY place a
++        // drained transfer is retired — so `AI_STATUS.FULL` could latch and never
++        // clear, and a game polling it for a free DMA slot spun forever. World
++        // Driver Championship did exactly that (ledger R-16).
++        //
++        // Hardware has no stopped-DAC state to model: the DAC counter runs off
++        // the video clock from power-on, whatever `AI_DACRATE` holds. ares (ISC,
++        // vendorable) makes the same choice structurally — `AI::power()` sets
++        // `dac.frequency = 44100` and `AI::main()` calls `sample()`
++        // unconditionally, so its identical retirement block runs from power-on.
++        //
++        // The naive alternative — letting `dac_rate == 0` compute
++        // `video_clock / 1` ≈ 48 MHz — is what the old zero-gate was avoiding,
++        // and it would flood the sink. A default rate avoids both failures.
++        self.sample_rate = if self.video_clock == 0 {
+             0
++        } else if self.dac_rate == 0 {
++            Self::DEFAULT_DAC_HZ
+         } else {
+             self.video_clock / (self.dac_rate as u32 + 1)
+         };
+@@ -634,19 +670,67 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn set_region_before_dacrate_keeps_rate_zero() {
+-        // Selecting a region before AI_DACRATE is programmed must NOT fabricate
+-        // a ~48 MHz rate (the video clock divided by 1) — the DAC stays idle.
++    fn set_region_before_dacrate_does_not_fabricate_the_video_clock_rate() {
++        // What this has always been protecting: selecting a region before
++        // AI_DACRATE is programmed must NOT compute `video_clock / 1` (~48 MHz)
++        // and flood the sink.
++        //
++        // It previously asserted the rate was exactly **0** and that the DAC
++        // "emits nothing". That over-specified the protection into a bug: a
++        // zero rate makes `tick` return before `emit_sample`, and `emit_sample`
++        // is the only place a drained transfer is retired — so `AI_STATUS.FULL`
++        // could latch forever (see
++        // `full_clears_even_when_dacrate_was_never_programmed`, and ledger R-16).
++        // The unprogrammed DAC now runs at `DEFAULT_DAC_HZ`. The assertion is
++        // therefore an ORDER-OF-MAGNITUDE bound, which is what the comment
++        // always described, rather than an exact value the hardware does not
++        // document.
+         let mut ai = Audio::new();
+         ai.set_region(Region::Pal);
++        assert!(
++            ai.sample_rate() > 0 && ai.sample_rate() < 100_000,
++            "an unprogrammed DAC runs at an audio rate, not the video clock: {}",
++            ai.sample_rate()
++        );
++        let mut bus = TestBus::new(0x1000);
++        ai.tick(MASTER_HZ / 60, &mut bus); // one frame
++        let emitted = ai.drain().len();
++        // ~44100/60 = 735. The bound that matters is that it is not the ~800k
++        // samples per frame a 48 MHz rate would produce.
++        assert!(
++            emitted < 5_000,
++            "one frame of an unprogrammed DAC must not flood the sink: {emitted}"
++        );
++    }
++
++    /// **`AI_STATUS.FULL` must be able to clear even if `AI_DACRATE` was never
++    /// programmed** — the World Driver Championship livelock (ledger R-16).
++    ///
++    /// A game may queue two buffers and poll `FULL` for a free slot before it
++    /// programs the DAC. Retirement lives in `emit_sample`, which only runs when
++    /// the DAC has a period, so a stopped DAC latched `FULL` permanently and the
++    /// poll never exited. Mutation guard: restore the `dac_rate == 0 → 0` rate
++    /// and this test hangs on `FULL` forever (it fails on the assertion below).
++    #[test]
++    fn full_clears_even_when_dacrate_was_never_programmed() {
++        let mut ai = Audio::new();
++        let mut bus = TestBus::new(0x4000);
++        // Two queued transfers, no AI_DACRATE write, DMA enabled.
++        ai.write_reg(2, 1); // AI_CONTROL: DMA enable
++        ai.write_reg(0, 0x0000_1000);
++        ai.write_reg(1, 0x40);
++        ai.write_reg(0, 0x0000_2000);
++        ai.write_reg(1, 0x40);
++        assert_ne!(ai.status() & (1 << 31), 0, "two queued → FULL");
++
++        // Advance a second of emulated time. With a running DAC the two 64-byte
++        // transfers drain almost immediately; with a stopped one, never.
++        ai.tick(MASTER_HZ, &mut bus);
+         assert_eq!(
+-            ai.sample_rate(),
++            ai.status() & (1 << 31),
+             0,
+-            "no DACRATE → no rate, whatever the region"
++            "FULL must clear once a transfer retires, even with AI_DACRATE unset"
+         );
+-        let mut bus = TestBus::new(0x1000);
+-        ai.tick(1_000_000, &mut bus);
+-        assert!(ai.drain().is_empty(), "an unprogrammed DAC emits nothing");
+     }
+ 
+     #[test]

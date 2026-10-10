@@ -15,6 +15,14 @@
 #                    the point, and it is gitignored anyway
 #   ref-proj/        study clones of other emulators (gitignored)
 #   third_party/     vendored upstream source (libdragon); not our prose to edit
+#   salvaged/        development artifacts rescued verbatim from a volatile /tmp.
+#                    Same reason as the trees above: they are a RECORD, not prose
+#                    this project edits. Two of them are en-US conversion tools
+#                    whose substitution TABLES are en-GB words as data (26 lines
+#                    in one file), and one is a diff that must stay byte-exact to
+#                    be worth keeping at all. Per-line markers would litter a data
+#                    table and corrupt a patch. Nothing here is built, run in CI,
+#                    or read as documentation.
 #
 # PER-LINE OPT-OUT: append the marker `spell-exempt` to a line that must keep an
 # en-GB form — a quoted external value, or prose that names the spelling itself.
@@ -119,7 +127,7 @@ git ls-files -z --others --exclude-standard >>"$raw"
 # `grep -v` exits 1 when it selects nothing, which is not an error here, so the
 # filters are deliberately status-tolerant -- the emptiness check below is what
 # catches a broken listing.
-grep -zvE '^(ref-docs|n64brew_wiki|ref-proj|third_party)/' <"$raw" |
+grep -zvE '^(ref-docs|n64brew_wiki|ref-proj|third_party|salvaged)/' <"$raw" |
   grep -zvE '^scripts/check_en_us\.sh$' >"$list" || true
 
 mapfile -d '' -t files <"$list"

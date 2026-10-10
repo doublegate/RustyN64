@@ -109,6 +109,14 @@ struct ViCfg {
 /// whole filter chain — under `aa_mode` 0 with `divot` and `dither_filter` set, three
 /// divot taps of nine de-dither taps each, 27 [`Bus::vi_read_cov`] calls of three
 /// `rdram_offset` lookups apiece.
+///
+/// **Two layers, because that redundancy is not all at the same level.** `cells` keys
+/// on the *output* of the filter chain, which is the right key for the repeated
+/// sampling described above and no help at all for the divot filter — that runs
+/// *inside* one `cells` miss. `cov_cells` keys one level lower, on
+/// [`Bus::vi_fetch_cov`], where the divot's own three-taps-per-pixel overlap lives.
+/// Measured together at **1.119x** on Super Mario 64 (A-B-A-B, `examples/frame_bench`:
+/// 56.8 ms -> 50.7 ms, 197 -> 176 host cycles per emulated instruction).
 struct ViSampler {
     /// The register-derived rules every sample is filtered under.
     cfg: ViCfg,
@@ -124,6 +132,22 @@ struct ViSampler {
     row_y: [Option<i32>; 2],
     /// `2 * span` filtered pixels, row-major. `None` is "not computed yet".
     cells: alloc::vec::Vec<Option<[u8; 3]>>,
+    /// **A second memo, one level lower: `vi_fetch_cov` results.**
+    ///
+    /// `cells` above caches the *output* of the filter chain, which cannot help the
+    /// divot filter — that runs *inside* `vi_sample_direct` and calls
+    /// `vi_fetch_cov` three times, for `x - 1`, `x`, `x + 1`. Advancing one output
+    /// pixel recomputes two of those three from scratch, and each costs 6 (AA-edge)
+    /// or 8 (de-dither) `vi_read_cov` calls plus its own center read.
+    ///
+    /// The tap reads were measured at **16.7% of a frame** (`docs/performance.md`),
+    /// by eliding them and taking the delta rather than by multiplying a profile
+    /// share — the mistake that produced three wrong ceilings before it.
+    ///
+    /// Same row/eviction discipline as `cells`, and the same failure mode: past the
+    /// span cap it is empty and every fetch takes the uncached path — slower, never
+    /// wrong.
+    cov_cells: alloc::vec::Vec<Option<([u8; 3], u32)>>,
 }
 
 impl ViSampler {
@@ -143,6 +167,17 @@ impl ViSampler {
     /// takes the uncached path: slower, never wrong.
     const MAX_SPAN: usize = 4096;
 
+    /// Columns per `cov_cells` row: two wider than `span`, because the divot filter
+    /// reaches one column either side of the range `cells` covers.
+    ///
+    /// Zero stays zero: `span == 0` is the "memo declined" state, and widening it to
+    /// 2 would allocate a memo for a sampler built expressly not to have one — which
+    /// is exactly what `memoized_scanout_matches_uncached_recomputation` relies on to
+    /// get an uncached reference walk.
+    const fn cov_span(&self) -> usize {
+        if self.span == 0 { 0 } else { self.span + 2 }
+    }
+
     /// Build a memo covering source columns `x_lo..=x_hi` inclusive.
     fn new(cfg: ViCfg, x_lo: i32, x_hi: i32) -> Self {
         // `i64` throughout: the subtraction is on guest-derived values, and a signed
@@ -161,6 +196,11 @@ impl ViSampler {
             span,
             row_y: [None; Self::ROWS],
             cells: alloc::vec![None; span * Self::ROWS],
+            // The divot filter reaches one column either side of the memo's range,
+            // so this layer is two columns wider and offset by one. Sizing it like
+            // `cells` would miss on the first and last column of every row — the
+            // ones the divot filter asks for most.
+            cov_cells: alloc::vec![None; if span == 0 { 0 } else { (span + 2) * Self::ROWS }],
         }
     }
 
@@ -192,6 +232,13 @@ impl ViSampler {
         self.row_y[victim] = Some(y);
         let base = victim * self.span;
         self.cells[base..base + self.span].fill(None);
+        // Both layers are keyed on the same `row_y`, so both must be invalidated
+        // together. Clearing only `cells` would leave `cov_cells` serving the evicted
+        // row's taps under the new row's key — a stale read that no geometry test can
+        // see, because the filtered output would still be *a* plausible pixel.
+        let cov = self.cov_span();
+        let cov_base = victim * cov;
+        self.cov_cells[cov_base..cov_base + cov].fill(None);
         victim
     }
 }
@@ -631,6 +678,17 @@ impl Bus {
             // `mtc0 DP_END` submits a command list to the RDP.
             self.rdp.dpc_write(u32::from(off), val);
         }
+    }
+
+    /// Charge one **RCP step** to the step counter.
+    ///
+    /// Called from `System::step_rcp`, not from `rsp_tick`. It used to live at the
+    /// tail of `rsp_tick`, which made "RCP steps" mean "RSP ticks" — invisible
+    /// while the RSP was stepped unconditionally, and immediately wrong once the
+    /// halted-RSP skip landed: `three_cpu_and_two_rcp_steps_per_six_ticks` began
+    /// failing because the counter tracked a chip rather than the clock. The
+    /// counter now measures what its name says.
+    pub(crate) const fn charge_rcp_step(&mut self) {
         self.rcp_steps = self.rcp_steps.wrapping_add(1);
     }
 
@@ -1446,20 +1504,19 @@ impl Bus {
     /// both formats — 16-bit reads coverage from the hidden-bits plane, 32-bit from the
     /// alpha byte ([`Bus::vi_read_cov`]). Under `aa_mode` 2/3 (`RESAMP_ONLY` / REPLICATE)
     /// coverage is forced full, so it is a plain format-dispatched fetch.
-    fn vi_sample_direct(&self, s: &ViSampler, x: i32, y: i32) -> [u8; 3] {
+    fn vi_sample_direct(&self, s: &mut ViSampler, x: i32, y: i32) -> [u8; 3] {
         let ViCfg {
             origin,
             src_stride,
             bpp,
             aa_mode,
-            divot,
-            dither_filter,
+            ..
         } = s.cfg;
         if aa_mode <= 1 {
-            if divot {
-                self.vi_divot(origin, src_stride, x, y, dither_filter, bpp)
+            if s.cfg.divot {
+                self.vi_divot(s, x, y)
             } else {
-                self.vi_fetch_coverage(origin, src_stride, x, y, dither_filter, bpp)
+                self.vi_fetch_cov_memo(s, x, y).0
             }
         } else if bpp == 2 {
             self.vi_fetch16(origin, src_stride, x, y)
@@ -1631,40 +1688,68 @@ impl Bus {
         ([acc[0] as u8, acc[1] as u8, acc[2] as u8], cvg)
     }
 
-    /// The filtered coverage-path color ([`Bus::vi_fetch_cov`] without the
-    /// coverage — for the non-divot path, which only needs the RGB).
-    fn vi_fetch_coverage(
-        &self,
-        origin: u32,
-        src_stride: i32,
-        x: i32,
-        y: i32,
-        dither_filter: bool,
-        bpp: u32,
-    ) -> [u8; 3] {
-        self.vi_fetch_cov(origin, src_stride, x, y, dither_filter, bpp)
-            .0
+    /// [`Bus::vi_fetch_cov`] served from the sampler's second memo layer
+    /// ([`ViSampler::cov_cells`]).
+    ///
+    /// The layer exists because the divot filter asks for `x - 1`, `x` and `x + 1` at
+    /// the same row, and the walk then advances one column — so two of every three
+    /// fetches were already computed for the previous output pixel. Each avoided
+    /// fetch is 6 (AA-edge) or 8 (de-dither) [`Bus::vi_read_cov`] calls plus its own
+    /// center read.
+    ///
+    /// The key is `x - (x_lo - 1)`, one wider on each side than [`ViSampler::cells`],
+    /// so the divot's outer taps land inside the memo rather than missing on every
+    /// row's first and last column. Outside that window — or with `span == 0` — this
+    /// is a plain call to [`Bus::vi_fetch_cov`]: slower, never wrong.
+    ///
+    /// Note this memoizes the *fetch*, not the divot: the taps `vi_fetch_cov` reads
+    /// internally are at `y ± 1` and go through [`Bus::vi_read_cov`], which is not
+    /// memoized, so there is no recursion through this function.
+    fn vi_fetch_cov_memo(&self, s: &mut ViSampler, x: i32, y: i32) -> ([u8; 3], u32) {
+        let ViCfg {
+            origin,
+            src_stride,
+            bpp,
+            dither_filter,
+            ..
+        } = s.cfg;
+        let uncached = || self.vi_fetch_cov(origin, src_stride, x, y, dither_filter, bpp);
+        // `checked_*` rather than `-`/`+`: `x` and `x_lo` both trace back to
+        // guest-controlled VI registers, and declining the memo is the correct
+        // response to an extreme pair — not a debug-build panic in scan-out.
+        let Some(idx) = x
+            .checked_sub(s.x_lo)
+            .and_then(|offset| offset.checked_add(1))
+            .and_then(|offset| usize::try_from(offset).ok())
+        else {
+            return uncached();
+        };
+        let width = s.cov_span();
+        if idx >= width {
+            return uncached();
+        }
+        let cell = s.row_slot(y) * width + idx;
+        if let Some(hit) = s.cov_cells[cell] {
+            return hit;
+        }
+        let computed = uncached();
+        s.cov_cells[cell] = Some(computed);
+        computed
     }
 
-    /// The **divot** filter (Angrylion `divot_filter`), format-generic over `bpp`: the
-    /// per-channel median of a pixel and its two horizontal neighbors (all
-    /// post-de-dither/AA-edge, via [`Bus::vi_fetch_cov`]). It is **skipped** (the center
+    /// The **divot** filter (Angrylion `divot_filter`), format-generic over `bpp`
+    /// (taken from the sampler's `cfg` with the rest of the register-derived rules):
+    /// the per-channel median of a pixel and its two horizontal neighbors (all
+    /// post-de-dither/AA-edge, via [`Bus::vi_fetch_cov_memo`] — which is where the
+    /// three-fetches-per-pixel cost this function creates is amortised across the
+    /// walk). It is **skipped** (the center
     /// passes through) when all three are fully covered
     /// (`cen_cvg & left_cvg & right_cvg == 7`), so it only touches partial-coverage
     /// edges. Ledger R-5.
-    fn vi_divot(
-        &self,
-        origin: u32,
-        src_stride: i32,
-        x: i32,
-        y: i32,
-        dither_filter: bool,
-        bpp: u32,
-    ) -> [u8; 3] {
-        let (cen, cen_cvg) = self.vi_fetch_cov(origin, src_stride, x, y, dither_filter, bpp);
-        let (left, left_cvg) = self.vi_fetch_cov(origin, src_stride, x - 1, y, dither_filter, bpp);
-        let (right, right_cvg) =
-            self.vi_fetch_cov(origin, src_stride, x + 1, y, dither_filter, bpp);
+    fn vi_divot(&self, s: &mut ViSampler, x: i32, y: i32) -> [u8; 3] {
+        let (cen, cen_cvg) = self.vi_fetch_cov_memo(s, x, y);
+        let (left, left_cvg) = self.vi_fetch_cov_memo(s, x - 1, y);
+        let (right, right_cvg) = self.vi_fetch_cov_memo(s, x + 1, y);
         if (cen_cvg & left_cvg & right_cvg) == 7 {
             return cen; // all fully covered → no divot
         }
@@ -2142,6 +2227,20 @@ impl CpuBus for Bus {
         // outside the 8 MiB window, so hoisting it would be equally correct
         // today. Sitting here means the change cannot come to depend on that
         // range staying disjoint from a future register block.
+        //
+        // **And the defence is free — hoisting was built and measured NEUTRAL.**
+        // The ten range tests ahead of this look expensive by inspection: they
+        // are on the instruction-fetch and load path, so nearly every access the
+        // emulator makes pays them. A-B-A-B on `frame_bench` says otherwise —
+        // 64.096 / 63.874 / 63.659 / 63.858 ms, both hoisted legs inside the
+        // baseline spread, 0.34% SLOWER on the conservative pairing. Each test is
+        // a mask-and-compare against a constant that is always false for RDRAM,
+        // which a branch predictor gets right every single time.
+        //
+        // So do not re-hoist this for speed; the reason it sits here is sound and
+        // the placement costs nothing. The disjointness it relies on is asserted
+        // by `rdram_window_is_disjoint_from_every_register_block` rather than
+        // merely hoped for, which is the part that WAS missing.
         //
         // Provenance and the measurement: `docs/performance.md`.
         if let Some(word) = Self::rdram_offset(addr)
@@ -2793,9 +2892,16 @@ mod tests {
     ///
     /// This is the test that would catch a wrong key, a stale row, or an eviction that
     /// keeps the wrong row — none of which the geometry tests above can see, because
-    /// they read a single pixel. It recomputes every output pixel from
-    /// [`Bus::vi_sample_direct`], which bypasses the memo entirely, and compares the
-    /// whole buffer.
+    /// they read a single pixel. It recomputes every output pixel through a second
+    /// sampler built with `span == 0` and compares the whole buffer.
+    ///
+    /// `span == 0` is what makes that second walk uncached, and it has to be: *both*
+    /// memo layers are consulted from inside [`Bus::vi_sample_direct`] now that
+    /// [`Bus::vi_fetch_cov_memo`] exists, so calling that function is no longer a way
+    /// to bypass anything. `ViSampler::new(cfg, 0, -1)` declines both layers at once
+    /// ([`ViSampler::cov_span`] keeps zero at zero), and the `bypass.span == 0`
+    /// assertion below is what holds that property — without it this test would be
+    /// comparing the memo against itself.
     ///
     /// The framebuffer is filled with a pattern that varies per pixel in *both* axes
     /// and sets coverage bits unevenly, so a sample taken from the wrong column, the
@@ -4068,6 +4174,75 @@ mod read_u32_fast_path_tests {
                 0x5A5A_5A5A,
                 "a word read of the {label} block returned the RDRAM fill pattern"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod rdram_dispatch_order_tests {
+    use super::{Bus, RDRAM_SIZE};
+
+    /// **The RDRAM window overlaps no register block**, which is what lets
+    /// `read_u32` test it FIRST instead of after ten range checks.
+    ///
+    /// That ordering used to be the safety mechanism: the fast path sat last so
+    /// it could not shadow a register block, with a comment calling the placement
+    /// "defensive". The trouble with defending an invariant by ordering is that
+    /// nothing checks it, nothing fails when a future register block violates it,
+    /// and the cost is paid on every instruction fetch and every load.
+    ///
+    /// So the invariant is asserted here instead, over every predicate the CPU
+    /// read path consults, and the fast path is free to sit where it belongs.
+    ///
+    /// Mutation check: give any `is_*` predicate a range below 8 MiB and this
+    /// goes red.
+    #[test]
+    fn rdram_window_is_disjoint_from_every_register_block() {
+        /// Every range predicate `read_u32` / `write_u32` test on the way to
+        /// RDRAM. A new register block must be added here, and if it overlaps
+        /// RDRAM this test says so before the fast path silently shadows it.
+        type Pred = (&'static str, fn(u32) -> bool);
+        let preds: [Pred; 11] = [
+            ("pi_bus", Bus::is_pi_bus),
+            ("isviewer", Bus::is_isviewer),
+            ("pi_register", Bus::is_pi_register),
+            ("sp_register", Bus::is_sp_register),
+            ("mi_register", Bus::is_mi_register),
+            ("dp_register", Bus::is_dp_register),
+            ("vi_register", Bus::is_vi_register),
+            ("ai_register", Bus::is_ai_register),
+            ("ri_register", Bus::is_ri_register),
+            ("si_register", Bus::is_si_register),
+            ("pif", Bus::is_pif),
+        ];
+
+        // Sample the whole 8 MiB window on a stride that cannot miss a register
+        // block: the smallest is 32 bytes (8 registers x 4), so a 4-byte stride
+        // over every physical page start plus the page interior is thorough
+        // without being a 2-million-iteration test.
+        for page in (0..RDRAM_SIZE).step_by(4096) {
+            for off in [0usize, 4, 32, 64, 2048, 4092] {
+                let phys = page + off;
+                if phys >= RDRAM_SIZE {
+                    continue;
+                }
+                // Check the physical address and both cached/uncached aliases,
+                // because the predicates take the address as the CPU presents it.
+                for base in [0x0000_0000u32, 0x8000_0000, 0xA000_0000] {
+                    let addr = base.wrapping_add(phys as u32);
+                    assert!(
+                        Bus::rdram_offset(addr).is_some(),
+                        "{addr:#010X} is inside the RDRAM window but rdram_offset rejects it"
+                    );
+                    for (name, p) in preds {
+                        assert!(
+                            !p(addr),
+                            "{name} claims {addr:#010X}, which is inside RDRAM -- \
+                             the read_u32 fast path would shadow it"
+                        );
+                    }
+                }
+            }
         }
     }
 }

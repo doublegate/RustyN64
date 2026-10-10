@@ -46,6 +46,13 @@ pub struct Vector<'a> {
     pub cmds: &'a [u8],
     /// The framebuffer Angrylion rendered — the oracle's expected output.
     pub golden_fb: &'a [u8],
+    /// The oracle's **hidden 9th-bit coverage plane** after the render, one byte
+    /// per pixel with the low two bits meaningful (**v3 only**; `None` otherwise).
+    ///
+    /// This is where the N64 keeps anti-aliasing coverage for a 16-bit color
+    /// image, and nothing in `golden_fb` reveals it — which is exactly how ledger
+    /// **R-24** (the RDP never wrote it) survived 164 committed vectors.
+    pub golden_hidden: Option<&'a [u8]>,
 }
 
 /// Parse the `.rvec` container.
@@ -71,7 +78,7 @@ pub fn parse(bytes: &[u8]) -> Vector<'_> {
     assert_eq!(u32_at(0), 0x5256_4543, "bad magic (expected RVEC)");
     let version = u32_at(4);
     assert!(
-        version == 1 || version == 2,
+        version == 1 || version == 2 || version == 3,
         "unexpected vector version {version}"
     );
     let fb_addr = u32_at(8);
@@ -114,6 +121,22 @@ pub fn parse(bytes: &[u8]) -> Vector<'_> {
     );
     let preload = &bytes[hdr..hdr + preload_len];
     let cmd_start = hdr + preload_len;
+    let fb_start = cmd_start + cmd_len;
+    // v3's hidden plane sits after the golden framebuffer, one byte per pixel.
+    // Checked against the declared geometry rather than "whatever is left", so a
+    // truncated tail fails loudly instead of comparing against a short slice.
+    let golden_hidden = if version == 3 {
+        let px = (width as usize)
+            .checked_mul(height as usize)
+            .expect("hidden-plane dimensions overflow");
+        assert!(
+            bytes.len() >= fb_start + fb_len + px,
+            "truncated .rvec: v3 declares a hidden plane the file does not hold"
+        );
+        Some(&bytes[fb_start + fb_len..fb_start + fb_len + px])
+    } else {
+        None
+    };
     Vector {
         fb_addr,
         width,
@@ -122,8 +145,9 @@ pub fn parse(bytes: &[u8]) -> Vector<'_> {
         cmd_addr,
         preload_addr,
         preload,
-        cmds: &bytes[cmd_start..cmd_start + cmd_len],
-        golden_fb: &bytes[cmd_start + cmd_len..cmd_start + cmd_len + fb_len],
+        cmds: &bytes[cmd_start..fb_start],
+        golden_fb: &bytes[fb_start..fb_start + fb_len],
+        golden_hidden,
     }
 }
 
@@ -188,6 +212,54 @@ pub fn replay(v: &Vector<'_>) -> Vec<u8> {
     }
 
     bus.rdram[fb..fb + fb_len].to_vec()
+}
+
+/// Replay a vector and return **both** the framebuffer and the hidden coverage
+/// plane, one byte per pixel with the low two bits meaningful.
+///
+/// A separate entry point rather than a change to [`replay`]'s return type: 164
+/// committed vectors call that one and none of them carry a hidden plane, so
+/// widening it would churn every call site to serve one vector.
+///
+/// This is what closes ledger **R-24**. The plane is invisible in the rendered
+/// pixels, so no amount of framebuffer comparison can detect a renderer that
+/// never writes it — which is precisely how the defect survived every existing
+/// vector.
+///
+/// # Panics
+///
+/// Panics under the same conditions as [`replay`].
+#[must_use]
+pub fn replay_with_hidden(v: &Vector<'_>) -> (Vec<u8>, Vec<u8>) {
+    let fb = replay(v);
+    // Rebuild the bus state the same way `replay` does and read the plane back.
+    // Re-running is deliberate: sharing the bus would mean returning it from
+    // `replay`, and the hidden plane is read through the same `Bus` accessor the
+    // VI uses, so the read path is the shipped one rather than a test-only peek.
+    let mut bus = Bus::new();
+    let base = v.cmd_addr as usize;
+    let fb_addr = v.fb_addr as usize;
+    let pre = v.preload_addr as usize;
+    bus.rdram[pre..pre + v.preload.len()].copy_from_slice(v.preload);
+    bus.rdram[base..base + v.cmds.len()].copy_from_slice(v.cmds);
+    bus.rdp.dpc_write(0, v.cmd_addr);
+    bus.rdp.dpc_write(1, v.cmd_addr + v.cmds.len() as u32);
+    let end = v.cmd_addr.wrapping_add(v.cmds.len() as u32);
+    let cap = v.cmds.len() * 8 + 4096;
+    let mut ticks = 0usize;
+    while bus.rdp.dpc_read(2) < end {
+        bus.rdp_tick();
+        ticks += 1;
+        assert!(ticks <= cap, "DP FIFO did not drain in {cap} ticks");
+    }
+    let px = (v.width as usize) * (v.height as usize);
+    let hidden = (0..px)
+        .map(|i| {
+            let addr = (fb_addr + i * v.bpp as usize) as u32;
+            rustyn64_core::cart::RdramBus::rdram_read_hidden(&bus, addr)
+        })
+        .collect();
+    (fb, hidden)
 }
 
 /// Replay a vector and report the first differing pixel, or `None` on a

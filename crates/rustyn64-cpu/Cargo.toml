@@ -16,6 +16,9 @@ std = []
 # field to `Pipeline`, so the save-state layout is identical either way and ADR
 # 0011 §4's mode marker is not owed yet.
 fast-exec = []
+# Instruction-classification census (ADR 0006: counters only, nothing schedules
+# against them). Used to size a fast commit path before writing one.
+work-counters = []
 
 [dependencies]
 bitflags = { version = "2", features = ["serde"] }

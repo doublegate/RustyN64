@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -uo pipefail
+cd /home/parobek/Code/OSS_Public-Projects/RustyN64
+ROM="/tmp/claude-1000/-home-parobek-Code-OSS-Public-Projects-RustyN64/3c159115-07d9-4b69-a1e2-ea68c3260bd6/scratchpad/rom/Super Mario 64.z64"
+SRC=crates/rustyn64-rsp/src/vu.rs
+for leg in real:/tmp/rustyn64-bench/vu.preElide elided:/tmp/rustyn64-bench/vu.elided; do
+  name="${leg%%:*}"; snap="${leg#*:}"
+  cp "$snap" "$SRC"
+  cargo build --release --example work_bench --features work-counters,fast-exec,fast-scheduler >/dev/null 2>&1 || { echo "$name BUILD FAILED"; continue; }
+  echo "=== $name"
+  RUSTYN64_PROBE_ROM="$ROM" ./target/release/examples/work_bench 2>&1 | head -30
+done
+cp /tmp/rustyn64-bench/vu.preElide "$SRC"

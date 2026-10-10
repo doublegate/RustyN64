@@ -14,6 +14,31 @@ not carry the old blanket rule alongside this exception. `docs/architecture.md`
 is *not* amended, and must not be cited as a source for this policy: it contains
 no mention of `unsafe` at all.
 
+> **AMENDED by [ADR 0020](0020-amend-0016-accept-the-simd-exception.md),
+> 2026-08-02.** The recommendation below ("do not use this exception") is no
+> longer current: 0020 accepts it for `multiply_lane` only. The four gates in
+> this ADR are carried forward unchanged and remain the operative requirements.
+
+## Addendum, 2026-08-02 — the 5.3% ceiling was re-derived by measurement, and it is smaller
+
+Every figure below is built on **5.3% of a frame / 1.056x**, which this ADR took
+from the VU census. That number is `62% x 8.5%` — an operation-count share
+multiplied by a time share — and it has now been measured directly, by doubling
+`multiply_lane` rather than by eliding it (an elision probe is invalid here: a
+garbage VU result steers the microcode, and the first attempt cut RSP
+instructions per frame by 59%).
+
+**Measured: 2.6–2.7% of a frame, a ~1.028x ceiling — half what this ADR
+declined.** The multiply/accumulate family is among the *cheapest* work the VU
+does, so 61.6% of the operations is well under 61.6% of the time. See
+`docs/performance.md` §*`multiply_lane` measures 2.6–2.7% of a frame*.
+
+**Nothing in the decision changes; every reason for it gets stronger.** The
+exception stays written down, unused, and recommended against, and the crate
+stays `forbid`. The figures below are left as written rather than restated —
+they are the record of the reasoning as it stood, and a decision that survives
+its own headline number being halved is worth reading in the original.
+
 ## Context
 
 `crates/rustyn64-rsp` carries `#![forbid(unsafe_code)]`, as every chip crate
