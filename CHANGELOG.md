@@ -8,6 +8,30 @@ All notable changes to RustyN64 are documented here. The format is based on
 
 ### Fixed
 
+- **Audio chopped rather than played, because the frontend offered the device
+  `fps / 60` of what it consumes and silence for the rest.** With the core at
+  ~8.5 FPS that is 14.2% — measured, at the device: **0 of 469** callbacks were
+  fully fed. `EmuCore::produce_audio` stages exactly one emulated frame of audio
+  per emulated frame, and no buffering strategy manufactures the remainder.
+
+  `emu_thread::AudioServo` now stretches each frame's audio over the wall-clock
+  time that frame actually took: feed-forward from the measured frame interval,
+  trimmed by ring occupancy, clamped to `[1.0, 12.0]`. The samples are the same
+  samples, spent over the whole frame instead of a sixtieth of it — so a slow
+  core sounds like a slow tape rather than a stutter. **14.2% -> 90.9%
+  delivered, 100.0% in steady state**, the shortfall being the startup ramp from
+  an empty ring. Frames per second and UI latency are both unchanged.
+
+  Determinism is untouched: the stretch applies in the frontend resampler, which
+  ADR 0004 already designates as the non-deterministic host-timing stage. With no
+  ring attached the servo never runs and behavior is byte-identical.
+
+  Two claims about this symptom were **refuted** while root-causing it, both of
+  which had been recorded as fact: the emulated AI was suspected of gapping (it
+  does not — 108/120 frames audible, 3 underruns), and the reported "~1 s on /
+  ~1 s off" period was attributed to the ring's 0.25 s capacity (the measured
+  period was ~95 ms, set by the pacer). See `docs/audio.md`.
+
 - **`AI_STATUS.FULL` could latch and never clear, so a game polling it for a
   free audio DMA slot spun forever** (ledger R-16). An unprogrammed
   `AI_DACRATE` mapped to a zero sample rate, which made `tick()` return before

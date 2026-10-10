@@ -235,3 +235,186 @@ crate (`docs/rsp.md`, ADR 0002). The *host*-rate resample (N64 output rate → t
 - **Determinism** — same seed + ROM + input ⇒ bit-identical stream: for the AI
   (`audio_play_rom.rs`) and for the mixer's PCM output (`mixer_microcode.rs`).
   **Done.**
+
+## The chopping, measured at both boundaries
+
+**User report:** audio plays ~1 s, then ~1 s of silence, repeating.
+**Status:** root cause identified and measured; the *period* in the report does
+not reproduce. Recorded here because a symptom description that survives into
+three documents becomes the thing people design against.
+
+Two probes, both against Super Mario 64, both committed so the numbers are
+re-runnable rather than remembered.
+
+**Provenance for every figure in this section.** These are host-sensitive, and
+without this block they are anecdotes:
+
+| | |
+| --- | --- |
+| ROM | Super Mario 64 (USA), SHA-256 `17ce0773…bb21d91` (local corpus, gitignored) |
+| host | Intel i9-10850K (10C/20T, 3.6 GHz base / 5.2 GHz boost), Linux 7.1.5 |
+| toolchain | `rustc 1.96.0 (ac68faa20 2026-05-25)`, `--release` |
+| build | default features for the device-boundary test; `fast-exec,fast-scheduler` for `audio_probe` — **the two are not comparable to each other**, which is why each table names its build |
+| tree | `52600ea` |
+| kind | **differential** over the timed window in every case: counters are cumulative from power-on and both harnesses subtract a baseline captured after warm-up |
+| audio | 48 kHz host rate, fixed rather than device-negotiated, so no sound card is required |
+
+The two builds differ deliberately: `audio_probe` measures the *core* and wants
+the fast path's ~15.7 FPS, while the device-boundary test measures the *shipped
+default* at ~8.5 FPS. Reading a supply ratio from one against a frame rate from
+the other is the mistake this table exists to prevent.
+
+| probe | boundary | how to run |
+| --- | --- | --- |
+| `crates/rustyn64-frontend/examples/audio_probe.rs` | the emulated AI, before the ring | `RUSTYN64_PROBE_ROM=… cargo run --release --example audio_probe --features fast-exec,fast-scheduler` |
+| `emu_thread::tests::measure_audio_gaps_at_the_device_boundary` | the device callback, after the ring | `RUSTYN64_PROBE_ROM=… cargo test -p rustyn64-frontend --release --lib measure_audio_gaps -- --ignored --nocapture` |
+
+### What the emulated machine produces — it is not the AI
+
+| | |
+| --- | --- |
+| frames carrying audible samples | **108 / 120** (the 12 are contiguous, at the start, before the game's audio engine begins) |
+| `Audio::underruns` over the window | **3** |
+| samples staged per frame | **1600**, exactly `output_rate / 60 * 2` |
+| supply ratio | **26.1%**, against `fps / 60 = 26.1%` |
+
+**So the emulated AI does not gap**, and the "supply is `fps / 60`" claim in
+`audio.rs` is now measured rather than asserted. The competing hypothesis — that
+the game's audio DMA is starving inside the machine, which would be an emulation
+defect no host buffering could fix — is **refuted**: the stream is continuous
+once it starts, and the underrun counter barely moves.
+
+### What the device receives
+
+At the device boundary, with the shipped 0.25 s ring and a 1024-frame callback:
+
+| | |
+| --- | --- |
+| callbacks fully fed | **0 / 469** |
+| callbacks fully empty | **384 / 469** |
+| samples delivered | **14.2%** (default build, ~8.5 FPS — `fps / 60 = 14.2%`) |
+| silent runs | mean **95 ms**, max **128 ms** |
+
+**The reported ~1 s period is off by an order of magnitude.** The measured chop
+is ~10 Hz, and its period is one emulated frame plus the pacer's yield — *not*
+the ring's 0.25 s capacity, which an earlier note had guessed. Both halves of
+that guess were wrong, and neither was checked before it was written down.
+
+### Why no buffering fixes it
+
+Supply is `fps / 60` by construction: `EmuCore::produce_audio` stages exactly one
+emulated frame of audio per emulated frame, and the device consumes in wall-clock
+time. A ring cannot emit samples that were never produced. The only levers are:
+
+1. **make the core faster** — `docs/performance.md` records that 60 FPS is out of
+   reach for this execution model, and that the entire declined optimization
+   backlog is worth ~1.12x;
+2. **an explicit slow-running audio policy** — resample to the speed actually
+   achieved (continuous, heavily pitch-shifted), or mute below a speed threshold;
+3. **accept the chopping**, which is what ships today.
+
+That is a product decision, not a defect, and it is recorded here rather than
+silently resolved.
+
+### The rate-control servo does not exist
+
+`audio.rs` describes a servo that "nudges the produce rate to keep the ring near
+half-full", and `AudioRing::occupancy` is documented as existing to feed it.
+**`occupancy` has no callers outside its own module.** The accessor was written
+for a consumer that was never built, and three doc comments describe it as though
+it runs. Whichever policy above is chosen, it is the servo's slot that would hold
+it.
+
+### One tempting fix, refuted by measurement
+
+The pacer sleeps a full frame period after **every** frame while already ~85 ms
+behind (`emu_thread::Schedule::snap_if_behind` sets `target = now + period`).
+That is 17.7 ms of idle on a 100 ms frame — confirmed two ways: `frame_bench`
+measures **99.955 ms** unpaced, the pacer delivers **117.6 ms**.
+
+Shrinking that yield to 2 ms was built and measured A-B-A:
+
+| | frames / 10 s | samples delivered | UI emu-lock p50 |
+| --- | --- | --- | --- |
+| A — full-period yield (shipped) | 85 | 14.2% | **664 ns** |
+| B — 2 ms yield | 96–97 | 16.0–16.2% | **76.5 ms** |
+| A — repeat | 85 | 14.2% | 614 ns |
+
+**1.14x throughput, and it is not worth taking.** The UI's median wait for the
+emu mutex goes from sub-microsecond to 76 ms, and the stand-in UI thread
+completed 98 iterations instead of 173 in the same window. The yield is
+*load-bearing*: it is the only interval in which anything else can take the emu
+mutex, because the pacer holds it for the whole frame. The hypothesis that it was
+vestigial is refuted.
+
+The real unlock is architectural: `emu_thread`'s own header says "**the winit
+thread never takes the emu mutex**", and `app.rs` takes it in six places
+(ROM load, save-state, pause, reset). Route those through the existing
+`SaveStateControls`-style request queue and the yield stops being a UI window, at
+which point the 1.14x is available for free. That needs its own change and is not
+attempted here.
+
+## The fix that shipped: stretch, don't chop
+
+**Policy chosen:** continuous audio at the wrong pitch, over chopped audio at the
+right pitch. Of the three levers above, (1) is unavailable and (3) was what
+shipped; this is (2).
+
+`emu_thread::AudioServo` stretches each emulated frame's audio over the
+wall-clock time that frame actually took. The samples are the same samples — the
+servo cannot manufacture the missing 86%, and nothing can — they are simply spent
+over the whole frame instead of over `1/60 s` followed by silence. A core at 14%
+speed therefore sounds like a tape running at 14%: continuous, two and a half
+octaves down.
+
+### How it decides
+
+| term | source | why |
+| --- | --- | --- |
+| feed-forward | EMA of the measured wall-clock interval between produced frames | correct on the *first* frame; an occupancy integrator covering a 7x range would take seconds to converge |
+| trim | ring occupancy against half-full | removes residual drift, which the feed-forward term cannot see because it does not know what is already banked |
+
+Clamped to `[1.0, MAX_AUDIO_STRETCH]`. It **never compresses below real time**: a
+core running faster than 60 FPS is already oversupplying, and the ring's
+drop-oldest is the right answer there. `MAX_AUDIO_STRETCH = 12.0` bounds it at
+5 FPS — below that the audio chops again rather than becoming an unrecognizable
+drone that also pins the ring.
+
+### Measured, same harness as the defect
+
+| | before | after |
+| --- | --- | --- |
+| callbacks fully fed | **0 / 469** | **412 / 469** |
+| callbacks fully empty | 384 / 469 | **34 / 469** |
+| samples delivered | **14.2%** | **90.9%** |
+| ...second half only (steady state) | 14.2% | **100.0%** |
+| silent runs | 86, mean 95 ms | 14, mean 52 ms |
+| first fully-fed callback | never | **#15 (320 ms in)** |
+| UI emu-lock p50 | 664 ns | 590 ns (unchanged) |
+| pacer frames / 10 s | 85 | 85 (unchanged) |
+
+**Steady state is 100%.** The whole-window 90.9% is the ramp from an empty ring
+at startup, which is why the harness reports the second half separately — a
+single figure charges a one-off transient to continuous quality.
+
+### The trim gain is measured, not tuned
+
+0.2, 0.4 and 0.6 were each run. **All three reach 100.0% steady state and all
+three reach their first fully-fed callback at #15.** The only difference is the
+whole-window figure (90.6 / 91.3 / 91.9%), which is dominated by the ramp.
+Picking 0.6 for that 1.3-point edge would be tuning against a transient, so the
+**lowest** gain ships: a larger one makes the pitch hunt audibly and nothing was
+bought with it.
+
+### What it does not change
+
+- **Determinism.** The stretch is applied in the frontend resampler, which
+  ADR 0004 already designates as the non-deterministic host-timing stage. The
+  core's emitted stream (`Bus::drain_audio_samples`) is untouched, so
+  `audio_play_rom` and `mixer_microcode` — which pin the *core* PCM — are
+  unaffected, and the save-state trace compare does not read the resampled f32.
+- **Anything without a ring.** With `ring: None` the servo is never consulted and
+  the core keeps its default `1.0`, so headless builds and every test are
+  byte-identical to before.
+- **The pacer.** Frames produced per second is unchanged (85 both ways); this
+  trades no throughput.
