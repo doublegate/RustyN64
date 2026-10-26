@@ -169,7 +169,10 @@ fn read_from_zip(file: File) -> Result<Vec<u8>, RomFileError> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|e| RomFileError::Archive(format!("entry {i}: {e}")))?
+            .into_owned();
         let Some(ext) = Path::new(&name)
             .extension()
             .and_then(|e| e.to_str())
