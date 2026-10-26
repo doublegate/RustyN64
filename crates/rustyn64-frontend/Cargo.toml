@@ -125,15 +125,15 @@ cpal = "0.18"
 gilrs = "0.11"
 rfd = "0.17"
 directories = "6"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2", "deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2", "deflate-flate2-zlib-rs"] }
 
 # wasm-only: the browser entry point. wasm-bindgen is pinned to EXACTLY the
-# version `web/Trunk.toml` installs (0.2.126) — a mismatch fails `trunk build`
+# version `web/Trunk.toml` installs (0.2.129) — a mismatch fails `trunk build`
 # and the `wasm-bindgen-pin` CI job. The canvas demo runs the emulator and blits
 # the VI scan-out through web-sys (no winit/wgpu on wasm yet — that is the
 # roadmap for the full in-browser shell).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "=0.2.126"
+wasm-bindgen = "=0.2.129"
 console_error_panic_hook = "0.1"
 web-sys = { version = "0.3", features = [
     "Window",
