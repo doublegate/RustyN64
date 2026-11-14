@@ -34,7 +34,7 @@ is why this uses a self-hosted runner rather than GitHub's cloud runners.
 
 ## How it works
 
-```
+```text
 GitHub PR event ──▶ self-hosted runner (YOUR machine, systemd --user)
                       │  gh pr diff ─▶ build adversarial-reviewer prompt (+ style guide)
                       │  agy --print  (PTY-wrapped, OAuth/Ultra)  ─▶ review text
@@ -200,7 +200,7 @@ consecutive rounds each raised a blocking issue and only the second survived —
 clean comment list is not evidence that nothing was raised.
 
 The script no longer issues a `DELETE` at all; `agy-review-selftest.sh` asserts
-that, so the behaviour cannot come back unnoticed. The archive is bounded by
+that, so the behavior cannot come back unnoticed. The archive is bounded by
 `MAX_BODY_BYTES` (default 60000, under GitHub's 65536 limit); when rounds must be
 dropped to fit, the oldest go first **and the body says how many were dropped**,
 because a silent truncation would look exactly like a PR reviewed only once.
@@ -211,7 +211,7 @@ because a silent truncation would look exactly like a PR reviewed only once.
 > immediately.
 >
 > The same rule governs the **scripts**: the workflow checks out the default branch
-> to run them, so a change to `agy-review.sh` (the archive behaviour above included)
+> to run them, so a change to `agy-review.sh` (the archive behavior above included)
 > has **no effect on any PR until it is merged**, not even on the PR that makes it.
 
 ---

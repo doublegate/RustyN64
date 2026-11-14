@@ -175,7 +175,7 @@ AGY_PRINT_TIMEOUT_MAX_SECONDS="${AGY_PRINT_TIMEOUT_MAX_SECONDS:-1800}"
 
 # Both of the above reach `$(( ... ))`, so both are validated before they get there.
 # >>> SELFTEST-EXTRACT: numeric env validation
-# Validate and canonicalise a numeric setting that will reach an arithmetic expansion.
+# Validate and canonicalize a numeric setting that will reach an arithmetic expansion.
 #
 # @param $1 name of the variable to validate, assigned in place.
 # @param $2 default to fall back to when the value is not a non-negative decimal integer.
@@ -188,19 +188,19 @@ AGY_PRINT_TIMEOUT_MAX_SECONDS="${AGY_PRINT_TIMEOUT_MAX_SECONDS:-1800}"
 #     bash 5.3 (measured here): they reach the parser as a literal and are refused with
 #     "arithmetic syntax error: operand expected". This was reported in review as a CWE-78, and an
 #     earlier version of this comment asserted the execution -- WRONGLY, from a nested-quoting
-#     artefact in the test that ran it. It does not reproduce. What is left is still worth
+#     artifact in the test that ran it. It does not reproduce. What is left is still worth
 #     refusing: a value naming another variable silently means something other than what it says.
 #  2. Digits-only is not sufficient on its own. `09` is all digits, and bash reads the leading
 #     zero as OCTAL:
 #         $(( 1000000 * 09 / 1048576 ))   ->  value too great for base
 #     So a *valid* setting takes the script down under `set -e`. That one is demonstrated, not
-#     theoretical, and is the reason this function exists. Canonicalising to base 10 here, once,
+#     theoretical, and is the reason this function exists. Canonicalizing to base 10 here, once,
 #     means no downstream `$(( ))` has to remember `10#`.
 # The locals are `_nne_`-prefixed because this function assigns THROUGH A NAME the caller supplies.
 # Plain `name`/`val` locals shadow a caller variable of the same name, and the failure is silent --
-# `normalise_numeric_env val 240` reads and writes the local, leaving the caller's `val` untouched.
-# Verified: with unprefixed locals, `val=07; normalise_numeric_env val 240` leaves val as `07`.
-normalise_numeric_env() {
+# `normalize_numeric_env val 240` reads and writes the local, leaving the caller's `val` untouched.
+# Verified: with unprefixed locals, `val=07; normalize_numeric_env val 240` leaves val as `07`.
+normalize_numeric_env() {
   local _nne_name="$1" _nne_default="$2" _nne_val="${!1}"
   case "$_nne_val" in
     ""|*[!0-9]*)
@@ -210,8 +210,8 @@ normalise_numeric_env() {
   esac
 }
 # <<< SELFTEST-EXTRACT
-normalise_numeric_env AGY_TIMEOUT_SECONDS_PER_MIB   900
-normalise_numeric_env AGY_PRINT_TIMEOUT_MAX_SECONDS 1800
+normalize_numeric_env AGY_TIMEOUT_SECONDS_PER_MIB   900
+normalize_numeric_env AGY_PRINT_TIMEOUT_MAX_SECONDS 1800
 AGY_DIFF_MODE="${AGY_DIFF_MODE:-auto}"     # auto|inline|file. A diff is passed to agy either inlined
                                            # in the --print prompt, or written to a FILE agy reads with
                                            # its own tools. `auto` inlines a diff that fits under the
@@ -253,13 +253,13 @@ STYLE_GUIDE="${STYLE_GUIDE:-.github/agy-review.md}"  # repo-relative; loaded if 
 LOG="${RUNNER_TEMP:-/tmp}/agy-review-${GITHUB_RUN_ID:-$$}.log"
 AGY_LOCK="${AGY_LOCK:-$HOME/.gemini/antigravity-cli/.agy-review.lock}"
 AGY_LOCK_WAIT="${AGY_LOCK_WAIT:-600}"      # seconds to wait for the agy lock before proceeding
-normalise_numeric_env AGY_LOCK_WAIT 600   # flock -w rejects a non-numeric value and aborts
+normalize_numeric_env AGY_LOCK_WAIT 600   # flock -w rejects a non-numeric value and aborts
 AGY_RETRIES="${AGY_RETRIES:-3}"            # attempts to get a usable agy response
 AGY_RETRY_DELAY="${AGY_RETRY_DELAY:-15}"   # base backoff seconds between retries (grows per attempt)
 # Both reach (( )) arithmetic: `08` would abort on an octal parse and `0` retries would skip every
 # attempt and report "no review output after 0 attempt(s)". Same validation as the other numerics.
-normalise_numeric_env AGY_RETRIES     3
-normalise_numeric_env AGY_RETRY_DELAY 15
+normalize_numeric_env AGY_RETRIES     3
+normalize_numeric_env AGY_RETRY_DELAY 15
 [ "$AGY_RETRIES" -ge 1 ] || AGY_RETRIES=1
 MARKER="<!-- antigravity-pr-review -->"
 
@@ -290,7 +290,7 @@ MAX_BODY_BYTES="${MAX_BODY_BYTES:-60000}"
 #
 # Do not "fix" that in advance by dropping the login and matching on `.user.type == "Bot"` plus the
 # marker. Under a PAT the comment's type is `"User"`, not `"Bot"`, so that clause fails in the same
-# scenario; and the marker is an HTML comment, so any bot that quotes or summarises a PR comment
+# scenario; and the marker is an HTML comment, so any bot that quotes or summarizes a PR comment
 # carries it along, which would let this script PATCH over ANOTHER bot's comment. Losing a review
 # that way is worse than posting a duplicate. Change this filter when the auth changes, not before,
 # and match on whatever identity the new credential actually presents.
@@ -314,7 +314,7 @@ REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY not set}"
 # person schedule execution here" has to be answered by the permissions API, not inferred
 # from a label that was never meant to answer it.
 #
-# Fails CLOSED: any API error, missing token, or unrecognised role denies. A reviewer that
+# Fails CLOSED: any API error, missing token, or unrecognized role denies. A reviewer that
 # stops running is a visible annoyance; one that runs for the wrong person is not.
 #
 # But fail-closed makes the error TEXT load-bearing, which is why stderr is captured and logged
@@ -405,7 +405,7 @@ auth_failed=0
 service_errors=0
 # Set when the large-diff fallback below creates refs/agy/* so the trap can remove them.
 agy_refs_created=
-# Set by the AGY_DRY_RUN block so cleanup KEEPS the two artefacts dry-run exists to expose. The
+# Set by the AGY_DRY_RUN block so cleanup KEEPS the two artifacts dry-run exists to expose. The
 # whole point of dry run is "let me look at the assembled prompt", and the EXIT trap fires on the
 # `exit 0` at the end of that block -- so it deleted the prompt on the way out, every time.
 # Everything else is still removed; only these two are spared, and their paths are printed.
@@ -418,7 +418,7 @@ cleanup() {
   # runner -- but BSD/macOS `rm` writes "No such file or directory" to stderr for it.
   #
   # A note for the next reader, because this was raised in review and the intuition is wrong:
-  # `rm -f ${v:+"$v"}` does NOT word-split. Bash honours the quotes inside the `:+` alternate
+  # `rm -f ${v:+"$v"}` does NOT word-split. Bash honors the quotes inside the `:+` alternate
   # word, so a path with a space or a glob character survives as one operand. Verified:
   #
   #     v='a*b';    rm -f ${v:+"$v"}   ->   + rm -f 'a*b'      (siblings axxb, ayb untouched)
@@ -648,7 +648,7 @@ truncated=""
 # overlooked: the UTF-8 scrub further down (`iconv -c`, python3 fallback) removes any partial
 # sequence before the prompt reaches agy, so the split never escapes this file.
 #
-# A line-aware cut would avoid creating the split, but cannot honour a byte ceiling — and the
+# A line-aware cut would avoid creating the split, but cannot honor a byte ceiling — and the
 # ceiling is the actual constraint, since this bounds what is handed to a model with a hard context
 # limit. One minified-asset line in a diff can exceed the whole budget by itself, so "cut at a line
 # boundary" degenerates to either overshooting the cap or emitting nothing. Exact where the limit is
@@ -918,7 +918,7 @@ scale_timeout_for_diff() {
   # against. Then the same guard the settings get, so a non-numeric value falls back rather than
   # becoming a syntax error in the expansion below.
   bytes="${bytes//[[:space:]]/}"
-  normalise_numeric_env bytes 0
+  normalize_numeric_env bytes 0
   [ -z "$AGY_PRINT_TIMEOUT_EXPLICIT" ] || { log "AGY_PRINT_TIMEOUT set explicitly ($AGY_PRINT_TIMEOUT); not scaling"; return 0; }
 
   # Computed from BYTES, not from truncated whole MiB: `mib = bytes / 1048576` in integer
@@ -929,7 +929,7 @@ scale_timeout_for_diff() {
 
   local base_s
   if ! base_s="$(duration_to_seconds "$AGY_PRINT_TIMEOUT")"; then
-    log "AGY_PRINT_TIMEOUT ('$AGY_PRINT_TIMEOUT') is not a recognised duration; leaving it alone"
+    log "AGY_PRINT_TIMEOUT ('$AGY_PRINT_TIMEOUT') is not a recognized duration; leaving it alone"
     return 0
   fi
 

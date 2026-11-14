@@ -54,7 +54,7 @@ extract_filter() {
 }
 
 # The extracted blocks are eval'd without the rest of agy-review.sh, so any helper they call has
-# to exist here. `normalise_numeric_env` logs its fallback; keep that off the checks' stdout.
+# to exist here. `normalize_numeric_env` logs its fallback; keep that off the checks' stdout.
 log() { :; }
 
 # Every marked block must exist and be sourceable. A renamed or unbalanced marker would
@@ -321,7 +321,7 @@ check "an unfamiliar error signature is caught" "MATCH" \
 
 # REGRESSION, observed on VeridianOS PR #5: agy under `unbuffer` printed the auth failure in
 # lowercase, the case-sensitive guard missed it, and the error was posted as the review under a
-# green check. Any capitalisation of the word is the same failure.
+# green check. Any capitalization of the word is the same failure.
 # --- truncation: executed, not grepped (CodeRabbit review, VeridianOS PR #5) -----
 # A diff cut by MAX_DIFF_BYTES, a prompt cut by MAX_PROMPT_BYTES, and a review cut to fit the comment
 # limit must each leave the model -- or the reader -- a notice. These run the real helpers.
@@ -421,14 +421,14 @@ done
 # one of them -- which is exactly how the octal case survived the first version of this guard.
 nne() {                                    # run the real function, echo what the variable became
   local v="$1"; local T="$v"
-  normalise_numeric_env T 240 >/dev/null 2>&1 || echo "CRASHED"
+  normalize_numeric_env T 240 >/dev/null 2>&1 || echo "CRASHED"
   printf '%s' "$T"
 }
 check "numeric env: plain integer passes through"   "300"  "$(nne 300)"
 check "numeric env: zero is a legal setting"        "0"    "$(nne 0)"
 # 9, not a crash and not 8: `09` is all digits, so the digits-only check admits it, and bash then
 # reads the leading zero as OCTAL. This is the case the digits-only check alone did NOT cover.
-check "numeric env: leading zero canonicalises"     "9"    "$(nne 09)"
+check "numeric env: leading zero canonicalizes"     "9"    "$(nne 09)"
 check "numeric env: many leading zeros"             "8"    "$(nne 0008)"
 check "numeric env: empty falls back"               "240"  "$(nne "")"
 check "numeric env: non-numeric falls back"         "240"  "$(nne 30s)"
@@ -446,15 +446,15 @@ check "numeric env: a variable name falls back"     "240"  "$(nne a_name)"
 # already swallowed the evidence. Kept as a note because a test that cannot fail is worse than
 # no test -- it reads as coverage.
 check "numeric env: a non-numeric value never reaches arithmetic" "" \
-  "$( { T=a_name; normalise_numeric_env T 240; } 2>&1 >/dev/null || true )"
+  "$( { T=a_name; normalize_numeric_env T 240; } 2>&1 >/dev/null || true )"
 # It assigns THROUGH a caller-supplied name, so its own locals must not collide with one. With
 # plain `name`/`default`/`val` locals these two silently no-op -- the function reads and writes its
 # own local and the caller's variable is never touched. Verified as a real failure before fixing.
-name=09; normalise_numeric_env name 240
+name=09; normalize_numeric_env name 240
 check "numeric env: a caller variable named 'name' is not shadowed" "9" "$name"
-val=07;  normalise_numeric_env val 240
+val=07;  normalize_numeric_env val 240
 check "numeric env: a caller variable named 'val' is not shadowed"  "7" "$val"
-default=08; normalise_numeric_env default 240
+default=08; normalize_numeric_env default 240
 check "numeric env: a caller variable named 'default' is not shadowed" "8" "$default"
 
 # --- diff-size scaling -------------------------------------------------------------------------
@@ -477,9 +477,9 @@ check "scaling: an explicit timeout is not touched" "5m" "$(sc 20000000)"
 AGY_PRINT_TIMEOUT_EXPLICIT=""
 
 # And the value it produces must survive the arithmetic it exists to feed.
-T=09; normalise_numeric_env T 240
+T=09; normalize_numeric_env T 240
 # 9. Feeding the RAW `09` to the same expansion dies "value too great for base" under `set -e`,
-# which is the crash this canonicalisation exists to prevent -- asserted directly below.
+# which is the crash this canonicalization exists to prevent -- asserted directly below.
 check "numeric env: canonical value is arithmetic-safe" "9" \
   "$(bash -c 'set -e; echo $(( 1048576 * '"$T"' / 1048576 ))' 2>/dev/null || echo CRASHED)"
 check "numeric env: the RAW value would have crashed"   "CRASHED" \
@@ -522,7 +522,7 @@ check "a legacy archive becomes one droppable round behind the new one" "NEW" \
 check "an archived round keeps its reviewed-at time" "1" \
   "$(agy_assemble_archive "$(printf '%s2026-10-06 12:34 UTC -->\nBODY' "$AGY_REVIEWED_AT_PREFIX")" "" "LATER" \
      | grep -c -F '<summary>Round reviewed at 2026-10-06 12:34 UTC</summary>')"
-check "a head without the line is labelled archived-at" "1" \
+check "a head without the line is labeled archived-at" "1" \
   "$(agy_assemble_archive "BODY" "" "LATER" | grep -c -F '<summary>Round archived at LATER</summary>')"
 if grep -q 'AGY_REVIEWED_AT_PREFIX' "$SCRIPT_DIR/agy-review.sh"; then
   echo "  ok    the posted head records its reviewed-at time"

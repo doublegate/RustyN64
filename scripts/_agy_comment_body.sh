@@ -99,7 +99,7 @@ AGY_REVIEWED_AT_PREFIX='<!-- agy-reviewed-at: '
 # ahead of the rounds already archived.
 #
 # Args: $1 previous head, $2 previous archive (may be empty), $3 time to show when the head
-# carries no reviewed-at line (labelled "archived at", because that is all it is).
+# carries no reviewed-at line (labeled "archived at", because that is all it is).
 #
 # A previous archive with no round marker predates markers. It is wrapped as ONE round behind
 # its own marker; emitted bare, the only marker would be the new round's, and trimming the
